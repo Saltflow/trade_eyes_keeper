@@ -1,0 +1,35 @@
+# 股票量化系统依赖包
+
+# 核心依赖
+pandas>=2.0.0
+numpy>=1.24.0
+
+# 数据获取
+akshare>=1.12.0
+
+# 邮件发送
+yagmail>=0.15.0
+
+# 定时任务
+APScheduler>=3.10.0
+pytz>=2023.3
+
+# 配置管理
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# HTTP请求
+requests>=2.31.0
+
+# 网页解析
+beautifulsoup4>=4.14.0
+
+# LLM API调用
+openai>=1.0.0  # 兼容DeepSeek API
+
+# 日志
+colorlog>=6.7.0
+
+# 开发依赖（测试等）
+pytest>=7.4.0
+pytest-mock>=3.11.0

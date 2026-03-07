@@ -1,0 +1,51 @@
+# 股票量化系统配置示例
+# 复制此文件为 config.yaml 并修改配置
+
+# 股票配置
+stocks:
+  - 601728  # 中国电信
+  - 600938  # 中国海油
+  # 添加更多股票代码（上海6开头，深圳0或3开头）
+  # - 000001  # 平安银行
+  # - 300750  # 宁德时代
+
+# 数据源配置
+data_source:
+  type: akshare  # 使用akshare获取数据，可选：akshare, tushare
+  # 如果需要tushare，请设置token
+  # tushare_token: "your_tushare_token_here"
+  # 注意：系统不再支持模拟数据模式，确保使用真实数据进行投资决策
+  # 当akshare失败时，系统会自动尝试使用网页爬虫获取真实数据
+
+# 邮件通知配置
+email:
+  smtp_server: smtp.yeah.net  # yeah.net邮箱SMTP服务器，其他邮箱：smtp.163.com, smtp.qq.com
+  smtp_port: 587  # 使用TLS的端口，QQ邮箱用465或587
+  sender_email: ""  # 发送邮箱，通过环境变量EMAIL_SENDER设置
+  sender_password: ""  # 邮箱密码或授权码，通过环境变量EMAIL_PASSWORD设置
+  receiver_email: ""  # 接收邮箱，通过环境变量EMAIL_RECEIVER设置
+  enable_tls: true  # 启用TLS加密
+
+# LLM API配置（可选）
+llm:
+  api_type: deepseek  # 使用DeepSeek API，可选：openai, deepseek
+  api_key: ""  # 请在此处填写API密钥，建议使用环境变量
+  base_url: "https://api.deepseek.com/v1"  # DeepSeek API地址
+  model: "deepseek-chat"  # 使用的模型
+
+# 系统运行配置
+scheduler:
+  run_time: "15:30"  # 每天15:30运行（收盘后），格式：HH:MM
+  timezone: "Asia/Shanghai"  # 时区
+  run_on_startup: false  # 启动时立即运行一次
+
+# 数据存储配置
+storage:
+  data_dir: "./data"  # 数据存储目录
+  csv_format: true  # 使用CSV格式存储
+
+# 日志配置
+logging:
+  level: INFO  # 日志级别：DEBUG, INFO, WARNING, ERROR
+  file: "./logs/quant_system.log"  # 日志文件路径
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"  # 日志格式

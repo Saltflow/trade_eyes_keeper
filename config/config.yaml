@@ -1,0 +1,39 @@
+announcements:
+  days: 7
+  enable: true
+  include_in_email: true
+data_source:
+  type: akshare
+email:
+  enable_ssl: true
+  enable_tls: false
+  smtp_port: 465
+  smtp_server: smtp.yeah.net
+llm:
+  api_type: deepseek
+  base_url: https://api.deepseek.com/v1
+  model: deepseek-chat
+logging:
+  file: ./logs/quant_system.log
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  level: INFO
+scheduler:
+  run_time: '15:30'
+  timezone: Asia/Shanghai
+stocks:
+- 601728
+- 600938  # 中国海油
+- 601985  # 中国核电
+- 601919  # 中远海控
+- 600795  # 国电电力
+- 601398  # 工商银行
+- 601088  # 中国神华
+- 512810  # 华宝中证军工ETF
+- 510880  # 华泰柏瑞红利ETF
+- 601818  # 光大银行
+- 601390  # 中国中铁
+storage:
+  cache_days: 7
+  cache_dir: ./cache
+  csv_format: true
+  data_dir: ./data
