@@ -14,7 +14,7 @@ data_source:
   type: akshare  # 使用akshare获取数据，可选：akshare, tushare
   # 如果需要tushare，请设置token
   # tushare_token: "your_tushare_token_here"
-  # 注意：系统不再支持模拟数据模式，确保使用真实数据进行投资决策
+  # 系统只使用真实数据，拒绝模拟数据，确保投资决策准确性
   # 当akshare失败时，系统会自动尝试使用网页爬虫获取真实数据
 
 # 邮件通知配置

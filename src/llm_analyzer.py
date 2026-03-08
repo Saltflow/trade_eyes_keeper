@@ -145,50 +145,26 @@ class LLMAnalyzer:
     def _get_stock_info(self, stock_code):
         """
         获取股票基本信息
-        实际应用中可能需要从API获取，这里返回模拟数据
+        实际应用中可能需要从API获取真实数据，这里返回基础信息
         
         Args:
             stock_code: 股票代码
             
         Returns:
-            dict: 股票信息
+            dict: 股票基础信息（不含模拟数据）
         """
-        # 这里可以扩展为从akshare或其他API获取股票基本信息
-        # 暂时返回模拟数据
-        
-        stock_info_map = {
-            '601728': {
-                'name': '中国电信',
-                'industry': '电信服务',
-                'market_cap': '约5000亿元',
-                'pe_ratio': '15.2',
-                'pb_ratio': '1.2',
-                'dividend_yield': '4.5%',
-                'last_dividend_date': '2023-06-30',
-                'last_dividend_amount': '0.2元/股'
-            },
-            '600938': {
-                'name': '中国海油',
-                'industry': '石油天然气',
-                'market_cap': '约8000亿元',
-                'pe_ratio': '8.5',
-                'pb_ratio': '1.8',
-                'dividend_yield': '6.2%',
-                'last_dividend_date': '2023-06-30',
-                'last_dividend_amount': '0.5元/股'
-            }
-        }
-        
-        return stock_info_map.get(stock_code, {
+        # 返回基础信息，避免使用模拟数据
+        # 未来可扩展为从akshare或其他API获取真实股票信息
+        return {
             'name': f'股票{stock_code}',
-            'industry': '未知',
-            'market_cap': '未知',
-            'pe_ratio': '未知',
-            'pb_ratio': '未知',
-            'dividend_yield': '未知',
-            'last_dividend_date': '未知',
-            'last_dividend_amount': '未知'
-        })
+            'industry': '',
+            'market_cap': '',
+            'pe_ratio': '',
+            'pb_ratio': '',
+            'dividend_yield': '',
+            'last_dividend_date': '',
+            'last_dividend_amount': ''
+        }
     
     def _call_llm_analysis(self, stock_code, stock_info):
         """
@@ -261,13 +237,12 @@ class LLMAnalyzer:
             return None
         except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, ssl.SSLError) as e:
             logger.error(f"LLM API连接失败（超时/SSL）: {e}")
-            logger.warning("使用模拟分析结果作为备选方案")
-            # 生成模拟分析结果
-            return self._generate_mock_analysis(stock_code, stock_info)
+            logger.warning("LLM分析失败，返回空结果")
+            return None
         except Exception as e:
             logger.error(f"调用LLM API失败: {e}", exc_info=True)
-            logger.warning("使用模拟分析结果作为备选方案")
-            return self._generate_mock_analysis(stock_code, stock_info)
+            logger.warning("LLM分析失败，返回空结果")
+            return None
     
     def _build_analysis_prompt(self, stock_code, stock_info):
         """
@@ -346,50 +321,5 @@ class LLMAnalyzer:
         
         return summary
     
-    def _generate_mock_analysis(self, stock_code, stock_info):
-        """
-        生成模拟分析结果（当LLM API不可用时使用）
-        
-        Args:
-            stock_code: 股票代码
-            stock_info: 股票信息
-            
-        Returns:
-            dict: 模拟分析结果
-        """
-        import random
-        analysis_text = f"""
-        股票 {stock_code} ({stock_info.get('name', '')}) 基本面分析（模拟数据）：
-        
-        1. 基本面分析：公司处于{stock_info.get('industry', '未知')}行业，具有一定的市场地位。
-        2. 盈利能力：市盈率{stock_info.get('pe_ratio', '未知')}，处于行业中等水平。
-        3. 分红情况：股息率{stock_info.get('dividend_yield', '未知')}，分红相对稳定。
-        4. 风险评估：面临行业竞争和政策风险，需关注宏观经济变化。
-        5. 投资建议：适合中长期价值投资者，建议分批建仓。
-        
-        注：此为模拟分析结果，实际投资请参考专业机构研究报告。
-        """
-        
-        mock_analysis = {
-            'stock_code': stock_code,
-            'stock_name': stock_info.get('name', ''),
-            'analysis_text': analysis_text,
-            'summary': {
-                'has_growth': True,
-                'has_risk': True,
-                'has_dividend': '分红' in stock_info.get('dividend_yield', ''),
-                'sentiment': '中性'
-            },
-            'rating': {
-                'fundamental': random.randint(3, 5),
-                'profitability': random.randint(3, 5),
-                'dividend_stability': random.randint(3, 5),
-                'overall_value': random.randint(3, 5)
-            },
-            'key_risks': ['行业竞争加剧', '宏观经济波动', '政策变化风险'],
-            'investment_advice': '建议关注，可适当配置'
-        }
-        
-        logger.info(f"为股票 {stock_code} 生成模拟分析结果")
-        return mock_analysis
+
     

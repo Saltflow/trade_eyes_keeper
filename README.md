@@ -184,18 +184,16 @@ stocks:
 
 ### 数据源配置
 
-系统支持多种数据源：
+系统支持真实数据源，拒绝使用模拟数据：
 
 1. **akshare**：免费数据源，无需注册（默认）
 2. **tushare**：需要注册获取token，数据更稳定
-3. **mock**：模拟数据，用于测试或网络不可用时
 
 配置示例：
 
 ```yaml
 data_source:
-  type: akshare  # 或 tushare, mock
-  enable_mock: true  # 当真实数据获取失败时使用模拟数据
+  type: akshare  # 或 tushare
   tushare_token: "your_tushare_token_here"  # 使用tushare时需要
 ```
 

@@ -170,8 +170,9 @@ class StockWebCrawler:
             if price_elem:
                 current_price = float(price_elem.text)
                 
-                # 生成最近days天的模拟数据，但基于真实最新价格
-                return self._generate_data_from_price(stock_code, current_price, days)
+                # 无法获取真实历史数据，返回空DataFrame（不生成模拟数据）
+                logger.warning(f"获取到股票 {stock_code} 当前价格 {current_price}，但无法获取真实历史数据")
+                return pd.DataFrame()
             
         except Exception as e:
             logger.warning(f"解析东方财富网页失败: {e}")
@@ -309,11 +310,9 @@ class StockWebCrawler:
                     df = pd.DataFrame([current_data])
                     df['date'] = pd.to_datetime(df['date'])
                     
-                    # 为了计算MA60，我们需要更多历史数据
-                    # 这里用简单方法生成基于当前价格的历史序列
-                    logger.warning(f"注意：股票 {stock_code} 的历史数据基于当前价格 {current_data['close']:.2f} 生成，非完全真实数据")
-                    logger.warning(f"建议：请确保使用真实历史数据进行投资决策")
-                    return self._generate_historical_data(stock_code, current_data, days)
+                    # 无法获取真实历史数据，返回空DataFrame（不生成模拟数据）
+                    logger.warning(f"获取到股票 {stock_code} 当前数据，但无法获取真实历史数据，无法计算MA60")
+                    return pd.DataFrame()
             
         except Exception as e:
             logger.warning(f"从新浪财经实时数据获取股票 {stock_code} 数据失败: {e}")
@@ -455,89 +454,15 @@ class StockWebCrawler:
                 df = pd.DataFrame([current_data])
                 df['date'] = pd.to_datetime(df['date'])
                 
-                logger.warning(f"注意：股票 {stock_code} 的历史数据基于当前价格 {current_data['close']:.2f} 生成，非完全真实数据")
-                logger.warning(f"建议：请确保使用真实历史数据进行投资决策")
-                return self._generate_historical_data(stock_code, current_data, days)
+                logger.warning(f"获取到股票 {stock_code} 当前数据，但无法获取真实历史数据，无法计算MA60")
+                return pd.DataFrame()
                 
         except Exception as e:
             logger.warning(f"从腾讯财经实时数据获取股票 {stock_code} 数据失败: {e}")
         
         return pd.DataFrame()
     
-    def _generate_historical_data(self, stock_code, current_data, days):
-        """
-        基于当前价格生成合理的历史数据序列
-        用于计算MA60等指标
-        """
-        try:
-            # 使用当前价格作为基准
-            base_price = current_data['close']
-            
-            # 生成日期序列（最近days个工作日）
-            end_date = datetime.now()
-            date_range = pd.date_range(end=end_date, periods=days, freq='B')  # B表示工作日
-            
-            # 根据股票类型设置合理波动
-            if stock_code == '601728':  # 中国电信
-                volatility = 0.02
-                trend = 0.0001  # 轻微上涨趋势
-            elif stock_code == '600938':  # 中国海油
-                volatility = 0.03
-                trend = 0.0002
-            else:
-                volatility = 0.025
-                trend = 0.00015
-            
-            # 生成价格序列（随机游走）
-            np.random.seed(int(stock_code) % 10000)
-            n_days = len(date_range)
-            
-            # 从历史到现在的序列
-            returns = np.random.normal(trend, volatility, n_days)
-            price_series = base_price * np.exp(-np.cumsum(returns[::-1]))[::-1]  # 反转使最新价格为base_price
-            
-            data_list = []
-            for i, date in enumerate(date_range):
-                close_price = price_series[i]
-                open_price = close_price * (1 + np.random.normal(0, 0.01))
-                high_price = max(open_price, close_price) * (1 + abs(np.random.normal(0, 0.005)))
-                low_price = min(open_price, close_price) * (1 - abs(np.random.normal(0, 0.005)))
-                
-                # 如果是最后一天（今天），使用真实数据
-                if i == n_days - 1:
-                    open_price = current_data.get('open', open_price)
-                    close_price = current_data.get('close', close_price)
-                    high_price = current_data.get('high', high_price)
-                    low_price = current_data.get('low', low_price)
-                
-                volume = np.random.randint(1000000, 10000000)
-                amount = volume * close_price
-                
-                data_list.append({
-                    'date': date,
-                    'open': round(open_price, 2),
-                    'close': round(close_price, 2),
-                    'high': round(high_price, 2),
-                    'low': round(low_price, 2),
-                    'volume': volume,
-                    'amount': round(amount, 2),
-                    'amplitude': round((high_price - low_price) / open_price * 100, 2),
-                    'change_pct': round((close_price - open_price) / open_price * 100, 2),
-                    'change': round(close_price - open_price, 2),
-                    'turnover': round(np.random.uniform(0.5, 5.0), 2)
-                })
-            
-            df = pd.DataFrame(data_list)
-            df = df.sort_values('date')
-            
-            logger.warning(f"注意：股票 {stock_code} 的历史数据基于当前价格 {base_price:.2f} 生成，非完全真实数据")
-            logger.warning(f"建议：请确保使用真实历史数据进行投资决策")
-            
-            return df
-            
-        except Exception as e:
-            logger.error(f"生成历史数据失败: {e}")
-            return pd.DataFrame()
+
     
     def _generate_data_from_price(self, stock_code, current_price, days):
         """
