@@ -516,29 +516,7 @@ class EmailNotifier:
             logger.error(f"发送邮件时发生未知错误: {e}", exc_info=True)
             raise
     
-    def send_test_email(self):
-        """发送测试邮件"""
-        try:
-            subject = "股票量化系统 - 测试邮件"
-            body = """
-            <html>
-            <body>
-                <h2>测试邮件</h2>
-                <p>这是一封来自股票量化系统的测试邮件。</p>
-                <p>发送时间：{current_time}</p>
-                <p>如果收到此邮件，说明邮件配置正确。</p>
-            </body>
-            </html>
-            """.format(current_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-            
-            self._send_email(subject, body)
-            logger.info("测试邮件发送成功")
-            return True
-            
-        except Exception as e:
-            logger.error(f"发送测试邮件失败: {e}")
-            return False
-    
+
     def _save_email_copy(self, subject, body):
         """
         保存邮件副本到本地文件
@@ -593,75 +571,3 @@ class EmailNotifier:
             logger.error(f"保存邮件副本失败: {e}")
             return None
     
-    def compare_email_changes(self, days_back=7):
-        """
-        比较最近几天邮件副本的差异，帮助验证邮件内容变化是否符合预期
-        
-        Args:
-            days_back: 查看最近几天的邮件（默认7天）
-            
-        Returns:
-            dict: 差异分析结果
-        """
-        try:
-            from datetime import datetime, timedelta
-            
-            # 获取最近的邮件副本文件
-            email_files = list(self.email_archive_dir.glob("*.html"))
-            if not email_files:
-                return {"error": "没有找到邮件副本文件"}
-            
-            # 按时间排序
-            email_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-            
-            # 分析最近几天的邮件
-            cutoff_date = datetime.now() - timedelta(days=days_back)
-            recent_files = []
-            
-            for filepath in email_files:
-                file_time = datetime.fromtimestamp(filepath.stat().st_mtime)
-                if file_time >= cutoff_date:
-                    recent_files.append(filepath)
-            
-            if len(recent_files) < 2:
-                return {"info": f"最近{days_back}天内只有{len(recent_files)}封邮件，无法比较"}
-            
-            analysis = {
-                "total_emails": len(recent_files),
-                "date_range": {
-                    "start": datetime.fromtimestamp(recent_files[-1].stat().st_mtime).strftime('%Y-%m-%d'),
-                    "end": datetime.fromtimestamp(recent_files[0].stat().st_mtime).strftime('%Y-%m-%d')
-                },
-                "emails": []
-            }
-            
-            # 分析每封邮件的基本信息
-            for filepath in recent_files[:10]:  # 最多分析10封最近的邮件
-                file_time = datetime.fromtimestamp(filepath.stat().st_mtime)
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        # 提取主题
-                        title_start = content.find('<title>')
-                        title_end = content.find('</title>')
-                        subject = content[title_start+7:title_end] if title_start != -1 and title_end != -1 else "未知"
-                        
-                        # 统计公告数量（如果存在）
-                        announcement_count = content.count("近期重要公告")
-                        
-                        analysis["emails"].append({
-                            "filename": filepath.name,
-                            "date": file_time.strftime('%Y-%m-%d %H:%M'),
-                            "subject": subject,
-                            "size_kb": len(content) / 1024,
-                            "has_announcements": announcement_count > 0,
-                            "announcement_count": announcement_count
-                        })
-                except Exception as e:
-                    logger.warning(f"读取邮件副本失败 {filepath}: {e}")
-            
-            return analysis
-            
-        except Exception as e:
-            logger.error(f"比较邮件变化失败: {e}")
-            return {"error": str(e)}

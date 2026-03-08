@@ -811,94 +811,9 @@ class AnnouncementFetcher:
         
         return important_announcements
     
-    def format_announcements_for_email(self, announcements):
-        """
-        格式化公告数据用于邮件显示
-        
-        Args:
-            announcements: 公告字典（股票代码->公告列表）
-            
-        Returns:
-            str: HTML格式的公告内容
-        """
-        if not announcements:
-            return ""
-        
-        html = """
-        <h3>近期重要公告</h3>
-        <p>以下为监控股票近期发布的重要公告：</p>
-        """
-        
-        for stock_code, announcement_list in announcements.items():
-            if not announcement_list:
-                continue
-            
-            html += f"""
-            <div style="border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 5px;">
-                <h4>股票 {stock_code}</h4>
-            """
-            
-            for i, announcement in enumerate(announcement_list[:5]):  # 每只股票最多显示5条
-                title = announcement.get('title', '')
-                date = announcement.get('date', '')
-                url = announcement.get('url', '')
-                exchange = announcement.get('exchange', '').upper()
-                
-                # 构建链接
-                link = f'<a href="{url}" target="_blank">{title}</a>' if url else title
-                
-                html += f"""
-                <div style="margin-bottom: 8px;">
-                    <strong>{i+1}. [{exchange}] {date}</strong><br/>
-                    {link}
-                </div>
-                """
-            
-            html += """
-            </div>
-            """
-        
-        html += """
-        <p><em>注：公告信息仅供参考，请以交易所官方公告为准。</em></p>
-        """
-        
-        return html
+
     
-    def save_announcements_to_csv(self, announcements, filename=None):
-        """
-        保存公告数据到CSV文件
-        
-        Args:
-            announcements: 公告字典
-            filename: 文件名，如果为None则自动生成
-            
-        Returns:
-            str: 保存的文件路径
-        """
-        try:
-            if filename is None:
-                filename = f"announcements_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-            
-            # 展平数据
-            records = []
-            for stock_code, announcement_list in announcements.items():
-                for announcement in announcement_list:
-                    record = announcement.copy()
-                    record['stock_code'] = stock_code
-                    records.append(record)
-            
-            if records:
-                df = pd.DataFrame(records)
-                df.to_csv(filename, index=False, encoding='utf-8-sig')
-                logger.info(f"公告数据已保存到: {filename}")
-                return filename
-            else:
-                logger.warning("没有公告数据可保存")
-                return None
-                
-        except Exception as e:
-            logger.error(f"保存公告数据到CSV失败: {e}")
-            return None
+
     
     def _get_dividend_details(self, stock_code, announcement_date=None):
         """

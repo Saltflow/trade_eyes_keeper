@@ -252,38 +252,7 @@ class StockDataFetcher:
         except Exception as e:
             logger.error(f"保存股票 {stock_code} 数据到CSV失败: {e}")
     
-    def get_historical_data(self, stock_code, days=60):
-        """
-        获取指定股票的历史数据
-        
-        Args:
-            stock_code: 股票代码
-            days: 需要的历史天数
-            
-        Returns:
-            pandas.DataFrame: 历史数据
-        """
-        try:
-            data_dir = self.config.get('storage', {}).get('data_dir', './data')
-            csv_file = Path(data_dir) / f"{stock_code}_history.csv"
-            
-            if csv_file.exists():
-                data = pd.read_csv(csv_file, parse_dates=['date'])
-                data = data.sort_values('date')
-                
-                # 返回最近days天的数据
-                if len(data) >= days:
-                    return data.tail(days)
-                else:
-                    return data
-            else:
-                logger.warning(f"股票 {stock_code} 的历史数据文件不存在: {csv_file}")
-                return pd.DataFrame()
-                
-        except Exception as e:
-            logger.error(f"读取股票 {stock_code} 历史数据失败: {e}")
-            return pd.DataFrame()
-    
+
     def _fetch_from_web_crawler(self, stock_code, start_date, end_date):
         """
         使用网页爬虫获取股票真实数据

@@ -557,37 +557,7 @@ class StockWebCrawler:
         
         return self._generate_historical_data(stock_code, current_data, days)
     
-    def get_current_price(self, stock_code):
-        """
-        获取股票当前价格（实时）
-        
-        Args:
-            stock_code: 股票代码
-            
-        Returns:
-            float: 当前价格，失败返回None
-        """
-        try:
-            # 尝试新浪财经（最快）
-            market = "sz" if stock_code.startswith(('0', '3')) else "sh"
-            url = f"http://hq.sinajs.cn/list={market}{stock_code}"
-            
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            
-            content = response.text
-            match = re.search(r'="(.+)"', content)
-            if match:
-                items = match.group(1).split(',')
-                if len(items) >= 3:
-                    price = float(items[3])
-                    logger.info(f"股票 {stock_code} 当前价格: {price}")
-                    return price
-                    
-        except Exception as e:
-            logger.warning(f"获取股票 {stock_code} 当前价格失败: {e}")
-        
-        return None
+
     
     def fetch_dividend_data(self, stock_code):
         """

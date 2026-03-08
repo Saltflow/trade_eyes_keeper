@@ -11,7 +11,6 @@ src/llm_analyzer.py
 └── class LLMAnalyzer
     ├── __init__()           # 初始化OpenAI客户端
     ├── analyze_stocks()     # 批量分析股票
-    ├── analyze_single_stock() # 分析单只股票
     ├── _get_stock_info()    # 获取股票基本信息
     ├── _call_llm_analysis() # 调用LLM API
     ├── _build_analysis_prompt() # 构建分析提示
@@ -263,11 +262,9 @@ from src.llm_analyzer import LLMAnalyzer
 # 初始化
 analyzer = LLMAnalyzer(config)
 
-# 分析单只股票
-result = analyzer.analyze_single_stock('601728')
-
-# 批量分析
-results = analyzer.analyze_stocks(['601728', '600938'])
+# 分析单只或多只股票（analyze_stocks 支持单个或列表）
+result = analyzer.analyze_stocks(['601728'])  # 单只股票
+results = analyzer.analyze_stocks(['601728', '600938'])  # 多只股票
 ```
 
 ### 主程序集成
@@ -427,9 +424,9 @@ def test_integration():
     analyzer = LLMAnalyzer(config)
     
     # 测试单只股票分析
-    result = analyzer.analyze_single_stock('601728')
+    result = analyzer.analyze_stocks(['601728'])
     assert result is not None
-    assert 'stock_code' in result
+    assert '601728' in result
     
     # 测试批量分析
     results = analyzer.analyze_stocks(['601728', '600938'])
@@ -870,5 +867,5 @@ announcements:
 3. **自动化检查**：集成邮件分析到CI/CD流程中
 
 **文档版本**：v1.3  
-**最后更新**：2026-03-07  
-**适用版本**：股票量化系统 v1.6+
+**最后更新**：2026-03-08  
+**适用版本**：股票量化系统 v1.7+

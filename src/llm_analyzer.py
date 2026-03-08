@@ -393,14 +393,3 @@ class LLMAnalyzer:
         logger.info(f"为股票 {stock_code} 生成模拟分析结果")
         return mock_analysis
     
-    def analyze_single_stock(self, stock_code):
-        """
-        分析单只股票
-        
-        Args:
-            stock_code: 股票代码
-            
-        Returns:
-            dict: 分析结果
-        """
-        return self.analyze_stocks([stock_code]).get(stock_code, {})
