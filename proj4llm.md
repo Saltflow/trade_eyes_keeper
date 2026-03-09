@@ -954,6 +954,75 @@ def get_total_dividends_last_12months(stock_code):
 #### 6. 配置与使用
 系统自动使用12个月总分红，无需额外配置。所有股票数据获取和邮件报告均已更新。
 
-**文档版本**：v1.5  
+### H. 缓存绕过与数据新鲜度保障系统 (v1.9升级)
+解决缓存数据过时问题（如使用周五数据在周一运行系统），确保在15:05后使用当日最新市场数据。
+
+#### 1. 核心问题
+- **原始问题**：系统在周一运行时仍使用周五的缓存数据（股价5.97元 vs 实际6.01元）
+- **根本原因**：缓存检查仅验证字段完整性，不验证数据日期和时间
+- **实际需求**：在15:05（市场收盘后）应使用当日最新数据
+
+#### 2. 技术实现
+- **时间判断**：配置`cache_bypass_cutoff: '15:05'`（可自定义）
+- **缓存检查**：`_should_bypass_cache()`方法判断是否应绕过缓存
+- **数据源降级**：akshare返回空数据时自动触发网页爬虫备用方案
+
+#### 3. 关键逻辑
+```python
+def _should_bypass_cache(self, cached_data):
+    # 规则：如果当前时间 >= 15:05 且缓存数据日期不是今天，则绕过缓存
+    if cached_date == today:
+        return False  # 缓存数据是今天的，可以使用
+    
+    now = datetime.now()
+    cutoff_time = now.replace(hour=15, minute=5, second=0, microsecond=0)
+    
+    if now >= cutoff_time:
+        # 当前时间 >= 15:05，需要今天的数据，但缓存数据不是今天的
+        return True
+    else:
+        # 当前时间 < 15:05，可以使用旧数据
+        return False
+```
+
+#### 4. 数据源降级流程
+```python
+# 1. akshare返回空数据时抛出异常
+if stock_zh_a_hist_df.empty:
+    raise ValueError("akshare返回空数据")
+
+# 2. 异常触发网页爬虫备用方案
+except Exception as e:
+    logger.warning("akshare失败，尝试使用网页爬虫获取真实数据")
+    return self._fetch_from_web_crawler(stock_code, start_date, end_date)
+
+# 3. 网页爬虫尝试多个数据源（新浪财经、腾讯财经、东方财富）
+data_sources = [
+    self._fetch_from_sina,      # 新浪财经历史数据API
+    self._fetch_from_qq,        # 腾讯财经API
+    self._fetch_from_eastmoney  # 东方财富API
+]
+```
+
+#### 5. 配置示例
+```yaml
+scheduler:
+  run_time: '15:30'
+  cache_bypass_cutoff: '15:05'  # 15:05后绕过非今日缓存
+  timezone: Asia/Shanghai
+```
+
+#### 6. 验证结果
+- **缓存绕过**：周一20:29检测到缓存数据日期2026-03-06不是今天，触发绕过
+- **数据获取**：网页爬虫成功获取2026-03-09最新数据（收盘价6.01元）
+- **股息计算**：使用最新股价6.01元计算准确股息率（4.56%）
+
+#### 7. 系统集成
+- **自动降级**：akshare失效时无缝切换至网页爬虫
+- **时间感知**：智能判断何时需要最新数据
+- **配置灵活**：支持自定义绕过时间阈值
+- **日志透明**：详细记录缓存绕过和数据源切换过程
+
+**文档版本**：v1.6  
 **最后更新**：2026-03-09  
-**适用版本**：股票量化系统 v1.8+
+**适用版本**：股票量化系统 v1.9+
