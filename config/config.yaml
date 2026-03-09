@@ -1,7 +1,12 @@
 announcements:
   days: 7
+  dividend_days: 420
   enable: true
   include_in_email: true
+  enable_content_fetching: true
+  enable_llm_extraction: true
+  max_llm_calls_per_run: 30
+  max_pdf_size_mb: 10
 data_source:
   type: akshare
 email:
@@ -13,6 +18,7 @@ llm:
   api_type: deepseek
   base_url: https://api.deepseek.com/v1
   model: deepseek-chat
+
 logging:
   file: ./logs/quant_system.log
   format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'

@@ -5,6 +5,7 @@
 
 import os
 import json
+import hashlib
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -29,6 +30,9 @@ class CacheManager:
         self.cache_dir = Path(cache_dir)
         self.data_cache_dir = self.cache_dir / 'data'
         self.analysis_cache_dir = self.cache_dir / 'analysis'
+        self.announcement_content_cache_dir = self.cache_dir / 'announcement_content'
+        self.announcement_extraction_cache_dir = self.cache_dir / 'announcement_extraction'
+        self.pdf_files_cache_dir = self.cache_dir / 'pdf_files'
         self.cache_days = storage_config.get('cache_days', 7)  # 默认保留7天缓存
         
         # 创建缓存目录
@@ -39,7 +43,7 @@ class CacheManager:
     
     def _create_cache_dirs(self):
         """创建缓存目录"""
-        for dir_path in [self.cache_dir, self.data_cache_dir, self.analysis_cache_dir]:
+        for dir_path in [self.cache_dir, self.data_cache_dir, self.analysis_cache_dir, self.announcement_content_cache_dir, self.announcement_extraction_cache_dir, self.pdf_files_cache_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
             logger.debug(f"创建缓存目录: {dir_path}")
     
@@ -230,4 +234,235 @@ class CacheManager:
         except Exception as e:
             logger.error(f"清理缓存时出错: {e}")
             return 0
+
+    def get_announcement_content_cache(self, stock_code, url):
+        """
+        获取公告内容缓存
+        
+        Args:
+            stock_code: 股票代码
+            url: 公告URL
+            
+        Returns:
+            dict: 缓存的内容数据，如果不存在返回None
+        """
+        try:
+            cache_key = self._get_announcement_content_key(stock_code, url)
+            cache_file = self.announcement_content_cache_dir / f'{cache_key}.json'
+            
+            if cache_file.exists():
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    cached_data = json.load(f)
+                
+                # 检查缓存是否有效
+                if 'content' in cached_data and 'stock_code' in cached_data:
+                    logger.debug(f'从缓存读取公告内容: {stock_code}')
+                    return cached_data
+                else:
+                    logger.warning(f'公告内容缓存格式无效: {cache_file}')
+                    
+            return None
+            
+        except Exception as e:
+            logger.error(f'读取公告内容缓存失败: {e}')
+            return None
+
+    def set_announcement_content_cache(self, stock_code, url, content, metadata=None):
+        """
+        设置公告内容缓存
+        
+        Args:
+            stock_code: 股票代码
+            url: 公告URL
+            content: 公告内容文本
+            metadata: 元数据字典（可选）
+        """
+        try:
+            cache_key = self._get_announcement_content_key(stock_code, url)
+            cache_file = self.announcement_content_cache_dir / f'{cache_key}.json'
+            
+            cache_data = {
+                'stock_code': stock_code,
+                'url': url,
+                'content': content,
+                'cached_at': datetime.now().isoformat(),
+                'metadata': metadata or {}
+            }
+            
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(cache_data, f, ensure_ascii=False, indent=2)
+                
+            logger.debug(f'公告内容已缓存: {cache_file}')
+            
+        except Exception as e:
+            logger.error(f'缓存公告内容失败: {e}')
+
+    def get_announcement_extraction_cache(self, stock_code, title, date, content_hash):
+        """
+        获取公告LLM提取结果缓存
+        
+        Args:
+            stock_code: 股票代码
+            title: 公告标题
+            date: 公告日期
+            content_hash: 内容哈希（用于验证内容未变更）
+            
+        Returns:
+            dict: 提取结果，如果不存在返回None
+        """
+        try:
+            cache_key = self._get_announcement_extraction_key(stock_code, title, date, content_hash)
+            cache_file = self.announcement_extraction_cache_dir / f'{cache_key}.json'
+            
+            if cache_file.exists():
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    cached_data = json.load(f)
+                
+                # 验证内容哈希是否匹配
+                if cached_data.get('content_hash') == content_hash:
+                    logger.debug(f'从缓存读取公告提取结果: {stock_code}')
+                    return cached_data.get('extracted_data')
+                else:
+                    logger.debug(f'内容哈希不匹配，缓存无效: {cache_key}')
+                    
+            return None
+            
+        except Exception as e:
+            logger.error(f'读取公告提取缓存失败: {e}')
+            return None
+
+    def set_announcement_extraction_cache(self, stock_code, title, date, content_hash, extracted_data):
+        """
+        设置公告LLM提取结果缓存
+        
+        Args:
+            stock_code: 股票代码
+            title: 公告标题
+            date: 公告日期
+            content_hash: 内容哈希
+            extracted_data: 提取的数据字典
+        """
+        try:
+            cache_key = self._get_announcement_extraction_key(stock_code, title, date, content_hash)
+            cache_file = self.announcement_extraction_cache_dir / f'{cache_key}.json'
+            
+            cache_data = {
+                'stock_code': stock_code,
+                'title': title,
+                'date': date,
+                'content_hash': content_hash,
+                'extracted_data': extracted_data,
+                'cached_at': datetime.now().isoformat()
+            }
+            
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(cache_data, f, ensure_ascii=False, indent=2)
+                
+            logger.debug(f'公告提取结果已缓存: {cache_file}')
+            
+        except Exception as e:
+            logger.error(f'缓存公告提取结果失败: {e}')
+
+    def save_pdf_file(self, stock_code, url, pdf_bytes, metadata=None):
+        """
+        保存PDF文件到缓存
+        
+        Args:
+            stock_code: 股票代码
+            url: 公告URL
+            pdf_bytes: PDF字节内容
+            metadata: 元数据字典（可选）
+            
+        Returns:
+            str: 保存的PDF文件路径，如果失败返回None
+        """
+        try:
+            cache_key = self._get_announcement_content_key(stock_code, url)
+            pdf_filename = f'{cache_key}.pdf'
+            pdf_filepath = self.pdf_files_cache_dir / pdf_filename
+            
+            # 保存PDF文件
+            with open(pdf_filepath, 'wb') as f:
+                f.write(pdf_bytes)
+            
+            # 保存元数据
+            metadata_file = self.pdf_files_cache_dir / f'{cache_key}_metadata.json'
+            metadata_data = {
+                'stock_code': stock_code,
+                'url': url,
+                'pdf_filename': pdf_filename,
+                'file_size': len(pdf_bytes),
+                'saved_at': datetime.now().isoformat(),
+                'metadata': metadata or {}
+            }
+            
+            with open(metadata_file, 'w', encoding='utf-8') as f:
+                json.dump(metadata_data, f, ensure_ascii=False, indent=2)
+            
+            logger.debug(f'PDF文件已缓存: {pdf_filepath}, 大小: {len(pdf_bytes)}字节')
+            return str(pdf_filepath)
+            
+        except Exception as e:
+            logger.error(f'保存PDF文件失败: {e}')
+            return None
+    
+    def get_pdf_file_path(self, stock_code, url):
+        """
+        获取缓存的PDF文件路径
+        
+        Args:
+            stock_code: 股票代码
+            url: 公告URL
+            
+        Returns:
+            str: PDF文件路径，如果不存在返回None
+        """
+        try:
+            cache_key = self._get_announcement_content_key(stock_code, url)
+            pdf_filepath = self.pdf_files_cache_dir / f'{cache_key}.pdf'
+            
+            if pdf_filepath.exists():
+                return str(pdf_filepath)
+            else:
+                return None
+                
+        except Exception as e:
+            logger.error(f'获取PDF文件路径失败: {e}')
+            return None
+    
+    def get_pdf_metadata(self, stock_code, url):
+        """
+        获取缓存的PDF元数据
+        
+        Args:
+            stock_code: 股票代码
+            url: 公告URL
+            
+        Returns:
+            dict: 元数据，如果不存在返回None
+        """
+        try:
+            cache_key = self._get_announcement_content_key(stock_code, url)
+            metadata_file = self.pdf_files_cache_dir / f'{cache_key}_metadata.json'
+            
+            if metadata_file.exists():
+                with open(metadata_file, 'r', encoding='utf-8') as f:
+                    metadata = json.load(f)
+                return metadata
+            else:
+                return None
+                
+        except Exception as e:
+            logger.error(f'获取PDF元数据失败: {e}')
+            return None
+
+    def _get_announcement_content_key(self, stock_code, url):
+        """生成公告内容缓存键"""
+        key_string = f'{stock_code}_{url}'
+        return hashlib.md5(key_string.encode('utf-8')).hexdigest()
+    
+    def _get_announcement_extraction_key(self, stock_code, title, date, content_hash):
+        """生成公告提取结果缓存键"""
+        key_string = f'{stock_code}_{title}_{date}_{content_hash}'
+        return hashlib.md5(key_string.encode('utf-8')).hexdigest()
     

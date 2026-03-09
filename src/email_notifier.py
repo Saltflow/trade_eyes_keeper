@@ -397,6 +397,87 @@ class EmailNotifier:
                     <div style="margin-bottom: 8px;">
                         <strong>{i+1}. [{exchange}] {date}</strong><br/>
                         {link}
+                    """
+                    # 检查是否有官方分红记录（akshare数据）
+                    dividend_details = announcement.get('dividend_details')
+                    if dividend_details and len(dividend_details) > 0:
+                        # 提取关键字段
+                        cash_ratio = dividend_details.get('cash_dividend_ratio')
+                        stock_ratio = dividend_details.get('stock_dividend_ratio')
+                        cap_ratio = dividend_details.get('capitalization_ratio')
+                        record_date = dividend_details.get('record_date')
+                        ex_rights_date = dividend_details.get('ex_rights_date')
+                        payment_date = dividend_details.get('payment_date')
+                        settlement_date = dividend_details.get('settlement_date')
+                        dividend_type = dividend_details.get('dividend_type')
+                        announcement_date = dividend_details.get('announcement_date')
+                        dividend_description = dividend_details.get('dividend_description')
+                        
+                        official_info = []
+                        if cash_ratio and cash_ratio.strip() and cash_ratio != 'nan':
+                            official_info.append(f"派息比例: {cash_ratio}")
+                        if stock_ratio and stock_ratio.strip() and stock_ratio != 'nan':
+                            official_info.append(f"送股比例: {stock_ratio}")
+                        if cap_ratio and cap_ratio.strip() and cap_ratio != 'nan':
+                            official_info.append(f"转增比例: {cap_ratio}")
+                        if record_date and record_date.strip() and record_date != 'nan':
+                            official_info.append(f"股权登记日: {record_date}")
+                        if ex_rights_date and ex_rights_date.strip() and ex_rights_date != 'nan':
+                            official_info.append(f"除权日: {ex_rights_date}")
+                        if payment_date and payment_date.strip() and payment_date != 'nan':
+                            official_info.append(f"派息日: {payment_date}")
+                        if settlement_date and settlement_date.strip() and settlement_date != 'nan':
+                            official_info.append(f"股份到账日: {settlement_date}")
+                        if dividend_type and dividend_type.strip() and dividend_type != 'nan':
+                            official_info.append(f"分红类型: {dividend_type}")
+                        if announcement_date and announcement_date.strip() and announcement_date != 'nan':
+                            official_info.append(f"公告日期: {announcement_date}")
+                        
+                        if official_info:
+                            announcements_section += f"""
+                            <div style="margin-left: 20px; margin-top: 5px; padding: 5px; background-color: #e8f4fd; border-left: 3px solid #2196f3; font-size: 0.9em;">
+                                <strong>官方分红记录 (akshare):</strong><br/>
+                                {', '.join(official_info)}
+                            </div>
+                            """
+                    
+                    # 检查是否有LLM提取的分红详情
+                    llm_dividend = announcement.get('llm_extracted_dividend')
+                    if llm_dividend and llm_dividend.get('success', False):
+                        cash = llm_dividend.get('cash_dividend_per_share')
+                        stock_ratio = llm_dividend.get('stock_dividend_ratio')
+                        cap_ratio = llm_dividend.get('capitalization_ratio')
+                        record_date = llm_dividend.get('record_date')
+                        ex_rights_date = llm_dividend.get('ex_rights_date')
+                        payment_date = llm_dividend.get('payment_date')
+                        total_amount = llm_dividend.get('total_dividend_amount')
+                        confidence = llm_dividend.get('confidence_score', 0.0)
+                        
+                        dividend_info = []
+                        if cash is not None:
+                            dividend_info.append(f"每股派息: {cash}元")
+                        if stock_ratio is not None:
+                            dividend_info.append(f"送股比例: {stock_ratio}")
+                        if cap_ratio is not None:
+                            dividend_info.append(f"转增比例: {cap_ratio}")
+                        if record_date:
+                            dividend_info.append(f"股权登记日: {record_date}")
+                        if ex_rights_date:
+                            dividend_info.append(f"除权日: {ex_rights_date}")
+                        if payment_date:
+                            dividend_info.append(f"派息日: {payment_date}")
+                        if total_amount is not None:
+                            dividend_info.append(f"分红总额: {total_amount}元")
+                        
+                        if dividend_info:
+                            confidence_pct = f"{confidence*100:.1f}%" if confidence else "未知"
+                            announcements_section += f"""
+                            <div style="margin-left: 20px; margin-top: 5px; padding: 5px; background-color: #f8f9fa; border-left: 3px solid #4caf50; font-size: 0.9em;">
+                                <strong>LLM提取分红详情（置信度: {confidence_pct}）:</strong><br/>
+                                {', '.join(dividend_info)}
+                            </div>
+                            """
+                    announcements_section += """
                     </div>
                     """
                 announcements_section += """

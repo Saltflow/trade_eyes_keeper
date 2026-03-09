@@ -14,6 +14,21 @@ import json
 
 logger = logging.getLogger(__name__)
 
+# 尝试导入内容抓取和LLM分析模块
+try:
+    from .content_fetcher import ContentFetcher
+    CONTENT_FETCHER_AVAILABLE = True
+except ImportError:
+    CONTENT_FETCHER_AVAILABLE = False
+    logger.warning("ContentFetcher不可用，内容抓取功能受限")
+
+try:
+    from .llm_analyzer import LLMAnalyzer
+    LLM_ANALYZER_AVAILABLE = True
+except ImportError:
+    LLM_ANALYZER_AVAILABLE = False
+    logger.warning("LLMAnalyzer不可用，LLM提取功能受限")
+
 # 尝试导入akshare，如果失败则标记为不可用
 try:
     import akshare as ak
@@ -42,26 +57,58 @@ class AnnouncementFetcher:
         # 缓存配置
         self.cache_days = config.get('storage', {}).get('cache_days', 7)
         
+        # 公告配置
+        announcement_config = config.get('announcements', {})
+        self.dividend_days = announcement_config.get('dividend_days', 420)
+        self.enable_content_fetching = announcement_config.get('enable_content_fetching', False)
+        self.enable_llm_extraction = announcement_config.get('enable_llm_extraction', False)
+        self.max_llm_calls = announcement_config.get('max_llm_calls_per_run', 5)
+        self.max_pdf_size_mb = announcement_config.get('max_pdf_size_mb', 10)
+        
         # 分红数据缓存
         self._dividend_cache = {}
         
-    def fetch_announcements(self, stock_codes, days=7):
+        # 初始化内容抓取器和LLM分析器（如果可用）
+        self.content_fetcher = None
+        self.llm_analyzer = None
+        
+        if CONTENT_FETCHER_AVAILABLE and self.enable_content_fetching:
+            try:
+                self.content_fetcher = ContentFetcher(config)
+                logger.info("内容抓取器初始化成功")
+            except Exception as e:
+                logger.warning(f"内容抓取器初始化失败: {e}")
+        
+        if LLM_ANALYZER_AVAILABLE and self.enable_llm_extraction:
+            try:
+                self.llm_analyzer = LLMAnalyzer(config)
+                logger.info("LLM分析器初始化成功")
+            except Exception as e:
+                logger.warning(f"LLM分析器初始化失败: {e}")
+        
+    def fetch_announcements(self, stock_codes, days=7, dividend_days=None):
         """
-        获取股票公告
+        获取股票公告，支持分红公告的扩展时间窗口
         
         Args:
             stock_codes: 股票代码列表
             days: 获取最近几天的公告（默认7天）
+            dividend_days: 分红公告的扩展时间窗口（默认None，使用配置中的dividend_days）
             
         Returns:
             dict: 按股票代码组织的公告列表
         """
+        if dividend_days is None:
+            dividend_days = self.dividend_days
+        
+        # 使用最大时间窗口获取公告
+        fetch_days = max(days, dividend_days)
         announcements = {}
         
         for stock_code in stock_codes:
             try:
                 stock_code = str(stock_code)
-                logger.info(f"开始获取股票 {stock_code} 的公告")
+                logger.info(f"开始获取股票 {stock_code} 的公告（窗口: {fetch_days}天）")
                 
                 # 跳过ETF基金（它们没有公司公告，只有基金公告）
                 # ETF代码通常以51、52开头，使用不同的公告系统
@@ -79,12 +126,14 @@ class AnnouncementFetcher:
                     logger.warning(f"无法识别的股票代码 {stock_code}，跳过")
                     continue
                 
-                # 获取公告
-                stock_announcements = self._fetch_from_exchange(stock_code, exchange, days)
+                # 获取公告（使用扩展窗口）
+                stock_announcements = self._fetch_from_exchange(
+                    stock_code, exchange, fetch_days, days, dividend_days
+                )
                 
                 if stock_announcements:
                     announcements[stock_code] = stock_announcements
-                    logger.info(f"股票 {stock_code} 获取到 {len(stock_announcements)} 条公告")
+                    logger.info(f"股票 {stock_code} 获取到 {len(stock_announcements)} 条公告（经过窗口过滤）")
                 else:
                     logger.info(f"股票 {stock_code} 未找到公告")
                     announcements[stock_code] = []
@@ -320,40 +369,195 @@ class AnnouncementFetcher:
             # 失败时返回空列表（不尝试获取新闻，因为用户需要的是官方公告不是新闻）
             return []
     
-    def _fetch_from_exchange(self, stock_code, exchange, days):
+    def _filter_announcements_by_window(self, announcements, original_days, dividend_days):
         """
-        从指定交易所获取公告
+        根据公告类型和时间窗口过滤公告
+        
+        Args:
+            announcements: 公告列表
+            original_days: 普通公告的时间窗口
+            dividend_days: 分红公告的扩展时间窗口
+            
+        Returns:
+            list: 过滤后的公告列表
+        """
+        filtered = []
+        dividend_keywords = ['分红', '利润分配', '派息', '送股', '转增']
+        cutoff_date_original = datetime.now() - timedelta(days=original_days)
+        cutoff_date_dividend = datetime.now() - timedelta(days=dividend_days)
+        
+        for announcement in announcements:
+            title = announcement.get('title', '')
+            date_str = announcement.get('date', '')
+            
+            # 解析公告日期
+            pub_date = None
+            if date_str:
+                for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%Y/%m/%d', '%Y%m%d'):
+                    try:
+                        pub_date = datetime.strptime(date_str.strip(), fmt)
+                        break
+                    except ValueError:
+                        continue
+            
+            if not pub_date:
+                # 如果无法解析日期，跳过该公告
+                continue
+            
+            # 检查是否为分红相关公告
+            is_dividend = any(keyword in title for keyword in dividend_keywords)
+            
+            # 应用相应的时间窗口
+            if is_dividend:
+                if pub_date.date() >= cutoff_date_dividend.date():
+                    filtered.append(announcement)
+            else:
+                if pub_date.date() >= cutoff_date_original.date():
+                    filtered.append(announcement)
+        
+        return filtered
+    
+    def _enrich_announcements(self, announcements):
+        """
+        丰富公告信息：对分红相关公告获取内容并提取分红详情
+        
+        Args:
+            announcements: 公告列表
+            
+        Returns:
+            list: 丰富后的公告列表
+        """
+        if not announcements:
+            return announcements
+        
+        # 检查是否启用内容抓取和LLM提取
+        if not self.enable_content_fetching or not self.content_fetcher:
+            logger.debug("内容抓取未启用，跳过公告丰富")
+            return announcements
+        
+        if not self.enable_llm_extraction or not self.llm_analyzer:
+            logger.debug("LLM提取未启用，跳过公告丰富")
+            return announcements
+        
+        dividend_keywords = ['分红', '利润分配', '派息', '送股', '转增']
+        enriched = []
+        llm_calls_made = 0
+        
+        for announcement in announcements:
+            title = announcement.get('title', '')
+            stock_code = announcement.get('stock_code', '')
+            date = announcement.get('date', '')
+            
+            # 检查是否为分红相关公告
+            is_dividend = any(keyword in title for keyword in dividend_keywords)
+            
+            if not is_dividend:
+                enriched.append(announcement)
+                continue
+            
+            # 分红相关公告：尝试获取内容并提取分红详情
+            url = announcement.get('url', '')
+            if not url:
+                logger.debug(f"公告无URL，跳过内容抓取: {title[:50]}...")
+                enriched.append(announcement)
+                continue
+            
+            # 检查LLM调用限制
+            if llm_calls_made >= self.max_llm_calls:
+                logger.info(f"已达到最大LLM调用限制 ({self.max_llm_calls})，跳过剩余公告的LLM提取")
+                enriched.append(announcement)
+                continue
+            
+            try:
+                # 获取公告内容
+                content_result = self.content_fetcher.fetch_content(url, stock_code, date)
+                if not content_result or not content_result.get('success', False):
+                    logger.debug(f"无法获取公告内容: {url}")
+                    enriched.append(announcement)
+                    continue
+                
+                extracted_text = content_result.get('extracted_text', '')
+                content_hash = content_result.get('content_hash', '')
+                
+                if not extracted_text:
+                    logger.debug(f"公告内容为空: {url}")
+                    enriched.append(announcement)
+                    continue
+                
+                # 使用LLM提取分红详情
+                extraction_result = self.llm_analyzer.extract_dividend_details_from_announcement(
+                    stock_code=stock_code,
+                    title=title,
+                    announcement_text=extracted_text,
+                    content_hash=content_hash
+                )
+                
+                if extraction_result and extraction_result.get('success', False):
+                    # 添加LLM提取结果到公告
+                    announcement['llm_extracted_dividend'] = extraction_result
+                    logger.info(f"成功提取分红详情: {title[:50]}...")
+                    llm_calls_made += 1
+                else:
+                    logger.debug(f"LLM提取分红详情失败: {title[:50]}...")
+                
+            except Exception as e:
+                logger.error(f"丰富公告时出错: {e}")
+            
+            enriched.append(announcement)
+        
+        logger.info(f"公告丰富完成，处理 {len(announcements)} 条公告，其中 {llm_calls_made} 条使用了LLM提取")
+        return enriched
+    
+    def _fetch_from_exchange(self, stock_code, exchange, fetch_days, original_days, dividend_days):
+        """
+        从指定交易所获取公告，并应用时间窗口过滤
         
         Args:
             stock_code: 股票代码
             exchange: 交易所 ('sse' 或 'szse')
-            days: 最近天数
+            fetch_days: 获取公告的时间窗口（最大天数）
+            original_days: 普通公告的时间窗口
+            dividend_days: 分红公告的扩展时间窗口
             
         Returns:
             list: 公告列表，每个公告为字典
         """
         try:
-            logger.info(f"_fetch_from_exchange: stock_code={stock_code}, exchange={exchange}, days={days}")
+            logger.info(f"_fetch_from_exchange: stock_code={stock_code}, exchange={exchange}, fetch_days={fetch_days}, original_days={original_days}, dividend_days={dividend_days}")
             # 首先尝试从akshare获取新闻/公告（更可靠）
-            akshare_result = self._fetch_from_akshare(stock_code, days)
+            akshare_result = self._fetch_from_akshare(stock_code, fetch_days)
             if akshare_result:
-                logger.info(f"股票 {stock_code} 从akshare获取到 {len(akshare_result)} 条新闻/公告")
-                return akshare_result
+                logger.info(f"股票 {stock_code} 从akshare获取到 {len(akshare_result)} 条新闻/公告（过滤前）")
+                # 应用时间窗口过滤
+                filtered_result = self._filter_announcements_by_window(
+                    akshare_result, original_days, dividend_days
+                )
+                logger.info(f"股票 {stock_code} 过滤后保留 {len(filtered_result)} 条公告")
+                # 丰富公告信息（内容抓取和LLM提取）
+                enriched_result = self._enrich_announcements(filtered_result)
+                return enriched_result
             
             logger.info(f"股票 {stock_code} akshare未获取到数据，尝试交易所官方接口")
             
             # akshare失败，尝试交易所官方接口
             if exchange == 'sse':
-                result = self._fetch_from_sse(stock_code, days)
+                result = self._fetch_from_sse(stock_code, fetch_days)
             elif exchange == 'szse':
-                result = self._fetch_from_szse(stock_code, days)
+                result = self._fetch_from_szse(stock_code, fetch_days)
             else:
                 logger.error(f"不支持的交易所: {exchange}")
                 result = []
             
             # 如果获取到公告，返回结果
             if result:
-                return result
+                # 应用时间窗口过滤
+                filtered_result = self._filter_announcements_by_window(
+                    result, original_days, dividend_days
+                )
+                logger.info(f"股票 {stock_code} 从{exchange}获取到 {len(result)} 条公告，过滤后保留 {len(filtered_result)} 条")
+                # 丰富公告信息（内容抓取和LLM提取）
+                enriched_result = self._enrich_announcements(filtered_result)
+                return enriched_result
             else:
                 # 没有获取到公告，返回空列表（不生成模拟数据）
                 logger.info(f"从{exchange}未获取到{stock_code}的公告")
@@ -365,6 +569,7 @@ class AnnouncementFetcher:
             logger.info(f"获取公告失败，返回空列表")
             return []
     
+
     def _fetch_from_sse(self, stock_code, days):
         """
         从上海证券交易所获取公告
@@ -762,18 +967,21 @@ class AnnouncementFetcher:
         
         return announcements
     
-    def get_recent_important_announcements(self, stock_codes, days=3):
+    def get_recent_important_announcements(self, stock_codes, days=3, dividend_days=None):
         """
-        获取近期重要公告（如业绩预告、分红预案等）
+        获取近期重要公告（如业绩预告、分红预案等），支持分红公告的扩展时间窗口
         
         Args:
             stock_code: 股票代码列表
             days: 最近天数
+            dividend_days: 分红公告的扩展时间窗口（默认None，使用配置中的dividend_days）
             
         Returns:
             dict: 重要公告列表
         """
-        all_announcements = self.fetch_announcements(stock_codes, days)
+        if dividend_days is None:
+            dividend_days = self.dividend_days
+        all_announcements = self.fetch_announcements(stock_codes, days, dividend_days)
         important_announcements = {}
         
         # 定义重要公告关键词
@@ -826,74 +1034,327 @@ class AnnouncementFetcher:
         Returns:
             dict: 分红详情，如果找不到则返回空字典
         """
+        # 确保股票代码为字符串类型
+        stock_code = str(stock_code)
         if not AKSHARE_AVAILABLE:
             return {}
         
         # akshare模块已在模块级别导入，这里确保可用
         import akshare as ak
         
-        # 检查缓存
+        # 检查缓存 - 缓存整个分红历史DataFrame
         cache_key = stock_code
         if cache_key in self._dividend_cache:
-            return self._dividend_cache[cache_key]
+            dividend_df = self._dividend_cache[cache_key]
+        else:
+            try:
+                # 获取分红数据
+                dividend_df = ak.stock_dividend_cninfo(symbol=stock_code)
+                if dividend_df.empty:
+                    self._dividend_cache[cache_key] = pd.DataFrame()
+                    return {}
+                
+                # 重命名列名为英文以便访问（按位置映射）
+                # 列顺序：实施方案公告日期, 分红类型, 送股比例, 转增比例, 派息比例, 
+                #        股权登记日, 除权日, 派息日, 股份到账日, 实施方案分红说明, 报告时间
+                column_names = [
+                    'announcement_date',    # 实施方案公告日期
+                    'dividend_type',        # 分红类型
+                    'stock_dividend_ratio', # 送股比例
+                    'capitalization_ratio', # 转增比例
+                    'cash_dividend_ratio',  # 派息比例
+                    'record_date',          # 股权登记日
+                    'ex_rights_date',       # 除权日
+                    'payment_date',         # 派息日
+                    'settlement_date',      # 股份到账日
+                    'dividend_description', # 实施方案分红说明
+                    'report_period'         # 报告时间
+                ]
+                
+                # 确保列数匹配
+                if len(dividend_df.columns) != len(column_names):
+                    logger.warning(f"分红数据列数不匹配: 期望{len(column_names)}，实际{len(dividend_df.columns)}")
+                    # 使用原始列名，但创建映射
+                    column_mapping = {}
+                    for i in range(len(dividend_df.columns)):
+                        orig_col = str(dividend_df.columns[i])
+                        if i < len(column_names):
+                            column_mapping[orig_col] = column_names[i]
+                        else:
+                            column_mapping[orig_col] = f'col_{i}'
+                    dividend_df = dividend_df.rename(columns=column_mapping)
+                else:
+                    # 创建列映射
+                    column_mapping = {str(dividend_df.columns[i]): column_names[i] for i in range(len(column_names))}
+                    dividend_df = dividend_df.rename(columns=column_mapping)
+                
+                # 确保announcement_date列为datetime类型
+                if 'announcement_date' in dividend_df.columns:
+                    # 尝试转换为datetime，如果已经是datetime则保持
+                    dividend_df['announcement_date'] = pd.to_datetime(dividend_df['announcement_date'], errors='coerce')
+                    # 按公告日期降序排序
+                    dividend_df = dividend_df.sort_values('announcement_date', ascending=False)
+                
+                # 缓存整个DataFrame
+                self._dividend_cache[cache_key] = dividend_df
+                
+            except Exception as e:
+                logger.error(f"获取股票 {stock_code} 分红详情失败: {e}")
+                self._dividend_cache[cache_key] = pd.DataFrame()
+                return {}
+        
+        # 如果缓存中是空的DataFrame，返回空字典
+        if self._dividend_cache[cache_key].empty:
+            return {}
+        
+        dividend_df = self._dividend_cache[cache_key]
+        
+        # 如果没有提供公告日期，返回最新记录
+        if announcement_date is None:
+            latest = dividend_df.iloc[0]
+            dividend_details = {}
+            for col in dividend_df.columns:
+                value = latest[col]
+                if pd.notna(value):
+                    dividend_details[col] = str(value)
+            return dividend_details
+        
+        # 将公告日期转换为datetime（如果已经是datetime则保持）
+        try:
+            if isinstance(announcement_date, str):
+                target_date = pd.to_datetime(announcement_date, errors='coerce')
+            else:
+                target_date = pd.to_datetime(announcement_date)
+            
+            if pd.isna(target_date):
+                logger.warning(f"无法解析公告日期: {announcement_date}，返回最新记录")
+                latest = dividend_df.iloc[0]
+                dividend_details = {}
+                for col in dividend_df.columns:
+                    value = latest[col]
+                    if pd.notna(value):
+                        dividend_details[col] = str(value)
+                return dividend_details
+        except Exception as e:
+            logger.warning(f"处理公告日期时出错: {e}，返回最新记录")
+            latest = dividend_df.iloc[0]
+            dividend_details = {}
+            for col in dividend_df.columns:
+                value = latest[col]
+                if pd.notna(value):
+                    dividend_details[col] = str(value)
+            return dividend_details
+        
+        # 查找最接近的分红记录
+        max_date_diff_days = 180  # 最大允许日期差异（天）
+        best_match_pos = -1
+        min_date_diff = float('inf')
+        
+        # 按位置迭代（不是按标签），因为DataFrame已排序
+        for pos in range(len(dividend_df)):
+            row = dividend_df.iloc[pos]
+            div_date = row['announcement_date']
+            if pd.isna(div_date):
+                continue
+            
+            date_diff = abs((div_date - target_date).days)
+            if date_diff < min_date_diff:
+                min_date_diff = date_diff
+                best_match_pos = pos
+        
+        # 检查是否找到匹配且日期差异在允许范围内
+        if best_match_pos >= 0 and min_date_diff <= max_date_diff_days:
+            matched_row = dividend_df.iloc[best_match_pos]
+            dividend_details = {}
+            for col in dividend_df.columns:
+                value = matched_row[col]
+                if pd.notna(value):
+                    dividend_details[col] = str(value)
+            
+            logger.debug(f"为股票 {stock_code} 找到匹配的分红记录: 公告日期 {announcement_date}, 匹配日期 {matched_row['announcement_date']}, 日期差异 {min_date_diff}天")
+            return dividend_details
+        else:
+            # 没有找到合适的匹配
+            if best_match_pos >= 0:
+                logger.debug(f"股票 {stock_code} 的分红记录日期差异过大: {min_date_diff}天 > {max_date_diff_days}天，返回空字典")
+            else:
+                logger.debug(f"股票 {stock_code} 未找到有效的分红记录")
+            return {}
+    def _get_annual_dividend_per_share(self, stock_code):
+        """尝试从年均股息数据获取每股分红"""
+        try:
+            import akshare as ak
+            dividend_df = ak.stock_history_dividend()
+            stock_dividend = dividend_df[dividend_df["代码"] == stock_code]
+            if not stock_dividend.empty:
+                latest_dividend = stock_dividend.iloc[0]
+                annual_dividend = latest_dividend.get("年均股息", 0)
+                if annual_dividend and annual_dividend > 0:
+                    original = annual_dividend
+                    unit_note = "原始值"
+                    
+                    # 单位修正：
+                    # 1. 如果数值过大（>100），可能以分为单位，转换为元
+                    if annual_dividend > 100:
+                        annual_dividend = annual_dividend / 100.0
+                        unit_note = "分转元"
+                        logger.info(f"股票 {stock_code} 分红数据单位修正({unit_note}): {original:.3f} → {annual_dividend:.3f}元")
+                    # 2. 如果数值在2-100之间，可能为每10股金额，转换为每股
+                    elif annual_dividend > 2:
+                        annual_dividend = annual_dividend / 10.0
+                        unit_note = "每10股转每股"
+                        logger.info(f"股票 {stock_code} 分红数据单位修正({unit_note}): {original:.3f} → {annual_dividend:.3f}元/股")
+                    
+                    if 0.01 <= annual_dividend <= 5.0:
+                        per_share = round(annual_dividend, 3)
+                        logger.info(f"股票 {stock_code} 使用年均股息: {per_share:.3f}元/股 (原始值: {original:.3f}, {unit_note})")
+                        return per_share
+                    else:
+                        logger.warning(f"股票 {stock_code} 年均股息数据不合理: {annual_dividend:.3f}元/股 (原始值: {original:.3f}, {unit_note})")
+        except Exception as e:
+            logger.debug(f"获取股票 {stock_code} 年均股息失败: {e}")
+        return None
+
+    def get_latest_dividend_per_share(self, stock_code):
+        """
+        获取股票最新的每股分红（元）
+        
+        Args:
+            stock_code: 股票代码
+            
+        Returns:
+            float: 每股分红（元），如果找不到则返回None
+        """
+        # 首先尝试cninfo最新分红数据（最准确）
+        dividend_details = self._get_dividend_details(stock_code)
+        if dividend_details:
+            # 检查分红数据是否过时（超过3年）
+            announcement_date_str = dividend_details.get('announcement_date')
+            if announcement_date_str:
+                try:
+                    from datetime import datetime
+                    date_str = announcement_date_str.split()[0]
+                    announcement_date = datetime.strptime(date_str, '%Y-%m-%d')
+                    current_date = datetime.now()
+                    years_diff = (current_date - announcement_date).days / 365.25
+                    
+                    if years_diff <= 3:
+                        cash_dividend_ratio = dividend_details.get('cash_dividend_ratio')
+                        if cash_dividend_ratio:
+                            try:
+                                per_share = float(cash_dividend_ratio) / 10.0
+                                if 0.01 <= per_share <= 5:
+                                    logger.info(f"股票 {stock_code} 使用cninfo最新分红: {per_share:.3f}元/股 (公告日期: {announcement_date_str})")
+                                    return per_share
+                                else:
+                                    logger.warning(f"股票 {stock_code} cninfo分红数据不合理: {per_share:.3f}元/股 (超出合理范围0.01-5元)")
+                            except (ValueError, TypeError):
+                                pass
+                    else:
+                        logger.warning(f"股票 {stock_code} 分红数据过时: {announcement_date_str} ({years_diff:.1f}年前)，尝试年均股息数据")
+                except Exception as e:
+                    logger.debug(f"解析分红日期失败: {e}")
+        
+        # 如果cninfo数据不可用或过时，尝试年均股息数据
+        per_share = self._get_annual_dividend_per_share(stock_code)
+        if per_share is not None:
+            return per_share
+        
+        # 如果都没有，返回None
+        return None
+    
+    def get_total_dividends_last_12months(self, stock_code):
+        """
+        获取股票过去12个月的总每股分红（元），包括年度分红和中期分红
+        
+        Args:
+            stock_code: 股票代码
+            
+        Returns:
+            float: 过去12个月的总每股分红（元），如果找不到则返回None
+        """
+        # 首先尝试从cninfo获取详细分红数据
+        stock_code = str(stock_code)
+        if not AKSHARE_AVAILABLE:
+            logger.debug(f"akshare不可用，无法获取股票 {stock_code} 的分红数据")
+            return None
+        
+        import akshare as ak
         
         try:
             # 获取分红数据
             dividend_df = ak.stock_dividend_cninfo(symbol=stock_code)
             if dividend_df.empty:
-                self._dividend_cache[cache_key] = {}
-                return {}
+                logger.debug(f"股票 {stock_code} 无分红数据")
+                return None
             
-            # 重命名列名为英文以便访问（按位置映射）
-            # 列顺序：实施方案公告日期, 分红类型, 送股比例, 转增比例, 派息比例, 
-            #        股权登记日, 除权日, 派息日, 股份到账日, 实施方案分红说明, 报告时间
-            column_names = [
-                'announcement_date',    # 实施方案公告日期
-                'dividend_type',        # 分红类型
-                'stock_dividend_ratio', # 送股比例
-                'capitalization_ratio', # 转增比例
-                'cash_dividend_ratio',  # 派息比例
-                'record_date',          # 股权登记日
-                'ex_rights_date',       # 除权日
-                'payment_date',         # 派息日
-                'settlement_date',      # 股份到账日
-                'dividend_description', # 实施方案分红说明
-                'report_period'         # 报告时间
-            ]
+            # 列映射（基于已知的列顺序）
+            # 0: 实施方案公告日期, 1: 分红类型, 4: 派息比例, 9: 实施方案分红说明
+            if len(dividend_df.columns) < 10:
+                logger.warning(f"股票 {stock_code} 分红数据列数不足: {len(dividend_df.columns)}")
+                return None
             
-            # 确保列数匹配
-            if len(dividend_df.columns) != len(column_names):
-                logger.warning(f"分红数据列数不匹配: 期望{len(column_names)}，实际{len(dividend_df.columns)}")
-                # 使用原始列名
-                dividend_details = {}
-                for i in range(len(dividend_df.columns)):
-                    col = str(dividend_df.columns[i])
-                    dividend_details[col] = str(dividend_df.iloc[0][col]) if pd.notna(dividend_df.iloc[0][col]) else ''
+            # 处理日期列
+            date_col = dividend_df.columns[0]
+            dividend_df['announcement_date'] = pd.to_datetime(dividend_df.iloc[:, 0], errors='coerce')
+            
+            # 按日期降序排序
+            dividend_df = dividend_df.sort_values('announcement_date', ascending=False)
+            
+            # 计算12个月前的时间点
+            twelve_months_ago = datetime.now() - timedelta(days=365)
+            
+            # 过滤过去12个月的分红
+            recent_dividends = dividend_df[dividend_df['announcement_date'] >= twelve_months_ago]
+            
+            if recent_dividends.empty:
+                logger.debug(f"股票 {stock_code} 过去12个月内无分红记录")
+                return None
+            
+            total_per_share = 0.0
+            dividend_count = 0
+            
+            for _, row in recent_dividends.iterrows():
+                # 获取现金分红比例（第4列）
+                cash_ratio = row.iloc[4]
+                if pd.isna(cash_ratio) or cash_ratio <= 0:
+                    continue
+                
+                # 获取分红描述（第9列）用于解析每股金额
+                dividend_desc = row.iloc[9] if len(dividend_df.columns) > 9 else None
+                
+                # 解析每股分红金额
+                shares_for_dividend = 10.0  # 默认每10股
+                if dividend_desc and isinstance(dividend_desc, str):
+                    # 尝试从描述中解析股数，例如 "10��1.7Ԫ(��˰)" -> 10股
+                    import re
+                    match = re.search(r'(\d+)\s*��', dividend_desc)
+                    if match:
+                        shares_for_dividend = float(match.group(1))
+                
+                # 计算每股分红
+                per_share = cash_ratio / shares_for_dividend
+                
+                # 验证合理性
+                if 0.001 <= per_share <= 5.0:  # 放宽下限，允许小金额分红
+                    total_per_share += per_share
+                    dividend_count += 1
+                    
+                    # 记录分红详情
+                    div_type = row.iloc[1] if len(dividend_df.columns) > 1 else "未知"
+                    div_date = row['announcement_date']
+                    logger.debug(f"股票 {stock_code} 分红记录: {div_date.strftime('%Y-%m-%d')}, 类型: {div_type}, 每股: {per_share:.3f}元, 累计: {total_per_share:.3f}元")
+                else:
+                    logger.warning(f"股票 {stock_code} 分红数据不合理: {per_share:.3f}元/股 (现金比例: {cash_ratio}, 描述: {dividend_desc})")
+            
+            if dividend_count > 0:
+                logger.info(f"股票 {stock_code} 过去12个月分红总计: {total_per_share:.3f}元/股 ({dividend_count}次分红)")
+                return round(total_per_share, 3)
             else:
-                # 创建列映射
-                column_mapping = {str(dividend_df.columns[i]): column_names[i] for i in range(len(column_names))}
-                dividend_df = dividend_df.rename(columns=column_mapping)
-                
-                # 按公告日期降序排序
-                if 'announcement_date' in dividend_df.columns:
-                    dividend_df = dividend_df.sort_values('announcement_date', ascending=False)
-                
-                # 获取最新记录
-                latest = dividend_df.iloc[0]
-                dividend_details = {}
-                
-                # 提取所有字段
-                for col in dividend_df.columns:
-                    value = latest[col]
-                    if pd.notna(value):
-                        dividend_details[col] = str(value)
-            
-            # 缓存结果
-            self._dividend_cache[cache_key] = dividend_details
-            return dividend_details
+                logger.debug(f"股票 {stock_code} 无有效的近期分红记录")
+                return None
                 
         except Exception as e:
-            logger.error(f"获取股票 {stock_code} 分红详情失败: {e}")
-            self._dividend_cache[cache_key] = {}
-            return {}
+            logger.error(f"计算股票 {stock_code} 过去12个月分红总计失败: {e}")
+            return None
     

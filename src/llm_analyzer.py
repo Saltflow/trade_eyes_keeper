@@ -5,11 +5,14 @@ LLM分析模块
 
 import logging
 import json
+import hashlib
 import ssl
+from datetime import datetime
 import sys
 import io
 import httpx
 from httpx import Timeout, Limits
+import requests
 from .cache_manager import CacheManager
 
 # 猴子补丁：确保JSON序列化使用UTF-8编码，不转义非ASCII字符
@@ -38,6 +41,7 @@ def _patched_normalize_header_value(value, encoding=None):
 httpx_utils.normalize_header_value = _patched_normalize_header_value
 
 from openai import OpenAI
+import openai
 
 # 设置UTF-8编码，避免中文字符编码问题
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -59,8 +63,12 @@ class LLMAnalyzer:
         self.llm_config = config.get('llm', {})
         # 初始化缓存管理器
         self.cache_manager = CacheManager(config)
+        # LLM调用计数器（用于限制每轮调用次数）
+        self._llm_calls_made = 0
+        self.max_llm_calls_per_run = config.get('announcements', {}).get('max_llm_calls_per_run', 5)
+
         
-        # 初始化OpenAI客户端（兼容DeepSeek API）
+        # 初始化DeepSeek API配置（使用requests直接调用，避免httpx/OpenAI库问题）
         api_key = self.llm_config.get('api_key', '')
         base_url = self.llm_config.get('base_url', 'https://api.deepseek.com/v1')
         model = self.llm_config.get('model', 'deepseek-chat')
@@ -69,24 +77,47 @@ class LLMAnalyzer:
             logger.warning("LLM API密钥未配置，LLM分析功能不可用")
             self.client = None
         else:
-            # 创建自定义HTTP客户端，尝试解决SSL超时问题
-            http_client = httpx.Client(
-                headers={
-                    'Content-Type': 'application/json; charset=utf-8',
-                    'Accept': 'application/json; charset=utf-8'
-                },
-                timeout=Timeout(connect=120.0, read=180.0, write=120.0, pool=120.0),
-                verify=True,  # 启用SSL验证（如遇SSL超时，可临时设置为False）
-                limits=Limits(max_connections=5, max_keepalive_connections=5),
-                follow_redirects=True
-            )
-            
-            self.client = OpenAI(
-                api_key=api_key,
-                base_url=base_url,
-                http_client=http_client
-            )
+            # 使用requests库直接调用API，避免httpx/OpenAI库的SSL超时问题
+            self.api_key = api_key
+            self.base_url = base_url
             self.model = model
+            self.client = None  # 不再使用OpenAI客户端
+            logger.info("LLM API配置完成，将使用requests直接调用")
+    
+    def _call_chat_completion(self, messages, temperature=0.7, max_tokens=2000):
+        """
+        使用requests直接调用DeepSeek API
+        """
+        if not hasattr(self, 'api_key') or not self.api_key:
+            raise ValueError("API key not configured")
+        
+        url = f"{self.base_url}/chat/completions"
+        headers = {
+            'Authorization': f'Bearer {self.api_key}',
+            'Content-Type': 'application/json',
+        }
+        payload = {
+            'model': self.model,
+            'messages': messages,
+            'temperature': temperature,
+            'max_tokens': max_tokens,
+        }
+        
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=120.0,
+                verify=True  # SSL验证
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"API请求失败: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"响应状态: {e.response.status_code}, 内容: {e.response.text[:200]}")
+            raise
     
     def analyze_stocks(self, stock_codes):
         """
@@ -98,8 +129,10 @@ class LLMAnalyzer:
         Returns:
             dict: 分析结果
         """
-        if not self.client:
-            logger.warning("LLM客户端未初始化，跳过分析")
+
+        
+        if not hasattr(self, 'api_key') or not self.api_key:
+            logger.warning("LLM API密钥未配置，跳过分析")
             return {}
         
         analysis_results = {}
@@ -166,6 +199,10 @@ class LLMAnalyzer:
             'last_dividend_amount': ''
         }
     
+
+    
+
+    
     def _call_llm_analysis(self, stock_code, stock_info):
         """
         调用LLM API进行基本面分析
@@ -181,68 +218,101 @@ class LLMAnalyzer:
         prompt = self._build_analysis_prompt(stock_code, stock_info)
         system_message = "你是一个专业的股票分析师，擅长分析A股公司的基本面和投资价值。"
         
-        try:
-            # 调用API
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=2000
-            )
-            
-            # 解析响应
-            analysis_text = response.choices[0].message.content
-            
-            # 尝试解析为JSON（如果LLM返回结构化数据）
+        # 重试逻辑（最多5次）
+        max_retries = 5
+        retry_delay = 2  # 秒
+        
+        for attempt in range(max_retries):
             try:
-                # 首先尝试从文本中提取JSON
-                import re
-                json_match = re.search(r'\{.*\}', analysis_text, re.DOTALL)
-                if json_match:
-                    analysis_json = json.loads(json_match.group())
-                else:
-                    # 如果没有JSON，使用文本分析
+                # 调用API (使用requests直接调用)
+                logger.info(f"尝试第{attempt+1}/{max_retries}次LLM调用分析股票 {stock_code}")
+                response_data = self._call_chat_completion(
+                    messages=[
+                        {"role": "system", "content": system_message},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.7,
+                    max_tokens=2000
+                )
+                # 保持与OpenAI响应格式兼容
+                # 解析响应
+                analysis_text = response_data['choices'][0]['message']['content']
+                
+                # 尝试解析为JSON（如果LLM返回结构化数据）
+                try:
+                    # 首先尝试从文本中提取JSON
+                    import re
+                    json_match = re.search(r'\{.*\}', analysis_text, re.DOTALL)
+                    if json_match:
+                        analysis_json = json.loads(json_match.group())
+                    else:
+                        # 如果没有JSON，使用文本分析
+                        analysis_json = {
+                            'stock_code': stock_code,
+                            'stock_name': stock_info.get('name', ''),
+                            'analysis_text': analysis_text,
+                            'summary': self._extract_summary(analysis_text),
+                            'attempts': attempt + 1
+                        }
+                except json.JSONDecodeError:
+                    # 如果无法解析为JSON，使用文本格式
                     analysis_json = {
                         'stock_code': stock_code,
                         'stock_name': stock_info.get('name', ''),
                         'analysis_text': analysis_text,
-                        'summary': self._extract_summary(analysis_text)
+                        'summary': self._extract_summary(analysis_text),
+                        'attempts': attempt + 1
                     }
-            except json.JSONDecodeError:
-                # 如果无法解析为JSON，使用文本格式
-                analysis_json = {
-                    'stock_code': stock_code,
-                    'stock_name': stock_info.get('name', ''),
-                    'analysis_text': analysis_text,
-                    'summary': self._extract_summary(analysis_text)
-                }
-            
-            return analysis_json
-            
-        except UnicodeEncodeError as e:
-            logger.error(f"LLM API编码错误: {e}")
-            logger.error(f"错误对象类型: {type(e.object)}")
-            logger.error(f"错误对象repr: {repr(e.object)}")
-            logger.error(f"错误位置: {e.start}-{e.end}")
-            logger.error(f"错误对象切片: {repr(e.object[e.start:e.end])}")
-            logger.error(f"系统消息长度: {len(system_message)}")
-            logger.error(f"系统消息前50字符: {system_message[:50]}")
-            logger.error(f"提示长度: {len(prompt)}")
-            logger.error(f"提示前100字符: {prompt[:100]}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return None
-        except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError, ssl.SSLError) as e:
-            logger.error(f"LLM API连接失败（超时/SSL）: {e}")
-            logger.warning("LLM分析失败，返回空结果")
-            return None
-        except Exception as e:
-            logger.error(f"调用LLM API失败: {e}", exc_info=True)
-            logger.warning("LLM分析失败，返回空结果")
-            return None
+                
+                logger.info(f"股票 {stock_code} 分析完成 (第{attempt+1}次尝试)")
+                return analysis_json
+                
+            except UnicodeEncodeError as e:
+                logger.error(f"第{attempt+1}次尝试LLM API编码错误: {e}")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    logger.error(f"所有{max_retries}次尝试均失败: {e}")
+                    return None
+            except requests.exceptions.RequestException as e:
+                logger.error(f"第{attempt+1}次尝试LLM API连接失败: {e}")
+                # 检查是否为认证错误（401）或速率限制（429）
+                if hasattr(e, 'response') and e.response is not None:
+                    status_code = e.response.status_code
+                    if status_code == 401:
+                        logger.error("API密钥无效或认证失败")
+                        return None  # 认证错误不需要重试
+                    elif status_code == 429:
+                        logger.error("API速率限制，等待后重试")
+                        if attempt < max_retries - 1:
+                            wait_time = retry_delay * (attempt + 2)
+                            logger.info(f"等待{wait_time}秒后重试...")
+                            import time
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            logger.error(f"所有{max_retries}次尝试均失败: {e}")
+                            return None
+                # 其他网络错误可以重试
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    logger.error(f"所有{max_retries}次尝试均失败: {e}")
+                    return None
+
+            except Exception as e:
+                logger.error(f"第{attempt+1}次尝试调用LLM API失败: {e}")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    logger.error(f"所有{max_retries}次尝试均失败: {e}")
+                    return None
     
     def _build_analysis_prompt(self, stock_code, stock_info):
         """
@@ -320,6 +390,433 @@ class LLMAnalyzer:
             summary['sentiment'] = '中性'
         
         return summary
+    def extract_dividend_details_from_announcement(self, stock_code, title, announcement_text, content_hash=None):
+        """
+        从公告文本中提取结构化分红数据
+        
+        Args:
+            stock_code: 股票代码
+            title: 公告标题
+            announcement_text: 公告正文文本
+            content_hash: 内容哈希（用于缓存键，可选）
+            
+        Returns:
+            dict: 结构化分红数据，包含以下字段（如果提取成功）：
+                - cash_dividend_per_share: float (每股派息)
+                - stock_dividend_ratio: float (送股比例)
+                - capitalization_ratio: float (转增比例)
+                - record_date: str (股权登记日, YYYY-MM-DD)
+                - ex_rights_date: str (除权日, YYYY-MM-DD)
+                - payment_date: str (派息日, YYYY-MM-DD)
+                - total_dividend_amount: float (分红总额，单位：元)
+                - confidence_score: float (置信度 0-1)
+                - extraction_timestamp: str (提取时间)
+                - raw_llm_response: str (原始LLM响应，用于调试)
+        """
+
+        
+        # 如果没有内容哈希，计算文本哈希
+        if content_hash is None:
+            content_hash = hashlib.md5(announcement_text.encode('utf-8')).hexdigest()
+        
+        # 检查缓存
+        if self.cache_manager:
+            cached_extraction = self.cache_manager.get_announcement_extraction_cache(
+                stock_code, title, '', content_hash  # 日期参数留空，因为我们用内容哈希
+            )
+            if cached_extraction is not None:
+                logger.info(f"使用缓存的分红提取结果: {stock_code}")
+                return cached_extraction
+        
+        # 检查是否为模板占位符内容
+        if '{{' in announcement_text or '}}' in announcement_text:
+            logger.info(f"检测到模板占位符内容，跳过LLM调用: {stock_code}")
+            return {
+                'success': False,
+                'cash_dividend_per_share': None,
+                'stock_dividend_ratio': None,
+                'capitalization_ratio': None,
+                'record_date': None,
+                'ex_rights_date': None,
+                'payment_date': None,
+                'total_dividend_amount': None,
+                'confidence_score': 0.0,
+                'notes': '内容为模板占位符，无法提取分红数据',
+                'extraction_timestamp': datetime.now().isoformat(),
+                'raw_llm_response': '',
+                'attempts': 0,
+                'content_hash': content_hash
+            }
+        # 检查LLM调用限制
+        if self._llm_calls_made >= self.max_llm_calls_per_run:
+            logger.warning(f"已达到LLM调用限制 ({self.max_llm_calls_per_run})，跳过分红提取")
+            return {
+                'success': False,
+                'error': f'达到LLM调用限制 ({self.max_llm_calls_per_run})',
+                'cash_dividend_per_share': None,
+                'stock_dividend_ratio': None,
+                'capitalization_ratio': None,
+                'record_date': None,
+                'ex_rights_date': None,
+                'payment_date': None,
+                'total_dividend_amount': None,
+                'confidence_score': 0.0,
+                'extraction_timestamp': datetime.now().isoformat(),
+                'raw_llm_response': ''
+            }
+        
+        # 检查LLM客户端是否可用 (使用api_key检查)
+        if not hasattr(self, 'api_key') or not self.api_key:
+            logger.warning("LLM API密钥未配置，跳过分红提取")
+            return {
+                'success': False,
+                'error': 'LLM API密钥未配置',
+                'cash_dividend_per_share': None,
+                'stock_dividend_ratio': None,
+                'capitalization_ratio': None,
+                'record_date': None,
+                'ex_rights_date': None,
+                'payment_date': None,
+                'total_dividend_amount': None,
+                'confidence_score': 0.0,
+                'extraction_timestamp': datetime.now().isoformat(),
+                'raw_llm_response': ''
+            }
+        
+        # 重试逻辑（最多5次）
+        max_retries = 5
+        retry_delay = 2  # 秒
+        
+        for attempt in range(max_retries):
+            try:
+                # 构建提示
+                prompt = self._build_dividend_extraction_prompt(stock_code, title, announcement_text)
+                logger.info(f"公告标题: {title}")
+                logger.info(f"公告文本长度: {len(announcement_text)}, 前200字符: {announcement_text[:200]}...")
+                system_message = "你是一个专业的财务分析师，擅长从上市公司公告中提取精确的分红数据。"
+                
+                # 调用LLM API
+                self._llm_calls_made += 1
+                logger.info(f"尝试第{attempt+1}/{max_retries}次LLM调用提取分红数据")
+                
+                response_data = self._call_chat_completion(
+                    messages=[
+                        {"role": "system", "content": system_message},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3,  # 低温度以获得更确定的输出
+                    max_tokens=1500
+                )
+                
+                # 解析响应
+                llm_response = response_data['choices'][0]['message']['content']
+                logger.info(f"LLM原始响应 (长度: {len(llm_response)}): {llm_response[:500]}...")
+                extraction_result = self._parse_dividend_extraction_response(llm_response)
+                
+                # 如果成功，返回结果
+                if extraction_result.get('success', False):
+                    # 添加元数据
+                    extraction_result['raw_llm_response'] = llm_response
+                    extraction_result['extraction_timestamp'] = datetime.now().isoformat()
+                    extraction_result['content_hash'] = content_hash
+                    extraction_result['attempts'] = attempt + 1
+                    
+                    # 缓存结果
+                    if self.cache_manager:
+                        try:
+                            self.cache_manager.set_announcement_extraction_cache(
+                                stock_code, title, '', content_hash, extraction_result
+                            )
+                            logger.debug(f"分红提取结果已缓存: {stock_code}")
+                        except Exception as cache_error:
+                            logger.warning(f"缓存分红提取结果失败: {cache_error}")
+                    
+                    logger.info(f"分红提取完成 (第{attempt+1}次尝试): {stock_code}, 置信度: {extraction_result.get('confidence_score', 0.0)}")
+                    return extraction_result
+                else:
+                    # 检查是否为有效的“无分红数据”响应
+                    if extraction_result.get('success') is False and extraction_result.get('confidence_score', -1) >= 0:
+                        # 有效响应：未找到分红数据
+                        extraction_result['raw_llm_response'] = llm_response
+                        extraction_result['extraction_timestamp'] = datetime.now().isoformat()
+                        extraction_result['content_hash'] = content_hash
+                        extraction_result['attempts'] = attempt + 1
+                        
+                        # 缓存结果（包括无数据结果）
+                        if self.cache_manager:
+                            try:
+                                self.cache_manager.set_announcement_extraction_cache(
+                                    stock_code, title, '', content_hash, extraction_result
+                                )
+                                logger.debug(f"无分红数据结果已缓存: {stock_code}")
+                            except Exception as cache_error:
+                                logger.warning(f"缓存无分红数据结果失败: {cache_error}")
+                        
+                        logger.info(f"无分红数据提取完成 (第{attempt+1}次尝试): {stock_code}")
+                        return extraction_result
+                    else:
+                        # 解析失败或无效格式
+                        logger.warning(f"第{attempt+1}次尝试：LLM返回无效格式: {extraction_result.get('error', 'unknown')}")
+                        if attempt < max_retries - 1:
+                            import time
+                            time.sleep(retry_delay)
+                            continue
+                        else:
+                            # 最后一次尝试失败
+                            extraction_result['raw_llm_response'] = llm_response
+                            extraction_result['extraction_timestamp'] = datetime.now().isoformat()
+                            extraction_result['content_hash'] = content_hash
+                            extraction_result['attempts'] = attempt + 1
+                            extraction_result['error'] = f'所有{max_retries}次尝试均失败: {extraction_result.get("error", "unknown")}'
+                            return extraction_result
+                
+            except requests.exceptions.RequestException as e:
+                logger.error(f"第{attempt+1}次尝试：API请求失败: {e}")
+                # 检查是否为认证错误（401）或速率限制（429）
+                error_response = None
+                if hasattr(e, 'response') and e.response is not None:
+                    status_code = e.response.status_code
+                    if status_code == 401:
+                        logger.error("API密钥无效或认证失败")
+                        return {
+                            'success': False,
+                            'error': f'API认证失败: {e}',
+                            'cash_dividend_per_share': None,
+                            'stock_dividend_ratio': None,
+                            'capitalization_ratio': None,
+                            'record_date': None,
+                            'ex_rights_date': None,
+                            'payment_date': None,
+                            'total_dividend_amount': None,
+                            'confidence_score': 0.0,
+                            'extraction_timestamp': datetime.now().isoformat(),
+                            'raw_llm_response': '',
+                            'attempts': attempt + 1
+                        }
+                    elif status_code == 429:
+                        logger.error("API速率限制")
+                        if attempt < max_retries - 1:
+                            wait_time = retry_delay * (attempt + 2)
+                            logger.info(f"等待{wait_time}秒后重试...")
+                            import time
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            return {
+                                'success': False,
+                                'error': f'API速率限制，所有{max_retries}次尝试均失败: {e}',
+                                'cash_dividend_per_share': None,
+                                'stock_dividend_ratio': None,
+                                'capitalization_ratio': None,
+                                'record_date': None,
+                                'ex_rights_date': None,
+                                'payment_date': None,
+                                'total_dividend_amount': None,
+                                'confidence_score': 0.0,
+                                'extraction_timestamp': datetime.now().isoformat(),
+                                'raw_llm_response': '',
+                                'attempts': attempt + 1
+                            }
+                # 其他网络错误可以重试
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    return {
+                        'success': False,
+                        'error': f'API请求失败，所有{max_retries}次尝试均失败: {e}',
+                        'cash_dividend_per_share': None,
+                        'stock_dividend_ratio': None,
+                        'capitalization_ratio': None,
+                        'record_date': None,
+                        'ex_rights_date': None,
+                        'payment_date': None,
+                        'total_dividend_amount': None,
+                        'confidence_score': 0.0,
+                        'extraction_timestamp': datetime.now().isoformat(),
+                        'raw_llm_response': '',
+                        'attempts': attempt + 1
+                    }
+            except Exception as e:
+                logger.error(f"第{attempt+1}次尝试分红提取失败: {e}")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    # 最后一次尝试也失败
+                    return {
+                        'success': False,
+                        'error': f'所有{max_retries}次尝试均失败: {e}',
+                        'cash_dividend_per_share': None,
+                        'stock_dividend_ratio': None,
+                        'capitalization_ratio': None,
+                        'record_date': None,
+                        'ex_rights_date': None,
+                        'payment_date': None,
+                        'total_dividend_amount': None,
+                        'confidence_score': 0.0,
+                        'extraction_timestamp': datetime.now().isoformat(),
+                        'raw_llm_response': '',
+                        'attempts': attempt + 1
+                    }
     
+    def _build_dividend_extraction_prompt(self, stock_code, title, announcement_text):
+        """构建分红提取提示"""
+        # 限制文本长度以避免令牌超限
+        max_text_length = 8000
+        if len(announcement_text) > max_text_length:
+            truncated_text = announcement_text[:max_text_length] + "... (文本过长，已截断)"
+        else:
+            truncated_text = announcement_text
+        
+        prompt = f"""
+请从以下上市公司公告中提取精确的分红数据：
+
+股票代码：{stock_code}
+公告标题：{title}
+
+公告正文：
+{truncated_text}
+
+请提取以下信息（如果存在）：
+1. 每股派息金额（现金分红，单位：元）
+2. 送股比例（每10股送X股）
+3. 转增比例（每10股转增X股）
+4. 股权登记日（格式：YYYY-MM-DD）
+5. 除权日（格式：YYYY-MM-DD）
+6. 派息日（格式：YYYY-MM-DD）
+7. 分红总额（单位：元，如果公告中提及）
+
+请以JSON格式返回，包含以下字段：
+{{
+    "success": true,
+    "cash_dividend_per_share": 0.5,  # 每股派息（元），如果没有则为null
+    "stock_dividend_ratio": 0.0,     # 送股比例（每1股送X股），例如0.5表示每10股送5股
+    "capitalization_ratio": 0.0,     # 转增比例（每1股转增X股）
+    "record_date": "2023-06-15",     # 股权登记日，如果没有则为null
+    "ex_rights_date": "2023-06-16",  # 除权日，如果没有则为null
+    "payment_date": "2023-06-20",    # 派息日，如果没有则为null
+    "total_dividend_amount": 100000000.0,  # 分红总额（元），如果没有则为null
+    "confidence_score": 0.85,        # 置信度（0-1）
+    "notes": "额外说明"               # 任何额外说明
+}}
+
+注意：
+- 只提取明确提到的数据，不要猜测
+- 如果某项信息不存在，请设置为null
+- 确保数值类型正确（浮点数或null）
+- 日期格式必须为YYYY-MM-DD
+- 置信度基于信息在文本中的明确程度
+- 送股比例和转增比例按每股计算（例如：每10股送5股 = 0.5）
+"""
+        return prompt
+    
+    def _parse_dividend_extraction_response(self, llm_response):
+        """解析LLM响应为结构化数据"""
+        import re
+        from datetime import datetime
+        
+        default_result = {
+            'success': False,
+            'cash_dividend_per_share': None,
+            'stock_dividend_ratio': None,
+            'capitalization_ratio': None,
+            'record_date': None,
+            'ex_rights_date': None,
+            'payment_date': None,
+            'total_dividend_amount': None,
+            'confidence_score': 0.0,
+            'notes': '',
+            'error': '解析失败'
+        }
+        
+        try:
+            # 尝试从响应中提取JSON
+            json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
+            if not json_match:
+                default_result['error'] = '未找到JSON格式响应'
+                return default_result
+            
+            json_str = json_match.group()
+            data = json.loads(json_str)
+            
+            # 验证必要字段
+            if 'success' not in data:
+                default_result['error'] = '响应缺少success字段'
+                return default_result
+            
+            if not data['success']:
+                # LLM determined no dividend data
+                result = {
+                    'success': False,
+                    'cash_dividend_per_share': None,
+                    'stock_dividend_ratio': None,
+                    'capitalization_ratio': None,
+                    'record_date': None,
+                    'ex_rights_date': None,
+                    'payment_date': None,
+                    'total_dividend_amount': None,
+                    'confidence_score': float(data.get('confidence_score', 0.0)),
+                    'notes': str(data.get('notes', '')),
+                    'error': data.get('error', 'LLM返回失败')
+                }
+                return result
+            
+            # 提取字段并验证类型
+            result = {
+                'success': True,
+                'cash_dividend_per_share': self._parse_float_or_null(data.get('cash_dividend_per_share')),
+                'stock_dividend_ratio': self._parse_float_or_null(data.get('stock_dividend_ratio')),
+                'capitalization_ratio': self._parse_float_or_null(data.get('capitalization_ratio')),
+                'record_date': self._parse_date_or_null(data.get('record_date')),
+                'ex_rights_date': self._parse_date_or_null(data.get('ex_rights_date')),
+                'payment_date': self._parse_date_or_null(data.get('payment_date')),
+                'total_dividend_amount': self._parse_float_or_null(data.get('total_dividend_amount')),
+                'confidence_score': min(max(float(data.get('confidence_score', 0.0)), 0.0), 1.0),
+                'notes': str(data.get('notes', '')),
+                'error': None
+            }
+            
+            # 验证置信度
+            if result['confidence_score'] < 0.1:
+                logger.warning(f"置信度过低: {result['confidence_score']}")
+            
+            return result
+            
+        except json.JSONDecodeError as e:
+            default_result['error'] = f'JSON解析错误: {e}'
+            logger.error(f"JSON解析错误: {e}, 响应: {llm_response[:200]}...")
+            return default_result
+        except Exception as e:
+            default_result['error'] = f'解析错误: {e}'
+            logger.error(f"解析错误: {e}")
+            return default_result
+    
+    def _parse_float_or_null(self, value):
+        """解析浮点数或返回null"""
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
+    
+    def _parse_date_or_null(self, value):
+        """解析日期字符串或返回null"""
+        if value is None:
+            return None
+        try:
+            # 尝试常见日期格式
+            for fmt in ('%Y-%m-%d', '%Y/%m/%d', '%Y年%m月%d日'):
+                try:
+                    dt = datetime.strptime(str(value), fmt)
+                    return dt.strftime('%Y-%m-%d')
+                except ValueError:
+                    continue
+            return None
+        except Exception:
+            return None
 
     

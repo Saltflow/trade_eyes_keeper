@@ -462,28 +462,6 @@ class StockWebCrawler:
         
         return pd.DataFrame()
     
-
-    
-    def _generate_data_from_price(self, stock_code, current_price, days):
-        """
-        从当前价格生成数据
-        """
-        current_data = {
-            'open': current_price * 0.99,
-            'close': current_price,
-            'high': current_price * 1.02,
-            'low': current_price * 0.98,
-            'volume': 5000000,
-            'amount': current_price * 5000000,
-            'amplitude': 4.0,
-            'change_pct': 1.0,
-            'change': current_price * 0.01
-        }
-        
-        return self._generate_historical_data(stock_code, current_data, days)
-    
-
-    
     def fetch_dividend_data(self, stock_code):
         """
         获取股票分红数据（从公开财报或利润分配公告扒取）

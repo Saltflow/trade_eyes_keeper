@@ -107,6 +107,9 @@ class StockDataFetcher:
                             else:
                                 latest_data['dividend_yield'] = round(dividend_yield, 2)
                                 logger.info(f"股票 {stock_code} 股息率计算: 分红={fundamental_data['dividend_per_share']:.3f}元, 股价={close_price:.2f}元, 股息率={dividend_yield:.2f}%")
+                                # 检查股息率是否过低（<0.5%），可能数据不准确
+                                if dividend_yield < 0.5:
+                                    logger.warning(f"股票 {stock_code} 股息率过低: {dividend_yield:.2f}% (可能分红数据不准确或股价过高)")
                         else:
                             latest_data['dividend_yield'] = None
                     else:
@@ -340,27 +343,44 @@ class StockDataFetcher:
                     try:
                         import akshare as ak
                         
-                        # 首先尝试获取具体的分红实施数据（更准确）
                         dividend_found = False
+                        
+                        # 首先尝试cninfo最新分红数据（最准确）
                         try:
                             cninfo_df = ak.stock_dividend_cninfo(symbol=stock_code)
                             if not cninfo_df.empty and len(cninfo_df) > 0:
                                 logger.info(f"股票 {stock_code} 从cninfo获取到 {len(cninfo_df)} 条分红记录")
+                                
+                                # 寻找日期列并排序，确保取最新记录
+                                date_col = None
+                                for col in cninfo_df.columns:
+                                    col_str = str(col)
+                                    if "����" in col_str or "日期" in col_str or "ʵʩ" in col_str:
+                                        date_col = col
+                                        break
+                                if date_col is not None:
+                                    try:
+                                        cninfo_df[date_col] = pd.to_datetime(cninfo_df[date_col], errors='coerce')
+                                        cninfo_df = cninfo_df.sort_values(date_col, ascending=False)
+                                        logger.debug(f"股票 {stock_code} cninfo数据按日期排序，最新日期: {cninfo_df.iloc[0][date_col]}")
+                                    except Exception as e:
+                                        logger.debug(f"股票 {stock_code} cninfo日期列处理失败: {e}")
+                                
                                 # 找到最新的一条分红记录
                                 # 寻找包含分红金额的列
                                 amount_col = None
                                 desc_col = None
-                                
+                    
                                 # 检查已知的列名模式
                                 for col in cninfo_df.columns:
                                     col_str = str(col)
-                                    # 金额列通常包含'Ϣ��'或'金额' 
-                                    if 'Ϣ��' in col_str or '金额' in col_str:
+                                    # 金额列通常包含"Ϣ��"或"金额"
+                                    if "Ϣ��" in col_str or "金额" in col_str:
                                         amount_col = col
-                                    # 描述列通常包含'ֺ˵'或'分红说明'
-                                    if 'ֺ˵' in col_str or '分红说明' in col_str or '˵��' in col_str:
+                                    # 描述列通常包含"ֺ˵"或"分红说明"
+                                    if "ֺ˵" in col_str or "分红说明" in col_str or "˵��" in col_str:
                                         desc_col = col
-                                
+                    
                                 # 如果没找到，尝试其他方法识别
                                 if amount_col is None or desc_col is None:
                                     # 检查第一行数据来识别列
@@ -372,72 +392,123 @@ class StockDataFetcher:
                                             # 如果值看起来像金额（数字且大于0小于100）
                                             if isinstance(val, (int, float)) and 0 < val < 100:
                                                 amount_col = col
-                                            # 如果值包含'��'字符（中文顿号，用于"10股"格式）
-                                            elif isinstance(val, str) and '��' in val_str:
+                                            # 如果值包含"��"字符（中文顿号，用于"10股"格式）
+                                            elif isinstance(val, str) and "��" in val_str:
                                                 desc_col = col
-                                
+                    
                                 logger.info(f"股票 {stock_code} cninfo列检测: amount_col={amount_col}, desc_col={desc_col}")
-                                
+                    
                                 if amount_col is not None and desc_col is not None:
-                                    # 取最新记录（假设按时间排序，最新在最前面）
-                                    latest = cninfo_df.iloc[0]
-                                    dividend_amount = latest[amount_col]
-                                    dividend_desc = latest[desc_col]
+                                    # 计算12个月前的时间点
+                                    twelve_months_ago = datetime.now() - timedelta(days=365)
                                     
-                                    if pd.notna(dividend_amount) and dividend_amount > 0:
-                                        # 从描述中解析每10股分红金额，例如"10��1.7Ԫ(��˰)"表示10股1.7元
-                                        # 默认按10股计算
-                                        shares_for_dividend = 10.0
-                                        if isinstance(dividend_desc, str) and '��' in dividend_desc:
+                                    # 初始化总分红
+                                    total_dividend_per_share = 0.0
+                                    dividend_count = 0
+                                    recent_dividends_found = False
+                                    
+                                    # 遍历所有分红记录，累加过去12个月的分红
+                                    for idx, row in cninfo_df.iterrows():
+                                        # 检查日期是否在12个月内
+                                        row_date = None
+                                        if date_col is not None:
+                                            row_date = row[date_col]
+                                        else:
+                                            # 尝试使用第一列作为日期
                                             try:
-                                                # 格式: "10��1.7Ԫ(��˰)"
-                                                parts = dividend_desc.split('��')
-                                                if len(parts) >= 2:
-                                                    shares_part = parts[0].strip()
-                                                    shares_for_dividend = float(shares_part)
+                                                row_date = pd.to_datetime(row.iloc[0], errors='coerce')
                                             except:
                                                 pass
                                         
-                                        # 计算每股分红
-                                        dividend_per_share = dividend_amount / shares_for_dividend
+                                        if pd.isna(row_date):
+                                            continue
                                         
-                                        # 验证合理性（通常每股分红在0-5元之间）
-                                        if 0 < dividend_per_share < 5:
-                                            fundamental_data['dividend_per_share'] = round(dividend_per_share, 3)
-                                            logger.info(f"股票 {stock_code} 从cninfo获取准确分红: {dividend_per_share:.3f}元/股 (来自: {dividend_desc})")
-                                            dividend_found = True
-                                        else:
-                                            logger.warning(f"股票 {stock_code} cninfo分红数据不合理: {dividend_per_share:.3f}元/股")
+                                        # 跳过12个月前的记录
+                                        if row_date < twelve_months_ago:
+                                            continue
+                                        
+                                        # 获取现金分红比例
+                                        dividend_amount = row[amount_col]
+                                        dividend_desc = row[desc_col]
+                                        
+                                        if pd.notna(dividend_amount) and dividend_amount > 0:
+                                            # 从描述中解析每10股分红金额，例如"10��1.7Ԫ(��˰)"表示10股1.7元
+                                            # 默认按10股计算
+                                            shares_for_dividend = 10.0
+                                            if isinstance(dividend_desc, str) and "��" in dividend_desc:
+                                                try:
+                                                    # 格式: "10��1.7Ԫ(��˰)"
+                                                    parts = dividend_desc.split("��")
+                                                    if len(parts) >= 2:
+                                                        shares_part = parts[0].strip()
+                                                        shares_for_dividend = float(shares_part)
+                                                except:
+                                                    pass
+                                            
+                                            # 计算每股分红
+                                            dividend_per_share = dividend_amount / shares_for_dividend
+                                            
+                                            # 验证合理性（通常每股分红在0-5元之间）
+                                            if 0 < dividend_per_share < 5:
+                                                total_dividend_per_share += dividend_per_share
+                                                dividend_count += 1
+                                                recent_dividends_found = True
+                                                
+                                                # 记录单次分红详情
+                                                logger.debug(f"股票 {stock_code} 分红记录: {row_date.strftime('%Y-%m-%d')}, 每股: {dividend_per_share:.3f}元, 累计: {total_dividend_per_share:.3f}元")
+                                            else:
+                                                logger.warning(f"股票 {stock_code} cninfo分红数据不合理: {dividend_per_share:.3f}元/股 (日期: {row_date})")
+                                    
+                                    # 如果找到近期分红，使用总和
+                                    if recent_dividends_found:
+                                        fundamental_data["dividend_per_share"] = round(total_dividend_per_share, 3)
+                                        logger.info(f"股票 {stock_code} 从cninfo获取过去12个月分红总计: {total_dividend_per_share:.3f}元/股 ({dividend_count}次分红)")
+                                        dividend_found = True
+                                    else:
+                                        logger.debug(f"股票 {stock_code} 过去12个月内无有效分红记录")
                         except Exception as cninfo_error:
                             logger.debug(f"股票 {stock_code} cninfo分红数据获取失败，尝试其他方法: {cninfo_error}")
                         
-                        # 如果cninfo没有找到数据，尝试历史分红数据
+                        # 如果cninfo数据没有找到或无效，尝试年均股息数据
                         if not dividend_found:
-                            dividend_df = ak.stock_history_dividend()
-                            stock_dividend = dividend_df[dividend_df['代码'] == stock_code]
-                            
-                            if not stock_dividend.empty:
-                                latest_dividend = stock_dividend.iloc[0]
-                                annual_dividend = latest_dividend.get('年均股息', 0)
+                            try:
+                                dividend_df = ak.stock_history_dividend()
+                                stock_dividend = dividend_df[dividend_df["代码"] == stock_code]
                                 
-                                if annual_dividend and annual_dividend > 0:
-                                    if annual_dividend > 10:
-                                        annual_dividend = annual_dividend / 100.0
-                                        logger.info(f"股票 {stock_code} 分红数据单位修正: {annual_dividend:.3f}元（原值过大，已除以100）")
-                                    
-                                    if 0.01 <= annual_dividend <= 10.0:
-                                        fundamental_data['dividend_per_share'] = round(annual_dividend, 3)
-                                        logger.info(f"股票 {stock_code} 年均股息: {annual_dividend:.3f}元")
+                                if not stock_dividend.empty:
+                                    latest_dividend = stock_dividend.iloc[0]
+                                    annual_dividend = latest_dividend.get("年均股息", 0)
+                                
+                                    if annual_dividend and annual_dividend > 0:
+                                        original = annual_dividend
+                                        unit_note = "原始值"
+                                        
+                                        # 单位修正：
+                                        # 1. 如果数值过大（>100），可能以分为单位，转换为元
+                                        if annual_dividend > 100:
+                                            annual_dividend = annual_dividend / 100.0
+                                            unit_note = "分转元"
+                                            logger.info(f"股票 {stock_code} 分红数据单位修正({unit_note}): {original:.3f} → {annual_dividend:.3f}元")
+                                        # 2. 如果数值在2-100之间，可能为每10股金额，转换为每股
+                                        elif annual_dividend > 2:
+                                            annual_dividend = annual_dividend / 10.0
+                                            unit_note = "每10股转每股"
+                                            logger.info(f"股票 {stock_code} 分红数据单位修正({unit_note}): {original:.3f} → {annual_dividend:.3f}元/股")
+                                        
+                                        if 0.01 <= annual_dividend <= 5.0:
+                                            fundamental_data["dividend_per_share"] = round(annual_dividend, 3)
+                                            logger.info(f"股票 {stock_code} 使用年均股息: {annual_dividend:.3f}元/股 (原始值: {original:.3f}, {unit_note})")
+                                            dividend_found = True
+                                        else:
+                                            logger.warning(f"股票 {stock_code} 年均股息数据不合理: {annual_dividend:.3f}元/股 (原始值: {original:.3f}, {unit_note})")
                                     else:
-                                        logger.warning(f"股票 {stock_code} 分红数据不合理: {annual_dividend:.3f}元，超出合理范围")
+                                        logger.warning(f"股票 {stock_code} 无有效年均股息数据")
                                 else:
-                                    logger.warning(f"股票 {stock_code} 无有效分红数据")
-                            else:
-                                logger.warning(f"未找到股票 {stock_code} 的分红数据，保持为None")
-                                
-                    except Exception as e:
-                        logger.error(f"从akshare获取股票 {stock_code} 分红数据失败: {e}")
-                        logger.info(f"股票 {stock_code} 无可靠分红数据，字段保持为None")
+                                    logger.warning(f"未找到股票 {stock_code} 的年均股息数据")
+                            except Exception as annual_error:
+                                logger.debug(f"获取股票 {stock_code} 年均股息失败: {annual_error}")
+                    except Exception:
+                        pass
             except Exception as e:
                 logger.error(f"使用web_crawler获取股票 {stock_code} 分红数据失败: {e}")
                 # web_crawler失败，无可靠分红数据，字段保持为None
