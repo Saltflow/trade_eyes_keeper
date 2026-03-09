@@ -25,6 +25,7 @@ logging:
   level: INFO
 scheduler:
   run_time: '15:30'
+  cache_bypass_cutoff: '15:05'
   timezone: Asia/Shanghai
 stocks:
 - 601728

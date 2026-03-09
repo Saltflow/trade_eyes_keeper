@@ -33,6 +33,61 @@ class StockDataFetcher:
         # 延迟导入web_crawler，避免循环依赖
         self.web_crawler = None
         
+        # 缓存绕过配置
+        scheduler_config = config.get('scheduler', {})
+        cutoff_str = scheduler_config.get('cache_bypass_cutoff', '15:05')
+        try:
+            cutoff_hour, cutoff_minute = map(int, cutoff_str.split(':'))
+            self.cache_bypass_cutoff_hour = cutoff_hour
+            self.cache_bypass_cutoff_minute = cutoff_minute
+        except:
+            self.cache_bypass_cutoff_hour = 15
+            self.cache_bypass_cutoff_minute = 5
+        
+    def _should_bypass_cache(self, cached_data):
+        """
+        判断是否应绕过缓存
+        规则：如果当前时间 >= 15:05 且缓存数据日期不是今天，则绕过缓存
+        """
+        try:
+            # 获取缓存中的股票数据日期
+            if not cached_data or 'data' not in cached_data:
+                return True
+                
+            cached_stock_data = cached_data['data']
+            if 'date' not in cached_stock_data:
+                return True
+                
+            # 解析缓存股票日期
+            cached_date_str = cached_stock_data['date']
+            cached_date = datetime.fromisoformat(cached_date_str.replace('Z', '+00:00')).date()
+            today = datetime.now().date()
+            
+            # 检查日期是否为今天
+            if cached_date == today:
+                return False  # 缓存数据是今天的，可以使用
+                
+            # 缓存数据不是今天的，检查当前时间
+            now = datetime.now()
+            cutoff_time = now.replace(
+                hour=self.cache_bypass_cutoff_hour, 
+                minute=self.cache_bypass_cutoff_minute, 
+                second=0, 
+                microsecond=0
+            )
+            
+            if now >= cutoff_time:
+                # 当前时间 >= 配置的截止时间，需要今天的数据，但缓存数据不是今天的
+                logger.info(f"缓存数据日期 {cached_date_str} 不是今天，当前时间 {now.strftime('%H:%M')} >= {self.cache_bypass_cutoff_hour:02d}:{self.cache_bypass_cutoff_minute:02d}，绕过缓存")
+                return True
+            else:
+                # 当前时间 < 配置的截止时间，可以使用旧数据
+                return False
+                
+        except Exception as e:
+            logger.warning(f"检查缓存是否应绕过时出错: {e}")
+            return True  # 出错时绕过缓存
+            
     def fetch_stock_data(self):
         """
         获取股票数据
@@ -49,7 +104,7 @@ class StockDataFetcher:
             try:
                 # 首先尝试从缓存获取数据
                 cached_data = self.cache_manager.get_stock_data_cache(stock_code)
-                if cached_data and 'data' in cached_data:
+                if cached_data and 'data' in cached_data and not self._should_bypass_cache(cached_data):
                     cached_latest_data = cached_data['data']
                     # 验证缓存数据包含必要字段
                     required_fields = ['open', 'close', 'high', 'low', 'ma60', 'dividend_per_share', 'dividend_yield', 'earnings_growth']
@@ -63,7 +118,10 @@ class StockDataFetcher:
                         continue
                     else:
                         logger.warning(f"股票 {stock_code} 缓存数据不完整，重新获取")
-                # 缓存不存在或数据不完整，继续获取新数据
+                elif cached_data and 'data' in cached_data:
+                    # 缓存存在但需要绕过（例如数据不是今天的且时间>=15:05）
+                    logger.info(f"股票 {stock_code} 缓存数据已过期，重新获取")
+                # 缓存不存在或数据不完整或需要绕过，继续获取新数据
                 
                 logger.info(f"获取股票 {stock_code} 数据（无缓存）")
                 
@@ -181,7 +239,7 @@ class StockDataFetcher:
             
             if stock_zh_a_hist_df.empty:
                 logger.warning(f"未获取到股票 {stock_code} 的数据")
-                return None
+                raise ValueError(f"akshare返回空数据，股票 {stock_code} 可能未更新或代码错误")
             
             # 重命名列以统一格式
             stock_zh_a_hist_df = stock_zh_a_hist_df.rename(columns={
