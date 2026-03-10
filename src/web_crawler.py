@@ -502,7 +502,7 @@ class StockWebCrawler:
     def fetch_valuation_data(self, stock_code):
         """
         获取股票估值指标数据（PE, PB, ROE, 负债率）
-        注意：此方法为占位符，需要实际实现网页爬取逻辑
+         使用腾讯财经(QQ)实时API获取估值指标，包含数据有效性验证
         
         Args:
             stock_code: 股票代码
@@ -531,12 +531,12 @@ class StockWebCrawler:
                 if value is None:
                     return None
                 if metric_name == 'pe':
-                    # PE通常0-200，超出范围视为无效
-                    if value <= 0 or value > 200:
+                    # PE可以为负值（亏损企业），但0无效，极高值(>1000)视为异常
+                    if value == 0 or abs(value) > 1000:
                         return None
                 elif metric_name == 'pb':
-                    # PB通常0-20，超出范围视为无效
-                    if value <= 0 or value > 20:
+                    # PB可以为负值（净资产为负），但0无效，极高值(>50)视为异常
+                    if value == 0 or abs(value) > 50:
                         return None
                 elif metric_name == 'roe':
                     # ROE百分比范围 -100 到 100
