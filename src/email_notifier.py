@@ -6,6 +6,9 @@
 import logging
 import smtplib
 import ssl
+import socket
+import platform
+import subprocess
 import pandas as pd
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -211,6 +214,16 @@ class EmailNotifier:
             {announcements_section}
             
             <p><em>注：此邮件由股票量化系统自动发送，请勿直接回复。</em></p>
+            
+            <div style="margin-top: 30px; padding-top: 15px; border-top: 1px solid #eee; font-size: 0.8em; color: #666;">
+                <p><strong>服务器信息:</strong></p>
+                <ul>
+                    <li>主机名: {server_hostname}</li>
+                    <li>IP地址: {server_ip}</li>
+                    <li>内核版本: {server_kernel}</li>
+                    <li>系统: {server_system} ({server_machine})</li>
+                </ul>
+            </div>
         </body>
         </html>
         """
@@ -523,6 +536,9 @@ class EmailNotifier:
             <p><em>注：公告信息仅供参考，请以交易所官方公告为准。</em></p>
             """
         
+        # 获取服务器信息
+        server_info = self._get_server_info()
+        
         # 替换模板中的变量
         html_content = html_table.format(
             current_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -532,7 +548,12 @@ class EmailNotifier:
             all_rows_price=all_rows_price,
             all_rows_fundamental=all_rows_fundamental,
             llm_analysis_section=llm_analysis_section,
-            announcements_section=announcements_section
+            announcements_section=announcements_section,
+            server_hostname=server_info['hostname'],
+            server_ip=server_info['ip_address'],
+            server_kernel=server_info['kernel_version'],
+            server_system=server_info['system'],
+            server_machine=server_info['machine']
         )
         
         return html_content
@@ -564,6 +585,53 @@ class EmailNotifier:
         }
         
         return stock_names.get(stock_code, stock_code)
+    
+    def _get_server_info(self):
+        """
+        获取服务器信息（IP地址和内核版本）
+        
+        Returns:
+            dict: 包含服务器信息的字典
+        """
+        try:
+            # 获取主机名和IP地址
+            hostname = socket.gethostname()
+            try:
+                # 获取主要IP地址
+                ip_address = socket.gethostbyname(hostname)
+            except:
+                ip_address = "无法获取"
+            
+            # 获取内核版本（Linux系统）
+            kernel_version = "未知"
+            try:
+                # 尝试通过platform模块获取
+                kernel_version = platform.release()
+                if not kernel_version or kernel_version == "":
+                    # 尝试通过uname命令获取
+                    result = subprocess.run(['uname', '-r'], capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        kernel_version = result.stdout.strip()
+            except:
+                # 最后回退到platform.uname
+                kernel_version = platform.uname().release
+            
+            return {
+                'hostname': hostname,
+                'ip_address': ip_address,
+                'kernel_version': kernel_version,
+                'system': platform.system(),
+                'machine': platform.machine()
+            }
+        except Exception as e:
+            logger.warning(f"获取服务器信息失败: {e}")
+            return {
+                'hostname': '未知',
+                'ip_address': '无法获取',
+                'kernel_version': '未知',
+                'system': '未知',
+                'machine': '未知'
+            }
     
     def _send_email(self, subject, body):
         """
