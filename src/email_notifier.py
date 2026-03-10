@@ -165,6 +165,10 @@ class EmailNotifier:
                     <th>每股分红(元)</th>
                     <th>股息率(%)</th>
                     <th>业绩增长(%)</th>
+                    <th>PE</th>
+                    <th>PB</th>
+                    <th>ROE(%)</th>
+                    <th>负债率(%)</th>
                 </tr>
                 {alert_rows_fundamental}
             </table>
@@ -194,6 +198,10 @@ class EmailNotifier:
                     <th>每股分红(元)</th>
                     <th>股息率(%)</th>
                     <th>业绩增长(%)</th>
+                    <th>PE</th>
+                    <th>PB</th>
+                    <th>ROE(%)</th>
+                    <th>负债率(%)</th>
                 </tr>
                 {all_rows_fundamental}
             </table>
@@ -232,16 +240,28 @@ class EmailNotifier:
             dividend_per_share = None
             dividend_yield = None
             earnings_growth = None
+            pe_ratio = None
+            pb_ratio = None
+            roe = None
+            debt_ratio = None
             
             if not stock_row.empty:
                 dividend_per_share = stock_row.iloc[0].get('dividend_per_share')
                 dividend_yield = stock_row.iloc[0].get('dividend_yield')
                 earnings_growth = stock_row.iloc[0].get('earnings_growth')
+                pe_ratio = stock_row.iloc[0].get('pe_ratio')
+                pb_ratio = stock_row.iloc[0].get('pb_ratio')
+                roe = stock_row.iloc[0].get('roe')
+                debt_ratio = stock_row.iloc[0].get('debt_ratio')
             
             # 格式化基本面数据
             dividend_per_share_str = f"{dividend_per_share:.3f}" if dividend_per_share is not None and not pd.isna(dividend_per_share) else "-"
             dividend_yield_str = f"{dividend_yield:.2f}%" if dividend_yield is not None and not pd.isna(dividend_yield) else "-"
             earnings_growth_str = f"{earnings_growth:+.2f}%" if earnings_growth is not None and not pd.isna(earnings_growth) else "-"
+            pe_ratio_str = f"{pe_ratio:.2f}" if pe_ratio is not None and not pd.isna(pe_ratio) else "-"
+            pb_ratio_str = f"{pb_ratio:.2f}" if pb_ratio is not None and not pd.isna(pb_ratio) else "-"
+            roe_str = f"{roe:.2f}%" if roe is not None and not pd.isna(roe) else "-"
+            debt_ratio_str = f"{debt_ratio:.2f}%" if debt_ratio is not None and not pd.isna(debt_ratio) else "-"
             
             # 确定颜色类
             close_diff_class = "positive" if close_ma60_diff >= 0 else "negative"
@@ -272,6 +292,10 @@ class EmailNotifier:
                     <td>{dividend_per_share_str}</td>
                     <td>{dividend_yield_str}</td>
                     <td class="{earnings_growth_class}">{earnings_growth_str}</td>
+                    <td>{pe_ratio_str}</td>
+                    <td>{pb_ratio_str}</td>
+                    <td>{roe_str}</td>
+                    <td>{debt_ratio_str}</td>
                 </tr>
             """
         
@@ -299,11 +323,19 @@ class EmailNotifier:
             dividend_per_share = row.get('dividend_per_share')
             dividend_yield = row.get('dividend_yield')
             earnings_growth = row.get('earnings_growth')
+            pe_ratio = row.get('pe_ratio')
+            pb_ratio = row.get('pb_ratio')
+            roe = row.get('roe')
+            debt_ratio = row.get('debt_ratio')
             
             # 格式化基本面数据
             dividend_per_share_str = f"{dividend_per_share:.3f}" if dividend_per_share is not None and not pd.isna(dividend_per_share) else "-"
             dividend_yield_str = f"{dividend_yield:.2f}%" if dividend_yield is not None and not pd.isna(dividend_yield) else "-"
             earnings_growth_str = f"{earnings_growth:+.2f}%" if earnings_growth is not None and not pd.isna(earnings_growth) else "-"
+            pe_ratio_str = f"{pe_ratio:.2f}" if pe_ratio is not None and not pd.isna(pe_ratio) else "-"
+            pb_ratio_str = f"{pb_ratio:.2f}" if pb_ratio is not None and not pd.isna(pb_ratio) else "-"
+            roe_str = f"{roe:.2f}%" if roe is not None and not pd.isna(roe) else "-"
+            debt_ratio_str = f"{debt_ratio:.2f}%" if debt_ratio is not None and not pd.isna(debt_ratio) else "-"
             
             # 确定颜色类
             earnings_growth_class = "positive" if earnings_growth is not None and earnings_growth > 0 else "negative" if earnings_growth is not None and earnings_growth < 0 else ""
@@ -335,6 +367,10 @@ class EmailNotifier:
                     <td>{dividend_per_share_str}</td>
                     <td>{dividend_yield_str}</td>
                     <td class="{earnings_growth_class}">{earnings_growth_str}</td>
+                    <td>{pe_ratio_str}</td>
+                    <td>{pb_ratio_str}</td>
+                    <td>{roe_str}</td>
+                    <td>{debt_ratio_str}</td>
                 </tr>
             """
         

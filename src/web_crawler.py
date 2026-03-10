@@ -476,33 +476,142 @@ class StockWebCrawler:
                 - last_dividend_date: 最近分红日期
                 - dividend_history: 历史分红列表
         """
-        try:
-            stock_code = str(stock_code)
-            logger.info(f"尝试获取股票 {stock_code} 的分红数据")
+        stock_code = str(stock_code)
+        logger.info(f"尝试获取股票 {stock_code} 的分红数据")
+        
+        # 尝试多个数据源
+        data_sources = [
+            self._fetch_dividend_from_sina,
+            self._fetch_dividend_from_eastmoney,
+        ]
+        
+        for source_func in data_sources:
+            try:
+                logger.info(f"尝试从 {source_func.__name__} 获取股票 {stock_code} 分红数据")
+                dividend_data = source_func(stock_code)
+                if dividend_data and dividend_data.get('dividend_per_share'):
+                    logger.info(f"从 {source_func.__name__} 成功获取股票 {stock_code} 分红数据")
+                    return dividend_data
+            except Exception as e:
+                logger.warning(f"从 {source_func.__name__} 获取股票 {stock_code} 分红数据失败: {e}")
+                continue
+        
+        logger.warning(f"所有数据源都失败，无法获取股票 {stock_code} 分红数据")
+        return None
+    
+    def fetch_valuation_data(self, stock_code):
+        """
+        获取股票估值指标数据（PE, PB, ROE, 负债率）
+        注意：此方法为占位符，需要实际实现网页爬取逻辑
+        
+        Args:
+            stock_code: 股票代码
             
-            # 尝试多个数据源
-            data_sources = [
-                self._fetch_dividend_from_sina,
-                self._fetch_dividend_from_eastmoney,
-            ]
-            
-            for source_func in data_sources:
+        Returns:
+            dict: 包含估值指标的字典，键包括：
+                - pe_ratio: 市盈率
+                - pb_ratio: 市净率  
+                - roe: 净资产收益率（%）
+                - debt_ratio: 资产负债率（%）
+        """
+        stock_code = str(stock_code)
+        logger.info(f"尝试获取股票 {stock_code} 的估值指标数据")
+        
+        def parse_qq_items(items):
+            """解析QQ实时数据项"""
+            def safe_float(val):
+                if not val:
+                    return None
                 try:
-                    logger.info(f"尝试从 {source_func.__name__} 获取股票 {stock_code} 分红数据")
-                    dividend_data = source_func(stock_code)
-                    if dividend_data and dividend_data.get('dividend_per_share'):
-                        logger.info(f"从 {source_func.__name__} 成功获取股票 {stock_code} 分红数据")
-                        return dividend_data
-                except Exception as e:
-                    logger.warning(f"从 {source_func.__name__} 获取股票 {stock_code} 分红数据失败: {e}")
-                    continue
+                    return float(val)
+                except (ValueError, TypeError):
+                    return None
             
-            logger.warning(f"所有数据源都失败，无法获取股票 {stock_code} 分红数据")
-            return None
+            def validate_metric(value, metric_name):
+                if value is None:
+                    return None
+                if metric_name == 'pe':
+                    # PE通常0-200，超出范围视为无效
+                    if value <= 0 or value > 200:
+                        return None
+                elif metric_name == 'pb':
+                    # PB通常0-20，超出范围视为无效
+                    if value <= 0 or value > 20:
+                        return None
+                elif metric_name == 'roe':
+                    # ROE百分比范围 -100 到 100
+                    if value < -100 or value > 100:
+                        return None
+                elif metric_name == 'debt':
+                    # 负债率百分比范围 0 到 100
+                    if value < 0 or value > 100:
+                        return None
+                return value
             
-        except Exception as e:
-            logger.error(f"获取股票 {stock_code} 分红数据时发生错误: {e}")
+            # QQ实时数据字段映射:
+            # 39: 市盈率(PE), 46: 市净率(PB), 52: 净资产收益率(ROE%), 53: 资产负债率(%)
+            pe = safe_float(items[39]) if len(items) > 39 else None
+            pb = safe_float(items[46]) if len(items) > 46 else None
+            roe = safe_float(items[52]) if len(items) > 52 else None
+            debt = safe_float(items[53]) if len(items) > 53 else None
+            
+            pe = validate_metric(pe, 'pe')
+            pb = validate_metric(pb, 'pb')
+            roe = validate_metric(roe, 'roe')
+            debt = validate_metric(debt, 'debt')
+            
+            return {
+                'pe_ratio': pe,
+                'pb_ratio': pb,
+                'roe': roe,
+                'debt_ratio': debt
+            }
+        
+        def fetch_from_qq(stock_code):
+            """从腾讯财经获取估值指标"""
+            try:
+                market = 'sh' if stock_code.startswith(('6', '5')) else 'sz'
+                url = f'http://qt.gtimg.cn/q={market}{stock_code}'
+                headers = {'User-Agent': self.user_agent}
+                response = requests.get(url, headers=headers, timeout=self.timeout)
+                response.raise_for_status()
+                content = response.text
+                if '=' in content:
+                    data_str = content.split('=')[1].strip('\";')
+                    items = data_str.split('~')
+                    if len(items) > 53:
+                        return parse_qq_items(items)
+            except Exception as e:
+                logger.warning(f"从腾讯财经获取股票 {stock_code} 估值数据失败: {e}")
             return None
+        
+        def fetch_from_eastmoney(stock_code):
+            """从东方财富获取估值指标（ROE和负债率）"""
+            # 占位符实现，暂时返回None
+            logger.warning(f"东方财富估值数据获取未实现，股票 {stock_code} 返回None值")
+            return None
+        
+        # 尝试多个数据源
+        data_sources = [fetch_from_qq, fetch_from_eastmoney]
+        
+        for source_func in data_sources:
+            try:
+                logger.info(f"尝试从 {source_func.__name__} 获取股票 {stock_code} 估值数据")
+                valuation_data = source_func(stock_code)
+                if valuation_data and any(v is not None for v in valuation_data.values()):
+                    logger.info(f"从 {source_func.__name__} 成功获取股票 {stock_code} 估值数据")
+                    return valuation_data
+            except Exception as e:
+                logger.warning(f"从 {source_func.__name__} 获取股票 {stock_code} 估值数据失败: {e}")
+                continue
+        
+        logger.warning(f"所有数据源都失败，无法获取股票 {stock_code} 估值数据")
+        return {  # type: ignore
+            'pe_ratio': None,
+            'pb_ratio': None,
+            'roe': None,
+            'debt_ratio': None
+        }
     
     def _fetch_dividend_from_sina(self, stock_code):
         """
