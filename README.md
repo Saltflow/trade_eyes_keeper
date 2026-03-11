@@ -241,6 +241,75 @@ scheduler:
 
 股票历史数据以CSV格式存储在`data/`目录，文件名为`{股票代码}_history.csv`。
 
+## 部署与监控
+
+### 健康检查服务器
+
+系统包含一个健康检查服务器，运行在端口1933，提供以下功能：
+
+1. **状态监控**：通过浏览器访问 `http://服务器IP:1933` 查看系统状态
+2. **API端点**：
+   - `/` - HTML状态页面
+   - `/status` - JSON格式状态信息
+   - `/health` - 健康检查（返回200 OK）
+   - `/test-email` - 发送测试邮件（需添加 `?force=true` 参数）
+   - `/metrics` - Prometheus格式指标
+3. **系统信息**：显示服务器主机名、IP地址、内核版本、运行时间、缓存大小等
+4. **自动启动**：健康服务器随调度器自动启动
+
+#### 使用方式：
+
+```bash
+# 单独启动健康服务器
+python main.py --health-server
+
+# 访问健康页面
+curl http://localhost:1933
+curl http://localhost:1933/status
+```
+
+### CI/CD自动化部署
+
+系统提供CI/CD部署脚本 `ci_cd_deploy.py`，支持以下功能：
+
+1. **SSH密钥认证**：优先使用SSH密钥，支持密码回退
+2. **自动部署**：更新代码、安装依赖、配置定时任务
+3. **部署通知**：部署成功后自动发送邮件通知
+4. **健康检查**：验证健康服务器配置
+
+#### 部署配置：
+
+1. **设置环境变量**：
+   ```bash
+   # SSH密钥方式（推荐）
+   export DEPLOY_SSH_KEY_PATH="/path/to/private/key"
+   # 或
+   export DEPLOY_SSH_KEY="$(cat /path/to/private/key)"
+   
+   # 密码方式（备选）
+   export DEPLOY_PASSWORD="your_server_password"
+   ```
+
+2. **执行部署**：
+   ```bash
+   python ci_cd_deploy.py
+   ```
+
+3. **部署验证**：
+   - 检查Cron任务：`crontab -l`
+   - 验证健康服务器：`curl http://服务器IP:1933/health`
+   - 查看部署邮件：收件箱中的部署通知
+
+### 服务器验证信息
+
+所有发出的邮件包含服务器验证信息：
+- **主机名**：运行系统的服务器名称
+- **IP地址**：包括公网IP和内部IP
+- **内核版本**：服务器操作系统内核版本
+- **系统信息**：操作系统类型和架构
+
+此信息用于验证邮件来源和部署目标。
+
 ## 故障排除
 
 ### 1. 数据获取失败
@@ -291,6 +360,12 @@ scheduler:
    - 使用`scripts/cleanup.py`脚本定期清理旧的日志和邮件存档
    - 示例：`python scripts/cleanup.py --days 30 --dry-run`（预览）
    - 实际清理：`python scripts/cleanup.py --days 30`
+
+7. **部署安全**：
+   - CI/CD部署优先使用SSH密钥认证，避免密码硬编码
+   - 部署脚本中的默认密码仅为演示用途，生产环境应使用环境变量
+   - 确保部署服务器的防火墙配置，仅开放必要端口（如1933用于健康检查）
+   - 定期轮换SSH密钥和API令牌
 
 ## 系统要求
 

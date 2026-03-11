@@ -4,6 +4,7 @@
 """
 
 import logging
+import threading
 from datetime import datetime
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -24,12 +25,16 @@ class SchedulerManager:
         self.config = config
         self.scheduler_config = config.get('scheduler', {})
         self.scheduler = None
+        self.health_server = None
     
     def start(self):
         """启动调度器"""
         try:
             # 创建调度器
             self.scheduler = BlockingScheduler()
+            
+            # 启动健康服务器（如果启用）
+            self._start_health_server()
             
             # 获取运行时间配置
             run_time = self.scheduler_config.get('run_time', '15:30')
@@ -120,8 +125,43 @@ class SchedulerManager:
             logger.warning(f"解析运行时间失败 {run_time_str}: {e}，使用默认时间15:30")
             return 15, 30
     
+    def _start_health_server(self):
+        """启动健康检查服务器"""
+        try:
+            health_config = self.config.get('health_server', {})
+            if not health_config.get('enabled', True):
+                logger.info("健康服务器已禁用")
+                return
+            
+            # 导入健康服务器（避免循环导入）
+            from .health_server import HealthServer
+            
+            host = health_config.get('host', '0.0.0.0')
+            port = health_config.get('port', 1933)
+            
+            self.health_server = HealthServer(self.config, host=host, port=port)
+            
+            if self.health_server.start(daemon=True):
+                logger.info(f"健康服务器已启动在 {host}:{port}")
+            else:
+                logger.warning("启动健康服务器失败")
+                
+        except ImportError as e:
+            logger.warning(f"无法导入健康服务器模块: {e}")
+        except Exception as e:
+            logger.error(f"启动健康服务器时出错: {e}")
+    
     def stop(self):
         """停止调度器"""
+        # 停止健康服务器
+        if self.health_server:
+            try:
+                self.health_server.stop()
+                logger.info("健康服务器已停止")
+            except Exception as e:
+                logger.error(f"停止健康服务器时发生错误: {e}")
+        
+        # 停止调度器
         if self.scheduler:
             try:
                 self.scheduler.shutdown()

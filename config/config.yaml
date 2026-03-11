@@ -44,3 +44,8 @@ storage:
   cache_dir: ./cache
   csv_format: true
   data_dir: ./data
+
+health_server:
+  enabled: true
+  host: 0.0.0.0
+  port: 1933

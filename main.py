@@ -227,11 +227,31 @@ def main():
     # 设置日志
     logger = setup_logging(config)
     
-    # 根据运行模式选择执行方式
-    if len(sys.argv) > 1 and sys.argv[1] == '--once':
-        # 单次运行模式
-        logger.info("单次运行模式")
-        run_daily_task()
+    # 解析命令行参数
+    if len(sys.argv) > 1:
+        if sys.argv[1] == '--once':
+            # 单次运行模式
+            logger.info("单次运行模式")
+            run_daily_task()
+        elif sys.argv[1] == '--health-server':
+            # 仅启动健康服务器模式
+            logger.info("启动健康服务器模式")
+            from src.health_server import start_health_server
+            start_health_server()
+        elif sys.argv[1] == '--help':
+            # 显示帮助信息
+            print("股票量化系统使用说明:")
+            print("  python main.py              # 启动定时任务调度器（默认）")
+            print("  python main.py --once       # 单次运行任务")
+            print("  python main.py --health-server # 仅启动健康服务器")
+            print("  python main.py --help       # 显示此帮助信息")
+            print("\n健康服务器运行在端口1933，提供系统状态监控和测试邮件功能")
+            return
+        else:
+            logger.error(f"未知参数: {sys.argv[1]}")
+            print(f"未知参数: {sys.argv[1]}")
+            print("使用 python main.py --help 查看可用参数")
+            return
     else:
         # 定时运行模式
         logger.info("启动定时任务调度器")

@@ -74,6 +74,15 @@ data/email_archive/
 .DS_Store
 Thumbs.db
 
+# SSH keys and certificates
+deploy_key*
+*.key
+*.pem
+*.priv
+*.pub
+*.crt
+*.cert
+
 # Test files (temporary)
 test_*.py
 

@@ -93,6 +93,96 @@ class EmailNotifier:
         except Exception as e:
             logger.error(f"发送每日报告邮件失败: {e}")
     
+    def send_deployment_notification(self, status, version="unknown", summary=""):
+        """
+        发送部署通知邮件
+        
+        Args:
+            status: 部署状态 (SUCCESS, FAILURE, etc.)
+            version: 版本号或提交哈希
+            summary: 部署摘要
+        """
+        try:
+            # 获取服务器信息
+            server_info = self._get_server_info()
+            
+            # 构建部署通知邮件内容
+            subject = f"部署通知 - {status} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            
+            # 构建HTML内容
+            status_color = "#4CAF50" if status.upper() == "SUCCESS" else "#f44336"
+            
+            html_body = f"""
+            <html>
+            <head>
+                <style>
+                    body {{ font-family: Arial, sans-serif; margin: 20px; line-height: 1.6; }}
+                    h1 {{ color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }}
+                    .status {{ display: inline-block; padding: 5px 15px; border-radius: 4px; 
+                             color: white; font-weight: bold; background-color: {status_color}; }}
+                    .info-table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
+                    .info-table th, .info-table td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
+                    .info-table th {{ background-color: #f2f2f2; font-weight: bold; }}
+                    .server-info {{ margin-top: 30px; padding: 15px; background-color: #f9f9f9; 
+                                  border-left: 4px solid #2196F3; }}
+                </style>
+            </head>
+            <body>
+                <h1>🚀 股票量化系统部署通知</h1>
+                
+                <p><strong>状态:</strong> <span class="status">{status}</span></p>
+                <p><strong>时间:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                <p><strong>版本:</strong> {version}</p>
+                <p><strong>摘要:</strong> {summary}</p>
+                
+                <h2>📊 部署信息</h2>
+                <table class="info-table">
+                    <tr>
+                        <th>项目</th>
+                        <th>值</th>
+                    </tr>
+                    <tr>
+                        <td>部署状态</td>
+                        <td><span class="status">{status}</span></td>
+                    </tr>
+                    <tr>
+                        <td>部署时间</td>
+                        <td>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</td>
+                    </tr>
+                    <tr>
+                        <td>版本/提交</td>
+                        <td><code>{version}</code></td>
+                    </tr>
+                    <tr>
+                        <td>摘要</td>
+                        <td>{summary}</td>
+                    </tr>
+                </table>
+                
+                <div class="server-info">
+                    <h3>🖥️ 服务器信息</h3>
+                    <p><strong>主机名:</strong> {server_info['hostname']}</p>
+                    <p><strong>IP地址:</strong> {server_info['ip_address']}</p>
+                    <p><strong>内核版本:</strong> {server_info['kernel_version']}</p>
+                    <p><strong>系统:</strong> {server_info['system']} ({server_info['machine']})</p>
+                </div>
+                
+                <p style="color: #666; font-size: 0.9em; margin-top: 30px;">
+                    💡 此邮件由CI/CD部署流程自动发送。服务器信息用于验证部署目标。
+                </p>
+            </body>
+            </html>
+            """
+            
+            # 发送邮件
+            self._send_email(subject, html_body)
+            
+            logger.info(f"部署通知邮件已发送: {status} (版本: {version})")
+            
+        except Exception as e:
+            logger.error(f"发送部署通知邮件失败: {e}")
+            raise
+    
     def _build_email_body(self, alert_stocks, stock_data, analysis_results=None, announcements=None):
         """
         构建邮件正文（包含提醒股票和LLM分析）
@@ -596,10 +686,40 @@ class EmailNotifier:
         try:
             # 获取主机名和IP地址
             hostname = socket.gethostname()
+            ip_list = []
+            
+            # 方法1: 通过socket.gethostbyname_ex获取所有IP
             try:
-                # 获取主要IP地址
-                ip_address = socket.gethostbyname(hostname)
+                _, _, ip_addresses = socket.gethostbyname_ex(hostname)
+                ip_list.extend(ip_addresses)
             except:
+                pass
+            
+            # 方法2: 通过hostname -I命令获取所有IP（Linux）
+            try:
+                result = subprocess.run(['hostname', '-I'], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    ips = result.stdout.strip().split()
+                    ip_list.extend(ips)
+            except:
+                pass
+            
+            # 方法3: 获取公网IP（可选）
+            try:
+                import urllib.request
+                public_ip = urllib.request.urlopen('http://ifconfig.me', timeout=10).read().decode('utf-8').strip()
+                if public_ip and public_ip not in ip_list:
+                    ip_list.append(f"{public_ip} (公网)")
+            except:
+                pass
+            
+            # 去重并过滤回环地址
+            ip_list = list(set(ip_list))
+            ip_list = [ip for ip in ip_list if not ip.startswith('127.')]
+            
+            if ip_list:
+                ip_address = ', '.join(ip_list)
+            else:
                 ip_address = "无法获取"
             
             # 获取内核版本（Linux系统）
