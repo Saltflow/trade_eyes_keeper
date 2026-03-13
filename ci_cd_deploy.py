@@ -18,6 +18,7 @@ import paramiko
 import sys
 import os
 import time
+import argparse
 from datetime import datetime
 
 def run_ssh(client, cmd, description=""):
@@ -42,7 +43,8 @@ def run_ssh(client, cmd, description=""):
 def deploy():
     """Main deployment function"""
     host = os.getenv("DEPLOY_HOST", "DEPLOY_HOST")  # Configurable via environment variable
-    username = "root"
+    port = int(os.getenv("DEPLOY_PORT", "22"))
+    username = os.getenv("DEPLOY_USER", "root")
     
     # Check for dry-run mode
     dry_run = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
@@ -69,8 +71,8 @@ def deploy():
             def set_missing_host_key_policy(self, policy):
                 pass
             
-            def connect(self, hostname, username, pkey=None, password=None, timeout=30):
-                print(f"  [MOCK] Would connect to {hostname} as {username}")
+            def connect(self, hostname, port=22, username=None, pkey=None, password=None, timeout=30):
+                print(f"  [MOCK] Would connect to {hostname}:{port} as {username}")
                 if pkey:
                     print(f"  [MOCK] Using SSH key")
                 if password:
@@ -84,6 +86,8 @@ def deploy():
                     def recv_exit_status(self):
                         return 0
                 class MockFile:
+                    def __init__(self):
+                        self.channel = None
                     def read(self):
                         return b"Mock output\n"
                     def decode(self, *args, **kwargs):
@@ -93,6 +97,9 @@ def deploy():
                 stderr = MockFile()
                 stdout.channel = MockChannel()
                 return stdin, stdout, stderr
+        
+            def close(self):
+                pass
         
         client = MockSSHClient()
     else:
@@ -112,19 +119,15 @@ def deploy():
                 # Try ECDSA
                 try:
                     return paramiko.ECDSAKey.from_private_key_file(key_path)
-                except paramiko.SSHException:
-                    # Try DSA (legacy)
-                    try:
-                        return paramiko.DSSKey.from_private_key_file(key_path)
-                    except paramiko.SSHException as e:
-                        raise ValueError(f"无法加载SSH密钥 {key_path}: {e}")
+                except paramiko.SSHException as e:
+                    raise ValueError(f"无法加载SSH密钥 {key_path}: {e}")
     
     def load_ssh_key_from_string(key_content):
         """Load SSH private key from string content"""
         from io import StringIO
         key_file = StringIO(key_content)
         # Try different key types
-        for key_class in [paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey, paramiko.DSSKey]:
+        for key_class in [paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey]:
             try:
                 return key_class.from_private_key(key_file)
             except paramiko.SSHException:
@@ -135,21 +138,32 @@ def deploy():
     try:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Connecting to server...")
         
+        # Wait 60 seconds to avoid rate limiting
+        print(f"  Waiting 60 seconds to avoid rate limiting...")
+        time.sleep(60)
+        
         # Try SSH key first, then password
-        if ssh_key_path and os.path.exists(ssh_key_path):
-            print(f"  Using SSH key from file: {ssh_key_path}")
-            key = load_ssh_key(ssh_key_path)
-            client.connect(hostname=host, username=username, pkey=key, timeout=30)
-        elif ssh_key_content:
-            print(f"  Using SSH key from environment variable")
-            key = load_ssh_key_from_string(ssh_key_content)
-            client.connect(hostname=host, username=username, pkey=key, timeout=30)
-        else:
-            print(f"  Using password authentication")
-            password = os.getenv("DEPLOY_PASSWORD", "")
-            if not password:
-                print(f"  WARNING: DEPLOY_PASSWORD environment variable not set. SSH connection may fail.")
-            client.connect(hostname=host, username=username, password=password, timeout=30)
+        try:
+            if ssh_key_path and os.path.exists(ssh_key_path):
+                print(f"  Using SSH key from file: {ssh_key_path}")
+                key = load_ssh_key(ssh_key_path)
+                client.connect(hostname=host, port=port, username=username, pkey=key, timeout=60)
+            elif ssh_key_content:
+                print(f"  Using SSH key from environment variable")
+                key = load_ssh_key_from_string(ssh_key_content)
+                client.connect(hostname=host, port=port, username=username, pkey=key, timeout=60)
+            else:
+                print(f"  Using password authentication")
+                password = os.getenv("DEPLOY_PASSWORD", "")
+                if not password:
+                    print(f"  WARNING: DEPLOY_PASSWORD environment variable not set. SSH connection may fail.")
+                client.connect(hostname=host, port=port, username=username, password=password, timeout=60)
+        except paramiko.AuthenticationException:
+            # Authentication failed
+            raise
+        except Exception as e:
+            # Other errors
+            raise
         
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Connected successfully!")
         
@@ -368,6 +382,256 @@ except Exception as e:
     finally:
         client.close()
 
+def investigate_server():
+    """Investigate remote server state - check cache, logs, and system status"""
+    host = os.getenv("DEPLOY_HOST", "DEPLOY_HOST")
+    port = int(os.getenv("DEPLOY_PORT", "22"))
+    username = os.getenv("DEPLOY_USER", "root")
+    
+    # Use SSH key if available, otherwise password
+    password = None
+    ssh_key_path = os.getenv("DEPLOY_SSH_KEY_PATH")
+    ssh_key_content = os.getenv("DEPLOY_SSH_KEY")
+    
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Investigating server {host}")
+    print("="*70)
+    
+    # Check for dry-run mode
+    dry_run = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
+    if dry_run:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] DRY RUN MODE - No actual SSH connections will be made")
+        print("="*70)
+    
+    if dry_run:
+        # Create mock SSH client for dry-run
+        class MockSSHClient:
+            def __init__(self):
+                self.hostname = host
+                self.username = username
+                self.commands = []
+            
+            def set_missing_host_key_policy(self, policy):
+                pass
+            
+            def connect(self, hostname, port=22, username=None, pkey=None, password=None, timeout=30):
+                print(f"  [MOCK] Would connect to {hostname}:{port} as {username}")
+                if pkey:
+                    print(f"  [MOCK] Using SSH key")
+                if password:
+                    print(f"  [MOCK] Using password (hidden)")
+            
+            def exec_command(self, cmd):
+                print(f"  [MOCK] Executing: {cmd}")
+                # Return mock stdin, stdout, stderr
+                import io
+                class MockChannel:
+                    def recv_exit_status(self):
+                        return 0
+                class MockFile:
+                    def __init__(self):
+                        self.channel = None
+                    def read(self):
+                        return b"Mock output\n"
+                    def decode(self, *args, **kwargs):
+                        return "Mock output"
+                stdin = MockFile()
+                stdout = MockFile()
+                stderr = MockFile()
+                stdout.channel = MockChannel()
+                return stdin, stdout, stderr
+            
+            def close(self):
+                pass
+        
+        client = MockSSHClient()
+    else:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    
+    def load_ssh_key(key_path):
+        """Load SSH private key, automatically detect type"""
+        try:
+            # Try RSA first
+            return paramiko.RSAKey.from_private_key_file(key_path)
+        except paramiko.SSHException:
+            # Try Ed25519
+            try:
+                return paramiko.Ed25519Key.from_private_key_file(key_path)
+            except paramiko.SSHException:
+                # Try ECDSA
+                try:
+                    return paramiko.ECDSAKey.from_private_key_file(key_path)
+                except paramiko.SSHException as e:
+                    raise ValueError(f"无法加载SSH密钥 {key_path}: {e}")
+    
+    def load_ssh_key_from_string(key_content):
+        """Load SSH private key from string content"""
+        from io import StringIO
+        key_file = StringIO(key_content)
+        # Try different key types
+        for key_class in [paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey]:
+            try:
+                return key_class.from_private_key(key_file)
+            except paramiko.SSHException:
+                key_file.seek(0)
+                continue
+        raise ValueError("无法解析SSH密钥内容，不支持此密钥类型")
+    
+    try:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Connecting to server...")
+        
+        # Wait 60 seconds to avoid rate limiting
+        print(f"  Waiting 60 seconds to avoid rate limiting...")
+        time.sleep(60)
+        
+        # Try SSH key first, then password
+        try:
+            if ssh_key_path and os.path.exists(ssh_key_path):
+                print(f"  Using SSH key from file: {ssh_key_path}")
+                key = load_ssh_key(ssh_key_path)
+                client.connect(hostname=host, port=port, username=username, pkey=key, timeout=60)
+            elif ssh_key_content:
+                print(f"  Using SSH key from environment variable")
+                key = load_ssh_key_from_string(ssh_key_content)
+                client.connect(hostname=host, port=port, username=username, pkey=key, timeout=60)
+            else:
+                print(f"  Using password authentication")
+                password = os.getenv("DEPLOY_PASSWORD", "")
+                if not password:
+                    print(f"  WARNING: DEPLOY_PASSWORD environment variable not set. SSH connection may fail.")
+                client.connect(hostname=host, port=port, username=username, password=password, timeout=60)
+        except paramiko.AuthenticationException:
+            # Authentication failed
+            raise
+        except Exception as e:
+            # Other errors
+            raise
+        
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Connected successfully!")
+        
+        # 1. Basic system info
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ===== BASIC SYSTEM INFO =====")
+        run_ssh(client, "date", "Server time")
+        run_ssh(client, "uptime", "System uptime")
+        run_ssh(client, "hostname -I", "Server IP addresses")
+        run_ssh(client, "uname -a", "System info")
+        run_ssh(client, "python3 --version", "Python version")
+        
+        # 2. Project directory status
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ===== PROJECT DIRECTORY =====")
+        run_ssh(client, "cd /root/trade_eyes_keeper && pwd", "Project directory")
+        run_ssh(client, "cd /root/trade_eyes_keeper && ls -la", "Directory listing")
+        
+        # 3. Git status
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ===== GIT STATUS =====")
+        run_ssh(client, "cd /root/trade_eyes_keeper && if [ -d .git ]; then git status; git log --oneline -5; else echo 'Not a git repository'; fi", "Git status and recent commits")
+        
+        # 4. Cache files investigation
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ===== CACHE FILES =====")
+        run_ssh(client, "cd /root/trade_eyes_keeper && find cache/data/ -name '*.json' -type f 2>/dev/null | head -20", "Cache files list")
+        run_ssh(client, "cd /root/trade_eyes_keeper && ls -la cache/data/ 2>/dev/null || echo 'No cache directory'", "Cache directory listing")
+        # Check specific cache file dates
+        run_ssh(client, "cd /root/trade_eyes_keeper && if [ -d cache/data ]; then for f in cache/data/*.json; do if [ -f \"$f\" ]; then echo \"$(basename $f) - $(stat -c %y $f 2>/dev/null || ls -la $f)\"; fi; done | head -10; fi", "Cache file dates")
+        # Check if cache files contain TEST data
+        run_ssh(client, "cd /root/trade_eyes_keeper && if [ -d cache/data ]; then grep -l 'TEST' cache/data/*.json 2>/dev/null | head -5 || echo 'No TEST data found in cache'; fi", "TEST data in cache")
+        
+        # 5. Log files investigation
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ===== LOG FILES =====")
+        run_ssh(client, "cd /root/trade_eyes_keeper && ls -la logs/ 2>/dev/null || echo 'No logs directory'", "Log directory")
+        run_ssh(client, "cd /root/trade_eyes_keeper && if [ -f logs/quant_system.log ]; then tail -50 logs/quant_system.log; else echo 'No quant_system.log found'; fi", "Recent logs")
+        run_ssh(client, "cd /root/trade_eyes_keeper && if [ -f logs/quant_system.log ]; then grep -i 'error\\|warn\\|fail' logs/quant_system.log | tail -20; else echo 'No log file'; fi", "Errors/Warnings in logs")
+        
+        # 6. Email archives investigation
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ===== EMAIL ARCHIVES =====")
+        run_ssh(client, "cd /root/trade_eyes_keeper && ls -la data/email_archive/ 2>/dev/null || echo 'No email archive directory'", "Email archive directory")
+        run_ssh(client, "cd /root/trade_eyes_keeper && if [ -d data/email_archive ]; then ls -lt data/email_archive/*.html 2>/dev/null | head -5 || echo 'No email archives'; fi", "Recent email archives")
+        # Check if latest email contains TEST data
+        run_ssh(client, '''cd /root/trade_eyes_keeper && latest=$(ls -t data/email_archive/*.html 2>/dev/null | head -1)
+if [ -n "$latest" ]; then
+    echo "Latest email archive: $latest"
+    if grep -q 'TEST' "$latest"; then
+        echo "[WARNING] Found TEST data in latest email"
+        grep -n 'TEST' "$latest" | head -5
+    else
+        echo "[OK] No TEST data found in latest email"
+    fi
+    echo "Email date from filename: $(basename "$latest" | cut -d_ -f1)"
+else
+    echo "No email archives found"
+fi''', "Check for TEST data in emails")
+        
+        # 7. Health server status
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ===== HEALTH SERVER =====")
+        run_ssh(client, "netstat -tlnp 2>/dev/null | grep :1933 || echo 'Port 1933 not listening (or netstat not available)'", "Health server port check")
+        run_ssh(client, "ps aux | grep -i 'health_server\\|python.*1933' | grep -v grep || echo 'No health server process found'", "Health server process")
+        
+        # 8. Cron jobs
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ===== CRON JOBS =====")
+        run_ssh(client, "crontab -l", "Cron jobs")
+        
+        # 9. Check if scheduler is running now
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ===== SCHEDULER STATUS =====")
+        run_ssh(client, "ps aux | grep -i 'main.py\\|scheduler' | grep -v grep || echo 'No scheduler process found'", "Scheduler process")
+        
+        # 10. Check data_fetcher cache bypass logic (by examining the file)
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ===== DATA_FETCHER CODE CHECK =====")
+        run_ssh(client, "cd /root/trade_eyes_keeper && if [ -f src/data_fetcher.py ]; then grep -n '_should_bypass_cache' src/data_fetcher.py -A 20 | head -30; else echo 'data_fetcher.py not found'; fi", "Cache bypass logic")
+        
+        # 11. Check config file
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ===== CONFIGURATION =====")
+        run_ssh(client, "cd /root/trade_eyes_keeper && if [ -f config/config.yaml ]; then grep -n 'cache_bypass_cutoff\\|timezone\\|run_time' config/config.yaml; else echo 'config.yaml not found'; fi", "Config settings")
+        
+        # 12. Check if email_notifier has send_deployment_notification method
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ===== EMAIL NOTIFIER CODE =====")
+        run_ssh(client, "cd /root/trade_eyes_keeper && if [ -f src/email_notifier.py ]; then grep -n 'send_deployment_notification' src/email_notifier.py -A 5 | head -20; else echo 'email_notifier.py not found'; fi", "Deployment notification method")
+        
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Investigation completed!")
+        print("="*70)
+        
+        return True
+        
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] INVESTIGATION FAILED: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+        
+    finally:
+        client.close()
+
 if __name__ == "__main__":
-    success = deploy()
+    parser = argparse.ArgumentParser(description='CI/CD Deployment and Investigation Script')
+    parser.add_argument('--mode', choices=['deploy', 'investigate'], default='deploy',
+                       help='Mode: deploy (default) or investigate server state')
+    parser.add_argument('--dry-run', action='store_true',
+                       help='Dry run mode (no actual SSH connections)')
+    parser.add_argument('--host', help='SSH host (overrides DEPLOY_HOST env var)')
+    parser.add_argument('--port', type=int, help='SSH port (overrides DEPLOY_PORT env var)')
+    parser.add_argument('--username', help='SSH username (overrides DEPLOY_USER env var)')
+    parser.add_argument('--password', help='SSH password (overrides DEPLOY_PASSWORD env var)')
+    parser.add_argument('--ssh-key-path', help='Path to SSH private key (overrides DEPLOY_SSH_KEY_PATH)')
+    
+    args = parser.parse_args()
+    
+    # Set environment variables from command line arguments if provided
+    if args.host:
+        os.environ['DEPLOY_HOST'] = args.host
+    if args.port:
+        os.environ['DEPLOY_PORT'] = str(args.port)
+    if args.username:
+        os.environ['DEPLOY_USER'] = args.username
+    if args.password:
+        os.environ['DEPLOY_PASSWORD'] = args.password
+    if args.ssh_key_path:
+        os.environ['DEPLOY_SSH_KEY_PATH'] = args.ssh_key_path
+    
+    # Set DRY_RUN environment variable if dry-run flag is used
+    if args.dry_run:
+        os.environ['DRY_RUN'] = '1'
+    
+    if args.mode == 'investigate':
+        success = investigate_server()
+    else:
+        success = deploy()
+    
     sys.exit(0 if success else 1)

@@ -560,6 +560,23 @@ class StockWebCrawler:
             roe = validate_metric(roe, 'roe')
             debt = validate_metric(debt, 'debt')
             
+            # 计算基于PB/PE的ROE并验证一致性
+            roe_calculated = None
+            if pe is not None and pb is not None and pe != 0:
+                roe_calculated = (pb / pe) * 100
+                
+                # 验证ROE数据一致性（允许±5%的差异）
+                if roe is not None and abs(roe - roe_calculated) > 5.0:
+                    logger.warning(f"ROE数据不一致: 股票估值数据中ROE={roe}%与计算值ROE(PB/PE)={roe_calculated:.2f}%差异过大")
+                    # 使用计算值以确保数据一致性
+                    roe = roe_calculated
+                elif roe is None:
+                    # 如果缺少ROE数据，使用计算值
+                    roe = roe_calculated
+            elif roe is None:
+                # 无法计算ROE且无原始ROE数据，保持None
+                pass
+            
             return {
                 'pe_ratio': pe,
                 'pb_ratio': pb,

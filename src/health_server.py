@@ -12,6 +12,7 @@ import time
 import socket
 import platform
 import subprocess
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 import logging
@@ -433,19 +434,12 @@ class HealthServer:
         """获取系统状态信息"""
         try:
             # 获取服务器信息
-            hostname = socket.gethostname()
-            ip_address = "未知"
-            try:
-                _, _, ip_addresses = socket.gethostbyname_ex(hostname)
-                ip_list = [ip for ip in ip_addresses if not ip.startswith('127.')]
-                if ip_list:
-                    ip_address = ', '.join(ip_list)
-            except:
-                pass
-            
-            kernel_version = platform.release()
-            system = platform.system()
-            machine = platform.machine()
+            server_info = self._get_server_info()
+            hostname = server_info['hostname']
+            ip_address = server_info['ip_address']
+            kernel_version = server_info['kernel_version']
+            system = server_info['system']
+            machine = server_info['machine']
             
             # 计算运行时间
             uptime_seconds = time.time() - self.start_time
@@ -526,6 +520,82 @@ class HealthServer:
                 'last_run_timestamp': 0,
                 'next_run_time': '未知',
                 'server_url': f"http://{self.host}:{self.port}"
+            }
+    
+    def _get_server_info(self):
+        """
+        获取服务器信息（IP地址和内核版本）
+        
+        Returns:
+            dict: 包含服务器信息的字典
+        """
+        try:
+            # 获取主机名和IP地址
+            hostname = socket.gethostname()
+            ip_list = []
+            
+            # 方法1: 通过socket.gethostbyname_ex获取所有IP
+            try:
+                _, _, ip_addresses = socket.gethostbyname_ex(hostname)
+                ip_list.extend(ip_addresses)
+            except:
+                pass
+            
+            # 方法2: 通过hostname -I命令获取所有IP（Linux）
+            try:
+                result = subprocess.run(['hostname', '-I'], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    ips = result.stdout.strip().split()
+                    ip_list.extend(ips)
+            except:
+                pass
+            
+            # 方法3: 获取公网IP（可选）
+            try:
+                public_ip = urllib.request.urlopen('http://ifconfig.me', timeout=10).read().decode('utf-8').strip()
+                if public_ip and public_ip not in ip_list:
+                    ip_list.append(f"{public_ip} (公网)")
+            except:
+                pass
+            
+            # 去重并过滤回环地址
+            ip_list = list(set(ip_list))
+            ip_list = [ip for ip in ip_list if not ip.startswith('127.')]
+            
+            if ip_list:
+                ip_address = ', '.join(ip_list)
+            else:
+                ip_address = "无法获取"
+            
+            # 获取内核版本（Linux系统）
+            kernel_version = "未知"
+            try:
+                # 尝试通过platform模块获取
+                kernel_version = platform.release()
+                if not kernel_version or kernel_version == "":
+                    # 尝试通过uname命令获取
+                    result = subprocess.run(['uname', '-r'], capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        kernel_version = result.stdout.strip()
+            except:
+                # 最后回退到platform.uname
+                kernel_version = platform.uname().release
+            
+            return {
+                'hostname': hostname,
+                'ip_address': ip_address,
+                'kernel_version': kernel_version,
+                'system': platform.system(),
+                'machine': platform.machine()
+            }
+        except Exception as e:
+            logger.warning(f"获取服务器信息失败: {e}")
+            return {
+                'hostname': '未知',
+                'ip_address': '无法获取',
+                'kernel_version': '未知',
+                'system': '未知',
+                'machine': '未知'
             }
     
     def _format_uptime(self, seconds):

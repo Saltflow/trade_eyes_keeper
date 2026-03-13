@@ -50,6 +50,11 @@ class StockDataFetcher:
             self.cache_bypass_cutoff_hour = 15
             self.cache_bypass_cutoff_minute = 5
         
+        # 时区配置
+        import pytz
+        timezone_str = scheduler_config.get('timezone', 'Asia/Shanghai')
+        self.timezone = pytz.timezone(timezone_str)
+        
     def _should_bypass_cache(self, cached_data):
         """
         判断是否应绕过缓存
@@ -64,17 +69,21 @@ class StockDataFetcher:
             if 'date' not in cached_stock_data:
                 return True
                 
-            # 解析缓存股票日期
+            # 解析缓存股票日期（转换为本地时区日期）
             cached_date_str = cached_stock_data['date']
-            cached_date = datetime.fromisoformat(cached_date_str.replace('Z', '+00:00')).date()
-            today = datetime.now().date()
+            cached_dt = datetime.fromisoformat(cached_date_str.replace('Z', '+00:00'))
+            # 转换为配置的时区再比较日期
+            cached_date_local = cached_dt.astimezone(self.timezone).date()
+            
+            # 获取当前时间（使用时区）
+            now = datetime.now(self.timezone)
+            today = now.date()
             
             # 检查日期是否为今天
-            if cached_date == today:
+            if cached_date_local == today:
                 return False  # 缓存数据是今天的，可以使用
                 
             # 缓存数据不是今天的，检查当前时间
-            now = datetime.now()
             cutoff_time = now.replace(
                 hour=self.cache_bypass_cutoff_hour, 
                 minute=self.cache_bypass_cutoff_minute, 
@@ -149,6 +158,14 @@ class StockDataFetcher:
                     
                     # 只保留最新一天的数据用于条件检查
                     latest_data = stock_data.iloc[-1:].copy()
+                    
+                    # 检查数据日期是否为今天
+                    if not latest_data.empty:
+                        latest_date = latest_data.iloc[0].get('date')
+                        if latest_date:
+                            today = datetime.now(self.timezone).date()
+                            if latest_date.date() != today:
+                                logger.warning(f"股票 {stock_code} 最新数据日期为 {latest_date.date()}，不是今天 {today}，数据可能已过期")
                     
                     # 获取基本面数据（分红、股息率、业绩增长）
                     fundamental_data = self._fetch_fundamental_data(stock_code)

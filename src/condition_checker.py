@@ -40,6 +40,21 @@ class ConditionChecker:
             stock_code = row.get('stock_code', '')
             low_price = row.get('low')
             ma60 = row.get('ma60')
+            close_price = row.get('close')
+            high_price = row.get('high')
+            
+            # 验证价格关系合理性
+            if close_price is not None and low_price is not None:
+                if close_price < low_price:
+                    logger.warning(f"股票 {stock_code} 价格关系异常: 收盘价 {close_price:.2f} < 最低价 {low_price:.2f}")
+                # 允许相等（跌停板）
+            if close_price is not None and high_price is not None:
+                if close_price > high_price:
+                    logger.warning(f"股票 {stock_code} 价格关系异常: 收盘价 {close_price:.2f} > 最高价 {high_price:.2f}")
+                # 允许相等（涨停板）
+            if low_price is not None and high_price is not None:
+                if low_price > high_price:
+                    logger.warning(f"股票 {stock_code} 价格关系异常: 最低价 {low_price:.2f} > 最高价 {high_price:.2f}")
             
             if pd.isna(low_price) or pd.isna(ma60):
                 logger.warning(f"股票 {stock_code} 数据不完整，跳过检查")

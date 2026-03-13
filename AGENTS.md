@@ -53,11 +53,21 @@ pytest --cov=src tests/
 
 # Run with verbose output
 pytest -v
+```
 
-# Test structure:
-# - tests/unit/       # Unit tests
-# - tests/integration/# Integration tests  
-# - tests/api/        # API tests
+### CI/CD Deployment
+```bash
+# Deploy with dry-run (no actual changes)
+python ci_cd_deploy.py --dry-run
+
+# Deploy to production
+python ci_cd_deploy.py
+
+# Investigate server health
+python ci_cd_deploy.py --investigate
+
+# Use custom SSH port
+python ci_cd_deploy.py --ssh-port 2222
 ```
 
 ### Code Quality
@@ -66,32 +76,17 @@ pytest -v
 # - Ensure no syntax errors
 # - Run tests before committing
 # - Check for unused imports
+# - Consider using black/isort for formatting (optional)
 ```
 
 ## Code Style Guidelines
 
 ### Imports Order
-```python
-# 1. Standard library imports
-import os
-import sys
-import logging
-from datetime import datetime, timedelta
-from pathlib import Path
+1. **Standard library imports** (e.g., `import os`, `import logging`)
+2. **Third-party imports** (e.g., `import pandas as pd`, `import akshare as ak`)
+3. **Local application imports** (e.g., `from .cache_manager import CacheManager`)
 
-# 2. Third-party imports
-import pandas as pd
-import numpy as np
-import akshare as ak
-import yaml
-
-# 3. Local application imports
-from .cache_manager import CacheManager
-from .web_crawler import StockWebCrawler
-
-# Use relative imports within src/ (e.g., from .module import Class)
-# Use absolute imports from main.py (e.g., from src.module import Class)
-```
+Use relative imports within `src/`, absolute imports from `main.py`.
 
 ### Naming Conventions
 - **Classes**: PascalCase (e.g., `StockDataFetcher`, `EmailNotifier`)
@@ -101,15 +96,7 @@ from .web_crawler import StockWebCrawler
 - **Private members**: Leading underscore (e.g., `_fetch_from_akshare`)
 
 ### Type Hints
-```python
-def fetch_stock_data(self) -> pd.DataFrame:
-    """
-    Get stock data.
-    
-    Returns:
-        pandas.DataFrame: Stock data with required columns
-    """
-```
+Use type hints for function parameters and return values (e.g., `def fetch_stock_data(self) -> pd.DataFrame:`).
 
 ### Error Handling
 ```python
@@ -138,90 +125,31 @@ logger.critical("Critical conditions requiring immediate attention")
 logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:%M')}")
 ```
 
-### Documentation
-```python
-def method_name(self, param1: str, param2: int) -> pd.DataFrame:
-    """
-    Brief description of method.
-    
-    Args:
-        param1: Description of first parameter
-        param2: Description of second parameter
-        
-    Returns:
-        Description of return value
-        
-    Raises:
-        ValueError: When invalid input provided
-    """
-```
-
 ## Project-Specific Conventions
 
-### Data Source Priority
-1. **Primary**: `akshare` API for stock data and dividends
-2. **Fallback**: Web crawler (Sina → QQ → Eastmoney) when akshare fails
-3. **Never use**: Simulated or hardcoded data for investment decisions
+### Data and Configuration
+- **Data sources**: `akshare` API (primary), web crawler fallback (Sina → QQ → Eastmoney), never use simulated/hardcoded data
+- **Cache**: `cache/data/` and `cache/analysis/`, 7-day retention, bypass after 15:05 if cached data not from today
+- **Config**: `config/config.yaml`, environment variables in `config/.env` (gitignored)
+- **Scheduler**: Run at 15:30 daily, cache bypass cutoff 15:05, timezone Asia/Shanghai
 
-### Cache Management
-- Cache location: `cache/data/` and `cache/analysis/`
-- Default retention: 7 days (configurable)
-- Cache bypass logic: After 15:05 daily, use fresh data if cached data isn't from today
-- Cache files: `{stock_code}_{YYYYMMDD}.json`
 
-### Configuration
-- Main config: `config/config.yaml`
-- Environment variables: `config/.env` (gitignored, use `.env.example` as template)
-- Never commit secrets or API keys
 
-**Important scheduler settings**:
-```yaml
-scheduler:
-  run_time: '15:30'  # Daily execution time
-  cache_bypass_cutoff: '15:05'  # Time after which stale cache is bypassed
-  timezone: Asia/Shanghai
-```
-
-### File Structure
-```
-src/
-├── data_fetcher.py      # Stock data fetching with fallback
-├── web_crawler.py       # Web scraping for real-time data
-├── condition_checker.py # MA60 condition checking
-├── email_notifier.py    # Email notification with HTML tables
-├── llm_analyzer.py      # DeepSeek API integration
-├── announcement_fetcher.py # Company announcement fetching
-├── cache_manager.py     # Cache management
-├── scheduler_manager.py # Task scheduling
-└── content_fetcher.py   # Announcement content extraction
-```
-
-### Development Rules (from proj4llm.md)
+### Development Practices
 - **No hardcoded data**: Solutions must work automatically for all stocks
 - **Temporary files**: Max 2 temp files per function, clean up after use
 - **Data validation**: Check dividend yields (0.5-20% reasonable range)
 - **ETF handling**: ETFs (510880, 512810) return None appropriately
 - **Unit conversion**: Handle cents to yuan, per-10-shares to per-share
-
-### Commit Messages
-- Use conventional prefixes: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`
-- Include ticket/reference if applicable
-- Write in English with Chinese context when needed
-- Example: `feat: Add cache bypass logic for data freshness`
-
-### Testing Requirements
-- New features should include unit tests
-- Integration tests for data fetching and email sending
-- Mock external APIs (akshare, email) in unit tests
-- Use `conftest.py` for shared fixtures
+- **Commit messages**: Use conventional prefixes (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`), include ticket/reference, English with Chinese context
+- **Testing**: New features include unit tests, mock external APIs, use `conftest.py` for shared fixtures
 
 ## Agent Instructions
-- Always run tests before submitting changes
+- Run tests before submitting changes
 - Follow existing patterns and conventions
 - Prioritize real data over simulated data
 - Document significant changes in `proj4llm.md`
 - Check for sensitive information before committing
-- Use descriptive commit messages explaining the "why"
 
 ## Troubleshooting
 - **Import errors**: Ensure `src/` is in Python path (see `conftest.py`)
@@ -229,6 +157,40 @@ src/
 - **Akshare failures**: System should automatically fall back to web crawler
 - **Email sending**: Set `SKIP_EMAIL=true` env var for testing
 - **Cache issues**: Delete `cache/` directory to force fresh data fetch
+- **Pytest capture errors**: Check pytest configuration if tests fail with capture issues
 
-**Last Updated**: 2026-03-09  
+## Recent Code Review Findings (2026-03-13)
+**Timezone Bug Fixed**: `src/data_fetcher.py:78-82` - Fixed mixing timezone-aware `now` with naive `cached_date` by converting cached date to local timezone before comparison.
+
+**Price Validation Added**: Added price relationship validation in `src/data_fetcher.py:164-180` and `src/condition_checker.py:46-58` to detect anomalies where close < low, close > high, or low > high. Logs warnings for investigation.
+
+**Bug Investigation**: User reported "end-day price (close) of each stock is reported as incorrect compared to the lowest price (low)". Investigation found:
+- All stored CSV files show correct price relationships (close ≥ low, close ≤ high)
+- Email archive outputs show correct prices
+- Data sources (Sina, QQ, Eastmoney) return consistent data
+- Added validation to catch any future data anomalies
+- **Deployed fixes** to production server (DEPLOY_HOST) with SSH key authentication. Price validation and timezone fixes active.
+
+**Root Cause Identified**: System runs at 15:30 but data source may not have updated today's data yet, causing yesterday's prices to be used. Fixed by:
+1. **Schedule adjustment**: Changed `run_time` from 15:30 to 16:00 and `cache_bypass_cutoff` from 15:05 to 15:55 in `config/config.yaml`.
+2. **Date validation**: Added check in `src/data_fetcher.py:162-168` to log warning if fetched data date is not today.
+3. **Timezone fix**: Enhanced `_should_bypass_cache` to properly compare dates in Asia/Shanghai timezone (`src/data_fetcher.py:73-96`).
+4. **Server deployment**: Updated server with all fixes; verified that system now fetches today's data (2026-03-13).
+
+**SSH Logic Duplication**: `ci_cd_deploy.py:385-600` - `investigate_server()` duplicates SSH connection/authentication code from `deploy()`. Refactor common SSH logic into shared functions.
+
+**Unnecessary 60-Second Wait**: Hardcoded 60-second wait on every deployment/investigation, even in dry-run mode. Consider making wait time configurable or only apply when actually hitting rate limits.
+
+**Redundant Exception Handling**: Exception blocks that only re-raise add no value. Remove or add meaningful error handling/logging.
+
+**Removed DSA Key Support**: DSA SSH key support removed; could break deployments using DSA keys. Document as breaking change or restore DSA support.
+
+**Pytest Environment Issues**: Pytest capture errors preventing test execution (environment issue). Investigate pytest configuration/capture plugin conflicts.
+
+## Cursor/Copilot Rules
+- No `.cursorrules` or `.cursor/rules/` files found
+- No `.github/copilot-instructions.md` found
+- No pre-commit hooks configured
+
+**Last Updated**: 2026-03-13  
 **Project Version**: v1.9+
