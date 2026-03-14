@@ -17,8 +17,72 @@ from datetime import datetime
 from pathlib import Path
 import logging
 from typing import Dict, Any, Optional
+import html
+from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger(__name__)
+
+
+class RateLimiter:
+    """简单的请求速率限制器，1 QPS（每秒1次请求）"""
+    
+    def __init__(self, requests_per_minute=60):
+        """
+        初始化速率限制器
+        
+        Args:
+            requests_per_minute: 每分钟允许的最大请求数 (默认60 = 1 QPS)
+        """
+        self.requests_per_minute = requests_per_minute
+        self.request_log = {}  # ip -> [timestamp1, timestamp2, ...]
+        self.lock = threading.Lock()
+        
+    def is_allowed(self, ip_address):
+        """
+        检查指定IP的请求是否允许
+        
+        Args:
+            ip_address: 客户端IP地址
+            
+        Returns:
+            bool: 是否允许请求
+        """
+        with self.lock:
+            now = time.time()
+            
+            # 清理过期记录（超过1分钟）
+            if ip_address in self.request_log:
+                self.request_log[ip_address] = [
+                    t for t in self.request_log[ip_address] 
+                    if now - t < 60  # 只保留最近1分钟的请求
+                ]
+            
+            # 检查是否超过限制
+            current_count = len(self.request_log.get(ip_address, []))
+            if current_count >= self.requests_per_minute:
+                return False
+            
+            # 记录本次请求
+            self.request_log.setdefault(ip_address, []).append(now)
+            return True
+    
+    def get_stats(self):
+        """获取速率限制统计信息"""
+        with self.lock:
+            now = time.time()
+            stats = {}
+            for ip, timestamps in self.request_log.items():
+                # 只统计最近1分钟的请求
+                recent_requests = [t for t in timestamps if now - t < 60]
+                stats[ip] = {
+                    'recent_requests': len(recent_requests),
+                    'blocked': len(recent_requests) >= self.requests_per_minute
+                }
+            return stats
+
+
+# 全局速率限制器实例
+rate_limiter = RateLimiter(requests_per_minute=60)  # 1 QPS
 
 class HealthHandler(http.server.BaseHTTPRequestHandler):
     """HTTP请求处理器"""
@@ -29,6 +93,16 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
     
     def do_GET(self):
         """处理GET请求"""
+        # 检查速率限制
+        client_ip = self.client_address[0]
+        if not rate_limiter.is_allowed(client_ip):
+            self.send_response(429)  # Too Many Requests
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(f"请求频率过高 (限制: 1 QPS). 客户端IP: {client_ip}".encode('utf-8'))
+            logger.warning(f"请求频率过高被拒绝: {client_ip} - {self.path}")
+            return
+        
         try:
             if self.path == '/':
                 self.send_html_response()
@@ -46,11 +120,31 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
             logger.error(f"处理请求 {self.path} 时出错: {e}")
             self.send_error(500, f"Internal Server Error: {e}")
     
+    def _get_rate_limit_stats(self):
+        """获取速率限制统计信息（HTML格式）"""
+        stats = rate_limiter.get_stats()
+        if not stats:
+            return "暂无请求记录"
+        
+        lines = []
+        for ip, data in stats.items():
+            status = "🚫 已限制" if data['blocked'] else "✅ 正常"
+            lines.append(f"{ip}: {data['recent_requests']}/60 请求 {status}")
+        
+        return "<br>".join(lines)
+    
     def send_html_response(self):
         """发送HTML格式的状态页面"""
         status = self.health_server.get_status() if self.health_server else {}
         
-        html = f"""
+        # 辅助函数：安全获取并转义HTML
+        def safe_get(key, default='未知'):
+            value = status.get(key, default)
+            if value is None:
+                value = default
+            return html.escape(str(value))
+        
+        html_content = f"""
         <!DOCTYPE html>
         <html>
         <head>
@@ -69,6 +163,9 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
                 .endpoints {{ margin-top: 30px; padding: 20px; background-color: #f5f5f5; }}
                 .endpoint {{ margin: 5px 0; font-family: monospace; }}
                 .timestamp {{ color: #666; font-size: 0.9em; }}
+                .security-info {{ background-color: #fff8e1; border-left: 4px solid #ffc107; 
+                               padding: 15px; margin: 20px 0; }}
+                .rate-limit-stats {{ font-family: monospace; font-size: 0.9em; color: #666; }}
             </style>
         </head>
         <body>
@@ -76,6 +173,17 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
             
             <p><strong>状态:</strong> <span class="status">运行正常</span></p>
             <p class="timestamp">最后更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            
+            <div class="security-info">
+                <h3>🔒 安全状态</h3>
+                <p><strong>速率限制:</strong> 已启用 (1 QPS / 60 请求每分钟)</p>
+                <p><strong>HTML注入防护:</strong> 已启用 (所有动态内容转义)</p>
+                <p><strong>客户端IP:</strong> {html.escape(str(self.client_address[0]))}</p>
+                <p class="rate-limit-stats">
+                    <strong>速率限制统计:</strong><br>
+                    {self._get_rate_limit_stats()}
+                </p>
+            </div>
             
             <div class="info-box">
                 <h2>🖥️ 服务器信息</h2>
@@ -86,31 +194,31 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
                     </tr>
                     <tr>
                         <td>主机名</td>
-                        <td>{status.get('hostname', '未知')}</td>
+                        <td>{safe_get('hostname', '未知')}</td>
                     </tr>
                     <tr>
                         <td>IP地址</td>
-                        <td>{status.get('ip_address', '未知')}</td>
+                        <td>{safe_get('ip_address', '未知')}</td>
                     </tr>
                     <tr>
                         <td>内核版本</td>
-                        <td>{status.get('kernel_version', '未知')}</td>
+                        <td>{safe_get('kernel_version', '未知')}</td>
                     </tr>
                     <tr>
                         <td>系统</td>
-                        <td>{status.get('system', '未知')} ({status.get('machine', '未知')})</td>
+                        <td>{safe_get('system', '未知')} ({safe_get('machine', '未知')})</td>
                     </tr>
                     <tr>
                         <td>Python版本</td>
-                        <td>{status.get('python_version', sys.version.split()[0])}</td>
+                        <td>{safe_get('python_version', sys.version.split()[0])}</td>
                     </tr>
                     <tr>
                         <td>启动时间</td>
-                        <td>{status.get('start_time', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}</td>
+                        <td>{safe_get('start_time', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}</td>
                     </tr>
                     <tr>
                         <td>运行时间</td>
-                        <td>{status.get('uptime', '0秒')}</td>
+                        <td>{safe_get('uptime', '0秒')}</td>
                     </tr>
                 </table>
             </div>
@@ -124,35 +232,35 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
                     </tr>
                     <tr>
                         <td>缓存目录大小</td>
-                        <td>{status.get('cache_size', '未知')}</td>
+                        <td>{safe_get('cache_size', '未知')}</td>
                     </tr>
                     <tr>
                         <td>数据目录大小</td>
-                        <td>{status.get('data_size', '未知')}</td>
+                        <td>{safe_get('data_size', '未知')}</td>
                     </tr>
                     <tr>
                         <td>日志目录大小</td>
-                        <td>{status.get('log_size', '未知')}</td>
+                        <td>{safe_get('log_size', '未知')}</td>
                     </tr>
                     <tr>
                         <td>磁盘使用率</td>
-                        <td>{status.get('disk_usage', '未知')}</td>
+                        <td>{safe_get('disk_usage', '未知')}</td>
                     </tr>
                     <tr>
                         <td>内存使用率</td>
-                        <td>{status.get('memory_usage', '未知')}</td>
+                        <td>{safe_get('memory_usage', '未知')}</td>
                     </tr>
                     <tr>
                         <td>监控股票数量</td>
-                        <td>{status.get('stock_count', '未知')}</td>
+                        <td>{safe_get('stock_count', '未知')}</td>
                     </tr>
                     <tr>
                         <td>最后运行时间</td>
-                        <td>{status.get('last_run_time', '未知')}</td>
+                        <td>{safe_get('last_run_time', '未知')}</td>
                     </tr>
                     <tr>
                         <td>下次运行时间</td>
-                        <td>{status.get('next_run_time', '未知')}</td>
+                        <td>{safe_get('next_run_time', '未知')}</td>
                     </tr>
                 </table>
             </div>
@@ -175,9 +283,9 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
         
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
-        self.send_header('Content-Length', str(len(html.encode('utf-8'))))
+        self.send_header('Content-Length', str(len(html_content.encode('utf-8'))))
         self.end_headers()
-        self.wfile.write(html.encode('utf-8'))
+        self.wfile.write(html_content.encode('utf-8'))
     
     def send_json_response(self):
         """发送JSON格式的状态信息"""
@@ -246,20 +354,30 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
         from src.email_notifier import EmailNotifier
         import yaml
         
-        # 检查是否强制发送
+        # 检查是否强制发送 - 使用安全的查询参数解析
         force = False
         if '?' in self.path:
-            query = self.path.split('?')[1]
-            if 'force=true' in query:
-                force = True
+            try:
+                from urllib.parse import parse_qs, urlparse
+                parsed = urlparse(self.path)
+                query_params = parse_qs(parsed.query)
+                # 检查force参数，不区分大小写
+                force_param = query_params.get('force', [''])[0].lower()
+                force = force_param == 'true'
+                logger.debug(f"解析测试邮件请求参数: path={self.path}, force={force}")
+            except Exception as e:
+                logger.warning(f"解析查询参数失败: {e}, 使用默认值 force=False")
+                force = False
         
         if not force:
             # 如果是日常运行时间，则拒绝频繁测试
             current_hour = datetime.now().hour
-            if 14 <= current_hour <= 16:  # 14:00-16:00之间（接近15:30运行时间）
+            current_minute = datetime.now().minute
+            # 检查是否接近运行时间 (15:30-16:30 之间，考虑16:00的运行时间)
+            if (current_hour == 15 and current_minute >= 30) or (current_hour == 16 and current_minute <= 30):
                 response = {
                     'status': 'error',
-                    'message': '当前接近日常运行时间(15:30)，为避免干扰，请使用 ?force=true 参数强制发送测试邮件'
+                    'message': '当前接近日常运行时间(16:00)，为避免干扰，请使用 ?force=true 参数强制发送测试邮件'
                 }
                 json_response = json.dumps(response, ensure_ascii=False, indent=2)
                 
@@ -550,12 +668,18 @@ class HealthServer:
             except:
                 pass
             
-            # 方法3: 获取公网IP（可选）
+            # 方法3: 获取公网IP（可选）- 使用HTTPS防止中间人攻击
             try:
-                public_ip = urllib.request.urlopen('http://ifconfig.me', timeout=10).read().decode('utf-8').strip()
-                if public_ip and public_ip not in ip_list:
+                public_ip = urllib.request.urlopen('https://ifconfig.me', timeout=10).read().decode('utf-8').strip()
+                # 简单验证IP格式（基本防护）
+                import re
+                ip_pattern = r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$'
+                if public_ip and re.match(ip_pattern, public_ip) and public_ip not in ip_list:
                     ip_list.append(f"{public_ip} (公网)")
-            except:
+                elif public_ip:
+                    logger.warning(f"从ifconfig.me获取到非标准IP响应: {public_ip[:50]}...")
+            except Exception as e:
+                logger.debug(f"获取公网IP失败: {e}")
                 pass
             
             # 去重并过滤回环地址

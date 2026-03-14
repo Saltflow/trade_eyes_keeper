@@ -159,10 +159,20 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 - **Cache issues**: Delete `cache/` directory to force fresh data fetch
 - **Pytest capture errors**: Check pytest configuration if tests fail with capture issues
 
-## Recent Code Review Findings (2026-03-13)
-**Timezone Bug Fixed**: `src/data_fetcher.py:78-82` - Fixed mixing timezone-aware `now` with naive `cached_date` by converting cached date to local timezone before comparison.
+## Recent Code Review Findings (2026-03-14)
+**Health Server Security Improvements**: `src/health_server.py` - Added security measures for internet-facing health server on port 1933:
+1. **HTML Injection Protection**: All dynamic content in HTML responses is now escaped using `html.escape()` (`src/health_server.py:141-145`).
+2. **Rate Limiting**: 1 QPS (60 requests/minute) per IP address with automatic blocking (`src/health_server.py:23-85`).
+3. **Secure Query Parsing**: Uses `urllib.parse.parse_qs()` instead of string matching for query parameters (`src/health_server.py:359-370`).
+4. **HTTPS for External IP**: Changed `http://ifconfig.me` to `https://ifconfig.me` to prevent MITM attacks (`src/health_server.py:664`).
+5. **IP Format Validation**: Basic regex validation for public IP responses (`src/health_server.py:667-671`).
+6. **Security Status Display**: Health page now shows security status and rate limit statistics (`src/health_server.py:147-282`).
+
+**ROE Inconsistency Fix**: `src/web_crawler.py:563-578` - Added consistency validation for ROE values from QQ data source. Uses calculated ROE (PB/PE) when discrepancy exceeds 5%.
 
 **Price Validation Added**: Added price relationship validation in `src/data_fetcher.py:164-180` and `src/condition_checker.py:46-58` to detect anomalies where close < low, close > high, or low > high. Logs warnings for investigation.
+
+**Timezone Bug Fixed**: `src/data_fetcher.py:78-82` - Fixed mixing timezone-aware `now` with naive `cached_date` by converting cached date to local timezone before comparison.
 
 **Bug Investigation**: User reported "end-day price (close) of each stock is reported as incorrect compared to the lowest price (low)". Investigation found:
 - All stored CSV files show correct price relationships (close ≥ low, close ≤ high)
@@ -192,5 +202,5 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 - No `.github/copilot-instructions.md` found
 - No pre-commit hooks configured
 
-**Last Updated**: 2026-03-13  
-**Project Version**: v1.9+
+**Last Updated**: 2026-03-14  
+**Project Version**: v1.10+
