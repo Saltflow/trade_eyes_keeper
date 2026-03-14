@@ -195,6 +195,7 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 5. **Confirmation Emails**: OTP and watchlist change confirmation emails via existing `EmailNotifier`.
 6. **Security**: Enhanced `RateLimiter` class with configurable time windows, HTTP-only cookies, HTML escaping.
 7. **Endpoints**: `/request-otp`, `/verify-otp`, `/manage`, `/logout`, `/update-watchlist` (POST).
+8. **UI Improvement**: Prominent button added to main health page linking directly to management interface, eliminating need for manual URL input.
 
 **SSH Logic Duplication**: RESOLVED - Refactored common SSH logic into shared helper functions (`_create_ssh_client`, `_get_ssh_key_path`, `_get_dry_run`, `load_ssh_key`, `load_ssh_key_from_string`). Both `deploy()` and `investigate_server()` now use shared functions, eliminating code duplication.
 
