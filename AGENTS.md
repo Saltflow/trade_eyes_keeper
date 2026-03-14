@@ -187,6 +187,15 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 3. **Timezone fix**: Enhanced `_should_bypass_cache` to properly compare dates in Asia/Shanghai timezone (`src/data_fetcher.py:73-96`).
 4. **Server deployment**: Updated server with all fixes; verified that system now fetches today's data (2026-03-13).
 
+**Management Interface Added**: `src/health_server.py` - Added OTP-authenticated management interface for watchlist management on port 1933:
+1. **OTP Authentication**: 5-digit OTP sent to subscribed email, 10-minute expiry, IP-bound, rate limited (1 request/5 minutes).
+2. **Session Management**: 32-character session tokens, 30-minute expiry, IP-bound, in-memory storage.
+3. **Watchlist Management**: Add/remove individual stocks, clear all stocks, real-time config updates with backup.
+4. **Audit Logging**: All management actions logged to `logs/management_audit.log`.
+5. **Confirmation Emails**: OTP and watchlist change confirmation emails via existing `EmailNotifier`.
+6. **Security**: Enhanced `RateLimiter` class with configurable time windows, HTTP-only cookies, HTML escaping.
+7. **Endpoints**: `/request-otp`, `/verify-otp`, `/manage`, `/logout`, `/update-watchlist` (POST).
+
 **SSH Logic Duplication**: `ci_cd_deploy.py:385-600` - `investigate_server()` duplicates SSH connection/authentication code from `deploy()`. Refactor common SSH logic into shared functions.
 
 **Unnecessary 60-Second Wait**: Hardcoded 60-second wait on every deployment/investigation, even in dry-run mode. Consider making wait time configurable or only apply when actually hitting rate limits.

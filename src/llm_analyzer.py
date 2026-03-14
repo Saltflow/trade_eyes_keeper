@@ -31,14 +31,19 @@ def _patched_json_dump(obj, fp, *args, **kwargs):
 json.dump = _patched_json_dump
 
 # 猴子补丁：确保httpx头部编码使用UTF-8而不是ASCII
-import httpx._utils as httpx_utils
-_original_normalize_header_value = httpx_utils.normalize_header_value
-def _patched_normalize_header_value(value, encoding=None):
-    """确保httpx头部编码使用UTF-8"""
-    if encoding is None:
-        encoding = 'utf-8'
-    return _original_normalize_header_value(value, encoding)
-httpx_utils.normalize_header_value = _patched_normalize_header_value
+try:
+    import httpx._utils as httpx_utils
+    _original_normalize_header_value = httpx_utils.normalize_header_value
+    def _patched_normalize_header_value(value, encoding=None):
+        """确保httpx头部编码使用UTF-8"""
+        if encoding is None:
+            encoding = 'utf-8'
+        return _original_normalize_header_value(value, encoding)
+    httpx_utils.normalize_header_value = _patched_normalize_header_value
+except AttributeError:
+    # httpx版本不兼容，跳过猴子补丁
+    import sys
+    print("Warning: httpx._utils.normalize_header_value not found, skipping monkey patch", file=sys.stderr)
 
 from openai import OpenAI
 import openai
