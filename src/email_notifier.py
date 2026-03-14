@@ -707,7 +707,7 @@ class EmailNotifier:
             # 方法3: 获取公网IP（可选）
             try:
                 import urllib.request
-                public_ip = urllib.request.urlopen('http://ifconfig.me', timeout=10).read().decode('utf-8').strip()
+                public_ip = urllib.request.urlopen('https://ifconfig.me', timeout=10).read().decode('utf-8').strip()
                 if public_ip and public_ip not in ip_list:
                     ip_list.append(f"{public_ip} (公网)")
             except:
