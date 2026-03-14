@@ -1336,6 +1336,11 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
                 .security-info {{ background-color: #fff8e1; border-left: 4px solid #ffc107; 
                                padding: 15px; margin: 20px 0; }}
                 .rate-limit-stats {{ font-family: monospace; font-size: 0.9em; color: #666; }}
+                .button {{ display: inline-block; padding: 10px 20px; margin: 10px 0; background-color: #4CAF50; 
+                          color: white; text-decoration: none; border-radius: 4px; font-weight: bold;
+                          border: none; cursor: pointer; font-size: 16px; }}
+                .button:hover {{ background-color: #45a049; }}
+                .button:active {{ background-color: #3d8b40; }}
             </style>
         </head>
         <body>
@@ -1343,6 +1348,7 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
             
             <p><strong>状态:</strong> <span class="status">运行正常</span></p>
             <p class="timestamp">最后更新: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <p><a href="/manage" class="button">📋 管理监控股票列表</a><br><small style="color: #666;">(需要邮箱验证码验证)</small></p>
             
             <div class="security-info">
                 <h3>🔒 安全状态</h3>
