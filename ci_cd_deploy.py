@@ -57,6 +57,13 @@ def deploy():
     ssh_key_path = os.getenv("DEPLOY_SSH_KEY_PATH")
     ssh_key_content = os.getenv("DEPLOY_SSH_KEY")
     
+    # Default fallback: look for deploy_key in current directory
+    if not ssh_key_path and not ssh_key_content:
+        default_key = os.path.join(os.path.dirname(os.path.abspath(__file__)), "deploy_key")
+        if os.path.exists(default_key):
+            ssh_key_path = default_key
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Using default SSH key: {ssh_key_path}")
+    
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting CI/CD deployment to {host}")
     print("="*70)
     
@@ -139,8 +146,9 @@ def deploy():
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Connecting to server...")
         
         # Wait 60 seconds to avoid rate limiting
-        print(f"  Waiting 60 seconds to avoid rate limiting...")
-        time.sleep(60)
+        if not dry_run:
+            print(f"  Waiting 60 seconds to avoid rate limiting...")
+            time.sleep(60)
         
         # Try SSH key first, then password
         try:
@@ -393,6 +401,13 @@ def investigate_server():
     ssh_key_path = os.getenv("DEPLOY_SSH_KEY_PATH")
     ssh_key_content = os.getenv("DEPLOY_SSH_KEY")
     
+    # Default fallback: look for deploy_key in current directory
+    if not ssh_key_path and not ssh_key_content:
+        default_key = os.path.join(os.path.dirname(os.path.abspath(__file__)), "deploy_key")
+        if os.path.exists(default_key):
+            ssh_key_path = default_key
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Using default SSH key: {ssh_key_path}")
+    
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Investigating server {host}")
     print("="*70)
     
@@ -481,8 +496,9 @@ def investigate_server():
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Connecting to server...")
         
         # Wait 60 seconds to avoid rate limiting
-        print(f"  Waiting 60 seconds to avoid rate limiting...")
-        time.sleep(60)
+        if not dry_run:
+            print(f"  Waiting 60 seconds to avoid rate limiting...")
+            time.sleep(60)
         
         # Try SSH key first, then password
         try:
