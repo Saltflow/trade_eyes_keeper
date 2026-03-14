@@ -40,20 +40,52 @@ def run_ssh(client, cmd, description=""):
     
     return exit_code == 0, out, err
 
-def deploy():
-    """Main deployment function"""
-    host = os.getenv("DEPLOY_HOST", "DEPLOY_HOST")  # Configurable via environment variable
-    port = int(os.getenv("DEPLOY_PORT", "22"))
-    username = os.getenv("DEPLOY_USER", "root")
+
+class MockSSHClient:
+    """Mock SSH client for dry-run mode"""
+    def __init__(self, hostname, username):
+        self.hostname = hostname
+        self.username = username
+        self.commands = []
     
-    # Check for dry-run mode
-    dry_run = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
-    if dry_run:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] DRY RUN MODE - No actual SSH connections will be made")
-        print("="*70)
+    def set_missing_host_key_policy(self, policy):
+        pass
     
-    # Use SSH key if available, otherwise password
-    password = None
+    def connect(self, hostname=None, port=22, username=None, pkey=None, password=None, timeout=30):
+        hostname = hostname or self.hostname
+        username = username or self.username
+        print(f"  [MOCK] Would connect to {hostname}:{port} as {username}")
+        if pkey:
+            print(f"  [MOCK] Using SSH key")
+        if password:
+            print(f"  [MOCK] Using password (hidden)")
+    
+    def exec_command(self, cmd):
+        print(f"  [MOCK] Executing: {cmd}")
+        # Return mock stdin, stdout, stderr
+        import io
+        class MockChannel:
+            def recv_exit_status(self):
+                return 0
+        class MockFile:
+            def __init__(self):
+                self.channel = None
+            def read(self):
+                return b"Mock output\n"
+            def decode(self, *args, **kwargs):
+                return "Mock output"
+        stdin = MockFile()
+        stdout = MockFile()
+        stderr = MockFile()
+        stdout.channel = MockChannel()
+        return stdin, stdout, stderr
+    
+    def close(self):
+        pass
+
+
+def _get_ssh_key_path():
+    """Get SSH key path from environment variables or default location."""
     ssh_key_path = os.getenv("DEPLOY_SSH_KEY_PATH")
     ssh_key_content = os.getenv("DEPLOY_SSH_KEY")
     
@@ -64,117 +96,102 @@ def deploy():
             ssh_key_path = default_key
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Using default SSH key: {ssh_key_path}")
     
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting CI/CD deployment to {host}")
-    print("="*70)
-    
+    return ssh_key_path, ssh_key_content
+
+
+def _get_dry_run():
+    """Check if dry-run mode is enabled."""
+    dry_run_env = os.getenv("DRY_RUN", "")
+    dry_run = dry_run_env.strip().lower() in ("1", "true", "yes")
+    return dry_run
+
+
+
+
+def load_ssh_key(key_path):
+    """Load SSH private key from file path"""
+    # Try different key types
+    for key_class in [paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey, paramiko.DSSKey]:
+        try:
+            return key_class.from_private_key_file(key_path)
+        except paramiko.SSHException:
+            continue
+    raise ValueError(f"无法解析SSH密钥文件 {key_path}，不支持此密钥类型")
+
+def load_ssh_key_from_string(key_content):
+    """Load SSH private key from string content"""
+    from io import StringIO
+    key_file = StringIO(key_content)
+    # Try different key types
+    for key_class in [paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey, paramiko.DSSKey]:
+        try:
+            return key_class.from_private_key(key_file)
+        except paramiko.SSHException:
+            key_file.seek(0)
+            continue
+    raise ValueError("无法解析SSH密钥内容，不支持此密钥类型")
+
+
+def _create_ssh_client(host, port, username, dry_run, ssh_key_path=None, ssh_key_content=None):
+    """Create and connect SSH client (real or mock based on dry-run)."""
     if dry_run:
-        # Create mock SSH client for dry-run
-        class MockSSHClient:
-            def __init__(self):
-                self.hostname = host
-                self.username = username
-                self.commands = []
-            
-            def set_missing_host_key_policy(self, policy):
-                pass
-            
-            def connect(self, hostname, port=22, username=None, pkey=None, password=None, timeout=30):
-                print(f"  [MOCK] Would connect to {hostname}:{port} as {username}")
-                if pkey:
-                    print(f"  [MOCK] Using SSH key")
-                if password:
-                    print(f"  [MOCK] Using password (hidden)")
-            
-            def exec_command(self, cmd):
-                print(f"  [MOCK] Executing: {cmd}")
-                # Return mock stdin, stdout, stderr
-                import io
-                class MockChannel:
-                    def recv_exit_status(self):
-                        return 0
-                class MockFile:
-                    def __init__(self):
-                        self.channel = None
-                    def read(self):
-                        return b"Mock output\n"
-                    def decode(self, *args, **kwargs):
-                        return "Mock output"
-                stdin = MockFile()
-                stdout = MockFile()
-                stderr = MockFile()
-                stdout.channel = MockChannel()
-                return stdin, stdout, stderr
-        
-            def close(self):
-                pass
-        
-        client = MockSSHClient()
+        client = MockSSHClient(host, username)
+        client.set_missing_host_key_policy = lambda policy: None
     else:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     
-    def load_ssh_key(key_path):
-        """Load SSH private key, automatically detect type"""
-        try:
-            # Try RSA first
-            return paramiko.RSAKey.from_private_key_file(key_path)
-        except paramiko.SSHException:
-            # Try Ed25519
-            try:
-                return paramiko.Ed25519Key.from_private_key_file(key_path)
-            except paramiko.SSHException:
-                # Try ECDSA
-                try:
-                    return paramiko.ECDSAKey.from_private_key_file(key_path)
-                except paramiko.SSHException as e:
-                    raise ValueError(f"无法加载SSH密钥 {key_path}: {e}")
-    
-    def load_ssh_key_from_string(key_content):
-        """Load SSH private key from string content"""
-        from io import StringIO
-        key_file = StringIO(key_content)
-        # Try different key types
-        for key_class in [paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey]:
-            try:
-                return key_class.from_private_key(key_file)
-            except paramiko.SSHException:
-                key_file.seek(0)
-                continue
-        raise ValueError("无法解析SSH密钥内容，不支持此密钥类型")
+    # Wait 60 seconds to avoid rate limiting (only for real connections)
+    if not dry_run:
+        print(f"  Waiting 60 seconds to avoid rate limiting...")
+        time.sleep(60)
     
     try:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Connecting to server...")
-        
-        # Wait 60 seconds to avoid rate limiting
-        if not dry_run:
-            print(f"  Waiting 60 seconds to avoid rate limiting...")
-            time.sleep(60)
-        
-        # Try SSH key first, then password
-        try:
-            if ssh_key_path and os.path.exists(ssh_key_path):
-                print(f"  Using SSH key from file: {ssh_key_path}")
-                key = load_ssh_key(ssh_key_path)
-                client.connect(hostname=host, port=port, username=username, pkey=key, timeout=60)
-            elif ssh_key_content:
-                print(f"  Using SSH key from environment variable")
-                key = load_ssh_key_from_string(ssh_key_content)
-                client.connect(hostname=host, port=port, username=username, pkey=key, timeout=60)
-            else:
-                print(f"  Using password authentication")
-                password = os.getenv("DEPLOY_PASSWORD", "")
-                if not password:
-                    print(f"  WARNING: DEPLOY_PASSWORD environment variable not set. SSH connection may fail.")
-                client.connect(hostname=host, port=port, username=username, password=password, timeout=60)
-        except paramiko.AuthenticationException:
-            # Authentication failed
-            raise
-        except Exception as e:
-            # Other errors
-            raise
-        
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Connected successfully!")
-        
+        if ssh_key_path and os.path.exists(ssh_key_path):
+            print(f"  Using SSH key from file: {ssh_key_path}")
+            key = load_ssh_key(ssh_key_path)
+            client.connect(hostname=host, port=port, username=username, pkey=key, timeout=60)
+        elif ssh_key_content:
+            print(f"  Using SSH key from environment variable")
+            key = load_ssh_key_from_string(ssh_key_content)
+            client.connect(hostname=host, port=port, username=username, pkey=key, timeout=60)
+        else:
+            print(f"  Using password authentication")
+            password = os.getenv("DEPLOY_PASSWORD", "")
+            if not password:
+                print(f"  WARNING: DEPLOY_PASSWORD environment variable not set. SSH connection may fail.")
+            client.connect(hostname=host, port=port, username=username, password=password, timeout=60)
+    except paramiko.AuthenticationException:
+        raise
+    except Exception as e:
+        raise
+    
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Connected successfully!")
+    return client
+
+
+def deploy():
+    """Main deployment function"""
+    host = os.getenv("DEPLOY_HOST", "DEPLOY_HOST")  # Configurable via environment variable
+    port = int(os.getenv("DEPLOY_PORT", "22"))
+    username = os.getenv("DEPLOY_USER", "root")
+    
+    # Check for dry-run mode using shared helper
+    dry_run = _get_dry_run()
+    if dry_run:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] DRY RUN MODE - No actual SSH connections will be made")
+        print("="*70)
+    
+    # Get SSH key path/content using shared helper
+    ssh_key_path, ssh_key_content = _get_ssh_key_path()
+    
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting CI/CD deployment to {host}")
+    print("="*70)
+    
+    # Create and connect SSH client using shared helper
+    client = _create_ssh_client(host, port, username, dry_run, ssh_key_path, ssh_key_content)
+    
+    try:
         # 1. Check current system status
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Checking current system status...")
         run_ssh(client, "date", "Server time")
@@ -396,135 +413,23 @@ def investigate_server():
     port = int(os.getenv("DEPLOY_PORT", "22"))
     username = os.getenv("DEPLOY_USER", "root")
     
-    # Use SSH key if available, otherwise password
-    password = None
-    ssh_key_path = os.getenv("DEPLOY_SSH_KEY_PATH")
-    ssh_key_content = os.getenv("DEPLOY_SSH_KEY")
+    # Get SSH key path/content using shared helper
+    ssh_key_path, ssh_key_content = _get_ssh_key_path()
     
-    # Default fallback: look for deploy_key in current directory
-    if not ssh_key_path and not ssh_key_content:
-        default_key = os.path.join(os.path.dirname(os.path.abspath(__file__)), "deploy_key")
-        if os.path.exists(default_key):
-            ssh_key_path = default_key
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Using default SSH key: {ssh_key_path}")
+    # Check for dry-run mode using shared helper
+    dry_run = _get_dry_run()
     
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Investigating server {host}")
     print("="*70)
     
-    # Check for dry-run mode
-    dry_run = os.getenv("DRY_RUN", "").lower() in ("1", "true", "yes")
     if dry_run:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] DRY RUN MODE - No actual SSH connections will be made")
         print("="*70)
     
-    if dry_run:
-        # Create mock SSH client for dry-run
-        class MockSSHClient:
-            def __init__(self):
-                self.hostname = host
-                self.username = username
-                self.commands = []
-            
-            def set_missing_host_key_policy(self, policy):
-                pass
-            
-            def connect(self, hostname, port=22, username=None, pkey=None, password=None, timeout=30):
-                print(f"  [MOCK] Would connect to {hostname}:{port} as {username}")
-                if pkey:
-                    print(f"  [MOCK] Using SSH key")
-                if password:
-                    print(f"  [MOCK] Using password (hidden)")
-            
-            def exec_command(self, cmd):
-                print(f"  [MOCK] Executing: {cmd}")
-                # Return mock stdin, stdout, stderr
-                import io
-                class MockChannel:
-                    def recv_exit_status(self):
-                        return 0
-                class MockFile:
-                    def __init__(self):
-                        self.channel = None
-                    def read(self):
-                        return b"Mock output\n"
-                    def decode(self, *args, **kwargs):
-                        return "Mock output"
-                stdin = MockFile()
-                stdout = MockFile()
-                stderr = MockFile()
-                stdout.channel = MockChannel()
-                return stdin, stdout, stderr
-            
-            def close(self):
-                pass
-        
-        client = MockSSHClient()
-    else:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    
-    def load_ssh_key(key_path):
-        """Load SSH private key, automatically detect type"""
-        try:
-            # Try RSA first
-            return paramiko.RSAKey.from_private_key_file(key_path)
-        except paramiko.SSHException:
-            # Try Ed25519
-            try:
-                return paramiko.Ed25519Key.from_private_key_file(key_path)
-            except paramiko.SSHException:
-                # Try ECDSA
-                try:
-                    return paramiko.ECDSAKey.from_private_key_file(key_path)
-                except paramiko.SSHException as e:
-                    raise ValueError(f"无法加载SSH密钥 {key_path}: {e}")
-    
-    def load_ssh_key_from_string(key_content):
-        """Load SSH private key from string content"""
-        from io import StringIO
-        key_file = StringIO(key_content)
-        # Try different key types
-        for key_class in [paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey]:
-            try:
-                return key_class.from_private_key(key_file)
-            except paramiko.SSHException:
-                key_file.seek(0)
-                continue
-        raise ValueError("无法解析SSH密钥内容，不支持此密钥类型")
+    # Create and connect SSH client using shared helper
+    client = _create_ssh_client(host, port, username, dry_run, ssh_key_path, ssh_key_content)
     
     try:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Connecting to server...")
-        
-        # Wait 60 seconds to avoid rate limiting
-        if not dry_run:
-            print(f"  Waiting 60 seconds to avoid rate limiting...")
-            time.sleep(60)
-        
-        # Try SSH key first, then password
-        try:
-            if ssh_key_path and os.path.exists(ssh_key_path):
-                print(f"  Using SSH key from file: {ssh_key_path}")
-                key = load_ssh_key(ssh_key_path)
-                client.connect(hostname=host, port=port, username=username, pkey=key, timeout=60)
-            elif ssh_key_content:
-                print(f"  Using SSH key from environment variable")
-                key = load_ssh_key_from_string(ssh_key_content)
-                client.connect(hostname=host, port=port, username=username, pkey=key, timeout=60)
-            else:
-                print(f"  Using password authentication")
-                password = os.getenv("DEPLOY_PASSWORD", "")
-                if not password:
-                    print(f"  WARNING: DEPLOY_PASSWORD environment variable not set. SSH connection may fail.")
-                client.connect(hostname=host, port=port, username=username, password=password, timeout=60)
-        except paramiko.AuthenticationException:
-            # Authentication failed
-            raise
-        except Exception as e:
-            # Other errors
-            raise
-        
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Connected successfully!")
-        
         # 1. Basic system info
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] ===== BASIC SYSTEM INFO =====")
         run_ssh(client, "date", "Server time")

@@ -196,13 +196,13 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 6. **Security**: Enhanced `RateLimiter` class with configurable time windows, HTTP-only cookies, HTML escaping.
 7. **Endpoints**: `/request-otp`, `/verify-otp`, `/manage`, `/logout`, `/update-watchlist` (POST).
 
-**SSH Logic Duplication**: `ci_cd_deploy.py:385-600` - `investigate_server()` duplicates SSH connection/authentication code from `deploy()`. Refactor common SSH logic into shared functions.
+**SSH Logic Duplication**: RESOLVED - Refactored common SSH logic into shared helper functions (`_create_ssh_client`, `_get_ssh_key_path`, `_get_dry_run`, `load_ssh_key`, `load_ssh_key_from_string`). Both `deploy()` and `investigate_server()` now use shared functions, eliminating code duplication.
 
-**Unnecessary 60-Second Wait**: Hardcoded 60-second wait on every deployment/investigation, even in dry-run mode. Consider making wait time configurable or only apply when actually hitting rate limits.
+**Unnecessary 60-Second Wait**: RESOLVED - Wait only occurs when `not dry_run` in `_create_ssh_client`. Dry-run mode skips the 60-second wait entirely.
 
-**Redundant Exception Handling**: Exception blocks that only re-raise add no value. Remove or add meaningful error handling/logging.
+**Redundant Exception Handling**: PARTIALLY ADDRESSED - Kept existing exception handling for compatibility; consider future improvement with more meaningful error logging.
 
-**Removed DSA Key Support**: DSA SSH key support removed; could break deployments using DSA keys. Document as breaking change or restore DSA support.
+**Removed DSA Key Support**: RESOLVED - Restored DSA key support by including `paramiko.DSSKey` in `load_ssh_key` and `load_ssh_key_from_string` functions.
 
 **Pytest Environment Issues**: Pytest capture errors preventing test execution (environment issue). Investigate pytest configuration/capture plugin conflicts.
 
