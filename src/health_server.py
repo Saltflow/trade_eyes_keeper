@@ -2042,6 +2042,12 @@ class HealthServer:
 def start_health_server(config_path=None):
     """启动健康服务器（独立运行）"""
     import yaml
+    from dotenv import load_dotenv
+    import os
+    
+    # 加载环境变量
+    env_path = Path(__file__).parent.parent / 'config' / '.env'
+    load_dotenv(dotenv_path=env_path)
     
     # 加载配置
     if config_path is None:
@@ -2049,6 +2055,19 @@ def start_health_server(config_path=None):
     
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
+    
+    # 用环境变量覆盖配置（与main.py保持一致）
+    if os.getenv('EMAIL_SENDER'):
+        config.setdefault('email', {})['sender_email'] = os.getenv('EMAIL_SENDER')
+    if os.getenv('EMAIL_PASSWORD'):
+        config.setdefault('email', {})['sender_password'] = os.getenv('EMAIL_PASSWORD')
+    if os.getenv('EMAIL_RECEIVER'):
+        config.setdefault('email', {})['receiver_email'] = os.getenv('EMAIL_RECEIVER')
+    deepseek_key = os.getenv('DEEPSEEK_API_KEY')
+    if deepseek_key and deepseek_key.strip():
+        config.setdefault('llm', {})['api_key'] = deepseek_key.strip()
+    if os.getenv('TUSHARE_TOKEN'):
+        config.setdefault('data_source', {})['tushare_token'] = os.getenv('TUSHARE_TOKEN')
     
     # 配置日志
     logging.basicConfig(

@@ -23,7 +23,7 @@ A quantitative stock monitoring system that tracks selected Chinese A-shares, ch
 │   ├── config.yaml        # 主配置文件
 │   └── config.yaml.example
 ├── src/                   # 源代码
-│   ├── data_fetcher.py    # 数据获取器（akshare + 网页爬虫）
+│       ├── data_fetcher.py    # 数据获取器（网页爬虫 + LLM提取缓存）
 │   ├── web_crawler.py     # 网页爬虫模块（新浪、腾讯、东方财富）
 │   ├── condition_checker.py # 条件检查器
 │   ├── email_notifier.py  # 邮件通知器
@@ -43,7 +43,7 @@ A quantitative stock monitoring system that tracks selected Chinese A-shares, ch
 
 #### ✅ 已完成功能
 1. **数据获取系统**
-   - 优先使用akshare API（因网络问题常失败）
+   - 使用网页爬虫获取真实数据（新浪财经、腾讯财经、东方财富）
    - 自动降级到网页爬虫获取真实数据
    - 当前使用新浪财经历史数据API获取真实历史价格
    - 支持股票：601728（中国电信）、600938（中国海油）
@@ -105,7 +105,7 @@ A quantitative stock monitoring system that tracks selected Chinese A-shares, ch
 
 #### 🔄 数据源优先级
 **价格数据**：
-1. akshare API（因网络问题常失败）
+1. 网页爬虫（新浪财经、腾讯财经、东方财富）
 2. 新浪财经历史数据API（当前主要数据源）
 3. 腾讯财经历史数据API（备用）
 4. 东方财富API（备用）
@@ -129,7 +129,7 @@ announcements:
 
 # 数据源配置
 data_source:
-  type: akshare              # 优先使用akshare
+  type: web_crawler          # 使用网页爬虫
 
 # 邮件通知配置（敏感信息通过环境变量提供）
 email:
@@ -277,13 +277,13 @@ tests/
 ## 问题与解决方案
 
 ### 已解决问题
-1. **akshare连接失败**：使用网页爬虫替代
+1. **数据源连接失败**：多个备用数据源确保可靠性
 2. **yeah.net SMTP超时**：改用端口465 SSL连接
 3. **历史数据获取**：集成新浪财经真实历史数据API
 4. **授权码认证**：更新邮件配置使用授权码
 
 ### 已知限制
-1. akshare API在国内网络环境下可能不稳定
+1. 网页数据源可能变更或失效，需要定期维护
 2. 免费数据源可能有频率限制
 3. LLM分析需要额外的API成本
 4. 仅支持A股市场
@@ -354,7 +354,7 @@ tests/
      6. **错误处理增强**：30天窗口回退，多列格式支持，移除模拟数据依赖
      7. **真实公告验证**：确认获取到真实公司公告（如"中国电信H股公告"、"中国海油增持公告"等）
 
- - **v1.7**：代码清理与瘦身（2026-03-08）
+  - **v1.7**：代码清理与瘦身（2026-03-08）
      1. **删除未使用函数**：移除16个完全未使用或仅测试使用的函数，简化代码库
      2. **测试文件更新**：更新10个测试文件，移除对已删除函数的引用
      3. **独立测试脚本清理**：删除3个独立的测试脚本，迁移到pytest框架
@@ -362,5 +362,14 @@ tests/
      5. **文档更新**：更新项目文档以反映清理后的代码结构
      6. **冗余文档清理**：删除冗余的简短文档（`docs/proj_short.md`, `docs/proj_compressed.md`），保留核心文档
 
-**最后更新**：2026-03-08  
-**状态**：稳定运行，代码库经过清理后更加精简，所有核心功能正常运行
+  - **v1.8**：架构清理与akshare依赖移除（2026-03-15）
+     1. **移除akshare依赖**：删除announcement_fetcher.py中不可靠的akshare API依赖
+     2. **分红数据架构重构**：整合分红数据获取路径，优先使用LLM提取缓存，网页爬虫作为备选
+     3. **循环导入修复**：修复scheduler_manager.py和main.py之间的循环导入问题
+     4. **缓存管理器增强**：添加get_latest_llm_extraction_for_stock()方法用于LLM提取缓存查找
+     5. **数据获取器优化**：更新_fetch_dividend_from_web_crawler()优先使用LLM缓存
+     6. **代码冗余消除**：移除main.py中的分红更新循环（数据获取器已处理）
+     7. **接口限制**：不添加定量分析Web界面，保持系统专注于核心邮件通知功能
+
+**最后更新**：2026-03-15  
+**状态**：稳定运行，akshare依赖已移除，架构更清晰，分红数据获取更可靠

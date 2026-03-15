@@ -136,65 +136,8 @@ def run_daily_task():
         announcements = {}
         announcement_config = config.get('announcements', {})
         
-        # 创建公告抓取器用于分红数据
+        # 创建公告抓取器用于公告信息获取
         announcement_fetcher = AnnouncementFetcher(config)
-        
-        # 更新股票数据中的每股分红信息（使用akshare数据）
-        logger.info("更新股票分红数据（akshare）")
-        logger.debug(f"stock_data shape: {stock_data.shape}, columns: {stock_data.columns.tolist()}")
-        logger.debug(f"stock_data unique stock codes: {stock_data['stock_code'].unique().tolist() if 'stock_code' in stock_data.columns else 'No stock_code column'}")
-        for stock_code in config['stocks']:
-            # 使用过去12个月的总分红（包括年度和中期分红）
-            dividend_per_share = announcement_fetcher.get_total_dividends_last_12months(stock_code)
-            if dividend_per_share is not None:
-                # 转换股票代码为字符串以匹配stock_data中的类型
-                stock_code_str = str(stock_code)
-                # 更新stock_data DataFrame
-                mask = stock_data['stock_code'] == stock_code_str
-                if mask.any():
-                    old_value = stock_data.loc[mask, 'dividend_per_share'].iloc[0] if not stock_data.loc[mask, 'dividend_per_share'].isna().all() else None
-                    stock_data.loc[mask, 'dividend_per_share'] = dividend_per_share
-                    logger.info(f"股票 {stock_code} 每股分红更新（过去12个月总计）: {old_value} -> {dividend_per_share:.3f}元")
-                    
-                    # 重新计算股息率
-                    close_price = stock_data.loc[mask, 'close'].iloc[0] if not stock_data.loc[mask, 'close'].isna().all() else None
-                    if close_price and close_price > 0:
-                        dividend_yield = (dividend_per_share / close_price) * 100
-                         # 验证股息率合理性
-                        if dividend_yield <= 20 and dividend_per_share <= close_price * 0.5:
-                            stock_data.loc[mask, 'dividend_yield'] = round(dividend_yield, 2)
-                            logger.info(f"股票 {stock_code} 股息率重新计算: {dividend_yield:.2f}%")
-                            # 检查股息率是否过低（<0.5%），可能数据不准确
-                            if dividend_yield < 0.5:
-                                logger.warning(f"股票 {stock_code} 股息率过低: {dividend_yield:.2f}% (可能分红数据不准确或股价过高)")
-                        else:
-                            stock_data.loc[mask, 'dividend_yield'] = None
-                            logger.warning(f"股票 {stock_code} 股息率异常: 分红={dividend_per_share:.3f}元, 股价={close_price:.2f}元, 股息率={dividend_yield:.2f}%")
-                    
-                    # 同时更新缓存中的分红数据
-                    try:
-                        cached_data = fetcher.cache_manager.get_stock_data_cache(stock_code_str)
-                        if cached_data and 'data' in cached_data:
-                            cached_data['data']['dividend_per_share'] = dividend_per_share
-                            # 重新计算股息率（如果需要）
-                            if 'close' in cached_data['data'] and cached_data['data']['close'] and cached_data['data']['close'] > 0:
-                                dividend_yield = (dividend_per_share / cached_data['data']['close']) * 100
-                                # 验证股息率合理性
-                                if dividend_yield <= 20 and dividend_per_share <= cached_data['data']['close'] * 0.5:
-                                    cached_data['data']['dividend_yield'] = round(dividend_yield, 2)
-                                else:
-                                    cached_data['data']['dividend_yield'] = None
-                            else:
-                                cached_data['data']['dividend_yield'] = None
-                            # 保存更新后的缓存
-                            fetcher.cache_manager.set_stock_data_cache(stock_code_str, cached_data['data'])
-                            logger.debug(f"股票 {stock_code} 缓存分红数据已更新")
-                    except Exception as e:
-                        logger.warning(f"更新股票 {stock_code} 缓存分红数据失败: {e}")
-                else:
-                    logger.warning(f"股票 {stock_code} 未在stock_data中找到匹配记录")
-            else:
-                logger.debug(f"股票 {stock_code} 无分红数据（akshare返回None）")
         
         if announcement_config.get('enable', False):
             try:
@@ -255,7 +198,7 @@ def main():
     else:
         # 定时运行模式
         logger.info("启动定时任务调度器")
-        scheduler = SchedulerManager(config)
+        scheduler = SchedulerManager(config, task_function=run_daily_task)
         scheduler.start()
 
 if __name__ == "__main__":

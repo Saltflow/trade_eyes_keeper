@@ -205,12 +205,36 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 
 **Removed DSA Key Support**: RESOLVED - Restored DSA key support by including `paramiko.DSSKey` in `load_ssh_key` and `load_ssh_key_from_string` functions.
 
+**CI/CD Deployment Improvements**: 
+1. **Cleaning Integration**: Added automatic cleaning of old logs and email archives (30+ days) before deployment, configurable via `CLEAN_BEFORE_DEPLOY` environment variable (`ci_cd_deploy.py:201-211`).
+2. **Code Synchronization**: Added `sync_code_to_remote()` function to sync local source code to remote server via tar over SSH, ensuring latest changes are deployed even without git repository (`ci_cd_deploy.py:173-246`).
+3. **Health Server Restart**: Added automatic health server restart after code updates to ensure new features (management button) are active. Includes process termination, restart, and content verification (`ci_cd_deploy.py:465-537`).
+4. **Step Numbering Updated**: Deployment steps renumbered to accommodate new cleaning, sync, and restart steps.
+5. **Summary Updated**: Deployment summary now includes cleaning status, code sync confirmation, and health server restart verification.
+6. **Deployed**: Successfully executed CI/CD deployment with cleaning and code sync to production server (DEPLOY_HOST).
+7. **Management Button Deployment Fix**: Identified that health server was started by scheduler process, not standalone. Fixed by killing scheduler process and starting standalone health server with updated code. Management button now appears on health server homepage (`http://DEPLOY_HOST:1933/`).
+
 **Pytest Environment Issues**: Pytest capture errors preventing test execution (environment issue). Investigate pytest configuration/capture plugin conflicts.
+
+**Akshare Dependency Removal & Architectural Cleanup**: RESOLVED - Removed unreliable akshare dependency and consolidated dividend data fetching:
+1. **Akshare Removal**: Eliminated akshare imports and methods from `announcement_fetcher.py` (lines 1-789)
+2. **Dividend Architecture Consolidation**: Updated dividend fetching to prioritize LLM extraction cache with web crawler fallback:
+   - `cache_manager.py`: Added `get_latest_llm_extraction_for_stock()` method (lines 469-554)
+   - `data_fetcher.py`: Updated `_fetch_dividend_from_web_crawler()` to use LLM cache first (lines 360-385)
+3. **Circular Import Fix**: Modified `scheduler_manager.py` to accept `task_function` parameter instead of importing from main (lines 18-100)
+4. **Code Redundancy Elimination**: Removed dividend update loop in `main.py` (lines 143-197)
+5. **Interface Policy**: System maintains focus on core email notification functionality without adding quantitative web interface
+
+**Key Architectural Changes**:
+- Dividend data now sourced primarily from LLM extraction of recent announcements
+- Web crawlers serve as backup when LLM cache unavailable  
+- Circular imports resolved for better code maintainability
+- No quantitative web interface to be added (policy)
 
 ## Cursor/Copilot Rules
 - No `.cursorrules` or `.cursor/rules/` files found
 - No `.github/copilot-instructions.md` found
 - No pre-commit hooks configured
 
-**Last Updated**: 2026-03-14  
-**Project Version**: v1.10+
+**Last Updated**: 2026-03-15  
+**Project Version**: v1.11+

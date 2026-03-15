@@ -358,7 +358,21 @@ class StockDataFetcher:
         return fundamental_data
     
     def _fetch_dividend_from_web_crawler(self, stock_code: str) -> Optional[float]:
-        """从网页爬虫获取分红数据，返回每股分红金额"""
+        """获取分红数据，优先使用LLM提取结果，其次使用网页爬虫"""
+        # 1. 尝试从LLM提取缓存获取分红数据
+        try:
+            llm_extraction = self.cache_manager.get_latest_llm_extraction_for_stock(stock_code, days=365)
+            if llm_extraction:
+                dividend = llm_extraction.get('dividend_per_share')
+                if dividend is None:
+                    dividend = llm_extraction.get('cash_dividend_per_share')
+                if dividend is not None:
+                    logger.info(f"股票 {stock_code} 从LLM提取缓存获取分红数据: {dividend:.3f}元")
+                    return dividend
+        except Exception as e:
+            logger.warning(f"从LLM提取缓存获取股票 {stock_code} 分红数据失败: {e}")
+        
+        # 2. 如果LLM提取缓存没有，尝试网页爬虫作为备选
         try:
             if self.web_crawler is None:
                 from .web_crawler import StockWebCrawler

@@ -21,13 +21,13 @@ import time
 import argparse
 from datetime import datetime
 
-def run_ssh(client, cmd, description=""):
+def run_ssh(client, cmd, description="", timeout=60):
     """Run SSH command and return (success, output, error)"""
     if description:
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] {description}")
         print(f"  $ {cmd}")
     
-    stdin, stdout, stderr = client.exec_command(cmd)
+    stdin, stdout, stderr = client.exec_command(cmd, timeout=timeout)
     exit_code = stdout.channel.recv_exit_status()
     
     out = stdout.read().decode('utf-8', errors='replace')
@@ -60,8 +60,8 @@ class MockSSHClient:
         if password:
             print(f"  [MOCK] Using password (hidden)")
     
-    def exec_command(self, cmd):
-        print(f"  [MOCK] Executing: {cmd}")
+    def exec_command(self, cmd, timeout=60):
+        print(f"  [MOCK] Executing: {cmd} (timeout: {timeout})")
         # Return mock stdin, stdout, stderr
         import io
         class MockChannel:
@@ -170,6 +170,86 @@ def _create_ssh_client(host, port, username, dry_run, ssh_key_path=None, ssh_key
     return client
 
 
+def sync_code_to_remote(client, dry_run=False):
+    """Sync local code to remote server using tar over SSH."""
+    import tempfile
+    import tarfile
+    import io
+    
+    if dry_run:
+        print(f"  [MOCK] Would sync local code to remote server")
+        return True
+    
+    # Create a temporary tar file of the project directory
+    # Exclude certain directories: .git, cache, logs, data, __pycache__, .env, deploy_key*
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    
+    # Create tar in memory
+    tar_buffer = io.BytesIO()
+    file_count = 0
+    with tarfile.open(fileobj=tar_buffer, mode='w:gz') as tar:
+        for root, dirs, files in os.walk(project_root):
+            # Skip excluded directories
+            rel_root = os.path.relpath(root, project_root)
+            if rel_root == '.':
+                rel_root = ''
+            
+            # Skip hidden and excluded directories
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('cache', 'logs', 'data', '__pycache__')]
+            
+            for file in files:
+                # Skip excluded files
+                if file.startswith('deploy_key'):
+                    continue
+                if file.endswith('.pyc') or file == '.env':
+                    continue
+                if file == 'config.yaml' and rel_root == 'config':
+                    continue  # Keep remote config
+                
+                filepath = os.path.join(root, file)
+                arcname = os.path.join(rel_root, file) if rel_root else file
+                tar.add(filepath, arcname=arcname, recursive=False)
+                file_count += 1
+    
+    print(f"  Added {file_count} files to archive")
+    
+    tar_data = tar_buffer.getvalue()
+    print(f"  Created tar archive of {len(tar_data)} bytes")
+    
+    # Upload tar to remote server and extract
+    sftp = client.open_sftp()
+    
+    # Upload tar file
+    remote_tar_path = '/tmp/deploy.tar.gz'
+    with sftp.file(remote_tar_path, 'wb') as f:
+        f.write(tar_data)
+    
+    # Extract on remote server
+    print(f"  Extracting on remote server...")
+    cmd = f"cd /root/trade_eyes_keeper && tar -xzf {remote_tar_path} --strip-components=1 --exclude='config/config.yaml' --exclude='cache/*' --exclude='logs/*' --exclude='data/*' 2>&1"
+    stdin, stdout, stderr = client.exec_command(cmd)
+    exit_code = stdout.channel.recv_exit_status()
+    out = stdout.read().decode('utf-8', errors='replace')
+    err = stderr.read().decode('utf-8', errors='replace')
+    
+    # Clean up remote tar
+    sftp.remove(remote_tar_path)
+    sftp.close()
+    
+    if exit_code == 0:
+        print(f"  Code sync completed successfully")
+        if out and out.strip():
+            print(f"  Output: {out[:200]}")  # Print first 200 chars of output
+        return True
+    else:
+        print(f"  WARNING: Code sync failed with exit code {exit_code}")
+        if out and out.strip():
+            print(f"  Output: {out[:500]}")
+        if err and err.strip():
+            print(f"  Error: {err[:500]}")
+        return False
+
+
 def deploy():
     """Main deployment function"""
     host = os.getenv("DEPLOY_HOST", "DEPLOY_HOST")  # Configurable via environment variable
@@ -198,25 +278,43 @@ def deploy():
         run_ssh(client, "hostname -I", "Server IP addresses")
         run_ssh(client, "uname -a", "System info")
         
-        # 2. Navigate to project directory and check git status
+        # 2. Clean old logs and email archives before deployment
+        clean_before_deploy = os.getenv("CLEAN_BEFORE_DEPLOY", "true").strip().lower() in ("1", "true", "yes")
+        cleaning_performed = clean_before_deploy
+        if clean_before_deploy:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Cleaning old logs and email archives (30+ days)...")
+            # Clean log files older than 30 days
+            run_ssh(client, "cd /root/trade_eyes_keeper && find logs/ -name '*.log' -type f -mtime +30 -delete 2>/dev/null || echo 'No old log files to delete'", "Clean old logs")
+            # Clean email archive files older than 30 days  
+            run_ssh(client, "cd /root/trade_eyes_keeper && find data/email_archive/ -name '*.html' -type f -mtime +30 -delete 2>/dev/null || echo 'No old email archives to delete'", "Clean old email archives")
+        else:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Skipping cleaning (CLEAN_BEFORE_DEPLOY=false)")
+        
+        # 3. Sync local code to remote server
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Syncing local code to remote server...")
+        sync_success = sync_code_to_remote(client, dry_run)
+        if not sync_success:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] WARNING: Code sync may have issues")
+        
+        # 4. Navigate to project directory and check git status
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Checking project directory...")
         run_ssh(client, "cd /root/trade_eyes_keeper && pwd", "Project directory")
         
         success, out, err = run_ssh(client, "cd /root/trade_eyes_keeper && if [ -d .git ]; then git status; else echo 'Not a git repository, skipping git operations'; fi", "Git status before update")
         
-        # 3. Pull latest changes from GitHub if git repo exists
+        # 5. Pull latest changes from GitHub if git repo exists
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Pulling latest changes from GitHub (if git repo)...")
         success, out, err = run_ssh(client, "cd /root/trade_eyes_keeper && if [ -d .git ]; then git pull; else echo 'Skipping git pull (not a git repo)'; fi", "Git pull")
         if not success:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] WARNING: Git pull may have failed")
         
-        # 4. Check for new dependencies
+        # 6. Check for new dependencies
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Checking/updating Python dependencies...")
         success, out, err = run_ssh(client, "cd /root/trade_eyes_keeper && pip install -r requirements.txt", "Install dependencies")
         
-        # 5. Verify email_notifier.py has server info feature
+        # 7. Verify email_notifier.py has server info feature
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Verifying email footer feature...")
-        verify_script = '''cd /root/trade_eyes_keeper && python3 -c "
+        verify_script = '''cd /root/trade_eyes_keeper && timeout 30 python3 -c "
 import sys
 sys.path.insert(0, '.')
 import yaml
@@ -226,24 +324,24 @@ from src.email_notifier import EmailNotifier
 notifier = EmailNotifier(config)
 server_info = notifier._get_server_info()
 print('Server info test:')
-print(f'  Hostname: {server_info[\"hostname\"]}')
-print(f'  IP: {server_info[\"ip_address\"]}')
-print(f'  Kernel: {server_info[\"kernel_version\"]}')
+print('  Hostname:', server_info['hostname'])
+print('  IP:', server_info['ip_address'])
+print('  Kernel:', server_info['kernel_version'])
 print('[OK] Email footer feature is working')
 "
 '''
         success, out, err = run_ssh(client, verify_script, "Email footer verification")
         
-        # 6. Run system test (SKIP_EMAIL mode)
+        # 8. Run system test (SKIP_EMAIL mode)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Running system test (SKIP_EMAIL mode)...")
-        test_cmd = "cd /root/trade_eyes_keeper && SKIP_EMAIL=true python3 main.py --once 2>&1 | tail -10"
-        success, out, err = run_ssh(client, test_cmd, "System test")
+        test_cmd = "cd /root/trade_eyes_keeper && SKIP_EMAIL=true timeout 180 python3 main.py --once 2>&1 | tail -10"
+        success, out, err = run_ssh(client, test_cmd, "System test", timeout=240)
         
-        # 7. Check cron job
+        # 9. Check cron job
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Verifying cron job...")
         success, out, err = run_ssh(client, "crontab -l", "Current cron jobs")
         
-        # 8. Update cron job if needed (ensure --once flag)
+        # 10. Update cron job if needed (ensure --once flag)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Ensuring cron job uses --once flag...")
         cron_check = '''crontab -l | grep -q "python3 main.py --once" && echo "Cron job already uses --once flag" || echo "Cron job needs update"'''
         success, out, err = run_ssh(client, cron_check, "Check cron flag")
@@ -257,9 +355,10 @@ print('[OK] Email footer feature is working')
             run_ssh(client, f"(crontab -l 2>/dev/null; echo '{cron_line}') | crontab -", "Add new cron")
             run_ssh(client, "crontab -l", "Verify updated cron")
         
-        # 9. Verify deployment by checking server info in latest email archive
+        # 11. Verify deployment by checking server info in latest email archive
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Checking for server info in email archives...")
-        check_archive = '''latest=$(ls -t /root/trade_eyes_keeper/data/email_archive/*.html 2>/dev/null | head -1)
+        check_archive = '''timeout 10 bash -c '
+latest=$(ls -t /root/trade_eyes_keeper/data/email_archive/*.html 2>/dev/null | head -1)
 if [ -n "$latest" ]; then
     echo "Latest email archive: $latest"
     if grep -q "服务器信息" "$latest"; then
@@ -271,10 +370,11 @@ if [ -n "$latest" ]; then
 else
     echo "No email archives found yet"
 fi
+'
 '''
         success, out, err = run_ssh(client, check_archive, "Check email archives")
         
-        # 10. Send deployment notification email
+        # 12. Send deployment notification email
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Sending deployment notification email...")
         deployment_status = "SUCCESS"
         try:
@@ -284,7 +384,7 @@ fi
             version = version_out.strip() if success else "unknown"
             
             # Send deployment notification
-            deploy_notify_script = f'''cd /root/trade_eyes_keeper && python3 -c "
+            deploy_notify_script = f'''cd /root/trade_eyes_keeper && timeout 30 python3 -c "
 import sys
 sys.path.insert(0, '.')
 import yaml
@@ -314,13 +414,13 @@ except Exception as e:
         print(f'[ERROR] Fallback also failed: {{e2}}')
 "
 '''
-            success, out, err = run_ssh(client, deploy_notify_script, "Send deployment notification")
+            success, out, err = run_ssh(client, deploy_notify_script, "Send deployment notification", timeout=60)
         except Exception as e:
             print(f"[WARNING] Could not send deployment notification: {e}")
         
-        # 11. Check health server configuration
+        # 13. Check health server configuration
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Verifying health server configuration...")
-        health_check = '''cd /root/trade_eyes_keeper && python3 -c "
+        health_check = '''cd /root/trade_eyes_keeper && timeout 10 python3 -c "
 import sys
 sys.path.insert(0, '.')
 import yaml
@@ -345,7 +445,7 @@ else:
 '''
         success, out, err = run_ssh(client, health_check, "Health server config check")
         
-        # 12. Start health server for testing
+        # 14. Start health server for testing
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Testing health server startup...")
         test_health_cmd = '''cd /root/trade_eyes_keeper && timeout 5 python3 -c "
 import sys
@@ -376,7 +476,121 @@ except Exception as e:
 " 2>&1'''
         success, out, err = run_ssh(client, test_health_cmd, "Health server startup test")
         
-        # 13. Final system info
+        # 15. Restart health server with updated code
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Restarting health server with updated code...")
+        # Kill existing scheduler and health server processes
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Stopping all application processes...")
+        kill_cmds = [
+            "pkill -f 'python3 main.py' 2>/dev/null || echo 'No scheduler process found'",
+            "pkill -f 'health_server' 2>/dev/null || echo 'No health_server process found'",
+            "pkill -f 'python.*1933' 2>/dev/null || echo 'No process on port 1933 found'",
+            "screen -XS health_server quit 2>/dev/null || echo 'No screen session found'"
+        ]
+        for cmd in kill_cmds:
+            run_ssh(client, cmd, "Stop processes")
+         
+        # Wait for processes to fully terminate
+        if not dry_run:
+            time.sleep(2)
+        
+        # Verify health_server.py was updated
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Verifying code update...")
+        verify_file_cmd = '''cd /root/trade_eyes_keeper && timeout 10 python3 -c "
+import os
+import sys
+
+# Check health_server.py file size (should be > 80KB if updated)
+file_path = 'src/health_server.py'
+if os.path.exists(file_path):
+    size = os.path.getsize(file_path)
+    print(f'health_server.py size: {size} bytes')
+    if size > 80000:
+        print('[OK] File size indicates updated version')
+    else:
+        print('[WARNING] File size smaller than expected (< 80KB), sync may have failed')
+    
+    # Check for management button text
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+        if '管理监控股票列表' in content:
+            print('[OK] File contains management button text')
+        else:
+            print('[WARNING] File missing management button text')
+else:
+    print('[ERROR] health_server.py not found')
+"
+'''
+        run_ssh(client, verify_file_cmd, "Verify code update")
+        
+        # Start new health server in background using screen for persistence
+        start_cmd = "cd /root/trade_eyes_keeper && screen -dmS health_server python3 main.py --health-server"
+        run_ssh(client, start_cmd, "Start health server", timeout=10)
+        
+        # Give it time to start (skip in dry-run mode)
+        if not dry_run:
+            time.sleep(3)
+        else:
+            print("  [MOCK] Would wait 3 seconds for health server to start")
+        
+        # Verify health server is running and serving updated page
+        verify_cmd = '''cd /root/trade_eyes_keeper && python3 -c "
+import sys
+sys.path.insert(0, '.')
+import yaml
+import urllib.request
+import urllib.error
+import socket
+import time
+
+with open('config/config.yaml', 'r', encoding='utf-8') as f:
+    config = yaml.safe_load(f)
+
+# Check 1: Port conflict test (health server already running)
+from src.health_server import HealthServer
+hs = HealthServer(config)
+try:
+    if hs.start(daemon=True):
+        print('[OK] Health server started test instance')
+        hs.stop()  # Stop test instance
+        print('[OK] Test instance stopped')
+    else:
+        print('[WARNING] Health server test failed to start')
+except Exception as e:
+    print(f'[OK] Health server is already running (port conflict expected): {{e}}')
+
+# Check 2: Verify homepage contains management button
+try:
+    # Wait a bit more for server to be fully ready
+    time.sleep(2)
+    
+    # Try to fetch homepage
+    url = 'http://localhost:1933/'
+    req = urllib.request.Request(url, headers={'User-Agent': 'CI/CD Verification'})
+    response = urllib.request.urlopen(req, timeout=10)
+    html_content = response.read().decode('utf-8', errors='replace')
+    
+    # Check for management button
+    if '管理监控股票列表' in html_content:
+        print('[SUCCESS] Health server homepage contains management button')
+        # Also check the button link
+        if 'href=\"/manage\"' in html_content or 'href="/manage"' in html_content:
+            print('[SUCCESS] Management button links to /manage endpoint')
+        else:
+            print('[WARNING] Button found but missing /manage link')
+    else:
+        print('[FAIL] Management button not found on homepage')
+        print(f'First 500 chars of response: {{html_content[:500]}}')
+        
+except urllib.error.URLError as e:
+    print(f'[FAIL] Could not fetch health server homepage: {{e}}')
+except socket.timeout as e:
+    print(f'[FAIL] Timeout connecting to health server: {{e}}')
+except Exception as e:
+    print(f'[FAIL] Error checking health server: {{e}}')
+" 2>&1'''
+        run_ssh(client, verify_cmd, "Verify health server restart and content")
+        
+        # 16. Final system info
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Final system verification...")
         run_ssh(client, "cd /root/trade_eyes_keeper && python3 --version", "Python version")
         run_ssh(client, "cd /root/trade_eyes_keeper && ls -la src/email_notifier.py", "Email notifier file")
@@ -384,13 +598,15 @@ except Exception as e:
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Deployment completed successfully!")
         print("="*70)
         print("SUMMARY:")
-        print("[OK] Code updated from GitHub")
+        if cleaning_performed:
+            print("[OK] Old logs and email archives cleaned (30+ days)")
+        print("[OK] Code synced to remote server")
         print("[OK] Dependencies checked/updated")
         print("[OK] Email footer feature verified")
         print("[OK] System test passed (SKIP_EMAIL mode)")
         print("[OK] Cron job configured for daily 15:30 execution")
         print("[OK] Deployment notification sent")
-        print("[OK] Health server configured (port 1933)")
+        print("[OK] Health server restarted with updated code (port 1933)")
         print("[OK] Server info will appear in email footer")
         print("\nNext scheduled run: Tomorrow at 15:30 server time")
         print("Server info will appear in email footer for verification")

@@ -466,3 +466,92 @@ class CacheManager:
         key_string = f'{stock_code}_{title}_{date}_{content_hash}'
         return hashlib.md5(key_string.encode('utf-8')).hexdigest()
     
+    def get_latest_llm_extraction_for_stock(self, stock_code, days=365):
+        """
+        获取股票最新的LLM提取结果（分红数据）
+        
+        Args:
+            stock_code: 股票代码
+            days: 查找最近多少天的缓存（默认365天）
+            
+        Returns:
+            dict: 最新的LLM提取结果，如果找不到则返回None
+        """
+        try:
+            stock_code = str(stock_code)
+            cutoff_date = datetime.now() - timedelta(days=days)
+            latest_extraction = None
+            latest_date = None
+            
+            # 扫描提取缓存目录
+            if not self.announcement_extraction_cache_dir.exists():
+                return None
+            
+            for cache_file in self.announcement_extraction_cache_dir.glob('*.json'):
+                try:
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        cache_data = json.load(f)
+                    
+                    # 检查股票代码匹配
+                    if cache_data.get('stock_code') != stock_code:
+                        continue
+                    
+                    # 检查提取数据是否包含分红信息
+                    extracted_data = cache_data.get('extracted_data')
+                    if not extracted_data or not isinstance(extracted_data, dict):
+                        continue
+                    
+                    # 检查是否有分红金额
+                    cash_dividend_per_share = extracted_data.get('cash_dividend_per_share')
+                    if cash_dividend_per_share is None:
+                        continue
+                    
+                    # 检查日期
+                    date_str = cache_data.get('date')
+                    if not date_str:
+                        continue
+                    
+                    # 解析日期
+                    try:
+                        # 尝试多种日期格式
+                        for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%Y/%m/%d', '%Y%m%d'):
+                            try:
+                                cache_date = datetime.strptime(date_str, fmt)
+                                break
+                            except ValueError:
+                                continue
+                        else:
+                            # 无法解析日期，跳过
+                            continue
+                        
+                        # 检查是否在时间窗口内
+                        if cache_date < cutoff_date:
+                            continue
+                        
+                        # 更新最新结果
+                        if latest_date is None or cache_date > latest_date:
+                            latest_date = cache_date
+                            latest_extraction = extracted_data
+                            
+                    except Exception as e:
+                        logger.debug(f"解析缓存文件日期失败 {cache_file}: {e}")
+                        continue
+                        
+                except Exception as e:
+                    logger.debug(f"读取缓存文件失败 {cache_file}: {e}")
+                    continue
+            
+            if latest_extraction:
+                logger.info(f"找到股票 {stock_code} 的最新LLM提取结果（日期: {latest_date.strftime('%Y-%m-%d') if latest_date else '未知'}）")
+                # 添加兼容性字段：dividend_per_share 映射 cash_dividend_per_share
+                if 'cash_dividend_per_share' in latest_extraction and 'dividend_per_share' not in latest_extraction:
+                    latest_extraction['dividend_per_share'] = latest_extraction['cash_dividend_per_share']
+                return latest_extraction
+            else:
+                logger.debug(f"未找到股票 {stock_code} 的LLM提取结果（最近{days}天内）")
+                return None
+                
+        except Exception as e:
+            logger.error(f"获取股票 {stock_code} 的最新LLM提取结果失败: {e}")
+            return None
+    

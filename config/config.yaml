@@ -8,7 +8,7 @@ announcements:
   max_llm_calls_per_run: 30
   max_pdf_size_mb: 10
 data_source:
-  type: akshare
+  type: web_crawler
 email:
   enable_ssl: true
   enable_tls: false

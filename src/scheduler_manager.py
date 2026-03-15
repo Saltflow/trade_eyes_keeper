@@ -15,17 +15,19 @@ logger = logging.getLogger(__name__)
 class SchedulerManager:
     """定时任务调度管理器"""
     
-    def __init__(self, config):
+    def __init__(self, config, task_function=None):
         """
         初始化调度管理器
         
         Args:
             config: 配置字典
+            task_function: 定时执行的任务函数，如果为None则从main导入run_daily_task
         """
         self.config = config
         self.scheduler_config = config.get('scheduler', {})
         self.scheduler = None
         self.health_server = None
+        self.task_function = task_function
     
     def start(self):
         """启动调度器"""
@@ -57,11 +59,16 @@ class SchedulerManager:
                 timezone=timezone
             )
             
-            # 导入主任务函数（避免循环导入）
-            from main import run_daily_task
+            # 确定要执行的任务函数
+            if self.task_function is None:
+                # 导入主任务函数（避免循环导入）
+                from main import run_daily_task
+                task_func = run_daily_task
+            else:
+                task_func = self.task_function
             
             self.scheduler.add_job(
-                func=run_daily_task,
+                func=task_func,
                 trigger=trigger,
                 id='daily_stock_task',
                 name='每日股票数据获取和分析任务',
@@ -71,7 +78,7 @@ class SchedulerManager:
             # 添加启动时的立即执行任务（可选）
             if self.scheduler_config.get('run_on_startup', False):
                 self.scheduler.add_job(
-                    func=run_daily_task,
+                    func=task_func,
                     trigger='date',
                     run_date=datetime.now(timezone),
                     id='startup_task',
