@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>验证管理验证码</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }}
+        .container {{ max-width: 500px; margin: 0 auto; }}
+        .info-box {{ background-color: #e3f2fd; border-left: 4px solid #2196F3; padding: 20px; margin: 20px 0; }}
+        .error-box {{ background-color: #ffebee; border-left: 4px solid #f44336; padding: 20px; margin: 20px 0; }}
+        .form-group {{ margin: 20px 0; }}
+        .input-field {{ width: 100%; padding: 12px; font-size: 18px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }}
+        .button {{ background-color: #4caf50; color: white; border: none; padding: 12px 24px; border-radius: 4px; cursor: pointer; font-size: 16px; width: 100%; }}
+        .button:hover {{ background-color: #45a049; }}
+        .countdown {{ color: #666; font-size: 0.9em; margin-top: 5px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 验证管理验证码</h1>
+        
+        <div class="info-box">
+            <h3>请输入5位数字验证码</h3>
+            <p>验证码已发送到您的订阅邮箱，10分钟内有效</p>
+            <p><strong>剩余时间:</strong> {remaining}秒</p>
+            <p><strong>您的IP地址:</strong> {client_ip}</p>
+        </div>
+        
+        {error_html}
+        
+        <form method="GET" action="/verify-otp">
+            <div class="form-group">
+                <label for="code"><strong>验证码:</strong></label>
+                <input type="text" id="code" name="code" class="input-field" 
+                       placeholder="输入5位数字" maxlength="5" pattern="\d{5}" 
+                       value="{code_value}" required>
+                <div class="countdown">请输入收到的5位数字验证码</div>
+            </div>
+            
+            <button type="submit" class="button">验证并登录</button>
+        </form>
+        
+        <p style="margin-top: 30px;">
+            <a href="/request-otp">← 重新请求验证码</a> | 
+            <a href="/">返回健康检查页面</a>
+        </p>
+    </div>
+</body>
+</html>

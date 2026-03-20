@@ -6,9 +6,6 @@
 import logging
 import smtplib
 import ssl
-import socket
-import platform
-import subprocess
 import pandas as pd
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -93,99 +90,9 @@ class EmailNotifier:
         except Exception as e:
             logger.error(f"发送每日报告邮件失败: {e}")
     
-    def send_deployment_notification(self, status, version="unknown", summary=""):
-        """
-        发送部署通知邮件
-        
-        Args:
-            status: 部署状态 (SUCCESS, FAILURE, etc.)
-            version: 版本号或提交哈希
-            summary: 部署摘要
-        """
-        try:
-            # 获取服务器信息
-            server_info = self._get_server_info()
-            
-            # 构建部署通知邮件内容
-            subject = f"部署通知 - {status} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-            
-            # 构建HTML内容
-            status_color = "#4CAF50" if status.upper() == "SUCCESS" else "#f44336"
-            
-            html_body = f"""
-            <html>
-            <head>
-                <style>
-                    body {{ font-family: Arial, sans-serif; margin: 20px; line-height: 1.6; }}
-                    h1 {{ color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }}
-                    .status {{ display: inline-block; padding: 5px 15px; border-radius: 4px; 
-                             color: white; font-weight: bold; background-color: {status_color}; }}
-                    .info-table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
-                    .info-table th, .info-table td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
-                    .info-table th {{ background-color: #f2f2f2; font-weight: bold; }}
-                    .server-info {{ margin-top: 30px; padding: 15px; background-color: #f9f9f9; 
-                                  border-left: 4px solid #2196F3; }}
-                </style>
-            </head>
-            <body>
-                <h1>🚀 股票量化系统部署通知</h1>
-                
-                <p><strong>状态:</strong> <span class="status">{status}</span></p>
-                <p><strong>时间:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                <p><strong>版本:</strong> {version}</p>
-                <p><strong>摘要:</strong> {summary}</p>
-                
-                <h2>📊 部署信息</h2>
-                <table class="info-table">
-                    <tr>
-                        <th>项目</th>
-                        <th>值</th>
-                    </tr>
-                    <tr>
-                        <td>部署状态</td>
-                        <td><span class="status">{status}</span></td>
-                    </tr>
-                    <tr>
-                        <td>部署时间</td>
-                        <td>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</td>
-                    </tr>
-                    <tr>
-                        <td>版本/提交</td>
-                        <td><code>{version}</code></td>
-                    </tr>
-                    <tr>
-                        <td>摘要</td>
-                        <td>{summary}</td>
-                    </tr>
-                </table>
-                
-                <div class="server-info">
-                    <h3>🖥️ 服务器信息</h3>
-                    <p><strong>主机名:</strong> {server_info['hostname']}</p>
-                    <p><strong>IP地址:</strong> {server_info['ip_address']}</p>
-                    <p><strong>内核版本:</strong> {server_info['kernel_version']}</p>
-                    <p><strong>系统:</strong> {server_info['system']} ({server_info['machine']})</p>
-                </div>
-                
-                <p style="color: #666; font-size: 0.9em; margin-top: 30px;">
-                    💡 此邮件由CI/CD部署流程自动发送。服务器信息用于验证部署目标。
-                </p>
-            </body>
-            </html>
-            """
-            
-            # 发送邮件
-            self._send_email(subject, html_body)
-            
-            logger.info(f"部署通知邮件已发送: {status} (版本: {version})")
-            
-        except Exception as e:
-            logger.error(f"发送部署通知邮件失败: {e}")
-            raise
-    
     def _build_email_body(self, alert_stocks, stock_data, analysis_results=None, announcements=None):
         """
-        构建邮件正文（包含提醒股票和LLM分析）
+        构建邮件正文（简化版）
         
         Args:
             alert_stocks: 满足条件的股票列表
@@ -196,458 +103,123 @@ class EmailNotifier:
         Returns:
             str: 邮件正文（HTML格式）
         """
+        import pandas as pd
+        from datetime import datetime
+        
         # 创建HTML表格
-        html_table = """
-        <html>
-        <head>
-            <style>
-                table {{
-                    border-collapse: collapse;
-                    width: 100%;
-                    margin: 20px 0;
-                }}
-                th, td {{
-                    border: 1px solid #ddd;
-                    padding: 8px;
-                    text-align: left;
-                }}
-                th {{
-                    background-color: #f2f2f2;
-                    font-weight: bold;
-                }}
-                .alert-row {{
-                    background-color: #fff8e1;
-                }}
-                .positive {{
-                    color: #4caf50;
-                }}
-                .negative {{
-                    color: #f44336;
-                }}
-            </style>
-        </head>
-        <body>
-            <h2>股票提醒通知</h2>
-            <p>系统检测到以下股票满足条件：<strong>当天最低价 &lt; MA60（前复权）</strong></p>
-            <p>检测时间：{current_time}</p>
-            
-            <h3>满足条件的股票 ({alert_count} 只)</h3>
-            
-            <h4>价格技术指标</h4>
-            <table>
-                <tr>
-                    <th>股票代码</th>
-                    <th>股票名称</th>
-                    <th>最低价</th>
-                    <th>MA60</th>
-                    <th>收盘价</th>
-                    <th>收盘-MA60差值</th>
-                    <th>差值(%)</th>
-                    <th>最低价-MA60差值</th>
-                    <th>差值(%)</th>
-                    <th>条件</th>
-                </tr>
-                {alert_rows_technical}
-            </table>
-            
-            <h4>基本面指标</h4>
-            <table>
-                <tr>
-                    <th>股票代码</th>
-                    <th>股票名称</th>
-                    <th>每股分红(元)</th>
-                    <th>股息率(%)</th>
-                    <th>业绩增长(%)</th>
-                    <th>PE</th>
-                    <th>PB</th>
-                    <th>ROE(%)</th>
-                    <th>负债率(%)</th>
-                </tr>
-                {alert_rows_fundamental}
-            </table>
-            
-            <h3>所有监控股票</h3>
-            
-            <h4>价格技术指标</h4>
-            <table>
-                <tr>
-                    <th>股票代码</th>
-                    <th>开盘价</th>
-                    <th>收盘价</th>
-                    <th>最高价</th>
-                    <th>最低价</th>
-                    <th>MA60</th>
-                    <th>收盘-MA60差值</th>
-                    <th>差值(%)</th>
-                    <th>状态</th>
-                </tr>
-                {all_rows_price}
-            </table>
-            
-            <h4>基本面指标</h4>
-            <table>
-                <tr>
-                    <th>股票代码</th>
-                    <th>每股分红(元)</th>
-                    <th>股息率(%)</th>
-                    <th>业绩增长(%)</th>
-                    <th>PE</th>
-                    <th>PB</th>
-                    <th>ROE(%)</th>
-                    <th>负债率(%)</th>
-                </tr>
-                {all_rows_fundamental}
-            </table>
-            
-            {llm_analysis_section}
-            
-            {announcements_section}
-            
-            <p><em>注：此邮件由股票量化系统自动发送，请勿直接回复。</em></p>
-            
-            <div style="margin-top: 30px; padding-top: 15px; border-top: 1px solid #eee; font-size: 0.8em; color: #666;">
-                <p><strong>服务器信息:</strong></p>
-                <ul>
-                    <li>主机名: {server_hostname}</li>
-                    <li>IP地址: {server_ip}</li>
-                    <li>内核版本: {server_kernel}</li>
-                    <li>系统: {server_system} ({server_machine})</li>
-                </ul>
-            </div>
-        </body>
-        </html>
-        """
+        html = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>股票提醒通知</title>
+    <style>
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 20px 0;
+            font-family: Arial, sans-serif;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+            font-weight: bold;
+        }
+        .alert-row {
+            background-color: #fff8e1;
+        }
+        .positive {
+            color: #4caf50;
+        }
+        .negative {
+            color: #f44336;
+        }
+    </style>
+</head>
+<body>
+    <h2>股票提醒通知</h2>
+    <p>系统检测到以下股票满足条件：<strong>当天最低价 &lt; MA60（前复权）</strong></p>
+    <p>检测时间：{current_time}</p>
+    
+    <h3>股票列表 ({stock_count} 只)</h3>
+    <table>
+        <tr>
+            <th>股票代码</th>
+            <th>股票名称</th>
+            <th>最低价</th>
+            <th>MA60</th>
+            <th>每股分红(元)</th>
+            <th>股息率(%)</th>
+            <th>PE</th>
+            <th>PB</th>
+            <th>ROE(%)</th>
+            <th>状态</th>
+        </tr>
+        {rows}
+    </table>
+    
+    <p><em>注：此邮件由股票量化系统自动发送，请勿直接回复。</em></p>
+</body>
+</html>"""
         
-        # 构建满足条件的股票行（拆分为技术指标和基本面指标）
-        alert_rows_technical = ""
-        alert_rows_fundamental = ""
-        for alert in alert_stocks:
-            stock_code = alert.get('stock_code', '')
-            stock_name = self._get_stock_name(stock_code)
-            low_price = alert.get('low_price', 0)
-            ma60 = alert.get('ma60', 0)
-            low_ma60_diff = alert.get('price_difference', 0)  # 最低价与MA60差值
-            low_ma60_pct = alert.get('percentage_difference', 0)  # 最低价与MA60百分比差值
-            
-            # 从stock_data中查找收盘价
-            close_price = 0
-            stock_row = stock_data[stock_data['stock_code'] == stock_code]
-            if not stock_row.empty:
-                close_price = stock_row.iloc[0].get('close', 0)
-            
-            # 计算收盘价与MA60差值
-            close_ma60_diff = close_price - ma60
-            close_ma60_pct = (close_ma60_diff / ma60 * 100) if ma60 != 0 else 0
-            
-            # 获取基本面数据
-            dividend_per_share = None
-            dividend_yield = None
-            earnings_growth = None
-            pe_ratio = None
-            pb_ratio = None
-            roe = None
-            debt_ratio = None
-            
-            if not stock_row.empty:
-                dividend_per_share = stock_row.iloc[0].get('dividend_per_share')
-                dividend_yield = stock_row.iloc[0].get('dividend_yield')
-                earnings_growth = stock_row.iloc[0].get('earnings_growth')
-                pe_ratio = stock_row.iloc[0].get('pe_ratio')
-                pb_ratio = stock_row.iloc[0].get('pb_ratio')
-                roe = stock_row.iloc[0].get('roe')
-                debt_ratio = stock_row.iloc[0].get('debt_ratio')
-            
-            # 格式化基本面数据
-            dividend_per_share_str = f"{dividend_per_share:.3f}" if dividend_per_share is not None and not pd.isna(dividend_per_share) else "-"
-            dividend_yield_str = f"{dividend_yield:.2f}%" if dividend_yield is not None and not pd.isna(dividend_yield) else "-"
-            earnings_growth_str = f"{earnings_growth:+.2f}%" if earnings_growth is not None and not pd.isna(earnings_growth) else "-"
-            pe_ratio_str = f"{pe_ratio:.2f}" if pe_ratio is not None and not pd.isna(pe_ratio) else "-"
-            pb_ratio_str = f"{pb_ratio:.2f}" if pb_ratio is not None and not pd.isna(pb_ratio) else "-"
-            roe_str = f"{roe:.2f}%" if roe is not None and not pd.isna(roe) else "-"
-            debt_ratio_str = f"{debt_ratio:.2f}%" if debt_ratio is not None and not pd.isna(debt_ratio) else "-"
-            
-            # 确定颜色类
-            close_diff_class = "positive" if close_ma60_diff >= 0 else "negative"
-            close_pct_class = "positive" if close_ma60_pct >= 0 else "negative"
-            earnings_growth_class = "positive" if earnings_growth is not None and earnings_growth > 0 else "negative" if earnings_growth is not None and earnings_growth < 0 else ""
-            
-            # 技术指标行
-            alert_rows_technical += f"""
-                <tr class="alert-row">
-                    <td>{stock_code}</td>
-                    <td>{stock_name}</td>
-                    <td>{low_price:.2f}</td>
-                    <td>{ma60:.2f}</td>
-                    <td>{close_price:.2f}</td>
-                    <td class="{close_diff_class}">{close_ma60_diff:+.2f}</td>
-                    <td class="{close_pct_class}">{close_ma60_pct:+.2f}%</td>
-                    <td class="positive">{low_ma60_diff:.2f}</td>
-                    <td class="positive">{low_ma60_pct:.2f}%</td>
-                    <td>最低价 &lt; MA60</td>
-                </tr>
-            """
-            
-            # 基本面指标行
-            alert_rows_fundamental += f"""
-                <tr class="alert-row">
-                    <td>{stock_code}</td>
-                    <td>{stock_name}</td>
-                    <td>{dividend_per_share_str}</td>
-                    <td>{dividend_yield_str}</td>
-                    <td class="{earnings_growth_class}">{earnings_growth_str}</td>
-                    <td>{pe_ratio_str}</td>
-                    <td>{pb_ratio_str}</td>
-                    <td>{roe_str}</td>
-                    <td>{debt_ratio_str}</td>
-                </tr>
-            """
+        # 构建表格行
+        rows = ""
+        alert_set = {alert.get('stock_code', '') for alert in alert_stocks}
         
-        # 构建所有监控股票行（拆分为价格技术指标和基本面指标）
-        all_rows_price = ""
-        all_rows_fundamental = ""
         for _, row in stock_data.iterrows():
             stock_code = row.get('stock_code', '')
             stock_name = self._get_stock_name(stock_code)
-            open_price = row.get('open', 0)
-            close_price = row.get('close', 0)
-            high_price = row.get('high', 0)
             low_price = row.get('low', 0)
             ma60 = row.get('ma60', 0)
             
-            # 计算收盘价与MA60差值
-            close_ma60_diff = close_price - ma60
-            close_ma60_pct = (close_ma60_diff / ma60 * 100) if ma60 != 0 else 0
-            
-            # 确定颜色类
-            diff_class = "positive" if close_ma60_diff >= 0 else "negative"
-            pct_class = "positive" if close_ma60_pct >= 0 else "negative"
-            
-            # 获取基本面数据
+            # 基本面数据
             dividend_per_share = row.get('dividend_per_share')
             dividend_yield = row.get('dividend_yield')
-            earnings_growth = row.get('earnings_growth')
             pe_ratio = row.get('pe_ratio')
             pb_ratio = row.get('pb_ratio')
             roe = row.get('roe')
-            debt_ratio = row.get('debt_ratio')
             
-            # 格式化基本面数据
+            # 格式化
             dividend_per_share_str = f"{dividend_per_share:.3f}" if dividend_per_share is not None and not pd.isna(dividend_per_share) else "-"
             dividend_yield_str = f"{dividend_yield:.2f}%" if dividend_yield is not None and not pd.isna(dividend_yield) else "-"
-            earnings_growth_str = f"{earnings_growth:+.2f}%" if earnings_growth is not None and not pd.isna(earnings_growth) else "-"
             pe_ratio_str = f"{pe_ratio:.2f}" if pe_ratio is not None and not pd.isna(pe_ratio) else "-"
             pb_ratio_str = f"{pb_ratio:.2f}" if pb_ratio is not None and not pd.isna(pb_ratio) else "-"
             roe_str = f"{roe:.2f}%" if roe is not None and not pd.isna(roe) else "-"
-            debt_ratio_str = f"{debt_ratio:.2f}%" if debt_ratio is not None and not pd.isna(debt_ratio) else "-"
             
-            # 确定颜色类
-            earnings_growth_class = "positive" if earnings_growth is not None and earnings_growth > 0 else "negative" if earnings_growth is not None and earnings_growth < 0 else ""
-            
-            # 检查是否满足条件（最低价 < MA60）
-            status = "正常"
+            # 状态
             if low_price < ma60:
                 status = "<span style='color: #f44336;'>提醒</span>"
+                row_class = "alert-row"
+            else:
+                status = "正常"
+                row_class = ""
             
-            # 价格技术指标行
-            all_rows_price += f"""
-                <tr>
+            rows += f"""
+                <tr class="{row_class}">
                     <td>{stock_code}</td>
-                    <td>{open_price:.2f}</td>
-                    <td>{close_price:.2f}</td>
-                    <td>{high_price:.2f}</td>
+                    <td>{stock_name}</td>
                     <td>{low_price:.2f}</td>
                     <td>{ma60:.2f}</td>
-                    <td class="{diff_class}">{close_ma60_diff:+.2f}</td>
-                    <td class="{pct_class}">{close_ma60_pct:+.2f}%</td>
-                    <td>{status}</td>
-                </tr>
-            """
-            
-            # 基本面指标行
-            all_rows_fundamental += f"""
-                <tr>
-                    <td>{stock_code}</td>
                     <td>{dividend_per_share_str}</td>
                     <td>{dividend_yield_str}</td>
-                    <td class="{earnings_growth_class}">{earnings_growth_str}</td>
                     <td>{pe_ratio_str}</td>
                     <td>{pb_ratio_str}</td>
                     <td>{roe_str}</td>
-                    <td>{debt_ratio_str}</td>
-                </tr>
-            """
+                    <td>{status}</td>
+                </tr>"""
         
-        # 构建LLM分析部分
-        llm_analysis_section = ""
-        if analysis_results and len(analysis_results) > 0:
-            llm_analysis_section = """
-            <h3>LLM基本面分析</h3>
-            """
-            for stock_code, analysis in analysis_results.items():
-                stock_name = self._get_stock_name(stock_code)
-                
-                # 提取分析文本
-                analysis_text = analysis.get('analysis_text', '')
-                summary = analysis.get('summary', {})
-                
-                # 截断过长的分析文本
-                if len(analysis_text) > 1000:
-                    analysis_text = analysis_text[:1000] + "... (分析内容过长，已截断)"
-                
-                # 构建分析卡片
-                sentiment = summary.get('sentiment', '中性')
-                sentiment_color = '#4caf50' if sentiment == '积极' else '#f44336' if sentiment == '谨慎' else '#ff9800'
-                
-                llm_analysis_section += f"""
-                <div style="border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 5px;">
-                    <h4>{stock_code} {stock_name} <span style="color: {sentiment_color}; font-weight: bold;">[{sentiment}]</span></h4>
-                    <p><strong>分析摘要:</strong> {analysis_text[:300]}...</p>
-                    <p><strong>关键指标:</strong></p>
-                    <ul>
-                        <li>增长潜力: {'有' if summary.get('has_growth', False) else '无'}</li>
-                        <li>分红情况: {'有' if summary.get('has_dividend', False) else '无'}</li>
-                        <li>风险提示: {'有' if summary.get('has_risk', False) else '无'}</li>
-                    </ul>
-                    <p><em>注：LLM分析仅供参考，不构成投资建议。</em></p>
-                </div>
-                """
-         
-        # 构建公告部分
-        announcements_section = ""
-        if announcements and len(announcements) > 0:
-            announcements_section = """
-            <h3>近期重要公告</h3>
-            <p>以下为监控股票近期发布的重要公告：</p>
-            """
-            for stock_code, announcement_list in announcements.items():
-                if not announcement_list:
-                    continue
-                announcements_section += f"""
-                <div style="border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 5px;">
-                    <h4>股票 {stock_code}</h4>
-                """
-                for i, announcement in enumerate(announcement_list[:5]):
-                    title = announcement.get('title', '')
-                    date = announcement.get('date', '')
-                    url = announcement.get('url', '')
-                    exchange = announcement.get('exchange', '').upper()
-                    link = f'<a href="{url}" target="_blank">{title}</a>' if url else title
-                    announcements_section += f"""
-                    <div style="margin-bottom: 8px;">
-                        <strong>{i+1}. [{exchange}] {date}</strong><br/>
-                        {link}
-                    """
-                    # 检查是否有官方分红记录（akshare数据）
-                    dividend_details = announcement.get('dividend_details')
-                    if dividend_details and len(dividend_details) > 0:
-                        # 提取关键字段
-                        cash_ratio = dividend_details.get('cash_dividend_ratio')
-                        stock_ratio = dividend_details.get('stock_dividend_ratio')
-                        cap_ratio = dividend_details.get('capitalization_ratio')
-                        record_date = dividend_details.get('record_date')
-                        ex_rights_date = dividend_details.get('ex_rights_date')
-                        payment_date = dividend_details.get('payment_date')
-                        settlement_date = dividend_details.get('settlement_date')
-                        dividend_type = dividend_details.get('dividend_type')
-                        announcement_date = dividend_details.get('announcement_date')
-                        dividend_description = dividend_details.get('dividend_description')
-                        
-                        official_info = []
-                        if cash_ratio and cash_ratio.strip() and cash_ratio != 'nan':
-                            official_info.append(f"派息比例: {cash_ratio}")
-                        if stock_ratio and stock_ratio.strip() and stock_ratio != 'nan':
-                            official_info.append(f"送股比例: {stock_ratio}")
-                        if cap_ratio and cap_ratio.strip() and cap_ratio != 'nan':
-                            official_info.append(f"转增比例: {cap_ratio}")
-                        if record_date and record_date.strip() and record_date != 'nan':
-                            official_info.append(f"股权登记日: {record_date}")
-                        if ex_rights_date and ex_rights_date.strip() and ex_rights_date != 'nan':
-                            official_info.append(f"除权日: {ex_rights_date}")
-                        if payment_date and payment_date.strip() and payment_date != 'nan':
-                            official_info.append(f"派息日: {payment_date}")
-                        if settlement_date and settlement_date.strip() and settlement_date != 'nan':
-                            official_info.append(f"股份到账日: {settlement_date}")
-                        if dividend_type and dividend_type.strip() and dividend_type != 'nan':
-                            official_info.append(f"分红类型: {dividend_type}")
-                        if announcement_date and announcement_date.strip() and announcement_date != 'nan':
-                            official_info.append(f"公告日期: {announcement_date}")
-                        
-                        if official_info:
-                            announcements_section += f"""
-                            <div style="margin-left: 20px; margin-top: 5px; padding: 5px; background-color: #e8f4fd; border-left: 3px solid #2196f3; font-size: 0.9em;">
-                                <strong>官方分红记录 (akshare):</strong><br/>
-                                {', '.join(official_info)}
-                            </div>
-                            """
-                    
-                    # 检查是否有LLM提取的分红详情
-                    llm_dividend = announcement.get('llm_extracted_dividend')
-                    if llm_dividend and llm_dividend.get('success', False):
-                        cash = llm_dividend.get('cash_dividend_per_share')
-                        stock_ratio = llm_dividend.get('stock_dividend_ratio')
-                        cap_ratio = llm_dividend.get('capitalization_ratio')
-                        record_date = llm_dividend.get('record_date')
-                        ex_rights_date = llm_dividend.get('ex_rights_date')
-                        payment_date = llm_dividend.get('payment_date')
-                        total_amount = llm_dividend.get('total_dividend_amount')
-                        confidence = llm_dividend.get('confidence_score', 0.0)
-                        
-                        dividend_info = []
-                        if cash is not None:
-                            dividend_info.append(f"每股派息: {cash}元")
-                        if stock_ratio is not None:
-                            dividend_info.append(f"送股比例: {stock_ratio}")
-                        if cap_ratio is not None:
-                            dividend_info.append(f"转增比例: {cap_ratio}")
-                        if record_date:
-                            dividend_info.append(f"股权登记日: {record_date}")
-                        if ex_rights_date:
-                            dividend_info.append(f"除权日: {ex_rights_date}")
-                        if payment_date:
-                            dividend_info.append(f"派息日: {payment_date}")
-                        if total_amount is not None:
-                            dividend_info.append(f"分红总额: {total_amount}元")
-                        
-                        if dividend_info:
-                            confidence_pct = f"{confidence*100:.1f}%" if confidence else "未知"
-                            announcements_section += f"""
-                            <div style="margin-left: 20px; margin-top: 5px; padding: 5px; background-color: #f8f9fa; border-left: 3px solid #4caf50; font-size: 0.9em;">
-                                <strong>LLM提取分红详情（置信度: {confidence_pct}）:</strong><br/>
-                                {', '.join(dividend_info)}
-                            </div>
-                            """
-                    announcements_section += """
-                    </div>
-                    """
-                announcements_section += """
-                </div>
-                """
-            announcements_section += """
-            <p><em>注：公告信息仅供参考，请以交易所官方公告为准。</em></p>
-            """
-        
-        # 获取服务器信息
-        server_info = self._get_server_info()
-        
-        # 替换模板中的变量
-        html_content = html_table.format(
+        # 替换变量
+        html_content = html.format(
             current_time=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            alert_count=len(alert_stocks),
-            alert_rows_technical=alert_rows_technical,
-            alert_rows_fundamental=alert_rows_fundamental,
-            all_rows_price=all_rows_price,
-            all_rows_fundamental=all_rows_fundamental,
-            llm_analysis_section=llm_analysis_section,
-            announcements_section=announcements_section,
-            server_hostname=server_info['hostname'],
-            server_ip=server_info['ip_address'],
-            server_kernel=server_info['kernel_version'],
-            server_system=server_info['system'],
-            server_machine=server_info['machine']
+            stock_count=len(stock_data),
+            rows=rows
         )
         
         return html_content
-    
+
     def _get_stock_name(self, stock_code):
         """
         获取股票名称（简单实现，实际可能需要从API获取）
@@ -675,83 +247,6 @@ class EmailNotifier:
         }
         
         return stock_names.get(stock_code, stock_code)
-    
-    def _get_server_info(self):
-        """
-        获取服务器信息（IP地址和内核版本）
-        
-        Returns:
-            dict: 包含服务器信息的字典
-        """
-        try:
-            # 获取主机名和IP地址
-            hostname = socket.gethostname()
-            ip_list = []
-            
-            # 方法1: 通过socket.gethostbyname_ex获取所有IP
-            try:
-                _, _, ip_addresses = socket.gethostbyname_ex(hostname)
-                ip_list.extend(ip_addresses)
-            except:
-                pass
-            
-            # 方法2: 通过hostname -I命令获取所有IP（Linux）
-            try:
-                result = subprocess.run(['hostname', '-I'], capture_output=True, text=True, timeout=5)
-                if result.returncode == 0:
-                    ips = result.stdout.strip().split()
-                    ip_list.extend(ips)
-            except:
-                pass
-            
-            # 方法3: 获取公网IP（可选）
-            try:
-                import urllib.request
-                public_ip = urllib.request.urlopen('https://ifconfig.me', timeout=10).read().decode('utf-8').strip()
-                if public_ip and public_ip not in ip_list:
-                    ip_list.append(f"{public_ip} (公网)")
-            except:
-                pass
-            
-            # 去重并过滤回环地址
-            ip_list = list(set(ip_list))
-            ip_list = [ip for ip in ip_list if not ip.startswith('127.')]
-            
-            if ip_list:
-                ip_address = ', '.join(ip_list)
-            else:
-                ip_address = "无法获取"
-            
-            # 获取内核版本（Linux系统）
-            kernel_version = "未知"
-            try:
-                # 尝试通过platform模块获取
-                kernel_version = platform.release()
-                if not kernel_version or kernel_version == "":
-                    # 尝试通过uname命令获取
-                    result = subprocess.run(['uname', '-r'], capture_output=True, text=True, timeout=5)
-                    if result.returncode == 0:
-                        kernel_version = result.stdout.strip()
-            except:
-                # 最后回退到platform.uname
-                kernel_version = platform.uname().release
-            
-            return {
-                'hostname': hostname,
-                'ip_address': ip_address,
-                'kernel_version': kernel_version,
-                'system': platform.system(),
-                'machine': platform.machine()
-            }
-        except Exception as e:
-            logger.warning(f"获取服务器信息失败: {e}")
-            return {
-                'hostname': '未知',
-                'ip_address': '无法获取',
-                'kernel_version': '未知',
-                'system': '未知',
-                'machine': '未知'
-            }
     
     def _send_email(self, subject, body):
         """

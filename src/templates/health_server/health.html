@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>股票量化系统健康检查</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }}
+        h1 {{ color: #333; border-bottom: 2px solid #4CAF50; padding-bottom: 10px; }}
+        .status {{ padding: 8px 15px; border-radius: 4px; color: white; font-weight: bold;
+                 background-color: #4CAF50; display: inline-block; }}
+        .info-box {{ background-color: #f9f9f9; border-left: 4px solid #2196F3; 
+                  padding: 15px; margin: 15px 0; }}
+        .info-table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
+        .info-table th, .info-table td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
+        .info-table th {{ background-color: #f2f2f2; font-weight: bold; }}
+        .endpoints {{ margin-top: 30px; padding: 20px; background-color: #f5f5f5; }}
+        .endpoint {{ margin: 5px 0; font-family: monospace; }}
+        .timestamp {{ color: #666; font-size: 0.9em; }}
+        .security-info {{ background-color: #fff8e1; border-left: 4px solid #ffc107; 
+                       padding: 15px; margin: 20px 0; }}
+        .rate-limit-stats {{ font-family: monospace; font-size: 0.9em; color: #666; }}
+        .button {{ display: inline-block; padding: 10px 20px; margin: 10px 0; background-color: #4CAF50; 
+                  color: white; text-decoration: none; border-radius: 4px; font-weight: bold;
+                  border: none; cursor: pointer; font-size: 16px; }}
+        .button:hover {{ background-color: #45a049; }}
+        .button:active {{ background-color: #3d8b40; }}
+    </style>
+</head>
+<body>
+    <h1>🚀 股票量化系统健康检查</h1>
+    
+    <p><strong>状态:</strong> <span class="status">运行正常</span></p>
+    <p class="timestamp">最后更新: {current_time}</p>
+    <p><a href="/manage" class="button">📋 管理监控股票列表</a><br><small style="color: #666;">(需要邮箱验证码验证)</small></p>
+    
+    <div class="security-info">
+        <h3>🔒 安全状态</h3>
+        <p><strong>速率限制:</strong> 已启用 (1 QPS / 60 请求每分钟)</p>
+        <p><strong>HTML注入防护:</strong> 已启用 (所有动态内容转义)</p>
+        <p><strong>客户端IP:</strong> {client_ip}</p>
+        <p class="rate-limit-stats">
+            <strong>速率限制统计:</strong><br>
+            {rate_limit_stats}
+        </p>
+    </div>
+    
+    <div class="info-box">
+        <h2>🖥️ 服务器信息</h2>
+        <table class="info-table">
+            <tr>
+                <th>项目</th>
+                <th>值</th>
+            </tr>
+            <tr>
+                <td>主机名</td>
+                <td>{hostname}</td>
+            </tr>
+            <tr>
+                <td>IP地址</td>
+                <td>{ip_address}</td>
+            </tr>
+            <tr>
+                <td>内核版本</td>
+                <td>{kernel_version}</td>
+            </tr>
+            <tr>
+                <td>系统</td>
+                <td>{system} ({machine})</td>
+            </tr>
+            <tr>
+                <td>Python版本</td>
+                <td>{python_version}</td>
+            </tr>
+            <tr>
+                <td>启动时间</td>
+                <td>{start_time}</td>
+            </tr>
+            <tr>
+                <td>运行时间</td>
+                <td>{uptime}</td>
+            </tr>
+        </table>
+    </div>
+    
+    <div class="info-box">
+        <h2>📊 系统状态</h2>
+        <table class="info-table">
+            <tr>
+                <th>项目</th>
+                <th>值</th>
+            </tr>
+            <tr>
+                <td>缓存目录大小</td>
+                <td>{cache_size}</td>
+            </tr>
+            <tr>
+                <td>数据目录大小</td>
+                <td>{data_size}</td>
+            </tr>
+            <tr>
+                <td>日志目录大小</td>
+                <td>{log_size}</td>
+            </tr>
+            <tr>
+                <td>磁盘使用率</td>
+                <td>{disk_usage}</td>
+            </tr>
+            <tr>
+                <td>内存使用率</td>
+                <td>{memory_usage}</td>
+            </tr>
+            <tr>
+                <td>监控股票数量</td>
+                <td>{stock_count}</td>
+            </tr>
+            <tr>
+                <td>最后运行时间</td>
+                <td>{last_run_time}</td>
+            </tr>
+            <tr>
+                <td>下次运行时间</td>
+                <td>{next_run_time}</td>
+            </tr>
+        </table>
+    </div>
+    
+    <div class="endpoints">
+        <h2>🔗 API端点</h2>
+        <div class="endpoint"><a href="/">/</a> - HTML状态页面 (当前页面)</div>
+        <div class="endpoint"><a href="/status">/status</a> - JSON格式状态信息</div>
+        <div class="endpoint"><a href="/health">/health</a> - 健康检查端点 (返回200 OK)</div>
+        <div class="endpoint"><a href="/test-email">/test-email</a> - 发送测试邮件 (需要GET参数?force=true)</div>
+        <div class="endpoint"><a href="/metrics">/metrics</a> - 系统指标 (Prometheus格式)</div>
+        <div class="endpoint"><a href="/request-otp">/request-otp</a> - 管理验证码请求</div>
+        <div class="endpoint"><a href="/manage">/manage</a> - 监控股票列表管理 (需要验证)</div>
+    </div>
+    
+    <p style="color: #666; margin-top: 30px; font-size: 0.9em;">
+        💡 健康服务器运行在端口1933，用于监控系统状态和发送测试邮件。
+    </p>
+</body>
+</html>

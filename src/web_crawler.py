@@ -472,7 +472,7 @@ class StockWebCrawler:
         Returns:
             dict: 包含分红数据的字典，键包括：
                 - dividend_per_share: 最近一年每股分红（元）
-                - dividend_yield: 当前股息率（%）
+                - dividend_yield: 当前股息率（%）（由data_fetcher计算）
                 - last_dividend_date: 最近分红日期
                 - dividend_history: 历史分红列表
         """
@@ -489,7 +489,7 @@ class StockWebCrawler:
             try:
                 logger.info(f"尝试从 {source_func.__name__} 获取股票 {stock_code} 分红数据")
                 dividend_data = source_func(stock_code)
-                if dividend_data and dividend_data.get('dividend_per_share'):
+                if dividend_data and dividend_data.get('dividend_per_share') is not None:
                     logger.info(f"从 {source_func.__name__} 成功获取股票 {stock_code} 分红数据")
                     return dividend_data
             except Exception as e:
@@ -660,54 +660,130 @@ class StockWebCrawler:
             # 解析HTML，查找分红表格
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # 查找分红表格（通常有class='datatbl'）
-            tables = soup.find_all('table', class_='datatbl')
+            # 查找所有表格
+            tables = soup.find_all('table')
             
             dividend_history = []
             latest_dividend = None
             latest_date = None
             
-            for table in tables:
-                # 查找表格行
-                rows = table.find_all('tr')
-                for row in rows[1:]:  # 跳过表头
-                    cols = row.find_all('td')
-                    if len(cols) >= 6:
-                        try:
-                            # 解析分红信息
-                            # 格式可能因页面而异，这里需要根据实际页面调整
-                            dividend_date = cols[0].text.strip()  # 分红年度
-                            dividend_scheme = cols[1].text.strip()  # 分红方案
-                            
-                            # 解析分红方案，例如"10派2.5元"表示每10股派2.5元
-                            import re
-                            match = re.search(r'10派([\d\.]+)元', dividend_scheme)
-                            if match:
-                                dividend_per_10 = float(match.group(1))  # 每10股分红
-                                dividend_per_share = dividend_per_10 / 10.0  # 每股分红
-                                
-                                dividend_info = {
-                                    'date': dividend_date,
-                                    'scheme': dividend_scheme,
-                                    'dividend_per_share': dividend_per_share,
-                                    'dividend_per_10': dividend_per_10
-                                }
-                                
-                                dividend_history.append(dividend_info)
-                                
-                                # 更新最新分红
-                                if not latest_dividend or dividend_date > latest_date:
-                                    latest_dividend = dividend_per_share
-                                    latest_date = dividend_date
-                        except Exception as e:
-                            logger.debug(f"解析分红行失败: {e}")
+            # 寻找分红表格 - 首先尝试通过ID查找
+            dividend_table = soup.find('table', id='sharebonus_1')
+            if not dividend_table:
+                # 回退到旧方法：寻找包含"分红"和"派息"文本的表格
+                for table in tables:
+                    table_text = table.get_text()
+                    if '分红' in table_text and '派息' in table_text:
+                        dividend_table = table
+                        break
+            
+            if not dividend_table:
+                logger.warning(f"未在新浪财经页面找到股票 {stock_code} 的分红表格")
+                return None
+            
+            # 解析表格行
+            rows = dividend_table.find_all('tr')
+            
+            # 寻找表头行（包含"送股"、"转增"、"派息"等关键词）
+            header_row_index = -1
+            for i, row in enumerate(rows):
+                row_text = row.get_text()
+                if '派息' in row_text and ('送股' in row_text or '转增' in row_text):
+                    header_row_index = i
+                    break
+            
+            if header_row_index < 0:
+                logger.warning(f"未找到分红表格的表头行")
+                return None
+            
+            # 解析数据行（表头行之后的行）
+            for i in range(header_row_index + 1, len(rows)):
+                row = rows[i]
+                cols = row.find_all('td')
+                if len(cols) >= 4:
+                    try:
+                        # 列结构：日期, 送股, 转增, 派息(税前), 状态, 除权除息日, 股权登记日, ...
+                        date = cols[0].text.strip()
+                        stock_div = cols[1].text.strip()
+                        cap_div = cols[2].text.strip()
+                        cash_div_per_10 = cols[3].text.strip()
+                        
+                        # 跳过没有现金分红的数据
+                        if not cash_div_per_10 or cash_div_per_10 == '--':
                             continue
+                        
+                        # 转换现金分红（从每10股到每股）
+                        try:
+                            cash_div_per_10_float = float(cash_div_per_10)
+                            dividend_per_share = cash_div_per_10_float / 10.0
+                            
+                            dividend_info = {
+                                'date': date,
+                                'stock_dividend': stock_div,
+                                'capitalization': cap_div,
+                                'cash_dividend_per_10': cash_div_per_10_float,
+                                'dividend_per_share': dividend_per_share,
+                                'scheme': f"10派{cash_div_per_10_float}元",
+                                'dividend_per_10': cash_div_per_10_float
+                            }
+                            
+                            dividend_history.append(dividend_info)
+                            
+                            # 更新最新分红
+                            if not latest_dividend or date > latest_date:
+                                latest_dividend = dividend_per_share
+                                latest_date = date
+                                
+                        except ValueError as e:
+                            logger.debug(f"解析分红数值失败: {cash_div_per_10}, 错误: {e}")
+                            continue
+                            
+                    except Exception as e:
+                        logger.debug(f"解析行 {i} 失败: {e}")
+                        continue
             
             if latest_dividend:
+                # 计算过去365天的分红总和
+                one_year_ago = datetime.now() - timedelta(days=365)
+                annual_dividend_sum = 0.0
+                
+                for dividend_info in dividend_history:
+                    try:
+                        # 解析分红日期，尝试多种格式
+                        date_str = dividend_info.get('date')
+                        if not date_str:
+                            continue
+                        
+                        # 尝试常见日期格式
+                        dividend_date = None
+                        for fmt in ('%Y-%m-%d', '%Y/%m/%d', '%Y%m%d', '%Y年%m月%d日'):
+                            try:
+                                dividend_date = datetime.strptime(date_str, fmt)
+                                break
+                            except ValueError:
+                                continue
+                        
+                        if dividend_date is None:
+                            logger.debug(f"无法解析分红日期格式: {date_str}")
+                            continue
+                        
+                        # 检查是否在过去365天内
+                        if dividend_date >= one_year_ago:
+                            annual_dividend_sum += dividend_info.get('dividend_per_share', 0.0)
+                            
+                    except Exception as e:
+                        logger.debug(f"处理分红记录时出错: {e}")
+                        continue
+                
+                # 使用年度分红总和作为dividend_per_share（符合"最近一年每股分红"定义）
+                dividend_per_share = annual_dividend_sum if annual_dividend_sum > 0 else None
+                
+                logger.info(f"从新浪财经成功获取股票 {stock_code} 的分红数据: 年度总和={annual_dividend_sum:.4f}元/股, 最新单次={latest_dividend:.4f}元/股 (日期: {latest_date})")
                 return {
-                    'dividend_per_share': latest_dividend,
+                    'dividend_per_share': dividend_per_share,
                     'last_dividend_date': latest_date,
-                    'dividend_history': dividend_history
+                    'dividend_history': dividend_history,
+                    'latest_dividend': latest_dividend  # 保留最新单次分红供参考
                 }
             else:
                 logger.warning(f"未在新浪财经页面找到股票 {stock_code} 的分红数据")
@@ -765,3 +841,5 @@ class StockWebCrawler:
         except Exception as e:
             logger.warning(f"从东方财富获取分红数据失败: {e}")
             return None
+
+# End of file

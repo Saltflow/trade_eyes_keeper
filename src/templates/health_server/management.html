@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>监控股票列表管理</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }}
+        .container {{ max-width: 800px; margin: 0 auto; }}
+        .info-box {{ background-color: #e3f2fd; border-left: 4px solid #2196F3; padding: 20px; margin: 20px 0; }}
+        .error-box {{ background-color: #ffebee; border-left: 4px solid #f44336; padding: 20px; margin: 20px 0; }}
+        .success-box {{ background-color: #e8f5e9; border-left: 4px solid #4caf50; padding: 20px; margin: 20px 0; }}
+        .form-group {{ margin: 20px 0; }}
+        .input-field {{ padding: 12px; font-size: 16px; border: 1px solid #ddd; border-radius: 4px; width: 200px; }}
+        .button {{ padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 14px; border: none; }}
+        .button-add {{ background-color: #4caf50; color: white; }}
+        .button-add:hover {{ background-color: #45a049; }}
+        .button-remove {{ background-color: #f44336; color: white; }}
+        .button-remove:hover {{ background-color: #d32f2f; }}
+        .button-logout {{ background-color: #ff9800; color: white; }}
+        .stock-table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+        .stock-table th, .stock-table td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
+        .stock-table th {{ background-color: #f2f2f2; }}
+        .session-info {{ color: #666; font-size: 0.9em; margin-bottom: 20px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📈 监控股票列表管理</h1>
+        
+        <div class="session-info">
+            <strong>登录状态:</strong> 已登录 | 
+            <strong>IP地址:</strong> {client_ip} | 
+            <a href="/logout">退出登录</a>
+        </div>
+        
+        {error_html}
+        {success_html}
+        
+        <div class="info-box">
+            <h3>添加新股票</h3>
+            <p>请输入6位数字股票代码（上海6开头，深圳0或3开头）</p>
+            <form method="POST" action="/update-watchlist">
+                <input type="hidden" name="action" value="add">
+                <input type="text" name="stock_code" class="input-field" 
+                       placeholder="例如: 000001" maxlength="6" pattern="\d{6}" required>
+                <button type="submit" class="button button-add">添加股票</button>
+            </form>
+        </div>
+        
+        <h2>当前监控股票 ({stock_count} 只)</h2>
+        <table class="stock-table">
+            <thead>
+                <tr>
+                    <th>股票代码</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {stocks_html}
+            </tbody>
+        </table>
+        
+        <div class="info-box">
+            <h3>批量操作</h3>
+            <form method="POST" action="/update-watchlist" onsubmit="return confirm('确定要清空所有股票吗？此操作不可撤销。');">
+                <input type="hidden" name="action" value="clear">
+                <button type="submit" class="button button-remove">清空所有股票</button>
+            </form>
+        </div>
+        
+        <p style="margin-top: 30px;">
+            <a href="/">← 返回健康检查页面</a>
+        </p>
+    </div>
+</body>
+</html>

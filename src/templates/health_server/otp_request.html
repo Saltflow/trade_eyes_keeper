@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>请求管理验证码</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }}
+        .container {{ max-width: 600px; margin: 0 auto; }}
+        .info-box {{ background-color: #e3f2fd; border-left: 4px solid #2196F3; padding: 20px; margin: 20px 0; }}
+        .error-box {{ background-color: #ffebee; border-left: 4px solid #f44336; padding: 20px; margin: 20px 0; }}
+        .success-box {{ background-color: #e8f5e9; border-left: 4px solid #4caf50; padding: 20px; margin: 20px 0; }}
+        .form-group {{ margin: 20px 0; }}
+        .button {{ background-color: #4caf50; color: white; border: none; padding: 12px 24px; border-radius: 4px; cursor: pointer; font-size: 16px; }}
+        .button:disabled {{ background-color: #cccccc; cursor: not-allowed; }}
+        .button:hover:not(:disabled) {{ background-color: #45a049; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 请求管理验证码</h1>
+        
+        <div class="info-box">
+            <h3>验证码将发送到您的订阅邮箱</h3>
+            <p><strong>邮箱地址:</strong> {receiver_email}</p>
+            <p><strong>验证码类型:</strong> 5位数字，10分钟内有效</p>
+            <p><strong>您的IP地址:</strong> {client_ip}</p>
+        </div>
+        
+        {error_html}
+        {remaining_html}
+        
+        <div class="form-group">
+            <p><strong>状态:</strong> {status_text}</p>
+            <p><strong>下次可请求时间:</strong> {next_request_time}</p>
+        </div>
+        
+        <form method="GET" action="/request-otp">
+            <button type="submit" class="button" {button_disabled}>
+                {button_text}
+            </button>
+        </form>
+        
+        <p style="margin-top: 30px;">
+            <a href="/">← 返回健康检查页面</a>
+        </p>
+    </div>
+</body>
+</html>
