@@ -113,30 +113,30 @@ class EmailNotifier:
     <meta charset="utf-8">
     <title>股票提醒通知</title>
     <style>
-        table {
+        table {{
             border-collapse: collapse;
             width: 100%;
             margin: 20px 0;
             font-family: Arial, sans-serif;
-        }
-        th, td {
+        }}
+        th, td {{
             border: 1px solid #ddd;
             padding: 8px;
             text-align: left;
-        }
-        th {
+        }}
+        th {{
             background-color: #f2f2f2;
             font-weight: bold;
-        }
-        .alert-row {
+        }}
+        .alert-row {{
             background-color: #fff8e1;
-        }
-        .positive {
+        }}
+        .positive {{
             color: #4caf50;
-        }
-        .negative {
+        }}
+        .negative {{
             color: #f44336;
-        }
+        }}
     </style>
 </head>
 <body>
