@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>股票提醒通知</title>
+    <style>
+        table {{
+            border-collapse: collapse;
+            width: 100%;
+            margin: 20px 0;
+        }}
+        th, td {{
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }}
+        th {{
+            background-color: #f2f2f2;
+            font-weight: bold;
+        }}
+        .alert-row {{
+            background-color: #fff8e1;
+        }}
+        .positive {{
+            color: #4caf50;
+        }}
+        .negative {{
+            color: #f44336;
+        }}
+    </style>
+</head>
+<body>
+    <h2>股票提醒通知</h2>
+    <p>系统检测到以下股票满足条件：<strong>当天最低价 &lt; MA60（前复权）</strong></p>
+    <p>检测时间：{current_time}</p>
+    
+    {alert_section}
+    
+    <h3>所有监控股票</h3>
+    
+    <h4>价格技术指标</h4>
+    <table>
+        <tr>
+            <th>股票代码</th>
+            <th>开盘价</th>
+            <th>收盘价</th>
+            <th>最高价</th>
+            <th>最低价</th>
+            <th>MA60</th>
+            <th>收盘-MA60差值</th>
+            <th>差值(%)</th>
+            <th>状态</th>
+        </tr>
+        {all_rows_price}
+    </table>
+    
+    <h4>基本面指标</h4>
+    <table>
+        <tr>
+            <th>股票代码</th>
+            <th>每股分红(元)</th>
+            <th>股息率(%)</th>
+            <th>业绩增长(%)</th>
+            <th>PE</th>
+            <th>PB</th>
+            <th>ROE(%)</th>
+            <th>负债率(%)</th>
+        </tr>
+        {all_rows_fundamental}
+    </table>
+    
+    {llm_analysis_section}
+    
+    {announcements_section}
+    
+    <p><em>注：此邮件由股票量化系统自动发送，请勿直接回复。</em></p>
+    
+    <div style="margin-top: 30px; padding-top: 15px; border-top: 1px solid #eee; font-size: 0.8em; color: #666;">
+        <p><strong>服务器信息:</strong></p>
+        <ul>
+            <li>主机名: {server_hostname}</li>
+            <li>IP地址: {server_ip}</li>
+            <li>内核版本: {server_kernel}</li>
+            <li>系统: {server_system} ({server_machine})</li>
+        </ul>
+    </div>
+</body>
+</html>
