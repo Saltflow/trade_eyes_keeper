@@ -1,0 +1,17 @@
+[style]
+based_on_style = pep8
+column_limit = 88
+blank_lines_before_top_level = 1
+blank_lines_between_methods = 1
+blank_lines_after_imports = 1
+indent_width = 4
+continuation_indent_width = 4
+split_before_logical_operator = false
+split_before_expression_after_opening_paren = false
+split_before_first_argument = false
+split_complex_comprehension = true
+split_penalty_after_opening_bracket = 300
+split_penalty_after_unary_operator = 10000
+split_penalty_bitwise_operator = 300
+split_penalty_import_names = 300
+split_penalty_logical_operator = 300
