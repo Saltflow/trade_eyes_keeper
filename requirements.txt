@@ -28,3 +28,4 @@ colorlog>=6.7.0
 # 开发依赖（测试等）
 pytest>=7.4.0
 pytest-mock>=3.11.0
+ruff>=0.4.0  # 代码格式化和检查
