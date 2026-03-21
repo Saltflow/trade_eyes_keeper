@@ -102,7 +102,7 @@ class LLMAnalyzer:
             self.client = None  # 不再使用OpenAI客户端
             logger.info("LLM API配置完成，将使用requests直接调用")
 
-    def _call_chat_completion(self, messages, temperature=0.7, max_tokens=2000):
+    def _call_chat_completion(self, messages, temperature=0.7, max_tokens=2000, stream=False):
         """
         使用requests直接调用DeepSeek API
         """
@@ -119,23 +119,70 @@ class LLMAnalyzer:
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "stream": stream,
         }
 
         try:
+            # 设置更长的超时时间和合理的读取设置
             response = requests.post(
                 url,
                 headers=headers,
                 json=payload,
-                timeout=120.0,
+                timeout=300.0,  # 5分钟超时
                 verify=True,  # SSL验证
+                stream=stream,  # 如果stream=True，需要流式处理
             )
             response.raise_for_status()
-            return response.json()
+            
+            if stream:
+                # 流式响应处理
+                content_chunks = []
+                for chunk in response.iter_lines():
+                    if chunk:
+                        chunk_str = chunk.decode('utf-8')
+                        if chunk_str.startswith('data: '):
+                            chunk_data = chunk_str[6:]
+                            if chunk_data == '[DONE]':
+                                break
+                            try:
+                                chunk_json = json.loads(chunk_data)
+                                if 'choices' in chunk_json and len(chunk_json['choices']) > 0:
+                                    if 'delta' in chunk_json['choices'][0] and 'content' in chunk_json['choices'][0]['delta']:
+                                        content_chunks.append(chunk_json['choices'][0]['delta']['content'])
+                            except json.JSONDecodeError:
+                                logger.warning(f"无法解析流式响应块: {chunk_data}")
+                content = ''.join(content_chunks)
+                return {"choices": [{"message": {"content": content}}]}
+            else:
+                # 非流式响应
+                return response.json()
+                
+        except requests.exceptions.ChunkedEncodingError as e:
+            logger.error(f"流式响应分块编码错误: {e}")
+            # 检查是否为InvalidChunkLength错误
+            if "InvalidChunkLength" in str(e):
+                logger.error("检测到InvalidChunkLength错误，可能是响应过大")
+                # 尝试减少max_tokens并重试
+                reduced_max_tokens = max(500, max_tokens // 2)
+                logger.info(f"尝试减少max_tokens到{reduced_max_tokens}并重试...")
+                return self._call_chat_completion(messages, temperature, reduced_max_tokens, stream=False)
+            # 尝试非流式模式重试
+            if stream:
+                logger.info("尝试使用非流式模式重试...")
+                return self._call_chat_completion(messages, temperature, max_tokens, stream=False)
+            raise
         except requests.exceptions.RequestException as e:
             logger.error(f"API请求失败: {e}")
+            # 检查是否为InvalidChunkLength错误（可能隐藏在内部异常中）
+            if "InvalidChunkLength" in str(e):
+                logger.error("检测到InvalidChunkLength错误，尝试减少max_tokens重试")
+                reduced_max_tokens = max(500, max_tokens // 2)
+                logger.info(f"尝试减少max_tokens到{reduced_max_tokens}并重试...")
+                return self._call_chat_completion(messages, temperature, reduced_max_tokens, stream=False)
+                
             if hasattr(e, "response") and e.response is not None:
                 logger.error(
-                    f"响应状态: {e.response.status_code}, 内容: {e.response.text[:200]}"
+                    f"响应状态: {e.response.status_code}, 内容: {e.response.text[:500]}"
                 )
             raise
 
@@ -253,7 +300,8 @@ class LLMAnalyzer:
                         {"role": "user", "content": prompt},
                     ],
                     temperature=0.7,
-                    max_tokens=2000,
+                    max_tokens=1200,
+                    stream=False,
                 )
                 # 保持与OpenAI响应格式兼容
                 # 解析响应
@@ -299,6 +347,16 @@ class LLMAnalyzer:
                     return None
             except requests.exceptions.RequestException as e:
                 logger.error(f"第{attempt + 1}次尝试LLM API连接失败: {e}")
+                # 检查是否为InvalidChunkLength错误（响应过大）
+                if "InvalidChunkLength" in str(e):
+                    logger.error(f"检测到InvalidChunkLength错误，响应可能过大: {e}")
+                    if attempt < max_retries - 1:
+                        logger.info("等待后重试，可能会减少请求大小...")
+                        time.sleep(retry_delay * 2)
+                        continue
+                    else:
+                        logger.error(f"所有{max_retries}次尝试均失败(InvalidChunkLength): {e}")
+                        return None
                 # 检查是否为认证错误（401）或速率限制（429）
                 if hasattr(e, "response") and e.response is not None:
                     status_code = e.response.status_code
@@ -536,7 +594,8 @@ class LLMAnalyzer:
                         {"role": "user", "content": prompt},
                     ],
                     temperature=0.3,  # 低温度以获得更确定的输出
-                    max_tokens=1500,
+                    max_tokens=800,
+                    stream=False,
                 )
 
                 # 解析响应
@@ -627,6 +686,29 @@ class LLMAnalyzer:
 
             except requests.exceptions.RequestException as e:
                 logger.error(f"第{attempt + 1}次尝试：API请求失败: {e}")
+                # 检查是否为InvalidChunkLength错误（响应过大）
+                if "InvalidChunkLength" in str(e):
+                    logger.error(f"检测到InvalidChunkLength错误，响应可能过大: {e}")
+                    if attempt < max_retries - 1:
+                        logger.info("等待后重试，可能会减少请求大小...")
+                        time.sleep(retry_delay * 2)
+                        continue
+                    else:
+                        return {
+                            "success": False,
+                            "error": f"API响应过大(InvalidChunkLength)，所有{max_retries}次尝试均失败: {e}",
+                            "cash_dividend_per_share": None,
+                            "stock_dividend_ratio": None,
+                            "capitalization_ratio": None,
+                            "record_date": None,
+                            "ex_rights_date": None,
+                            "payment_date": None,
+                            "total_dividend_amount": None,
+                            "confidence_score": 0.0,
+                            "extraction_timestamp": datetime.now().isoformat(),
+                            "raw_llm_response": "",
+                            "attempts": attempt + 1,
+                        }
                 # 检查是否为认证错误（401）或速率限制（429）
                 if hasattr(e, "response") and e.response is not None:
                     status_code = e.response.status_code
@@ -716,7 +798,7 @@ class LLMAnalyzer:
     def _build_dividend_extraction_prompt(self, stock_code, title, announcement_text):
         """构建分红提取提示"""
         # 限制文本长度以避免令牌超限
-        max_text_length = 8000
+        max_text_length = 5000
         if len(announcement_text) > max_text_length:
             truncated_text = (
                 announcement_text[:max_text_length] + "... (文本过长，已截断)"

@@ -714,10 +714,53 @@ class AnnouncementFetcher:
 
         try:
             soup = BeautifulSoup(html, "html.parser")
-
-            # 查找公告表格
+            
+            # 尝试新样式：查找公告列表 (div.datelist > ul)
+            datelist_div = soup.find("div", class_="datelist")
+            if datelist_div:
+                ul = datelist_div.find("ul")
+                if ul:
+                    # 解析ul中的内容：日期和链接被<br>分隔
+                    # 方法：遍历ul的所有子节点
+                    current_date = None
+                    for child in ul.children:
+                        if child.name is None:  # 文本节点
+                            text = str(child)
+                            # 查找日期模式 YYYY-MM-DD
+                            import re
+                            date_match = re.search(r'(\d{4}-\d{2}-\d{2})', text)
+                            if date_match:
+                                current_date = date_match.group(1)
+                        elif child.name == 'a':  # 链接标签
+                            if current_date:
+                                href = child.get('href', '')
+                                title = child.get_text(strip=True)
+                                # 构建完整URL
+                                if href and not href.startswith("http"):
+                                    url = f"http://vip.stock.finance.sina.com.cn{href}"
+                                else:
+                                    url = href
+                                
+                                announcement = {
+                                    "stock_code": stock_code,
+                                    "exchange": exchange,
+                                    "title": title,
+                                    "date": current_date,
+                                    "url": url,
+                                    "type": "",  # 新浪页面没有类型信息
+                                    "summary": title,
+                                }
+                                announcements.append(announcement)
+                                # 重置当前日期，避免重复使用
+                                current_date = None
+                        # <br>标签忽略，继续处理下一个节点
+                    
+                    if announcements:
+                        logger.info(f"从新浪财经datelist解析到 {len(announcements)} 条公告")
+                        return announcements
+            
+            # 备用方法：查找旧样式公告表格
             tables = soup.find_all("table", class_="datatbl")
-
             for table in tables:
                 rows = table.find_all("tr")
                 for row in rows[1:]:  # 跳过表头
