@@ -16,17 +16,19 @@ try:
     from .content_fetcher import ContentFetcher
 
     CONTENT_FETCHER_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     CONTENT_FETCHER_AVAILABLE = False
-    logger.warning("ContentFetcher不可用，内容抓取功能受限")
+    logger.warning(f"ContentFetcher不可用，内容抓取功能受限: {e}")
+    logger.debug(f"ContentFetcher import error details", exc_info=True)
 
 try:
     from .llm_analyzer import LLMAnalyzer
 
     LLM_ANALYZER_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     LLM_ANALYZER_AVAILABLE = False
-    logger.warning("LLMAnalyzer不可用，LLM提取功能受限")
+    logger.warning(f"LLMAnalyzer不可用，LLM提取功能受限: {e}")
+    logger.debug(f"Import error details", exc_info=True)
 
 
 class AnnouncementFetcher:
@@ -333,9 +335,30 @@ class AnnouncementFetcher:
                 enriched_result = self._enrich_announcements(filtered_result)
                 return enriched_result
             else:
-                # 没有获取到公告，返回空列表（不生成模拟数据）
-                logger.info(f"从{exchange}未获取到{stock_code}的公告")
-                return []
+                # 没有获取到公告，尝试备用接口
+                logger.info(f"从{exchange}未获取到{stock_code}的公告，尝试备用接口")
+                if exchange == "sse":
+                    result_backup = self._fetch_from_sse_backup(stock_code, fetch_days)
+                elif exchange == "szse":
+                    result_backup = self._fetch_from_szse_backup(stock_code, fetch_days)
+                else:
+                    result_backup = []
+                
+                if result_backup:
+                    # 应用时间窗口过滤
+                    filtered_result = self._filter_announcements_by_window(
+                        result_backup, original_days, dividend_days
+                    )
+                    logger.info(
+                        f"股票 {stock_code} 从{exchange}备用接口获取到 {len(result_backup)} 条公告，过滤后保留 {len(filtered_result)} 条"
+                    )
+                    # 丰富公告信息（内容抓取和LLM提取）
+                    enriched_result = self._enrich_announcements(filtered_result)
+                    return enriched_result
+                else:
+                    # 备用接口也未获取到公告，返回空列表
+                    logger.info(f"备用接口也未获取到{stock_code}的公告")
+                    return []
 
         except Exception as e:
             logger.error(f"从 {exchange} 获取公告失败: {e}")
