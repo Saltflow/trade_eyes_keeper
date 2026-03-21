@@ -71,6 +71,32 @@ llm:
 ```
 **功能**: 基本面分析、盈利能力评估、分红分析
 
+### 6. 健康服务器模块化架构
+**决策**: 拆分单文件健康服务器为模块化包结构
+**时间**: 2026-03-21 (v1.11+)
+**背景**: `health_server.py` 超过2200行，包含11处硬编码HTML，维护困难
+**新结构**:
+```
+src/health_server/
+├── __init__.py              # 包导出接口
+├── core/
+│   ├── health_server.py     # HealthServer 类
+│   ├── start_server.py      # start_health_server 函数
+│   └── global_instances.py  # 全局实例 (rate_limiter等)
+├── handlers/
+│   └── health_handler.py    # HealthHandler 类
+└── auth/
+    ├── rate_limiter.py      # 速率限制器
+    ├── otp_manager.py       # OTP管理器
+    └── session_manager.py   # 会话管理器
+```
+**改进**:
+1. **消除硬编码HTML**: 所有HTML模板移至 `src/templates/health_server/`
+2. **模板系统可靠化**: 模板加载失败时优雅降级到内置HTTP错误响应
+3. **向后兼容**: 外部导入 (`scheduler_manager.py`, `main.py`, `ci_cd_deploy.py`) 无需修改
+4. **循环编码防护**: 通过 @cycle_guard 验证无重复错误模式
+**状态**: 已完成，所有验证测试通过
+
 ---
 
 ## 🔧 关键问题与解决方案
@@ -260,6 +286,8 @@ tests/
 - `.opencode/opencode.json` - 主代理配置
 - `.opencode/agents/cycle_guard.md` - 防循环编码验证子代理配置
 - `.opencode/agents/checkpoint-acceptor.md` - 抗硬编码测试验收子代理配置
+- `.opencode/agents/narrow-down-designer.md` - 需求拆解设计师子代理配置
+- `.opencode/agents/data-source-validator.md` - 数据源验证用户代理配置
 
 ---
 

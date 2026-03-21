@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>发送测试邮件</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+        .warning { background-color: #fff8e1; border-left: 4px solid #ffc107; padding: 20px; margin: 20px 0; }
+        .button { background-color: #4caf50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block; }
+    </style>
+</head>
+<body>
+    <h1>📧 发送测试邮件</h1>
+    <div class="warning">
+        <h3>⚠️ 注意</h3>
+        <p>这将发送一封测试邮件到您的订阅邮箱:</p>
+        <p><strong>{receiver_email}</strong></p>
+        <p>请确认您确实需要发送测试邮件。</p>
+    </div>
+    <p>
+        <a href="/test-email?force=true" class="button">确认发送测试邮件</a>
+        <a href="/" style="margin-left: 20px;">取消</a>
+    </p>
+</body>
+</html>
