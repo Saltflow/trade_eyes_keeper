@@ -1,7 +1,7 @@
 announcements:
   days: 7
   dividend_days: 420
-  enable: false
+  enable: true
   include_in_email: true
   enable_content_fetching: true
   enable_llm_extraction: true

@@ -256,6 +256,7 @@ def sync_code_to_remote(client, dry_run=False):
 
                 filepath = os.path.join(root, file)
                 arcname = os.path.join(rel_root, file) if rel_root else file
+                arcname = arcname.replace('\\', '/')
                 tar.add(filepath, arcname=arcname, recursive=False)
                 file_count += 1
 
