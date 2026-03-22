@@ -8,6 +8,7 @@
 3. 满足条件时发送邮件提醒
 4. 获取股票报告并分析基本面（LLM API）
 """
+
 import os
 import sys
 import yaml
@@ -17,6 +18,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
+
 # 加载环境变量
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "config", ".env"))
 # 添加src目录到Python路径
@@ -27,6 +29,8 @@ from src.email_notifier import EmailNotifier
 from src.llm_analyzer import LLMAnalyzer
 from src.scheduler_manager import SchedulerManager
 from src.announcement_fetcher import AnnouncementFetcher
+
+
 # 设置日志
 def setup_logging(config):
     """配置日志系统"""
@@ -55,6 +59,7 @@ def setup_logging(config):
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
     return logger
+
 
 def load_config(config_path=None):
     """加载配置文件"""
@@ -87,6 +92,7 @@ def load_config(config_path=None):
     except Exception as e:
         print(f"加载配置文件失败: {e}")
         sys.exit(1)
+
 
 def run_daily_task():
     """每日运行的任务"""
@@ -137,37 +143,6 @@ def run_daily_task():
             logger.info(f"LLM分析完成，共分析{len(analysis_results)}只股票")
         else:
             logger.info("LLM API未配置，跳过基本面分析")
-        # 6. 财务健康分析（可选）
-        financial_health_results = {}
-        financial_config = config.get("financial_health", {})
-        if financial_config.get("enable", False) and api_key and api_key.strip():
-            logger.info("开始财务健康分析")
-            # 使用已有的analyzer实例或创建新的
-            if "analyzer" not in locals():
-                analyzer = LLMAnalyzer(config)
-            for stock_code in config["stocks"]:
-                stock_announcements = announcements.get(stock_code, [])
-                if stock_announcements:
-                    try:
-                        health_result = analyzer.analyze_financial_health(
-                            stock_code, stock_announcements
-                        )
-                        financial_health_results[stock_code] = health_result
-                        logger.info(f"股票 {stock_code} 财务健康分析完成")
-                        # 合并到LLM分析结果中
-                        if stock_code in analysis_results:
-                            analysis_results[stock_code][
-                                "financial_health"
-                            ] = health_result
-                        else:
-                            analysis_results[stock_code] = {
-                                "financial_health": health_result
-                            }
-                    except Exception as e:
-                        logger.error(f"股票 {stock_code} 财务健康分析失败: {e}")
-                else:
-                    logger.debug(f"股票 {stock_code} 无公告，跳过财务健康分析")
-            logger.info(f"财务健康分析完成，共分析{len(financial_health_results)}只股票")
         # 7. 发送邮件（无论是否有满足条件的股票都发送日报）
         if alert_stocks:
             logger.info(f"发现{len(alert_stocks)}只满足条件的股票: {alert_stocks}")
@@ -180,6 +155,7 @@ def run_daily_task():
         logger.info("每日任务执行完成")
     except Exception as e:
         logger.error(f"执行任务时发生错误: {e}", exc_info=True)
+
 
 def main():
     """主函数"""
@@ -197,6 +173,7 @@ def main():
             # 仅启动健康服务器模式
             logger.info("启动健康服务器模式")
             from src.health_server import start_health_server
+
             start_health_server()
         elif sys.argv[1] == "--help":
             # 显示帮助信息
@@ -217,6 +194,7 @@ def main():
         logger.info("启动定时任务调度器")
         scheduler = SchedulerManager(config, task_function=run_daily_task)
         scheduler.start()
+
 
 if __name__ == "__main__":
     main()

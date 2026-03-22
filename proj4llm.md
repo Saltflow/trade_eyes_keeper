@@ -322,6 +322,27 @@ tests/
 - `.opencode/agents/checkpoint-acceptor.md` - 抗硬编码测试验收子代理配置
 - `.opencode/agents/narrow-down-designer.md` - 需求拆解设计师子代理配置
 - `.opencode/agents/data-source-validator.md` - 数据源验证用户代理配置
+- `.opencode/agents/acceptance.md` - 验收测试主协调器配置
+
+### 验收测试工作流架构 (2026-03-22)
+**目标**: 创建自动化验收流程，协调四个子代理完成端到端验证
+**主代理**: `acceptance` (模式: primary，可通过Tab键切换)
+**协调流程**:
+1. **需求分析** → @narrow-down-designer: 生成≤20步实施计划
+2. **分步实施与验收** → 对每步:
+   - 代码修改 (≤150行增量)
+   - @checkpoint-acceptor: 验证行数、测试通过、随机化参数
+   - @cycle_guard: 检测循环编码模式
+3. **系统验证** → @data-source-validator: 运行真实系统，测试数据源API和数据质量
+4. **报告生成** → 综合四个子代理结果，生成验收报告
+
+**约束条件**:
+- 单次变更≤150行核心代码
+- 文档驱动开发 (更新proj4llm.md)
+- 防循环编码 (高风险≥5次重复强制停止)
+- 股息计算一致性 (明确选择12个月总和)
+
+**状态**: 已实现，acceptance.md配置完成
 
 ---
 

@@ -36,28 +36,6 @@ def _patched_json_dump(obj, fp, *args, **kwargs):
 
 json.dump = _patched_json_dump
 
-# 猴子补丁：确保httpx头部编码使用UTF-8而不是ASCII
-try:
-    import httpx._utils as httpx_utils
-
-    _original_normalize_header_value = httpx_utils.normalize_header_value
-
-    def _patched_normalize_header_value(value, encoding=None):
-        """确保httpx头部编码使用UTF-8"""
-        if encoding is None:
-            encoding = "utf-8"
-        return _original_normalize_header_value(value, encoding)
-
-    httpx_utils.normalize_header_value = _patched_normalize_header_value
-except AttributeError:
-    # httpx版本不兼容，跳过猴子补丁
-    import sys
-
-    print(
-        "Warning: httpx._utils.normalize_header_value not found, skipping monkey patch",
-        file=sys.stderr,
-    )
-
 
 # 设置UTF-8编码，避免中文字符编码问题
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
@@ -93,16 +71,16 @@ class LLMAnalyzer:
 
         if not api_key:
             logger.warning("LLM API密钥未配置，LLM分析功能不可用")
-            self.client = None
         else:
             # 使用requests库直接调用API，避免httpx/OpenAI库的SSL超时问题
             self.api_key = api_key
             self.base_url = base_url
             self.model = model
-            self.client = None  # 不再使用OpenAI客户端
             logger.info("LLM API配置完成，将使用requests直接调用")
 
-    def _call_chat_completion(self, messages, temperature=0.7, max_tokens=2000, stream=False):
+    def _call_chat_completion(
+        self, messages, temperature=0.7, max_tokens=2000, stream=False
+    ):
         """
         使用requests直接调用DeepSeek API
         """
@@ -133,30 +111,39 @@ class LLMAnalyzer:
                 stream=stream,  # 如果stream=True，需要流式处理
             )
             response.raise_for_status()
-            
+
             if stream:
                 # 流式响应处理
                 content_chunks = []
                 for chunk in response.iter_lines():
                     if chunk:
-                        chunk_str = chunk.decode('utf-8')
-                        if chunk_str.startswith('data: '):
+                        chunk_str = chunk.decode("utf-8")
+                        if chunk_str.startswith("data: "):
                             chunk_data = chunk_str[6:]
-                            if chunk_data == '[DONE]':
+                            if chunk_data == "[DONE]":
                                 break
                             try:
                                 chunk_json = json.loads(chunk_data)
-                                if 'choices' in chunk_json and len(chunk_json['choices']) > 0:
-                                    if 'delta' in chunk_json['choices'][0] and 'content' in chunk_json['choices'][0]['delta']:
-                                        content_chunks.append(chunk_json['choices'][0]['delta']['content'])
+                                if (
+                                    "choices" in chunk_json
+                                    and len(chunk_json["choices"]) > 0
+                                ):
+                                    if (
+                                        "delta" in chunk_json["choices"][0]
+                                        and "content"
+                                        in chunk_json["choices"][0]["delta"]
+                                    ):
+                                        content_chunks.append(
+                                            chunk_json["choices"][0]["delta"]["content"]
+                                        )
                             except json.JSONDecodeError:
                                 logger.warning(f"无法解析流式响应块: {chunk_data}")
-                content = ''.join(content_chunks)
+                content = "".join(content_chunks)
                 return {"choices": [{"message": {"content": content}}]}
             else:
                 # 非流式响应
                 return response.json()
-                
+
         except requests.exceptions.ChunkedEncodingError as e:
             logger.error(f"流式响应分块编码错误: {e}")
             # 检查是否为InvalidChunkLength错误
@@ -165,11 +152,15 @@ class LLMAnalyzer:
                 # 尝试减少max_tokens并重试
                 reduced_max_tokens = max(500, max_tokens // 2)
                 logger.info(f"尝试减少max_tokens到{reduced_max_tokens}并重试...")
-                return self._call_chat_completion(messages, temperature, reduced_max_tokens, stream=False)
+                return self._call_chat_completion(
+                    messages, temperature, reduced_max_tokens, stream=False
+                )
             # 尝试非流式模式重试
             if stream:
                 logger.info("尝试使用非流式模式重试...")
-                return self._call_chat_completion(messages, temperature, max_tokens, stream=False)
+                return self._call_chat_completion(
+                    messages, temperature, max_tokens, stream=False
+                )
             raise
         except requests.exceptions.RequestException as e:
             logger.error(f"API请求失败: {e}")
@@ -178,8 +169,10 @@ class LLMAnalyzer:
                 logger.error("检测到InvalidChunkLength错误，尝试减少max_tokens重试")
                 reduced_max_tokens = max(500, max_tokens // 2)
                 logger.info(f"尝试减少max_tokens到{reduced_max_tokens}并重试...")
-                return self._call_chat_completion(messages, temperature, reduced_max_tokens, stream=False)
-                
+                return self._call_chat_completion(
+                    messages, temperature, reduced_max_tokens, stream=False
+                )
+
             if hasattr(e, "response") and e.response is not None:
                 logger.error(
                     f"响应状态: {e.response.status_code}, 内容: {e.response.text[:500]}"
@@ -355,7 +348,9 @@ class LLMAnalyzer:
                         time.sleep(retry_delay * 2)
                         continue
                     else:
-                        logger.error(f"所有{max_retries}次尝试均失败(InvalidChunkLength): {e}")
+                        logger.error(
+                            f"所有{max_retries}次尝试均失败(InvalidChunkLength): {e}"
+                        )
                         return None
                 # 检查是否为认证错误（401）或速率限制（429）
                 if hasattr(e, "response") and e.response is not None:

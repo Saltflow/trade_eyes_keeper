@@ -7,10 +7,6 @@ announcements:
   enable_llm_extraction: true
   max_llm_calls_per_run: 30
   max_pdf_size_mb: 10
-financial_health:
-  enable: false
-  years_to_analyze: 2
-  enable_multi_pass: true
 data_source:
   type: web_crawler
 email:
