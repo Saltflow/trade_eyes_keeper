@@ -276,7 +276,7 @@ def sync_code_to_remote(client, dry_run=False):
 
     # Extract on remote server
     print(f"  Extracting on remote server...")
-    cmd = f"cd /root/trade_eyes_keeper && tar -xzf {remote_tar_path} --strip-components=1 --exclude='cache/*' --exclude='logs/*' --exclude='data/*' 2>&1"
+    cmd = f"cd /root/trade_eyes_keeper && tar -xzf {remote_tar_path} --exclude='cache/*' --exclude='logs/*' --exclude='data/*' 2>&1"
     stdin, stdout, stderr = client.exec_command(cmd)
     exit_code = stdout.channel.recv_exit_status()
     out = stdout.read().decode("utf-8", errors="replace")
