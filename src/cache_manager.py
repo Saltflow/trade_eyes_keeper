@@ -508,6 +508,8 @@ class CacheManager:
             dict: 最新的LLM提取结果，如果找不到则返回None
         """
         try:
+            import re
+
             stock_code = str(stock_code)
             cutoff_date = datetime.now() - timedelta(days=days)
             latest_extraction = None
@@ -538,10 +540,25 @@ class CacheManager:
                     if cash_dividend_per_share is None:
                         continue
 
-                    # 检查日期
+                    # 检查日期，优先使用公告日期，其次使用缓存时间
                     date_str = cache_data.get("date")
                     if not date_str:
-                        continue
+                        # 尝试使用缓存时间作为日期
+                        cached_at_str = cache_data.get("cached_at")
+                        if not cached_at_str:
+                            continue
+                        # 提取日期部分 (YYYY-MM-DD)，ISO格式如"2026-03-22T10:30:45"
+                        date_match = re.search(
+                            r"^(\d{4}-\d{2}-\d{2})[T\s]", cached_at_str
+                        )
+                        if not date_match:
+                            # 备用模式：匹配任何地方的YYYY-MM-DD格式
+                            date_match = re.search(
+                                r"(\d{4}-\d{2}-\d{2})", cached_at_str
+                            )
+                            if not date_match:
+                                continue
+                        date_str = date_match.group(1)
 
                     # 解析日期
                     try:
@@ -579,8 +596,9 @@ class CacheManager:
                     continue
 
             if latest_extraction:
+                date_str = latest_date.strftime("%Y-%m-%d") if latest_date else "未知"
                 logger.info(
-                    f"找到股票 {stock_code} 的最新LLM提取结果（日期: {latest_date.strftime('%Y-%m-%d') if latest_date else '未知'}）"
+                    f"找到股票 {stock_code} 的最新LLM提取结果（日期: {date_str}）"
                 )
                 # 添加兼容性字段：dividend_per_share 映射 cash_dividend_per_share
                 if (

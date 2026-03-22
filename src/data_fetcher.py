@@ -96,7 +96,9 @@ class StockDataFetcher:
             if now >= cutoff_time:
                 # 当前时间 >= 配置的截止时间，需要今天的数据，但缓存数据不是今天的
                 logger.info(
-                    f"缓存数据日期 {cached_date_str} 不是今天，当前时间 {now.strftime('%H:%M')} >= {self.cache_bypass_cutoff_hour:02d}:{self.cache_bypass_cutoff_minute:02d}，绕过缓存"
+                    f"缓存数据日期 {cached_date_str} 不是今天，"
+                    f"当前时间 {now.strftime('%H:%M')} >= "
+                    f"{self.cache_bypass_cutoff_hour:02d}:{self.cache_bypass_cutoff_minute:02d}，绕过缓存"
                 )
                 return True
             else:
@@ -112,7 +114,8 @@ class StockDataFetcher:
         获取股票数据
 
         Returns:
-            pandas.DataFrame: 包含股票代码、日期、开盘、收盘、最高、最低、成交量、成交额、MA60的数据
+            pandas.DataFrame: 包含股票代码、日期、开盘、收盘、最高、最低、
+                成交量、成交额、MA60的数据
         """
         all_data = []
 
@@ -189,7 +192,9 @@ class StockDataFetcher:
                             today = datetime.now(self.timezone).date()
                             if latest_date.date() != today:
                                 logger.warning(
-                                    f"股票 {stock_code} 最新数据日期为 {latest_date.date()}，不是今天 {today}，数据可能已过期"
+                                    f"股票 {stock_code} 最新数据日期为 "
+                                    f"{latest_date.date()}，不是今天 {today}，"
+                                    f"数据可能已过期"
                                 )
 
                     # 获取基本面数据（分红、股息率、业绩增长）
@@ -212,32 +217,33 @@ class StockDataFetcher:
                     ):
                         close_price = latest_data.iloc[0].get("close")
                         if close_price and close_price > 0:
-                            dividend_yield = (
-                                fundamental_data["dividend_per_share"] / close_price
-                            ) * 100
+                            dividend_per_share = fundamental_data["dividend_per_share"]
+                            dividend_yield = (dividend_per_share / close_price) * 100
 
-                            # 验证股息率合理性（通常不超过20%）
-                            # 同时检查分红是否不超过股价的50%（防止数据错误）
-                            if (
-                                dividend_yield > 20
-                                or fundamental_data["dividend_per_share"]
-                                > close_price * 0.5
-                            ):
+                            # 验证股息率合理性（调整阈值，仅记录警告不丢弃数据）
+                            # 股息率>30%或分红>股价可能为异常数据，但仅记录警告
+                            if dividend_yield > 30 or dividend_per_share > close_price:
                                 logger.warning(
-                                    f"股票 {stock_code} 股息率异常: 分红={fundamental_data['dividend_per_share']:.3f}元, 股价={close_price:.2f}元, 股息率={dividend_yield:.2f}% (可能数据错误)"
+                                    f"股票 {stock_code} 股息率异常高: "
+                                    f"分红={dividend_per_share:.3f}元, "
+                                    f"股价={close_price:.2f}元, "
+                                    f"股息率={dividend_yield:.2f}% (请手动验证)"
                                 )
-                                latest_data["dividend_per_share"] = None
-                                latest_data["dividend_yield"] = None
-                            else:
-                                latest_data["dividend_yield"] = round(dividend_yield, 2)
-                                logger.info(
-                                    f"股票 {stock_code} 股息率计算: 分红={fundamental_data['dividend_per_share']:.3f}元, 股价={close_price:.2f}元, 股息率={dividend_yield:.2f}%"
+                            # 总是计算并设置股息率
+                            latest_data["dividend_yield"] = round(dividend_yield, 2)
+                            logger.info(
+                                f"股票 {stock_code} 股息率计算: "
+                                f"分红={dividend_per_share:.3f}元, "
+                                f"股价={close_price:.2f}元, "
+                                f"股息率={dividend_yield:.2f}%"
+                            )
+                            # 检查股息率是否过低（<0.5%），可能数据不准确
+                            if dividend_yield < 0.5:
+                                logger.warning(
+                                    f"股票 {stock_code} 股息率过低: "
+                                    f"{dividend_yield:.2f}% "
+                                    f"(可能分红数据不准确或股价过高)"
                                 )
-                                # 检查股息率是否过低（<0.5%），可能数据不准确
-                                if dividend_yield < 0.5:
-                                    logger.warning(
-                                        f"股票 {stock_code} 股息率过低: {dividend_yield:.2f}% (可能分红数据不准确或股价过高)"
-                                    )
                         else:
                             latest_data["dividend_yield"] = None
                     else:
@@ -400,13 +406,15 @@ class StockDataFetcher:
             fundamental_data["debt_ratio"] = valuation_data.get("debt_ratio")  # type: ignore
 
         logger.info(
-            f"股票 {stock_code} 基本面数据获取完成: 分红={fundamental_data['dividend_per_share']}"
+            f"股票 {stock_code} 基本面数据获取完成: "
+            f"分红={fundamental_data['dividend_per_share']}"
         )
 
         return fundamental_data
 
     def _fetch_dividend_from_web_crawler(self, stock_code: str) -> Optional[float]:
         """获取分红数据，优先使用LLM提取结果，其次使用网页爬虫"""
+        logger.info(f"开始获取股票 {stock_code} 的分红数据")
         # 1. 尝试从LLM提取缓存获取分红数据
         try:
             llm_extraction = self.cache_manager.get_latest_llm_extraction_for_stock(
@@ -481,7 +489,8 @@ class StockDataFetcher:
                 else "None"
             )
             logger.info(
-                f"股票 {stock_code} 估值指标: PE={pe_str}, PB={pb_str}, ROE={roe_str}, 负债率={debt_str}"
+                f"股票 {stock_code} 估值指标: "
+                f"PE={pe_str}, PB={pb_str}, ROE={roe_str}, 负债率={debt_str}"
             )
             return cast(Dict[str, Optional[float]], valuation_data)  # type: ignore
         else:

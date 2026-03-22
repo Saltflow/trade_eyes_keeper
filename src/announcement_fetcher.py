@@ -271,6 +271,7 @@ class AnnouncementFetcher:
                         title=title,
                         announcement_text=extracted_text,
                         content_hash=content_hash,
+                        date=date,
                     )
                 )
 

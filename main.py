@@ -95,31 +95,7 @@ def run_daily_task():
     # 加载配置
     config = load_config()
     try:
-        # 1. 获取股票数据
-        logger.info("开始获取股票数据")
-        fetcher = StockDataFetcher(config)
-        stock_data = fetcher.fetch_stock_data()
-        if stock_data.empty:
-            logger.warning("未获取到股票数据")
-            return
-        # 2. 检查条件
-        logger.info("开始检查交易条件")
-        checker = ConditionChecker(config)
-        alert_stocks = checker.check_condition(stock_data)
-        # 3. 创建邮件通知器
-        notifier = EmailNotifier(config)
-        # 4. LLM分析基本面（可选）
-        analysis_results = {}
-        llm_config = config.get("llm", {})
-        api_key = llm_config.get("api_key")
-        if api_key and api_key.strip():
-            logger.info("开始LLM基本面分析")
-            analyzer = LLMAnalyzer(config)
-            analysis_results = analyzer.analyze_stocks(config["stocks"])
-            logger.info(f"LLM分析完成，共分析{len(analysis_results)}只股票")
-        else:
-            logger.info("LLM API未配置，跳过基本面分析")
-        # 5. 获取公告信息（可选）
+        # 1. 获取公告信息（可选） - 提前获取以填充股息数据缓存
         announcements = {}
         announcement_config = config.get("announcements", {})
         # 创建公告抓取器用于公告信息获取
@@ -137,6 +113,30 @@ def run_daily_task():
                 )
             except Exception as e:
                 logger.error(f"获取公告信息失败: {e}")
+        # 2. 获取股票数据
+        logger.info("开始获取股票数据")
+        fetcher = StockDataFetcher(config)
+        stock_data = fetcher.fetch_stock_data()
+        if stock_data.empty:
+            logger.warning("未获取到股票数据")
+            return
+        # 3. 检查条件
+        logger.info("开始检查交易条件")
+        checker = ConditionChecker(config)
+        alert_stocks = checker.check_condition(stock_data)
+        # 4. 创建邮件通知器
+        notifier = EmailNotifier(config)
+        # 5. LLM分析基本面（可选）
+        analysis_results = {}
+        llm_config = config.get("llm", {})
+        api_key = llm_config.get("api_key")
+        if api_key and api_key.strip():
+            logger.info("开始LLM基本面分析")
+            analyzer = LLMAnalyzer(config)
+            analysis_results = analyzer.analyze_stocks(config["stocks"])
+            logger.info(f"LLM分析完成，共分析{len(analysis_results)}只股票")
+        else:
+            logger.info("LLM API未配置，跳过基本面分析")
         # 6. 财务健康分析（可选）
         financial_health_results = {}
         financial_config = config.get("financial_health", {})

@@ -468,7 +468,7 @@ class LLMAnalyzer:
         return summary
 
     def extract_dividend_details_from_announcement(
-        self, stock_code, title, announcement_text, content_hash=None
+        self, stock_code, title, announcement_text, content_hash=None, date=""
     ):
         """
         从公告文本中提取结构化分红数据
@@ -477,6 +477,7 @@ class LLMAnalyzer:
             stock_code: 股票代码
             title: 公告标题
             announcement_text: 公告正文文本
+            date: 公告日期（可选，用于缓存）
             content_hash: 内容哈希（用于缓存键，可选）
 
         Returns:
@@ -621,7 +622,7 @@ class LLMAnalyzer:
                     if self.cache_manager:
                         try:
                             self.cache_manager.set_announcement_extraction_cache(
-                                stock_code, title, "", content_hash, extraction_result
+                                stock_code, title, date, content_hash, extraction_result
                             )
                             logger.debug(f"分红提取结果已缓存: {stock_code}")
                         except Exception as cache_error:
@@ -651,7 +652,7 @@ class LLMAnalyzer:
                                 self.cache_manager.set_announcement_extraction_cache(
                                     stock_code,
                                     title,
-                                    "",
+                                    date,
                                     content_hash,
                                     extraction_result,
                                 )
