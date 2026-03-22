@@ -251,12 +251,13 @@ def sync_code_to_remote(client, dry_run=False):
                     continue
                 if file.endswith(".pyc") or file == ".env":
                     continue
-                if file == "config.yaml" and rel_root == "config":
-                    continue  # Keep remote config
+                # 配置文件也需要同步，确保一致性
+                # if file == "config.yaml" and rel_root == "config":
+                #    continue  # Keep remote config
 
                 filepath = os.path.join(root, file)
                 arcname = os.path.join(rel_root, file) if rel_root else file
-                arcname = arcname.replace('\\', '/')
+                arcname = arcname.replace("\\", "/")
                 tar.add(filepath, arcname=arcname, recursive=False)
                 file_count += 1
 
@@ -275,7 +276,7 @@ def sync_code_to_remote(client, dry_run=False):
 
     # Extract on remote server
     print(f"  Extracting on remote server...")
-    cmd = f"cd /root/trade_eyes_keeper && tar -xzf {remote_tar_path} --strip-components=1 --exclude='config/config.yaml' --exclude='cache/*' --exclude='logs/*' --exclude='data/*' 2>&1"
+    cmd = f"cd /root/trade_eyes_keeper && tar -xzf {remote_tar_path} --strip-components=1 --exclude='cache/*' --exclude='logs/*' --exclude='data/*' 2>&1"
     stdin, stdout, stderr = client.exec_command(cmd)
     exit_code = stdout.channel.recv_exit_status()
     out = stdout.read().decode("utf-8", errors="replace")
