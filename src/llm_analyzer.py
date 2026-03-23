@@ -231,6 +231,57 @@ class BaseLLMClient:
         except Exception:
             return None
 
+    @staticmethod
+    def _calculate_data_hash(data_row):
+        """
+        计算股票数据行的哈希值，用于验证缓存数据新鲜度
+
+        Args:
+            data_row: 股票数据字典
+
+        Returns:
+            str: 数据哈希值
+        """
+        import hashlib
+        import json
+
+        if not data_row:
+            return ""
+
+        # 选择关键字段进行计算（这些字段变化会影响分析结果）
+        key_fields = [
+            "close",  # 收盘价
+            "dividend_per_share",  # 每股分红
+            "dividend_yield",  # 股息率
+            "pe_ratio",  # 市盈率
+            "pb_ratio",  # 市净率
+            "roe",  # 净资产收益率
+            "debt_ratio",  # 负债率
+            "earnings_growth",  # 业绩增长
+            "ma60",  # 60日移动平均线
+        ]
+
+        # 提取关键字段的值
+        hash_data = {}
+        for field in key_fields:
+            if field in data_row:
+                value = data_row[field]
+                # 处理None值
+                if value is None:
+                    hash_data[field] = "null"
+                elif isinstance(value, float):
+                    # 浮点数保留3位小数以确保稳定性
+                    hash_data[field] = f"{value:.3f}"
+                else:
+                    hash_data[field] = str(value)
+
+        # 计算哈希
+        if not hash_data:
+            return ""
+
+        json_str = json.dumps(hash_data, sort_keys=True, ensure_ascii=False)
+        return hashlib.md5(json_str.encode("utf-8")).hexdigest()
+
 
 class LLMAnalyzer(BaseLLMClient):
     """LLM股票分析器，专注于分红可持续性和股价稳定性分析"""
@@ -255,8 +306,18 @@ class LLMAnalyzer(BaseLLMClient):
 
         for stock_code in stock_codes:
             try:
-                # 首先尝试从缓存获取分析结果
-                cached_analysis = self.cache_manager.get_analysis_cache(stock_code)
+                # 计算当前数据哈希（如果提供了股票数据）
+                current_data_hash = None
+                if stock_data and stock_code in stock_data:
+                    current_data_hash = self._calculate_data_hash(
+                        stock_data[stock_code]
+                    )
+                    logger.debug(f"股票 {stock_code} 数据哈希: {current_data_hash}")
+
+                # 首先尝试从缓存获取分析结果（验证数据哈希）
+                cached_analysis = self.cache_manager.get_analysis_cache(
+                    stock_code, current_data_hash
+                )
                 if cached_analysis and "analysis" in cached_analysis:
                     logger.info(f"股票 {stock_code} 使用缓存分析结果")
                     analysis_results[stock_code] = cached_analysis["analysis"]
@@ -277,12 +338,14 @@ class LLMAnalyzer(BaseLLMClient):
                 if analysis_result:
                     analysis_results[stock_code] = analysis_result
                     logger.info(f"股票 {stock_code} 分析完成")
-                    # 缓存分析结果
+                    # 缓存分析结果（包含数据哈希）
                     try:
                         self.cache_manager.set_analysis_cache(
-                            stock_code, analysis_result
+                            stock_code, analysis_result, current_data_hash
                         )
-                        logger.debug(f"股票 {stock_code} 分析结果已缓存")
+                        logger.debug(
+                            f"股票 {stock_code} 分析结果已缓存，数据哈希: {current_data_hash}"
+                        )
                     except Exception as cache_error:
                         logger.warning(
                             f"缓存股票 {stock_code} 分析结果失败: {cache_error}"
@@ -1181,28 +1244,3 @@ class LLMAnalyzer(BaseLLMClient):
             default_result["error"] = f"解析错误: {e}"
             logger.error(f"解析错误: {e}")
             return default_result
-
-    def _parse_float_or_null(self, value):
-        """解析浮点数或返回null"""
-        if value is None:
-            return None
-        try:
-            return float(value)
-        except (ValueError, TypeError):
-            return None
-
-    def _parse_date_or_null(self, value):
-        """解析日期字符串或返回null"""
-        if value is None:
-            return None
-        try:
-            # 尝试常见日期格式
-            for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y年%m月%d日"):
-                try:
-                    dt = datetime.strptime(str(value), fmt)
-                    return dt.strftime("%Y-%m-%d")
-                except ValueError:
-                    continue
-            return None
-        except Exception:
-            return None

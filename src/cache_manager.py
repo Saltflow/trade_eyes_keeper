@@ -155,15 +155,16 @@ class CacheManager:
         except Exception as e:
             logger.error(f"缓存股票 {stock_code} 数据失败: {e}")
 
-    def get_analysis_cache(self, stock_code):
+    def get_analysis_cache(self, stock_code, data_hash=None):
         """
-        获取LLM分析缓存
+        获取LLM分析缓存，可选的验证数据哈希
 
         Args:
             stock_code: 股票代码
+            data_hash: 可选的数据哈希，用于验证缓存数据新鲜度
 
         Returns:
-            dict: 缓存的分析结果，如果不存在或过期返回None
+            dict: 缓存的分析结果，如果不存在、过期或数据哈希不匹配返回None
         """
         try:
             cache_file = (
@@ -176,6 +177,16 @@ class CacheManager:
 
                 # 检查缓存是否有效
                 if "stock_code" in cached_analysis and "analysis" in cached_analysis:
+                    # 如果提供了数据哈希，验证缓存的数据哈希
+                    if data_hash is not None:
+                        cached_hash = cached_analysis.get("data_hash")
+                        if cached_hash != data_hash:
+                            logger.info(
+                                f"股票 {stock_code} 缓存数据哈希不匹配: "
+                                f"缓存哈希={cached_hash}, 当前哈希={data_hash}"
+                            )
+                            return None
+
                     logger.debug(f"从缓存读取股票 {stock_code} 分析结果")
                     return cached_analysis
                 else:
@@ -187,13 +198,14 @@ class CacheManager:
             logger.error(f"读取股票 {stock_code} 分析缓存失败: {e}")
             return None
 
-    def set_analysis_cache(self, stock_code, analysis_result):
+    def set_analysis_cache(self, stock_code, analysis_result, data_hash=None):
         """
-        设置LLM分析缓存
+        设置LLM分析缓存，可选的存储数据哈希
 
         Args:
             stock_code: 股票代码
             analysis_result: 分析结果字典
+            data_hash: 可选的数据哈希，用于验证缓存数据新鲜度
         """
         try:
             cache_file = (
@@ -207,6 +219,10 @@ class CacheManager:
                 "cached_at": datetime.now().isoformat(),
                 "analysis": analysis_result,
             }
+
+            # 如果提供了数据哈希，存储它
+            if data_hash is not None:
+                cache_data["data_hash"] = data_hash
 
             with open(cache_file, "w", encoding="utf-8") as f:
                 json.dump(cache_data, f, ensure_ascii=False, indent=2)
