@@ -139,7 +139,15 @@ def run_daily_task():
         if api_key and api_key.strip():
             logger.info("开始LLM基本面分析")
             analyzer = LLMAnalyzer(config)
-            analysis_results = analyzer.analyze_stocks(config["stocks"])
+            # 将DataFrame转换为字典格式，键为股票代码，值为该股票的数据行
+            stock_data_dict = {}
+            if not stock_data.empty and "stock_code" in stock_data.columns:
+                for _, row in stock_data.iterrows():
+                    stock_code = str(row["stock_code"])
+                    stock_data_dict[stock_code] = row.to_dict()
+            analysis_results = analyzer.analyze_stocks(
+                config["stocks"], stock_data_dict
+            )
             logger.info(f"LLM分析完成，共分析{len(analysis_results)}只股票")
         else:
             logger.info("LLM API未配置，跳过基本面分析")

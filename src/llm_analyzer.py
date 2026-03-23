@@ -1,6 +1,7 @@
 """
-LLM分析模块
-使用DeepSeek API分析股票基本面
+LLM分析模块重构
+使用DeepSeek API分析股票基本面和提取分红数据
+重构为三个类：BaseLLMClient, LLMAnalyzer, DividendExtractor
 """
 
 import logging
@@ -10,7 +11,9 @@ import time
 from datetime import datetime
 import sys
 import io
+import re
 import requests
+from typing import Optional, Dict, Any, List
 from .cache_manager import CacheManager
 
 # 猴子补丁：确保JSON序列化使用UTF-8编码，不转义非ASCII字符
@@ -44,12 +47,12 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 logger = logging.getLogger(__name__)
 
 
-class LLMAnalyzer:
-    """LLM分析器"""
+class BaseLLMClient:
+    """LLM基础客户端，提供共享的API调用和配置功能"""
 
     def __init__(self, config):
         """
-        初始化LLM分析器
+        初始化LLM基础客户端
 
         Args:
             config: 配置字典
@@ -83,6 +86,15 @@ class LLMAnalyzer:
     ):
         """
         使用requests直接调用DeepSeek API
+
+        Args:
+            messages: 消息列表
+            temperature: 温度参数
+            max_tokens: 最大token数
+            stream: 是否使用流式响应
+
+        Returns:
+            dict: API响应
         """
         if not hasattr(self, "api_key") or not self.api_key:
             raise ValueError("API key not configured")
@@ -179,17 +191,62 @@ class LLMAnalyzer:
                 )
             raise
 
-    def analyze_stocks(self, stock_codes):
+    def _increment_llm_calls(self):
+        """增加LLM调用计数"""
+        self._llm_calls_made += 1
+
+    def _can_make_llm_call(self):
+        """检查是否可以进行LLM调用"""
+        if not hasattr(self, "api_key") or not self.api_key:
+            return False
+        if self._llm_calls_made >= self.max_llm_calls_per_run:
+            logger.warning(f"已达到LLM调用限制 ({self.max_llm_calls_per_run})")
+            return False
+        return True
+
+    @staticmethod
+    def _parse_float_or_null(value):
+        """解析浮点数或返回null"""
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _parse_date_or_null(value):
+        """解析日期字符串或返回null"""
+        if value is None:
+            return None
+        try:
+            # 尝试常见日期格式
+            for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y年%m月%d日"):
+                try:
+                    dt = datetime.strptime(str(value), fmt)
+                    return dt.strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
+            return None
+        except Exception:
+            return None
+
+
+class LLMAnalyzer(BaseLLMClient):
+    """LLM股票分析器，专注于分红可持续性和股价稳定性分析"""
+
+    def analyze_stocks(self, stock_codes, stock_data=None):
         """
-        分析股票基本面
+        分析股票基本面，重点关注分红可持续性和股价稳定性
 
         Args:
             stock_codes: 股票代码列表
+            stock_data: 可选的股票数据字典（映射股票代码到最新数据行），
+                        包含真实的分红和财务数据
 
         Returns:
-            dict: 分析结果
+            dict: 分析结果，键为股票代码，值为分析结果字典
         """
-
         if not hasattr(self, "api_key") or not self.api_key:
             logger.warning("LLM API密钥未配置，跳过分析")
             return {}
@@ -207,8 +264,8 @@ class LLMAnalyzer:
 
                 logger.info(f"开始分析股票 {stock_code} 的基本面")
 
-                # 获取股票基本信息
-                stock_info = self._get_stock_info(stock_code)
+                # 获取股票信息（优先使用传入的真实数据）
+                stock_info = self._get_stock_info(stock_code, stock_data)
 
                 if not stock_info:
                     logger.warning(f"无法获取股票 {stock_code} 的信息")
@@ -238,20 +295,19 @@ class LLMAnalyzer:
 
         return analysis_results
 
-    def _get_stock_info(self, stock_code):
+    def _get_stock_info(self, stock_code, stock_data=None):
         """
-        获取股票基本信息
-        实际应用中可能需要从API获取真实数据，这里返回基础信息
+        获取股票基本信息，优先使用真实数据
 
         Args:
             stock_code: 股票代码
+            stock_data: 可选的股票数据字典（映射股票代码到最新数据行）
 
         Returns:
-            dict: 股票基础信息（不含模拟数据）
+            dict: 股票基础信息
         """
-        # 返回基础信息，避免使用模拟数据
-        # 未来可扩展为从akshare或其他API获取真实股票信息
-        return {
+        # 基础信息模板
+        stock_info = {
             "name": f"股票{stock_code}",
             "industry": "",
             "market_cap": "",
@@ -260,11 +316,50 @@ class LLMAnalyzer:
             "dividend_yield": "",
             "last_dividend_date": "",
             "last_dividend_amount": "",
+            # 新增字段用于分红可持续性和股价稳定性分析
+            "dividend_per_share": "",
+            "roe": "",
+            "debt_ratio": "",
+            "earnings_growth": "",
+            "current_price": "",
+            "ma60": "",
+            "price_volatility": "",
         }
+
+        # 如果提供了真实数据，优先使用真实数据
+        if stock_data and stock_code in stock_data:
+            data_row = stock_data[stock_code]
+
+            # 映射字段：target_field (stock_info中的字段) -> source_field (data_row中的字段)
+            field_mapping = {
+                "dividend_per_share": "dividend_per_share",
+                "dividend_yield": "dividend_yield",
+                "pe_ratio": "pe_ratio",
+                "pb_ratio": "pb_ratio",
+                "roe": "roe",
+                "debt_ratio": "debt_ratio",
+                "earnings_growth": "earnings_growth",
+                "current_price": "close",  # 修正：stock_info["current_price"] = data_row["close"]
+                "ma60": "ma60",
+            }
+
+            for target_field, source_field in field_mapping.items():
+                if source_field in data_row and data_row[source_field] is not None:
+                    stock_info[target_field] = data_row[source_field]
+
+            # 尝试获取分红历史（通过web_crawler或缓存）
+            try:
+                # 这里可以扩展为获取真实的分红历史数据
+                # 目前先使用现有数据
+                pass
+            except Exception as e:
+                logger.debug(f"获取股票 {stock_code} 分红历史失败: {e}")
+
+        return stock_info
 
     def _call_llm_analysis(self, stock_code, stock_info):
         """
-        调用LLM API进行基本面分析
+        调用LLM API进行基本面分析，重点关注分红可持续性和股价稳定性
 
         Args:
             stock_code: 股票代码
@@ -275,7 +370,9 @@ class LLMAnalyzer:
         """
         # 构建分析提示
         prompt = self._build_analysis_prompt(stock_code, stock_info)
-        system_message = "你是一个专业的股票分析师，擅长分析A股公司的基本面和投资价值。"
+        system_message = (
+            "你是一个专业的股票分析师，特别擅长分析A股公司的分红可持续性和股价稳定性。"
+        )
 
         # 重试逻辑（最多5次）
         max_retries = 5
@@ -293,40 +390,50 @@ class LLMAnalyzer:
                         {"role": "user", "content": prompt},
                     ],
                     temperature=0.7,
-                    max_tokens=1200,
+                    max_tokens=1500,  # 增加token数以包含更多分析细节
                     stream=False,
                 )
-                # 保持与OpenAI响应格式兼容
+
                 # 解析响应
                 analysis_text = response_data["choices"][0]["message"]["content"]
 
-                # 尝试解析为JSON（如果LLM返回结构化数据）
-                try:
-                    # 首先尝试从文本中提取JSON
-                    import re
+                # 尝试解析为结构化JSON
+                structured_result = self._parse_structured_analysis_response(
+                    analysis_text
+                )
 
-                    json_match = re.search(r"\{.*\}", analysis_text, re.DOTALL)
-                    if json_match:
-                        analysis_json = json.loads(json_match.group())
-                    else:
-                        # 如果没有JSON，使用文本分析
-                        analysis_json = {
-                            "stock_code": stock_code,
-                            "stock_name": stock_info.get("name", ""),
-                            "analysis_text": analysis_text,
-                            "summary": self._extract_summary(analysis_text),
-                            "attempts": attempt + 1,
-                        }
-                except json.JSONDecodeError:
-                    # 如果无法解析为JSON，使用文本格式
+                if structured_result:
+                    # 成功解析为结构化数据
                     analysis_json = {
                         "stock_code": stock_code,
                         "stock_name": stock_info.get("name", ""),
                         "analysis_text": analysis_text,
-                        "summary": self._extract_summary(analysis_text),
+                        "structured_summary": structured_result,
+                        "summary": self._extract_summary_from_structured(
+                            structured_result, analysis_text
+                        ),
                         "attempts": attempt + 1,
                     }
+                else:
+                    # 无法解析为结构化数据，记录错误并重试（如果还有重试次数）
+                    logger.warning(
+                        f"第{attempt + 1}次尝试：LLM未返回有效的结构化JSON格式，"
+                        f"响应长度: {len(analysis_text)}"
+                    )
 
+                    if attempt < max_retries - 1:
+                        # 还有重试次数，继续重试
+                        logger.info(f"等待{retry_delay}秒后重试...")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        # 最后一次尝试也失败，返回None表示分析失败
+                        logger.error(
+                            f"所有{max_retries}次尝试均未能获取有效的结构化分析结果"
+                        )
+                        return None
+
+                # 成功解析结构化数据
                 logger.info(f"股票 {stock_code} 分析完成 (第{attempt + 1}次尝试)")
                 return analysis_json
 
@@ -387,7 +494,7 @@ class LLMAnalyzer:
 
     def _build_analysis_prompt(self, stock_code, stock_info):
         """
-        构建分析提示
+        构建分析提示，重点关注分红可持续性和股价稳定性
 
         Args:
             stock_code: 股票代码
@@ -396,69 +503,210 @@ class LLMAnalyzer:
         Returns:
             str: 分析提示
         """
-        prompt = f"""
-        请分析以下A股股票的基本面和投资价值：
-        
-        股票代码：{stock_code}
-        股票名称：{stock_info.get("name", "")}
-        行业：{stock_info.get("industry", "")}
-        市值：{stock_info.get("market_cap", "")}
-        市盈率(PE)：{stock_info.get("pe_ratio", "")}
-        市净率(PB)：{stock_info.get("pb_ratio", "")}
-        股息率：{stock_info.get("dividend_yield", "")}
-        最近分红日期：{stock_info.get("last_dividend_date", "")}
-        最近分红金额：{stock_info.get("last_dividend_amount", "")}
-        
-        请从以下角度进行分析：
-        1. 基本面分析（行业地位、竞争优势、财务状况）
-        2. 盈利能力分析（毛利率、净利率、ROE等）
-        3. 分红情况分析（分红稳定性、股息率水平）
-        4. 风险评估（行业风险、公司特定风险）
-        5. 投资建议（适合的投资者类型、投资时点建议）
-        
-        请以专业分析师的角度提供详细分析，并给出结构化的总结。
-        如果可以，请用JSON格式返回分析结果，包含以下字段：
-        - 基本面评级（1-5星）
-        - 盈利能力评级（1-5星）
-        - 分红稳定性评级（1-5星）
-        - 总体投资价值评级（1-5星）
-        - 关键风险点
-        - 投资建议
-        """
+        # 提取关键指标
+        dividend_per_share = stock_info.get("dividend_per_share", "")
+        dividend_yield = stock_info.get("dividend_yield", "")
+        pe_ratio = stock_info.get("pe_ratio", "")
+        pb_ratio = stock_info.get("pb_ratio", "")
+        roe = stock_info.get("roe", "")
+        debt_ratio = stock_info.get("debt_ratio", "")
+        earnings_growth = stock_info.get("earnings_growth", "")
+        current_price = stock_info.get("current_price", "")
+        ma60 = stock_info.get("ma60", "")
 
+        prompt = f"""
+请分析以下A股股票的基本面，重点关注分红可持续性和股价稳定性：
+
+股票代码：{stock_code}
+股票名称：{stock_info.get("name", "")}
+
+**关键财务指标：**
+- 每股分红：{dividend_per_share if dividend_per_share else "未知"} 元
+- 股息率：{dividend_yield if dividend_yield else "未知"} %
+- 市盈率(PE)：{pe_ratio if pe_ratio else "未知"}
+- 市净率(PB)：{pb_ratio if pb_ratio else "未知"}
+- 净资产收益率(ROE)：{roe if roe else "未知"} %
+- 资产负债率：{debt_ratio if debt_ratio else "未知"} %
+- 业绩增长：{earnings_growth if earnings_growth else "未知"} %
+
+**价格技术指标：**
+- 当前价格：{current_price if current_price else "未知"} 元
+- 60日移动平均线(MA60)：{ma60 if ma60 else "未知"} 元
+
+请从以下角度进行专业分析：
+
+**1. 分红可持续性分析：**
+- 历史分红稳定性（如有可能）
+- 当前分红水平与行业对比
+- 公司盈利能力支撑分红的能力
+- 现金流状况是否支持持续分红
+- 未来分红政策预期
+
+**2. 股价稳定性分析：**
+- 当前价格与MA60的关系
+- 历史价格波动性
+- 技术面支撑和阻力位
+- 市场情绪和资金流向
+- 行业周期位置
+
+**3. 风险因素评估：**
+- 行业特定风险
+- 公司治理风险
+- 宏观经济风险
+- 政策风险
+
+**4. 投资建议：**
+- 适合的投资者类型（价值/成长/股息投资者）
+- 投资时间框架建议
+- 关键监控指标
+
+请以JSON格式返回分析结果，包含以下结构化字段：
+{{
+    "sustainability_score": 1-5,        # 分红可持续性评分（1-5分，5分最优）
+    "stability_score": 1-5,            # 股价稳定性评分（1-5分，5分最优）
+    "overall_rating": 1-5,             # 总体投资评级（1-5分，5分最优）
+    "key_factors": ["因子1", "因子2"], # 关键影响因素列表
+    "dividend_sustainability_analysis": "详细分析文本",  # 分红可持续性详细分析
+    "price_stability_analysis": "详细分析文本",         # 股价稳定性详细分析
+    "major_risks": ["风险1", "风险2"], # 主要风险列表
+    "investment_recommendation": "投资建议文本",        # 投资建议
+    "monitoring_points": ["监控点1", "监控点2"]        # 需要监控的关键点
+}}
+
+请确保分析基于提供的财务指标，如指标缺失请基于行业常识分析。
+"""
         return prompt
+
+    def _parse_structured_analysis_response(self, analysis_text):
+        """
+        解析LLM的结构化分析响应
+
+        Args:
+            analysis_text: LLM响应文本
+
+        Returns:
+            dict: 结构化分析结果，如果解析失败返回None
+        """
+        try:
+            # 尝试从响应中提取JSON
+            json_match = re.search(r"\{.*\}", analysis_text, re.DOTALL)
+            if not json_match:
+                return None
+
+            json_str = json_match.group()
+            data = json.loads(json_str)
+
+            # 验证必要字段
+            required_fields = [
+                "sustainability_score",
+                "stability_score",
+                "overall_rating",
+            ]
+            if not all(field in data for field in required_fields):
+                return None
+
+            # 确保分数在合理范围
+            structured_result = {
+                "sustainability_score": min(
+                    max(int(data.get("sustainability_score", 3)), 1), 5
+                ),
+                "stability_score": min(max(int(data.get("stability_score", 3)), 1), 5),
+                "overall_rating": min(max(int(data.get("overall_rating", 3)), 1), 5),
+                "key_factors": data.get("key_factors", []),
+                "dividend_sustainability_analysis": data.get(
+                    "dividend_sustainability_analysis", ""
+                ),
+                "price_stability_analysis": data.get("price_stability_analysis", ""),
+                "major_risks": data.get("major_risks", []),
+                "investment_recommendation": data.get("investment_recommendation", ""),
+                "monitoring_points": data.get("monitoring_points", []),
+            }
+
+            # 验证列表类型
+            list_fields = ["key_factors", "major_risks", "monitoring_points"]
+            for field in list_fields:
+                if not isinstance(structured_result[field], list):
+                    structured_result[field] = [str(structured_result[field])]
+
+            return structured_result
+
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            logger.warning(f"解析结构化分析响应失败: {e}")
+            return None
+
+    def _extract_summary_from_structured(self, structured_result, analysis_text):
+        """
+        从结构化结果提取摘要信息
+
+        Args:
+            structured_result: 结构化分析结果
+            analysis_text: 原始分析文本
+
+        Returns:
+            dict: 摘要信息
+        """
+        sustainability_score = structured_result.get("sustainability_score", 3)
+        stability_score = structured_result.get("stability_score", 3)
+        overall_rating = structured_result.get("overall_rating", 3)
+
+        # 根据评分判断情感
+        total_score = sustainability_score + stability_score + overall_rating
+        if total_score >= 12:
+            sentiment = "积极"
+        elif total_score >= 9:
+            sentiment = "中性"
+        else:
+            sentiment = "谨慎"
+
+        # 判断是否有增长潜力（基于ROE和增长指标）
+        has_growth = sustainability_score >= 3 and stability_score >= 3
+
+        # 判断分红情况
+        has_dividend = sustainability_score >= 2
+
+        # 判断风险
+        has_risk = len(structured_result.get("major_risks", [])) > 0
+
+        summary = {
+            "sustainability_score": sustainability_score,
+            "stability_score": stability_score,
+            "overall_rating": overall_rating,
+            "has_growth": has_growth,
+            "has_dividend": has_dividend,
+            "has_risk": has_risk,
+            "sentiment": sentiment,
+            "key_factors_count": len(structured_result.get("key_factors", [])),
+            "major_risks_count": len(structured_result.get("major_risks", [])),
+        }
+
+        return summary
 
     def _extract_summary(self, analysis_text):
         """
-        从分析文本中提取摘要
+        从分析文本中提取摘要（备用方法，但不应被调用）
+        根据要求，统一使用模板（结构化JSON），此方法仅返回默认值
 
         Args:
             analysis_text: 分析文本
 
         Returns:
-            dict: 摘要信息
+            dict: 默认摘要信息
         """
-        # 简单的关键词提取
+        # 不使用关键词提取，统一返回默认值
+        # 此方法仅作为后备，正常情况下不应被调用
+        logger.warning("使用默认摘要提取方法（结构化JSON解析失败时的后备）")
+
         summary = {
-            "has_growth": "增长" in analysis_text or "成长" in analysis_text,
-            "has_risk": "风险" in analysis_text or "谨慎" in analysis_text,
-            "has_dividend": "分红" in analysis_text or "股息" in analysis_text,
-            "sentiment": "中性",  # 默认
+            "sustainability_score": 3,  # 默认值
+            "stability_score": 3,  # 默认值
+            "overall_rating": 3,  # 默认值
+            "has_growth": False,  # 默认值，不使用关键词提取
+            "has_dividend": False,  # 默认值，不使用关键词提取
+            "has_risk": True,  # 默认值，不使用关键词提取
+            "sentiment": "中性",  # 默认值
+            "key_factors_count": 0,
+            "major_risks_count": 0,
         }
-
-        # 判断情感倾向
-        positive_words = ["推荐", "买入", "看好", "优质", "低估", "机会"]
-        negative_words = ["谨慎", "回避", "高估", "风险", "卖出", "警告"]
-
-        positive_count = sum(1 for word in positive_words if word in analysis_text)
-        negative_count = sum(1 for word in negative_words if word in analysis_text)
-
-        if positive_count > negative_count:
-            summary["sentiment"] = "积极"
-        elif negative_count > positive_count:
-            summary["sentiment"] = "谨慎"
-        else:
-            summary["sentiment"] = "中性"
 
         return summary
 

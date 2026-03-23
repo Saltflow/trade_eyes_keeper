@@ -362,9 +362,9 @@ class EmailNotifier:
                 analysis_text = analysis.get("analysis_text", "")
                 summary = analysis.get("summary", {})
 
-                # 截断过长的分析文本
-                if len(analysis_text) > 1000:
-                    analysis_text = analysis_text[:1000] + "... (分析内容过长，已截断)"
+                # 截断过长的分析文本（增加到2000字符以避免过度截断）
+                if len(analysis_text) > 2000:
+                    analysis_text = analysis_text[:2000] + "... (分析内容过长，已截断)"
 
                 # 构建分析卡片
                 sentiment = summary.get("sentiment", "中性")
@@ -376,10 +376,99 @@ class EmailNotifier:
                     else "#ff9800"
                 )
 
-                llm_analysis_section += f"""
+                # 检查是否有结构化摘要
+                structured_summary = analysis.get("structured_summary")
+
+                if structured_summary:
+                    # 使用结构化摘要显示
+                    sustainability_score = structured_summary.get(
+                        "sustainability_score", 3
+                    )
+                    stability_score = structured_summary.get("stability_score", 3)
+                    overall_rating = structured_summary.get("overall_rating", 3)
+                    key_factors = structured_summary.get("key_factors", [])
+                    major_risks = structured_summary.get("major_risks", [])
+                    investment_recommendation = structured_summary.get(
+                        "investment_recommendation", ""
+                    )
+
+                    # 分数颜色（1-2分红色，3分橙色，4-5分绿色）
+                    def get_score_color(score):
+                        if score >= 4:
+                            return "#4caf50"  # 绿色
+                        elif score == 3:
+                            return "#ff9800"  # 橙色
+                        else:
+                            return "#f44336"  # 红色
+
+                    sustainability_color = get_score_color(sustainability_score)
+                    stability_color = get_score_color(stability_score)
+                    overall_color = get_score_color(overall_rating)
+
+                    # 构建关键因素HTML
+                    key_factors_html = ""
+                    if key_factors:
+                        key_factors_html = "<ul>"
+                        for factor in key_factors[:5]:  # 最多显示5个
+                            key_factors_html += f"<li>{factor}</li>"
+                        key_factors_html += "</ul>"
+                    else:
+                        key_factors_html = "<p>无关键因素信息</p>"
+
+                    # 构建主要风险HTML
+                    major_risks_html = ""
+                    if major_risks:
+                        major_risks_html = "<ul>"
+                        for risk in major_risks[:5]:  # 最多显示5个
+                            major_risks_html += f"<li>{risk}</li>"
+                        major_risks_html += "</ul>"
+                    else:
+                        major_risks_html = "<p>无明确风险信息</p>"
+
+                    llm_analysis_section += f"""
                 <div style="border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 5px;">
                     <h4>{stock_code} {stock_name} <span style="color: {sentiment_color}; font-weight: bold;">[{sentiment}]</span></h4>
-                    <p><strong>分析摘要:</strong> {analysis_text[:300]}...</p>
+                    
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 15px;">
+                        <div style="text-align: center; padding: 10px; border-radius: 5px; background-color: #f5f5f5; flex: 1; margin: 0 5px;">
+                            <h5 style="margin: 0 0 5px 0; color: #666;">分红可持续性</h5>
+                            <div style="font-size: 24px; font-weight: bold; color: {sustainability_color};">{sustainability_score}/5</div>
+                        </div>
+                        <div style="text-align: center; padding: 10px; border-radius: 5px; background-color: #f5f5f5; flex: 1; margin: 0 5px;">
+                            <h5 style="margin: 0 0 5px 0; color: #666;">股价稳定性</h5>
+                            <div style="font-size: 24px; font-weight: bold; color: {stability_color};">{stability_score}/5</div>
+                        </div>
+                        <div style="text-align: center; padding: 10px; border-radius: 5px; background-color: #f5f5f5; flex: 1; margin: 0 5px;">
+                            <h5 style="margin: 0 0 5px 0; color: #666;">总体评级</h5>
+                            <div style="font-size: 24px; font-weight: bold; color: {overall_color};">{overall_rating}/5</div>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-bottom: 15px;">
+                        <h5 style="margin: 0 0 5px 0; color: #666;">关键影响因素</h5>
+                        {key_factors_html}
+                    </div>
+                    
+                    <div style="margin-bottom: 15px;">
+                        <h5 style="margin: 0 0 5px 0; color: #666;">主要风险</h5>
+                        {major_risks_html}
+                    </div>
+                    
+                    {f'<div style="margin-bottom: 15px;"><h5 style="margin: 0 0 5px 0; color: #666;">投资建议</h5><p>{investment_recommendation}</p></div>' if investment_recommendation else ""}
+                    
+                    <div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #eee;">
+                        <p><strong>详细分析:</strong> {analysis_text[:500]}{"..." if len(analysis_text) > 500 else ""}</p>
+                    </div>
+                    
+                    <p style="margin-top: 10px; font-size: 0.9em; color: #999;"><em>注：LLM分析仅供参考，不构成投资建议。分数基于分红可持续性和股价稳定性分析。</em></p>
+                </div>
+                """
+                else:
+                    # 使用旧的简单摘要显示（向后兼容）
+                    llm_analysis_section += f"""
+                <div style="border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 5px;">
+                    <h4>{stock_code} {stock_name} <span style="color: {sentiment_color}; font-weight: bold;">[{sentiment}]</span></h4>
+                    <p><strong>分析摘要:</strong> {analysis_text[:500]}{"..." if len(analysis_text) > 500 else ""}</p>
                     <p><strong>关键指标:</strong></p>
                     <ul>
                         <li>增长潜力: {"有" if summary.get("has_growth", False) else "无"}</li>
