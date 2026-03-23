@@ -456,10 +456,6 @@ class EmailNotifier:
                     
                     {f'<div style="margin-bottom: 15px;"><h5 style="margin: 0 0 5px 0; color: #666;">投资建议</h5><p>{investment_recommendation}</p></div>' if investment_recommendation else ""}
                     
-                    <div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #eee;">
-                        <p><strong>详细分析:</strong> {analysis_text[:500]}{"..." if len(analysis_text) > 500 else ""}</p>
-                    </div>
-                    
                     <p style="margin-top: 10px; font-size: 0.9em; color: #999;"><em>注：LLM分析仅供参考，不构成投资建议。分数基于分红可持续性和股价稳定性分析。</em></p>
                 </div>
                 """
@@ -468,7 +464,6 @@ class EmailNotifier:
                     llm_analysis_section += f"""
                 <div style="border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 5px;">
                     <h4>{stock_code} {stock_name} <span style="color: {sentiment_color}; font-weight: bold;">[{sentiment}]</span></h4>
-                    <p><strong>分析摘要:</strong> {analysis_text[:500]}{"..." if len(analysis_text) > 500 else ""}</p>
                     <p><strong>关键指标:</strong></p>
                     <ul>
                         <li>增长潜力: {"有" if summary.get("has_growth", False) else "无"}</li>
