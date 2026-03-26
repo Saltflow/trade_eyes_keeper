@@ -461,7 +461,7 @@ class EmailNotifier:
                         {major_risks_html}
                     </div>
                     
-                    {f'<div style="margin-bottom: 15px;"><h5 style="margin: 0 0 5px 0; color: #666;">投资建议</h5><p>{investment_recommendation_html}</p></div>' if investment_recommendation else ""}
+                    {f'<div style="margin-bottom: 15px;"><h5 style="margin: 0 0 5px 0; color: #666;">投资建议</h5><div>{investment_recommendation_html}</div></div>' if investment_recommendation else ""}
                     
                     <p style="margin-top: 10px; font-size: 0.9em; color: #999;"><em>注：LLM分析仅供参考，不构成投资建议。分数基于分红可持续性和股价稳定性分析。</em></p>
                 </div>
