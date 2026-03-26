@@ -23,6 +23,8 @@ pdfplumber>=0.10.0
 tqdm>=4.65.0
 # LLM API调用
 openai>=1.0.0  # 兼容DeepSeek API
+# 文本处理
+markdown>=3.5
 # 日志
 colorlog>=6.7.0
 # 开发依赖（测试等）

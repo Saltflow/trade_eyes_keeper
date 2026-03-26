@@ -10,6 +10,8 @@ import pandas as pd
 import socket
 import platform
 import subprocess
+import requests
+import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email import policy
@@ -392,6 +394,11 @@ class EmailNotifier:
                         "investment_recommendation", ""
                     )
 
+                    # 将Markdown格式的投资建议转换为HTML
+                    investment_recommendation_html = self._markdown_to_html(
+                        investment_recommendation
+                    )
+
                     # 分数颜色（1-2分红色，3分橙色，4-5分绿色）
                     def get_score_color(score):
                         if score >= 4:
@@ -454,7 +461,7 @@ class EmailNotifier:
                         {major_risks_html}
                     </div>
                     
-                    {f'<div style="margin-bottom: 15px;"><h5 style="margin: 0 0 5px 0; color: #666;">投资建议</h5><p>{investment_recommendation}</p></div>' if investment_recommendation else ""}
+                    {f'<div style="margin-bottom: 15px;"><h5 style="margin: 0 0 5px 0; color: #666;">投资建议</h5><p>{investment_recommendation_html}</p></div>' if investment_recommendation else ""}
                     
                     <p style="margin-top: 10px; font-size: 0.9em; color: #999;"><em>注：LLM分析仅供参考，不构成投资建议。分数基于分红可持续性和股价稳定性分析。</em></p>
                 </div>
@@ -594,13 +601,110 @@ class EmailNotifier:
         Returns:
             str: 股票名称（如果无法获取名称，则返回股票代码）
         """
-        # TODO: 实现从API或配置文件获取股票名称
-        # 目前返回股票代码，避免硬编码数据
-        # 可以扩展为：
-        # 1. 从配置文件读取股票名称映射
-        # 2. 调用股票信息API获取名称
-        # 3. 从缓存中获取预先抓取的股票名称
-        return stock_code
+        stock_code_str = str(stock_code)
+
+        # 尝试从新浪财经实时API获取股票名称
+        try:
+            # 确定市场代码
+            if stock_code_str.startswith(("6", "5", "9")):
+                market = "sh"  # 沪市
+            elif stock_code_str.startswith(("0", "3", "2")):
+                market = "sz"  # 深市
+            else:
+                # 默认沪市
+                market = "sh"
+
+            # 新浪财经实时API
+            url = f"http://hq.sinajs.cn/list={market}{stock_code_str}"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                "Referer": "http://finance.sina.com.cn/",
+            }
+
+            response = requests.get(url, headers=headers, timeout=5)
+            response.raise_for_status()
+
+            # 解析响应格式: var hq_str_sh601728="中国联通,5.83,5.82,..."
+            content = response.text
+            match = re.search(r'="(.+)"', content)
+            if match:
+                data_str = match.group(1)
+                items = data_str.split(",")
+                if len(items) > 0:
+                    stock_name = items[0].strip()
+                    if stock_name and stock_name != "暂无该股票信息":
+                        logger.info(
+                            f"从新浪财经API获取股票 {stock_code_str} 名称: {stock_name}"
+                        )
+                        return stock_name
+
+        except Exception as e:
+            logger.warning(f"从新浪财经API获取股票 {stock_code_str} 名称失败: {e}")
+
+        # 如果API失败，尝试从配置文件读取（向后兼容）
+        stocks_config = self.config.get("stocks", [])
+        for stock_item in stocks_config:
+            stock_str = str(stock_item).strip()
+            if stock_str.startswith(stock_code_str) and "#" in stock_str:
+                parts = stock_str.split("#", 1)
+                if len(parts) > 1:
+                    name = parts[1].strip()
+                    if name:
+                        logger.info(f"从配置文件获取股票 {stock_code_str} 名称: {name}")
+                        return name
+
+        # 所有方法都失败，返回股票代码
+        logger.warning(f"无法获取股票 {stock_code_str} 名称，返回股票代码")
+        return stock_code_str
+
+    def _markdown_to_html(self, text):
+        """
+        将Markdown文本转换为HTML
+
+        Args:
+            text: Markdown格式文本
+
+        Returns:
+            str: HTML格式文本
+        """
+        if not text:
+            return ""
+
+        try:
+            # 尝试使用markdown库
+            import markdown
+
+            # 基本扩展，支持粗体、列表等
+            html = markdown.markdown(text, extensions=["extra", "nl2br"])
+            return html
+        except ImportError:
+            # 如果markdown库不可用，进行简单转换
+            # 替换粗体语法：**text** -> <strong>text</strong>
+            import re
+
+            html = re.sub(r"\*\*(.*?)\*\*", r"<strong>\1</strong>", text)
+            # 替换斜体语法：*text* -> <em>text</em>
+            html = re.sub(r"\*(.*?)\*", r"<em>\1</em>", html)
+            # 替换无序列表：* item -> <li>item</li>
+            lines = html.split("\n")
+            in_list = False
+            result_lines = []
+            for line in lines:
+                if line.strip().startswith("* ") or line.strip().startswith("- "):
+                    if not in_list:
+                        result_lines.append("<ul>")
+                        in_list = True
+                    content = line.strip()[2:].strip()
+                    result_lines.append(f"<li>{content}</li>")
+                else:
+                    if in_list:
+                        result_lines.append("</ul>")
+                        in_list = False
+                    result_lines.append(line)
+            if in_list:
+                result_lines.append("</ul>")
+            html = "\n".join(result_lines)
+            return html
 
     def _get_server_info(self):
         """
