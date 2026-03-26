@@ -340,6 +340,58 @@ tests/
 
 ---
 
+## 🔧 LLM分析器模块重构 (2026-03-26)
+
+### 重构目标
+**问题**: `src/llm_analyzer.py` 文件过大（1246行），包含基本面分析和分红公告解析两类功能，维护困难
+**目标**: 模块化重构，为插件化功能扩展奠定基础
+
+### 新模块结构
+```
+src/llm_analyzer/
+├── __init__.py              # 导出接口：LLMAnalyzer, FundamentalAnalyzer, DividendExtractor, BaseLLMClient
+├── base.py                  # 基础类 BaseLLMClient（API调用、缓存管理、工具方法）
+├── fundamental_analyzer.py  # 基本面分析器 FundamentalAnalyzer（分红可持续性、股价稳定性）
+├── dividend_extractor.py    # 分红公告解析器 DividendExtractor（公告文本结构化提取）
+└── analyzer.py              # 兼容性主类 LLMAnalyzer（组合模式，向后兼容）
+```
+
+### 核心设计
+1. **分离关注点**:
+   - `FundamentalAnalyzer`: 专注股票基本面分析（`analyze_stocks`）
+   - `DividendExtractor`: 专注分红公告解析（`extract_dividend_details_from_announcement`）
+   - 两者均继承 `BaseLLMClient`，共享API配置和缓存管理
+
+2. **向后兼容**:
+   - 保持 `LLMAnalyzer` 类接口不变
+   - 内部使用组合模式委托给专用组件
+   - 现有导入 (`from src.llm_analyzer import LLMAnalyzer`) 继续有效
+
+3. **插件化扩展准备**:
+   - 新分析器只需继承 `BaseLLMClient` 并实现特定方法
+   - 可轻松集成到 `LLMAnalyzer` 或独立使用
+   - 为未来功能（财报分析、利润分析等）预留架构空间
+
+### 技术细节
+- **猴子补丁**: JSON编码UTF-8处理保留在 `base.py`
+- **相对导入**: 模块内部使用相对导入（`from .base import BaseLLMClient`）
+- **共享状态**: LLM调用计数器通过父类同步
+- **缓存管理**: 继续使用现有 `CacheManager` 基础设施
+
+### 验证状态
+- ✅ 导入测试通过（LLMAnalyzer, FundamentalAnalyzer, DividendExtractor）
+- ✅ 组件实例化成功
+- ✅ 现有测试通过（系统验证测试）
+- ✅ 公告抓取器导入正常
+
+### 未来扩展
+1. **插件接口**: 定义 `AnalysisPlugin` 抽象基类
+2. **注册机制**: 动态加载分析器插件
+3. **配置驱动**: 通过配置文件启用/禁用分析器
+4. **财报分析器**: 阅读完整财报，提取利润分析（未来功能）
+
+---
+
 ## 🛡️ 防循环编码系统设计
 
 ### 核心机制
