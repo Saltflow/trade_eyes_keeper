@@ -404,7 +404,7 @@ def deploy():
         )
         success, out, err = run_ssh(
             client,
-            "cd /root/trade_eyes_keeper && pip install -r requirements.txt",
+            "cd /root/trade_eyes_keeper && pip install --quiet -r requirements.txt",
             "Install dependencies",
         )
 

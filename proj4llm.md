@@ -1,7 +1,7 @@
 # 股票量化系统 - 关键设计决策文档
 
-**文档版本**: v2.1 (压缩版)
-**最后更新**: 2026-03-21
+**文档版本**: v2.2 (压缩版)
+**最后更新**: 2026-03-24
 **原始文档**: [归档版本](docs/archive/proj4llm_archive_20260319.md) (1028行)
 **压缩目标**: <1000行，保留关键设计决策
 
@@ -84,16 +84,61 @@ scheduler:
 - 自动存档到`data/email_archive/`
 - 编码修复（UTF-8强制，SMTPUTF8策略）
 
-### 6. LLM分析架构
-**决策**: DeepSeek API集成
-**配置**:
+### 6. LLM分析架构重构 (2026-03-24)
+**决策**: 从通用关键词提取转向结构化股息可持续性和价格稳定性分析
+**背景**: 本地开发与远程生产环境之间的股息数据不一致，LLM分析质量低下（通用关键词匹配）
+**目标**: 
+1. 确保LLM分析使用真实股票数据（股息、估值指标、价格）
+2. 强制结构化JSON模板响应，关注股息可持续性和价格稳定性
+3. 添加数据哈希验证，确保分析缓存与当日数据匹配
+4. 简化电子邮件显示，突出结构化评分
+
+#### 重构组件：
+1. **BaseLLMClient** (基类):
+   - 共享API方法和配置（DeepSeek API）
+   - 数据哈希计算：`_calculate_data_hash(stock_data)` 基于关键字段计算MD5哈希
+   - 缓存验证：确保分析缓存与当前数据哈希匹配
+
+2. **LLMAnalyzer** (分析器):
+   - 扩展BaseLLMClient，专注于股票分析
+   - 结构化提示模板，强制JSON响应包含：
+     - `sustainability_score` (1-5): 股息可持续性评分
+     - `stability_score` (1-5): 价格稳定性评分
+     - `overall_rating` (1-5): 综合评级
+     - `key_factors`, `major_risks`, `investment_recommendation`
+   - 真实数据集成：`_get_stock_info()` 从stock_data参数获取实际指标
+   - 移除关键词提取：`_extract_summary()` 返回默认值，不再依赖通用关键词
+
+3. **数据哈希验证机制**:
+   ```python
+   # 计算数据哈希（关键字段：收盘价、最高价、最低价、PE、PB、ROE、负债率、股息）
+   hash_fields = ['close', 'high', 'low', 'pe_ratio', 'pb_ratio', 
+                 'roe', 'debt_ratio', 'dividend_per_share']
+   # 缓存存储：{stock_code: {'analysis': ..., 'data_hash': ..., 'timestamp': ...}}
+   # 缓存验证：如果当前数据哈希 ≠ 缓存哈希 → 缓存无效，重新分析
+   ```
+
+#### 配置更新：
 ```yaml
 llm:
   api_type: deepseek
   model: deepseek-chat
   base_url: https://api.deepseek.com/v1
+  analysis_focus: "dividend_sustainability_and_price_stability"  # 新增
 ```
-**功能**: 基本面分析、盈利能力评估、分红分析
+
+#### 电子邮件显示优化：
+- 分析文本截断：1000字符 → 2000字符
+- 移除冗余文本：删除"详细分析"和"分析摘要"章节
+- 突出显示结构化评分：颜色编码评级（5=优秀，1=差）
+- 仅在电子邮件中显示关键因素和风险
+
+#### 向后兼容性：
+- `analyze_stocks()` 接受可选的 `stock_data` 参数（支持旧调用）
+- `announcement_fetcher.py` 继续使用 `extract_dividend_details_from_announcement()`
+- 缓存管理器更新：支持数据哈希存储/验证
+
+**结果**: LLM分析现在基于真实数据，提供可操作的投资见解（股息可持续性、价格稳定性），而非通用关键词总结。
 
 ### 7. 健康服务器模块化架构
 **决策**: 拆分单文件健康服务器为模块化包结构
