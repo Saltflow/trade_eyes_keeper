@@ -516,13 +516,19 @@ class ContentFetcher:
 
                 # 流式读取，限制大小
                 pdf_bytes = b""
+                size_exceeded = False
                 for chunk in response.iter_content(chunk_size=8192):
                     pdf_bytes += chunk
                     if len(pdf_bytes) > self.max_pdf_size:
                         logger.warning(
                             f"PDF大小超过限制: {len(pdf_bytes)} > {self.max_pdf_size}"
                         )
+                        size_exceeded = True
                         break
+
+                # 如果大小超过限制，跳过这个PDF
+                if size_exceeded:
+                    continue
 
                 # 验证PDF文件头
                 if len(pdf_bytes) >= 4 and pdf_bytes[:4] == b"%PDF":
