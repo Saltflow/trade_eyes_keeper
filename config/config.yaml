@@ -7,6 +7,13 @@ announcements:
   enable_llm_extraction: true
   max_llm_calls_per_run: 30
   max_pdf_size_mb: 10
+
+financial_reports:
+  enable: true
+  auto_enable: true
+  conditional_enable: true
+  reports_per_stock: 3
+  conditional_days: 30
 data_source:
   type: web_crawler
 email:

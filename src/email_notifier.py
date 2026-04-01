@@ -53,22 +53,32 @@ class EmailNotifier:
             logger.warning("邮件配置不完整，邮件通知功能可能无法正常工作")
 
     def send_alert(
-        self, alert_stocks, stock_data, analysis_results=None, announcements=None
+        self,
+        alert_stocks,
+        stock_data,
+        analysis_results=None,
+        announcements=None,
+        financial_analysis_results=None,
     ):
         """
-        发送股票提醒邮件
+         发送股票提醒邮件
 
         Args:
             alert_stocks: 满足条件的股票列表
             stock_data: 完整的股票数据DataFrame
             analysis_results: LLM分析结果字典（可选）
             announcements: 公告数据字典（可选）
+            financial_analysis_results: 财报分析结果字典（可选）
         """
         try:
             # 构建邮件内容
             subject = f"股票提醒 - {datetime.now().strftime('%Y-%m-%d')}"
             body = self._build_email_body(
-                alert_stocks, stock_data, analysis_results, announcements
+                alert_stocks,
+                stock_data,
+                analysis_results,
+                announcements,
+                financial_analysis_results,
             )
 
             # 发送邮件
@@ -79,20 +89,31 @@ class EmailNotifier:
         except Exception as e:
             logger.error(f"发送邮件失败: {e}")
 
-    def send_daily_report(self, stock_data, analysis_results=None, announcements=None):
+    def send_daily_report(
+        self,
+        stock_data,
+        analysis_results=None,
+        announcements=None,
+        financial_analysis_results=None,
+    ):
         """
-        发送每日报告邮件（即使没有满足条件的股票也发送）
+         发送每日报告邮件（即使没有满足条件的股票也发送）
 
         Args:
             stock_data: 完整的股票数据DataFrame
             analysis_results: LLM分析结果字典（可选）
             announcements: 公告数据字典（可选）
+            financial_analysis_results: 财报分析结果字典（可选）
         """
         try:
             # 构建邮件内容（使用空提醒列表）
             subject = f"股票日报 - {datetime.now().strftime('%Y-%m-%d')}"
             body = self._build_email_body(
-                [], stock_data, analysis_results, announcements
+                [],
+                stock_data,
+                analysis_results,
+                announcements,
+                financial_analysis_results,
             )
 
             # 发送邮件
@@ -103,17 +124,114 @@ class EmailNotifier:
         except Exception as e:
             logger.error(f"发送每日报告邮件失败: {e}")
 
+    def _build_financial_analysis_section(self, financial_analysis_results):
+        """
+         构建财报分析部分HTML
+
+        Args:
+            financial_analysis_results: 财报分析结果字典
+
+        Returns:
+            str: HTML格式的财报分析部分
+        """
+        if not financial_analysis_results:
+            logger.info("财报分析结果为空，跳过构建财报分析部分")
+            return ""
+
+        logger.info(
+            f"构建财报分析部分: 收到{len(financial_analysis_results)}只股票的分析结果"
+        )
+
+        html = """
+            <h3>财报分析</h3>
+            <p>基于最新财务报告的分析结果：</p>
+            <table style="border-collapse: collapse; width: 100%; margin: 20px 0;">
+                <tr>
+                    <th style="border: 1px solid #ddd; padding: 8px; text-align: left; background-color: #f2f2f2;">股票代码</th>
+                    <th style="border: 1px solid #ddd; padding: 8px; text-align: left; background-color: #f2f2f2;">报告类型</th>
+                    <th style="border: 1px solid #ddd; padding: 8px; text-align: left; background-color: #f2f2f2;">报告期间</th>
+                    <th style="border: 1px solid #ddd; padding: 8px; text-align: left; background-color: #f2f2f2;">分析内容</th>
+                </tr>
+        """
+
+        for stock_code, reports in financial_analysis_results.items():
+            if not reports:
+                logger.info(f"股票{stock_code}没有分析报告，跳过")
+                continue
+
+            stock_name = self._get_stock_name(stock_code)
+            logger.info(
+                f"处理股票{stock_code}({stock_name})的财报分析，共{len(reports)}份报告"
+            )
+
+            # 限制显示的报告数量，显示前2份报告
+            max_reports = min(2, len(reports))
+            selected_reports = reports[:max_reports]
+
+            for i, report in enumerate(selected_reports):
+                report_type = report.get("report_type", "未知")
+                period_date = report.get("period_date", "")
+                analysis = report.get("analysis", {})
+
+                # 显示前2个分析字段
+                analysis_fields = [
+                    ("cost_structure", "成本结构"),
+                    ("profit_changes", "利润变化"),
+                    ("liquidation_value", "清算价值"),
+                    ("audit_risks", "审计风险"),
+                    ("overall_assessment", "总体评估"),
+                ]
+                selected_fields = analysis_fields[: min(2, len(analysis_fields))]
+
+                # 构建分析内容字符串
+                analysis_items = []
+                for field_key, field_name in selected_fields:
+                    value = analysis.get(field_key, "")
+                    if value:
+                        analysis_items.append(f"{field_name}: {value}")
+
+                analysis_text = (
+                    "<br>".join(analysis_items) if analysis_items else "无分析数据"
+                )
+
+                # 固定行背景颜色（交替颜色）
+                row_color = "#f9f9f9" if i % 2 == 0 else "#ffffff"
+
+                html += f"""
+                <tr style="background-color: {row_color};">
+                    <td style="border: 1px solid #ddd; padding: 8px;">{stock_code}<br><small>{stock_name}</small></td>
+                    <td style="border: 1px solid #ddd; padding: 8px;">{report_type}</td>
+                    <td style="border: 1px solid #ddd; padding: 8px;">{period_date}</td>
+                    <td style="border: 1px solid #ddd; padding: 8px;">{analysis_text}</td>
+                </tr>
+                """
+
+        html += """
+            </table>
+        """
+
+        # 固定免责声明
+        html += "<p><em>注：财报分析基于最新财务报告，数据仅供参考。</em></p>"
+
+        return html
+
     def _build_email_body(
-        self, alert_stocks, stock_data, analysis_results=None, announcements=None
+        self,
+        alert_stocks,
+        stock_data,
+        analysis_results=None,
+        announcements=None,
+        financial_analysis_results=None,
     ):
         """
-        构建邮件正文（完整版：4个表格 + LLM分析 + 公告 + 服务器信息）
+         构建邮件正文（完整版：4个表格 + LLM分析 + 公告 + 服务器信息 + 财报分析）
 
         Args:
             alert_stocks: 满足条件的股票列表
             stock_data: 完整的股票数据DataFrame
             analysis_results: LLM分析结果字典（可选）
             announcements: 公告数据字典（可选）
+            financial_analysis_results: 财报分析结果字典（可选）
 
         Returns:
             str: 邮件正文（HTML格式）
@@ -481,7 +599,12 @@ class EmailNotifier:
                 </div>
                 """
 
-        # 5. 构建公告部分
+        # 5. 构建财报分析部分
+        financial_analysis_section = self._build_financial_analysis_section(
+            financial_analysis_results
+        )
+
+        # 6. 构建公告部分
         announcements_section = ""
         if announcements and len(announcements) > 0:
             announcements_section = """
@@ -581,6 +704,7 @@ class EmailNotifier:
             all_rows_price=all_rows_price,
             all_rows_fundamental=all_rows_fundamental,
             llm_analysis_section=llm_analysis_section,
+            financial_analysis_section=financial_analysis_section,
             announcements_section=announcements_section,
             server_hostname=server_info["hostname"],
             server_ip=server_info["ip_address"],

@@ -29,6 +29,7 @@ from src.email_notifier import EmailNotifier
 from src.llm_analyzer import LLMAnalyzer
 from src.scheduler_manager import SchedulerManager
 from src.announcement_fetcher import AnnouncementFetcher
+from src.financial_report_manager import FinancialReportManager
 
 
 # 设置日志
@@ -136,6 +137,7 @@ def run_daily_task():
         analysis_results = {}
         llm_config = config.get("llm", {})
         api_key = llm_config.get("api_key")
+        analyzer = None  # 初始化分析器变量
         if api_key and api_key.strip():
             logger.info("开始LLM基本面分析")
             analyzer = LLMAnalyzer(config)
@@ -151,15 +153,63 @@ def run_daily_task():
             logger.info(f"LLM分析完成，共分析{len(analysis_results)}只股票")
         else:
             logger.info("LLM API未配置，跳过基本面分析")
+
+        # 6. 财报分析（可选）
+        financial_analysis_results = {}
+        financial_config = config.get("financial_reports", {})
+        if financial_config.get("enable", True):
+            try:
+                logger.info("开始财报分析检查")
+
+                # 确定要传递给财报管理器的LLM分析器
+                financial_llm_analyzer = None
+                if api_key and api_key.strip():
+                    financial_llm_analyzer = analyzer  # 使用已创建的LLM分析器实例
+                    logger.info("使用LLM分析器进行财报分析")
+                else:
+                    logger.warning("LLM API未配置，跳过财报分析")
+
+                # 获取内容抓取器（如果可用）
+                content_fetcher = getattr(announcement_fetcher, "content_fetcher", None)
+
+                financial_manager = FinancialReportManager(
+                    config,
+                    announcement_fetcher,
+                    financial_llm_analyzer,
+                    financial_report_fetcher=None,  # 让管理器自动创建
+                    content_fetcher=content_fetcher,
+                )
+                should_analyze, stocks_to_analyze = (
+                    financial_manager.should_analyze_financial_reports(alert_stocks)
+                )
+                if should_analyze:
+                    logger.info(f"需要财报分析: {stocks_to_analyze}")
+                    financial_analysis_results = (
+                        financial_manager.analyze_financial_reports(stocks_to_analyze)
+                    )
+                    logger.info(
+                        f"财报分析完成: {len(financial_analysis_results)}只股票有结果"
+                    )
+                else:
+                    logger.info("无需财报分析")
+            except Exception as e:
+                logger.error(f"财报分析失败: {e}", exc_info=True)
+
         # 7. 发送邮件（无论是否有满足条件的股票都发送日报）
         if alert_stocks:
             logger.info(f"发现{len(alert_stocks)}只满足条件的股票: {alert_stocks}")
             notifier.send_alert(
-                alert_stocks, stock_data, analysis_results, announcements
+                alert_stocks,
+                stock_data,
+                analysis_results,
+                announcements,
+                financial_analysis_results,
             )
         else:
             logger.info("没有满足条件的股票，发送每日报告")
-            notifier.send_daily_report(stock_data, analysis_results, announcements)
+            notifier.send_daily_report(
+                stock_data, analysis_results, announcements, financial_analysis_results
+            )
         logger.info("每日任务执行完成")
     except Exception as e:
         logger.error(f"执行任务时发生错误: {e}", exc_info=True)

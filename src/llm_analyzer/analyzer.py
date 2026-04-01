@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Optional
 from .base import BaseLLMClient
 from .fundamental_analyzer import FundamentalAnalyzer
 from .dividend_extractor import DividendExtractor
+from .financial_report_analyzer import FinancialReportAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class LLMAnalyzer(BaseLLMClient):
         # 初始化专用组件
         self.fundamental_analyzer = FundamentalAnalyzer(config)
         self.dividend_extractor = DividendExtractor(config)
+        self.financial_report_analyzer = FinancialReportAnalyzer(config)
 
         # 共享LLM调用计数器
         # 注意：两个组件共享同一个计数器（通过继承自BaseLLMClient）
@@ -89,6 +91,38 @@ class LLMAnalyzer(BaseLLMClient):
 
         # 同步计数器状态
         self._llm_calls_made = self.dividend_extractor._llm_calls_made
+
+        return result
+
+    def analyze_financial_report(
+        self, stock_code, report_text, report_type, period_date, report_title=""
+    ):
+        """
+        分析财务报告文本，提取关键财务数据并进行多维度分析
+        委托给FinancialReportAnalyzer组件
+
+        Args:
+            stock_code: 股票代码
+            report_text: 财报正文文本（PDF/HTML提取内容）
+            report_type: 报告类型 ('annual', 'semiannual', 'quarterly')
+            period_date: 报告期间（如 '2024-12-31'）
+            report_title: 报告标题（可选）
+
+        Returns:
+            dict: 分析结果，包含提取的财务数据和多维分析
+        """
+        # 确保使用相同的LLM调用计数器
+        self.financial_report_analyzer._llm_calls_made = self._llm_calls_made
+        self.financial_report_analyzer.max_llm_calls_per_run = (
+            self.max_llm_calls_per_run
+        )
+
+        result = self.financial_report_analyzer.analyze_financial_report(
+            stock_code, report_text, report_type, period_date, report_title
+        )
+
+        # 同步计数器状态
+        self._llm_calls_made = self.financial_report_analyzer._llm_calls_made
 
         return result
 
