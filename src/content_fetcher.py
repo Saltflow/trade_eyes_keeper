@@ -130,19 +130,6 @@ class ContentFetcher:
         content_bytes = download_result["content"]
         content_type = download_result["content_type"]
 
-        # 检查是否有PDF附件链接（HTML页面可能包含PDF附件）
-        pdf_links = download_result.get("pdf_links", [])
-
-        # 尝试下载PDF附件（如果存在）
-        if pdf_links and content_type == "html":
-            pdf_result = self._try_download_pdf_attachment(pdf_links, url)
-            if pdf_result["success"]:
-                content_bytes = pdf_result["content_bytes"]
-                content_type = "pdf"
-                logger.info(f"成功下载PDF附件，大小: {len(content_bytes)}字节")
-            else:
-                logger.debug("PDF附件下载失败，使用原始HTML内容")
-
         # 计算内容哈希
         content_hash = hashlib.md5(content_bytes).hexdigest()
 
@@ -275,39 +262,11 @@ class ContentFetcher:
                 logger.debug(
                     f"下载成功: {len(content_bytes)}字节, 类型: {detected_type}"
                 )
-
-                # 提取PDF链接（如果是HTML内容）
-                pdf_links = []
-                if detected_type == "html":
-                    try:
-                        # 尝试解码HTML内容
-                        html_content = None
-                        encodings = ["utf-8", "gbk", "gb2312", "gb18030", "big5"]
-                        for encoding in encodings:
-                            try:
-                                html_content = content_bytes.decode(encoding)
-                                break
-                            except UnicodeDecodeError:
-                                continue
-
-                        if html_content is None:
-                            html_content = content_bytes.decode(
-                                "utf-8", errors="ignore"
-                            )
-
-                        # 提取PDF链接
-                        pdf_links = self._extract_pdf_links_from_html(html_content, url)
-                        if pdf_links:
-                            logger.debug(f"发现{len(pdf_links)}个PDF附件链接")
-                    except Exception as e:
-                        logger.debug(f"提取PDF链接时出错（非致命）: {e}")
-
                 return {
                     "success": True,
                     "content": content_bytes,
                     "content_type": detected_type,
                     "headers": dict(response.headers),
-                    "pdf_links": pdf_links,
                 }
 
             except requests.exceptions.Timeout:
@@ -434,125 +393,8 @@ class ContentFetcher:
                 "metadata": {},
             }
 
-    def _extract_pdf_links_from_html(self, html_content, base_url):
-        """
-        从HTML内容中提取PDF附件链接
-
-        Args:
-            html_content: HTML文本内容
-            base_url: 基础URL（用于解析相对链接）
-
-        Returns:
-            list: PDF链接列表
-        """
-        try:
-            from bs4 import BeautifulSoup
-            from urllib.parse import urljoin
-        except ImportError:
-            logger.debug("BeautifulSoup不可用，无法提取PDF链接")
-            return []
-
-        if not html_content:
-            return []
-
-        try:
-            soup = BeautifulSoup(html_content, "html.parser")
-            pdf_urls = set()  # 使用集合自动去重
-
-            for link in soup.find_all("a", href=True):
-                href = link.get("href", "")
-                if not href:
-                    continue
-
-                # 检查是否为PDF链接（基于扩展名）
-                if href.lower().endswith(".pdf"):
-                    absolute_url = urljoin(base_url, href)
-                    pdf_urls.add(absolute_url)
-
-            result = list(pdf_urls)[:2]  # 最多返回前2个链接
-            logger.debug(f"从HTML提取到{len(result)}个PDF链接")
-            return result
-
-        except Exception as e:
-            logger.warning(f"提取PDF链接失败: {e}")
-            return []
-
-    def _try_download_pdf_attachment(self, pdf_links, referer_url):
-        """
-        尝试下载PDF附件
-
-        Args:
-            pdf_links: PDF链接列表
-            referer_url: 原始URL（用于Referer头）
-
-        Returns:
-            dict: 包含success和content_bytes的结果
-        """
-        import requests
-
-        for i, pdf_url in enumerate(pdf_links[:2]):  # 最多尝试前2个链接
-            try:
-                logger.debug(f"尝试下载PDF附件 {i + 1}/{len(pdf_links)}: {pdf_url}")
-
-                headers = {
-                    "User-Agent": self.user_agent,
-                    "Accept": "application/pdf,*/*",
-                    "Referer": referer_url,
-                }
-
-                response = requests.get(
-                    pdf_url,
-                    headers=headers,
-                    timeout=self.timeout,
-                    stream=True,
-                )
-                response.raise_for_status()
-
-                # 检查内容类型
-                content_type = response.headers.get("Content-Type", "").lower()
-                if "pdf" not in content_type:
-                    logger.debug(f"链接内容类型不是PDF: {content_type}")
-                    continue
-
-                # 流式读取，限制大小
-                pdf_bytes = b""
-                size_exceeded = False
-                for chunk in response.iter_content(chunk_size=8192):
-                    pdf_bytes += chunk
-                    if len(pdf_bytes) > self.max_pdf_size:
-                        logger.warning(
-                            f"PDF大小超过限制: {len(pdf_bytes)} > {self.max_pdf_size}"
-                        )
-                        size_exceeded = True
-                        break
-
-                # 如果大小超过限制，跳过这个PDF
-                if size_exceeded:
-                    continue
-
-                # 验证PDF文件头
-                if len(pdf_bytes) >= 4 and pdf_bytes[:4] == b"%PDF":
-                    return {"success": True, "content_bytes": pdf_bytes}
-                else:
-                    logger.debug("下载的文件不是有效的PDF（缺少%PDF头）")
-
-            except Exception as e:
-                logger.debug(f"下载PDF附件失败 ({pdf_url}): {e}")
-                continue
-
-        return {"success": False, "content_bytes": None}
-
-    # 注：已移除未使用的_calculate_pdf_link_priority方法，简化PDF链接提取逻辑
-
     def _extract_text_from_html(self, content_bytes, url):
         """从HTML提取文本（使用BeautifulSoup）"""
-        # 检查BeautifulSoup是否可用
-        try:
-            from bs4 import BeautifulSoup
-        except ImportError:
-            # BeautifulSoup不可用，使用回退方法
-            return self._extract_text_from_html_fallback(content_bytes)
-
         try:
             # 尝试多种编码
             encodings = ["utf-8", "gbk", "gb2312", "gb18030", "big5"]

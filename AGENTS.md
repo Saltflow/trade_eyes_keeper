@@ -153,6 +153,9 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
   - `narrow-down-designer`: Analyze requirements and break down work
   - `checkpoint-acceptor`: Focus on table checking and sub-function acceptance
   - `cycle_guard`: Detect repetitive error patterns, prevent circular coding
+  - `todosaver`: Save pending todos to docs/todo_backlog.md and clear context
+  - `compaction`: Override built-in English compactor with Chinese version
+  - `mail_checker`: Run system and validate latest email archive for data readiness and format compliance
 
 ## Troubleshooting
 - **Import errors**: Ensure `src/` is in Python path (see `conftest.py`)
@@ -183,5 +186,5 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 - **Flake8 configuration**: `.flake8` (max-line-length 88, ignore E203/W503)
 - **YAPF configuration**: `.style.yapf` (pep8 style, column_limit 88)
 
-**Last Updated**: 2026-03-22  
-**Project Version**: v1.11+
+**Last Updated**: 2026-04-02  
+**Project Version**: v1.12+
