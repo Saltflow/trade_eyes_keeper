@@ -423,6 +423,7 @@ src/llm_analyzer/
 - `.opencode/agents/todosaver.md` - 待办事项保存代理配置
 - `.opencode/agents/compaction.md` - 上下文压缩代理配置
 - `.opencode/agents/mail_checker.md` - 邮件验证代理配置
+- `.opencode/agents/net-checker.md` - 网络健康检查代理配置
 
 ### 待办事项保存代理 (Todo Saver Agent) (2026-04-01)
 **目的**: 将未完成待办事项保存到 `docs/todo_backlog.md` 并清空上下文，节省token使用。
@@ -460,8 +461,33 @@ src/llm_analyzer/
 - 允许空股票表格（0行数据）作为正常情况
 **配置**: 在`.opencode/agents/mail_checker.md`中定义，包含详细的验证标准和命令权限。
 
-### 验收测试工作流架构 (2026-03-22) [更新: 2026-04-02]
-**目标**: 创建自动化验收流程，协调五个子代理完成端到端验证
+### 网络健康检查代理 (Net Checker Agent) (2026-04-03)
+**目的**: 作为验收工作流的最终关卡，通过SSH连接远程服务器，检查health-server服务状态并验证各端点功能合规性。
+**触发方式**: 由 `@acceptance` 代理在工作流最后阶段调用（邮件验证之后）。
+**核心功能**:
+1. **远程服务器连接**: 通过SSH连接远程服务器（`DEPLOY_HOST`，复用`ci_cd_deploy.py`的SSH配置）
+2. **自动启动服务**: 如果health-server未运行，通过`screen`自动启动后再验证
+3. **端点功能验证**: 验证4个核心端点（`/`、`/health`、`/status`、`/metrics`），所有端点必须通过
+4. **安全特性验证**: 速率限制（429触发）、404处理
+5. **详细报告**: 每个端点独立报告状态码、内容类型和内容验证结果
+**远程服务器信息**:
+- Host: `DEPLOY_HOST` 环境变量（默认 `DEPLOY_HOST`）
+- SSH Port: `DEPLOY_PORT` 环境变量（默认 `22`）
+- Username: `DEPLOY_USER` 环境变量（默认 `root`）
+- Remote Path: `/root/trade_eyes_keeper`
+- Health Server Port: `1933`（从`config.yaml`读取）
+**检查标准**:
+- `/` → 200, text/html, 包含系统状态信息
+- `/health` → 200, text/plain, 返回"OK"
+- `/status` → 200, application/json, 有效JSON对象
+- `/metrics` → 200, text/plain, Prometheus格式指标
+**集成要求**:
+- 所有核心端点必须通过，否则acceptance标记为失败
+- 超时限制120秒
+- SSH不可达时降级到本地检查
+
+### 验收测试工作流架构 (2026-03-22) [更新: 2026-04-03]
+**目标**: 创建自动化验收流程，协调六个子代理完成端到端验证
 **主代理**: `acceptance` (模式: primary，可通过Tab键切换)
 **协调流程**:
 1. **需求分析** → @narrow-down-designer: 生成≤20步实施计划
@@ -471,7 +497,8 @@ src/llm_analyzer/
    - @cycle_guard: 检测循环编码模式
 3. **系统验证** → @data-source-validator: 运行真实系统，测试数据源API和数据质量
 4. **邮件验证** → @mail_checker: 运行系统并验证最新邮件存档的数据准备状态和格式合规性
-5. **报告生成** → 综合五个子代理结果，生成验收报告
+5. **网络健康检查** → @net-checker: SSH连接远程服务器，检查health-server服务状态，验证各端点功能合规性
+6. **报告生成** → 综合六个子代理结果，生成验收报告
 
 **约束条件**:
 - 单次变更≤150行核心代码

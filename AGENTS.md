@@ -156,6 +156,7 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
   - `todosaver`: Save pending todos to docs/todo_backlog.md and clear context
   - `compaction`: Override built-in English compactor with Chinese version
   - `mail_checker`: Run system and validate latest email archive for data readiness and format compliance
+  - `net-checker`: SSH to remote server, check health-server status and verify endpoint compliance
 
 ## Troubleshooting
 - **Import errors**: Ensure `src/` is in Python path (see `conftest.py`)
@@ -186,5 +187,5 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 - **Flake8 configuration**: `.flake8` (max-line-length 88, ignore E203/W503)
 - **YAPF configuration**: `.style.yapf` (pep8 style, column_limit 88)
 
-**Last Updated**: 2026-04-02  
+**Last Updated**: 2026-04-03  
 **Project Version**: v1.12+
