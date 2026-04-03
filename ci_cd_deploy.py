@@ -563,6 +563,15 @@ else:
 """
         success, out, err = run_ssh(client, health_check, "Health server config check")
 
+        # 13.b Ensure config symlink for health_server absolute path compatibility
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] Ensuring /root/config points to deployment config..."
+        )
+        ensure_config_symlink = (
+            "ln -sfn /root/trade_eyes_keeper/config /root/config && ls -ld /root/config"
+        )
+        run_ssh(client, ensure_config_symlink, "Ensure config symlink", timeout=10)
+
         # 14. Start health server for testing
         print(
             f"[{datetime.now().strftime('%H:%M:%S')}] Testing health server startup..."

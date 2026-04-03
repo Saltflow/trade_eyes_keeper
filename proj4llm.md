@@ -476,6 +476,7 @@ src/llm_analyzer/
 - Username: `DEPLOY_USER` 环境变量（默认 `root`）
 - Remote Path: `/root/trade_eyes_keeper`
 - Health Server Port: `1933`（从`config.yaml`读取）
+- 配置路径兼容性：远端存在顶层 `health_server.py` 使用 `Path(__file__).parent.parent / 'config'`，解析为 `/root/config/config.yaml`。部署时应创建符号链接 `ln -sfn /root/trade_eyes_keeper/config /root/config` 确保健康服务可直接启动。
 **检查标准**:
 - `/` → 200, text/html, 包含系统状态信息
 - `/health` → 200, text/plain, 返回"OK"
