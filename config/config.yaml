@@ -12,6 +12,10 @@ financial_reports:
   enable: true
   auto_enable: true
   conditional_enable: true
+  force_analyze: true        # 强制分析所有股票，忽略自动/条件触发
+  max_stocks_per_run: 2      # 常规模式每轮最多分析股票数
+  max_force_stocks: 2        # 强制模式最多分析的股票数（0或缺省则不限）
+  max_llm_calls_per_run: 80  # 财报分析LLM调用上限，单独计入保护大模型额度
   reports_per_stock: 3
   conditional_days: 30
 data_source:

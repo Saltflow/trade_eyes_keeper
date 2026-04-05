@@ -59,6 +59,15 @@ class FinancialReportAnalyzer(BaseLLMClient):
         logger.info(
             f"开始分析财报: {stock_code} {report_type} {period_date} ({len(report_text)} chars)"
         )
+        logger.debug(
+            "财报分析入参: stock=%s type=%s period=%s title=%s hash=%s text_len=%s",
+            stock_code,
+            report_type,
+            period_date,
+            self._truncate_for_log(report_title or "", 120),
+            content_hash,
+            len(report_text),
+        )
 
         try:
             # 多步骤LLM分析流程
@@ -124,16 +133,88 @@ class FinancialReportAnalyzer(BaseLLMClient):
                 return result
 
             logger.info(f"步骤1: 提取关键财务数据 - {stock_code}")
-            financial_data = self._extract_financial_data(
+            financial_data = self._extract_financial_data_multipass(
                 stock_code, report_text, report_type, period_date
             )
             result["extracted_financial_data"] = financial_data
             result["analysis_steps"]["financial_data_extraction"] = "completed"
+            self._log_step_output("financial_data_extraction", financial_data)
 
             if not financial_data.get("success", False):
                 result["success"] = False
                 result["error"] = financial_data.get("error", "财务数据提取失败")
+                logger.warning(
+                    "财务数据提取失败，终止后续分析: %s | error=%s",
+                    stock_code,
+                    financial_data.get("error"),
+                )
                 return result
+
+            # 最低要求：提取到足够的数值字段，否则短路后续步骤，避免浪费token
+            parsed_financial_data = financial_data.get("financial_data", {})
+            numeric_fields = self._count_numeric_fields(parsed_financial_data)
+            result["numeric_fields_detected"] = numeric_fields
+            logger.info(
+                "财报数值字段统计: stock=%s fields=%s",
+                stock_code,
+                numeric_fields,
+            )
+
+            # 记录字段名，便于排查哪些数字被解析出来
+            try:
+                field_names = sorted(list(parsed_financial_data.keys()))
+                logger.info(
+                    "财报已解析字段: stock=%s count=%s fields=%s",
+                    stock_code,
+                    numeric_fields,
+                    field_names,
+                )
+                result["numeric_field_names"] = field_names
+            except Exception:
+                result["numeric_field_names"] = []
+
+            min_required = 15 if report_type in ("annual", "semiannual") else 8
+
+            # 若字段不足，尝试在正文中挖掘数字行补充关键科目，再次计数
+            if numeric_fields < min_required:
+                mined_fields = self._mine_numeric_from_text(  # type: ignore[attr-defined]
+                    report_text
+                )
+                if mined_fields:
+                    parsed_financial_data = {**parsed_financial_data, **mined_fields}
+                    financial_data["financial_data"] = parsed_financial_data
+                    numeric_fields = self._count_numeric_fields(parsed_financial_data)
+                    result["numeric_fields_detected"] = numeric_fields
+                    try:
+                        field_names = sorted(list(parsed_financial_data.keys()))
+                        result["numeric_field_names"] = field_names
+                        logger.info(
+                            "正文补充后字段: stock=%s count=%s fields=%s",
+                            stock_code,
+                            numeric_fields,
+                            field_names,
+                        )
+                    except Exception:
+                        result["numeric_field_names"] = []
+
+                if numeric_fields < min_required:
+                    result["success"] = False
+                    result["error"] = (
+                        f"结构化数值字段过少({numeric_fields}/{min_required})，疑似文本截断或报表缺失，已短路后续分析"
+                    )
+                    result["analysis_steps"]["financial_data_extraction"] = "partial"
+                    result["short_circuited"] = True
+                    self._log_step_output(
+                        "financial_data_extraction_insufficient", financial_data
+                    )
+                    logger.warning(
+                        "财报数值字段不足，终止后续分析: %s type=%s detected=%s required=%s",
+                        stock_code,
+                        report_type,
+                        numeric_fields,
+                        min_required,
+                    )
+                    return result
 
             # 步骤2: 分析成本结构及同比变化
             if not self._can_make_llm_call():
@@ -145,6 +226,7 @@ class FinancialReportAnalyzer(BaseLLMClient):
             cost_analysis = self._analyze_cost_structure(financial_data)
             result["cost_structure_analysis"] = cost_analysis
             result["analysis_steps"]["cost_structure_analysis"] = "completed"
+            self._log_step_output("cost_structure_analysis_output", cost_analysis)
 
             # 步骤3: 分析利润变化及竞争力
             if not self._can_make_llm_call():
@@ -156,6 +238,7 @@ class FinancialReportAnalyzer(BaseLLMClient):
             profit_analysis = self._analyze_profit_changes(financial_data)
             result["profit_competitiveness_analysis"] = profit_analysis
             result["analysis_steps"]["profit_competitiveness_analysis"] = "completed"
+            self._log_step_output("profit_analysis_output", profit_analysis)
 
             # 步骤4: 计算资产清算价值
             if not self._can_make_llm_call():
@@ -167,6 +250,7 @@ class FinancialReportAnalyzer(BaseLLMClient):
             liquidation_analysis = self._calculate_liquidation_value(financial_data)
             result["liquidation_value_analysis"] = liquidation_analysis
             result["analysis_steps"]["liquidation_value_analysis"] = "completed"
+            self._log_step_output("liquidation_value_output", liquidation_analysis)
 
             # 步骤5: 生成审计风险提示
             if not self._can_make_llm_call():
@@ -178,6 +262,7 @@ class FinancialReportAnalyzer(BaseLLMClient):
             audit_insights = self._generate_audit_insights(financial_data)
             result["audit_risk_insights"] = audit_insights
             result["analysis_steps"]["audit_risk_insights"] = "completed"
+            self._log_step_output("audit_insights_output", audit_insights)
 
             # 步骤6: 综合评估
             if not self._can_make_llm_call():
@@ -195,6 +280,7 @@ class FinancialReportAnalyzer(BaseLLMClient):
             )
             result["overall_assessment"] = overall_assessment
             result["analysis_steps"]["overall_assessment"] = "completed"
+            self._log_step_output("overall_assessment_output", overall_assessment)
 
             # 汇总结果
             result["analysis_completed"] = True
@@ -210,6 +296,124 @@ class FinancialReportAnalyzer(BaseLLMClient):
 
         return result
 
+    def _count_numeric_fields(self, data: Any) -> int:
+        """统计嵌套字典/列表中的数字字段数量"""
+
+        def _walk(value: Any) -> int:
+            if isinstance(value, (int, float)):
+                return 1
+            if isinstance(value, dict):
+                return sum(_walk(v) for v in value.values())
+            if isinstance(value, (list, tuple)):
+                return sum(_walk(v) for v in value)
+            return 0
+
+        return _walk(data)
+
+    def _mine_numeric_from_text(self, report_text: str) -> Dict[str, Any]:
+        """从正文挖掘常见科目与比例，补充字段计数（不依赖表格）"""
+
+        # 科目类（金额）
+        amount_patterns = {
+            "revenue": r"营业收入[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "net_profit": r"(?:归母)?净利润[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "operating_income": r"营业利润[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "total_assets": r"总资产[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "total_liabilities": r"总负债[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "equity": r"(股东权益|所有者权益)[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "current_assets": r"流动资产[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "current_liabilities": r"流动负债[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "cash_and_equivalents": r"货币资金[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "operating_cash_flow": r"经营活动现金流(?:量)?[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "investing_cash_flow": r"投资活动现金流(?:量)?[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "financing_cash_flow": r"筹资活动现金流(?:量)?[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "capex": r"资本(?:性)?支出[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "ebitda": r"EBITDA[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "depreciation": r"折旧[费]?用?[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "amortization": r"摊销[费]?用?[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "interest_expense": r"利息支出[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "ar": r"应收账款[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+            "inventory": r"存货[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)(?:\s*[亿万万元]*)",
+        }
+
+        # 比例类（百分比）
+        ratio_patterns = {
+            "gross_margin": r"毛利率[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)%",
+            "net_margin": r"净利率[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)%",
+            "operating_margin": r"营业利润率[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)%",
+            "asset_liability_ratio": r"资产负债率[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)%",
+            "roe": r"ROE[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)%",
+            "roa": r"ROA[：:，,。 ]*([0-9]+(?:\.[0-9]+)?)%",
+        }
+
+        mined: Dict[str, Any] = {}
+
+        for key, pattern in amount_patterns.items():
+            m = re.search(pattern, report_text)
+            if m:
+                value = self._parse_number_unit(m.group(1), m.group(0))
+                if value is not None and key not in mined:
+                    mined[key] = value
+
+        for key, pattern in ratio_patterns.items():
+            m = re.search(pattern, report_text)
+            if m:
+                value = self._parse_percent(m.group(1))
+                if value is not None and key not in mined:
+                    mined[key] = value
+
+        if mined:
+            logger.info("正文补充数字字段: %s", mined)
+        return mined
+
+    def _parse_number_unit(self, number_str: str, context: str) -> Optional[float]:
+        """解析带单位的数字，支持亿/万/元；无法解析返回None"""
+
+        try:
+            num = float(number_str)
+        except Exception:
+            return None
+
+        context_lower = context.lower()
+        if "亿" in context_lower:
+            return num * 1e8
+        if "万" in context_lower:
+            return num * 1e4
+        return num
+
+    def _parse_percent(self, percent_str: str) -> Optional[float]:
+        try:
+            return float(percent_str) / 100.0
+        except Exception:
+            return None
+
+    def _truncate_for_log(self, text: Any, limit: int = 1200) -> str:
+        """将文本或结构化数据转换为可安全截断的字符串"""
+
+        if text is None:
+            return "None"
+
+        if not isinstance(text, str):
+            text = json.dumps(text, ensure_ascii=False, default=str)
+
+        if len(text) <= limit:
+            return text
+
+        return f"{text[:limit]}... (truncated, total={len(text)})"
+
+    def _log_step_output(self, step: str, payload: Any, max_len: int = 1200) -> None:
+        """统一输出财报分析中间结果，便于排查不透明问题"""
+
+        serialized = payload
+        if not isinstance(payload, str):
+            serialized = json.dumps(payload, ensure_ascii=False, default=str)
+
+        logger.debug(
+            "财报分析中间结果 | step=%s | payload=%s",
+            step,
+            self._truncate_for_log(serialized, max_len),
+        )
+
     def _extract_financial_data(
         self, stock_code: str, report_text: str, report_type: str, period_date: str
     ) -> Dict[str, Any]:
@@ -217,7 +421,10 @@ class FinancialReportAnalyzer(BaseLLMClient):
         从财报文本中提取关键财务数据表格
         使用LLM识别并结构化财务数据
         """
-        # 构建提示词
+        # 构建提示词（保留更长正文，避免丢失报表数字）
+        max_chars = 128000
+        truncated_text = report_text[:max_chars]
+
         prompt = f"""你是一名专业的财务分析师，请从以下上市公司财务报告中提取关键财务数据。
 
 股票代码: {stock_code}
@@ -271,8 +478,8 @@ class FinancialReportAnalyzer(BaseLLMClient):
   "notes": "提取过程中的备注"
 }}
 
-财报文本内容（可能不完整）：
-{report_text[:10000]}  # 限制文本长度
+财报文本内容（已截取前 {max_chars} 字符，原文长度 {len(report_text)}）：
+{truncated_text}
 """
 
         messages = [
@@ -290,21 +497,26 @@ class FinancialReportAnalyzer(BaseLLMClient):
             llm_response = (
                 response.get("choices", [{}])[0].get("message", {}).get("content", "")
             )
+            logger.debug(
+                "单轮财报提取LLM返回: stock=%s | snippet=%s",
+                stock_code,
+                self._truncate_for_log(llm_response, 500),
+            )
 
             # 尝试解析JSON响应
             try:
-                import json
-
                 extracted_data = json.loads(llm_response)
                 if isinstance(extracted_data, dict):
                     extracted_data["llm_response_raw"] = llm_response[:1000]
+                    self._log_step_output(
+                        "single_pass_extraction_parsed", extracted_data
+                    )
                     return extracted_data
-                else:
-                    return {
-                        "success": False,
-                        "error": "LLM返回非JSON格式",
-                        "llm_response": llm_response[:1000],
-                    }
+                return {
+                    "success": False,
+                    "error": "LLM返回非JSON格式",
+                    "llm_response": llm_response[:1000],
+                }
             except json.JSONDecodeError:
                 # 尝试从文本中提取JSON
                 json_match = re.search(r"\{.*\}", llm_response, re.DOTALL)
@@ -312,19 +524,205 @@ class FinancialReportAnalyzer(BaseLLMClient):
                     try:
                         extracted_data = json.loads(json_match.group())
                         extracted_data["llm_response_raw"] = llm_response[:1000]
+                        self._log_step_output(
+                            "single_pass_extraction_parsed", extracted_data
+                        )
                         return extracted_data
                     except json.JSONDecodeError:
                         pass
 
-                return {
-                    "success": False,
-                    "error": "无法解析LLM返回的JSON",
-                    "llm_response": llm_response[:1000],
-                }
+            return {
+                "success": False,
+                "error": "无法解析LLM返回的JSON",
+                "llm_response": llm_response[:1000],
+            }
 
         except Exception as e:
             logger.error(f"提取财务数据时出错: {e}")
             return {"success": False, "error": f"提取失败: {e}"}
+
+    def _extract_financial_data_multipass(
+        self, stock_code: str, report_text: str, report_type: str, period_date: str
+    ) -> Dict[str, Any]:
+        """
+        多轮提取：每轮聚焦不同报表，但输入使用全文（截取上限）
+        """
+
+        max_chars = 128000
+        truncated_text = report_text[:max_chars]
+
+        passes = [
+            (
+                "income_balance",
+                "仅提取利润表与资产负债表字段：收入/成本/费用/利润/总资产/总负债/权益/货币资金/应收/存货/流动与非流动拆分，严格JSON",
+            ),
+            (
+                "cash_flow",
+                "仅提取现金流量表关键字段：经营/投资/筹资现金流净额，严格JSON",
+            ),
+        ]
+
+        merged_financial_data: Dict[str, Any] = {}
+        llm_raw_snippets: List[str] = []
+        errors: List[Dict[str, Any]] = []
+
+        for name, focus in passes:
+            prompt = f"""你是一名专业的财务分析师，请从以下上市公司财务报告中提取关键财务数据。
+
+股票代码: {stock_code}
+报告类型: {report_type}
+报告期间: {period_date}
+
+提取范围（本轮聚焦）：{focus}
+
+返回JSON格式：
+{{
+  "success": true/false,
+  "financial_data": {{
+    "income_statement": {{
+      "revenue": 金额（万元）, 
+      "cost_of_revenue": 金额（万元）, 
+      "gross_profit": 金额（万元）, 
+      "operating_expenses": {{
+        "sales_expenses": 金额（万元）, 
+        "management_expenses": 金额（万元）, 
+        "rd_expenses": 金额（万元）, 
+        "financial_expenses": 金额（万元）
+      }},
+      "operating_profit": 金额（万元）, 
+      "total_profit": 金额（万元）, 
+      "net_profit": 金额（万元）, 
+      "net_profit_attributable": 金额（万元）
+    }},
+    "balance_sheet": {{
+      "total_assets": 金额（万元）, 
+      "current_assets": 金额（万元）, 
+      "non_current_assets": 金额（万元）, 
+      "total_liabilities": 金额（万元）, 
+      "current_liabilities": 金额（万元）, 
+      "non_current_liabilities": 金额（万元）, 
+      "equity": 金额（万元）
+    }},
+    "cash_flow": {{
+      "operating_cash_flow": 金额（万元）, 
+      "investing_cash_flow": 金额（万元）, 
+      "financing_cash_flow": 金额（万元）
+    }}
+  }},
+  "extraction_confidence": "high/medium/low",
+  "notes": "提取过程中的备注"
+}}
+
+财报全文（已截取前 {max_chars} 字符，原文长度 {len(report_text)}）：
+{truncated_text}
+"""
+
+            messages = [
+                {
+                    "role": "system",
+                    "content": "你是一名专业的财务分析师，擅长从财务报告中提取结构化数据。请严格按JSON格式返回结果。",
+                },
+                {"role": "user", "content": prompt},
+            ]
+
+            response = self._call_chat_completion(
+                messages, temperature=0.3, max_tokens=5000
+            )
+            llm_response = (
+                response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            )
+            logger.debug(
+                "多轮提取LLM返回: stock=%s | pass=%s | snippet=%s",
+                stock_code,
+                name,
+                self._truncate_for_log(llm_response, 600),
+            )
+
+            parsed: Dict[str, Any] = {
+                "success": False,
+                "error": "无法解析LLM返回的JSON",
+            }
+
+            json_match = None
+            try:
+                parsed = json.loads(llm_response)
+            except json.JSONDecodeError:
+                json_match = re.search(r"\{.*\}", llm_response, re.DOTALL)
+                if json_match:
+                    try:
+                        parsed = json.loads(json_match.group())
+                    except json.JSONDecodeError:
+                        pass
+
+            if isinstance(parsed, dict):
+                parsed["llm_response_raw"] = llm_response[:1000]
+            else:
+                parsed = {
+                    "success": False,
+                    "error": "LLM返回非JSON格式",
+                    "llm_response": llm_response[:1000],
+                }
+
+            if not parsed.get("success"):
+                errors.append({"pass": name, "error": parsed.get("error", "解析失败")})
+                llm_raw_snippets.append(llm_response[:300])
+                self._log_step_output(f"multipass_extraction_failure_{name}", parsed)
+                continue
+
+            llm_raw_snippets.append(llm_response[:300])
+            fd = parsed.get("financial_data") or {}
+            merged_financial_data = self._merge_financial_data(
+                merged_financial_data, fd
+            )
+            self._log_step_output(f"multipass_extraction_parsed_{name}", parsed)
+
+        if not merged_financial_data:
+            self._log_step_output(
+                "multipass_extraction_result_empty",
+                {"errors": errors, "llm_snippets": llm_raw_snippets},
+            )
+            return {
+                "success": False,
+                "error": "未能提取到财务数据",
+                "errors": errors,
+                "llm_response_raw": " | ".join(llm_raw_snippets)[:1000],
+            }
+
+        self._log_step_output(
+            "multipass_extraction_merged",
+            {
+                "financial_data": merged_financial_data,
+                "errors": errors,
+                "llm_snippets": llm_raw_snippets,
+            },
+        )
+        return {
+            "success": True,
+            "financial_data": merged_financial_data,
+            "extraction_confidence": "mixed",
+            "notes": "multi-pass extraction",
+            "llm_response_raw": " | ".join(llm_raw_snippets)[:1000],
+        }
+
+    def _merge_financial_data(
+        self, base: Dict[str, Any], new: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """合并多次提取的财务数据，优先保留已有非空值"""
+
+        def _merge(a: Any, b: Any) -> Any:
+            if isinstance(a, dict) and isinstance(b, dict):
+                merged = dict(a)
+                for k, v in b.items():
+                    if k in merged:
+                        merged[k] = _merge(merged[k], v)
+                    else:
+                        merged[k] = v
+                return merged
+            if a in (None, "", []):
+                return b
+            return a
+
+        return _merge(base or {}, new or {})
 
     def _analyze_cost_structure(self, financial_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -383,16 +781,25 @@ class FinancialReportAnalyzer(BaseLLMClient):
             llm_response = (
                 response.get("choices", [{}])[0].get("message", {}).get("content", "")
             )
+            logger.debug(
+                "成本结构分析LLM返回: snippet=%s",
+                self._truncate_for_log(llm_response, 800),
+            )
 
             # 解析JSON响应
             try:
                 analysis_result = json.loads(llm_response)
+                self._log_step_output("cost_structure_analysis_parsed", analysis_result)
                 return analysis_result
             except json.JSONDecodeError:
                 json_match = re.search(r"\{.*\}", llm_response, re.DOTALL)
                 if json_match:
                     try:
-                        return json.loads(json_match.group())
+                        analysis_result = json.loads(json_match.group())
+                        self._log_step_output(
+                            "cost_structure_analysis_parsed", analysis_result
+                        )
+                        return analysis_result
                     except json.JSONDecodeError:
                         pass
 
@@ -464,16 +871,23 @@ class FinancialReportAnalyzer(BaseLLMClient):
             llm_response = (
                 response.get("choices", [{}])[0].get("message", {}).get("content", "")
             )
+            logger.debug(
+                "利润分析LLM返回: snippet=%s",
+                self._truncate_for_log(llm_response, 800),
+            )
 
             # 解析JSON响应
             try:
                 analysis_result = json.loads(llm_response)
+                self._log_step_output("profit_analysis_parsed", analysis_result)
                 return analysis_result
             except json.JSONDecodeError:
                 json_match = re.search(r"\{.*\}", llm_response, re.DOTALL)
                 if json_match:
                     try:
-                        return json.loads(json_match.group())
+                        analysis_result = json.loads(json_match.group())
+                        self._log_step_output("profit_analysis_parsed", analysis_result)
+                        return analysis_result
                     except json.JSONDecodeError:
                         pass
 
@@ -491,47 +905,32 @@ class FinancialReportAnalyzer(BaseLLMClient):
         self, financial_data: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        计算资产清算价值（参考橡树资本马克斯的观点）
-        关注安全边际和资产变现能力
+        以DCF为主的估值（替代清算价值），聚焦内在价值和安全边际
         """
-        prompt = f"""你是一名价值投资分析师，参考橡树资本霍华德·马克斯的投资理念，
-计算以下公司的资产清算价值：
 
-财务数据:
+        prompt = f"""你是一名价值投资分析师，请基于DCF框架估算公司内在价值（万元口径），并给出安全边际。
+
+输入财务数据（可能不全）：
 {json.dumps(financial_data.get("financial_data", {}), indent=2, ensure_ascii=False)}
 
-请计算：
-1. 资产变现价值（保守估计）：
-   - 流动资产变现率（货币资金100%，应收账款80%，存货50%等）
-   - 非流动资产变现率（固定资产60%，无形资产20%等）
-2. 负债清偿优先级
-3. 清算价值计算：
-   - 总可变现资产
-   - 减：优先清偿负债
-   - 股东可获得的清算价值
-4. 安全边际分析：
-   - 清算价值与市值的比较
-   - 破产风险评估
-5. 橡树资本风格建议：
-   - 是否具有足够的安全边际
-   - 投资时机建议
+要求：
+1) 使用简化FCFF模型，给出主要假设（收入增速、EBIT或利润率、折旧/资本开支、营运资金变化）
+2) 估算WACC，给出取值理由；如缺数据，用行业保守值并说明
+3) 给出核心结果：企业价值EV、股权价值、每股内在价值（如缺股本，用“未提供股本，无法算每股”提示）
+4) 安全边际：基于当前股价/总市值（若缺，给出“缺市值，无法计算安全边际”）
+5) 总结与结论：一句话结论（买入/中性/回避）
 
-请按以下JSON格式返回分析结果：
+返回JSON：
 {{
   "success": true/false,
   "liquidation_analysis": {{
-    "asset_liquidation_values": {{
-      "cash_equivalents": 金额（万元）,
-      "receivables_liquidation": 金额（万元）,
-      "inventory_liquidation": 金额（万元）,
-      "fixed_assets_liquidation": 金额（万元）
-    }},
-    "total_liquidation_value": 金额（万元）,
-    "priority_liabilities": 金额（万元）,
-    "shareholder_liquidation_value": 金额（万元）,
-    "safety_margin": "高/中/低",
-    "bankruptcy_risk": "低/中/高",
-    "oaktree_style_recommendation": "推荐/中性/避免"
+    "method": "DCF",
+    "assumptions": {{"revenue_growth": "", "margin": "", "capex": "", "wacc": ""}},
+    "intrinsic_value": "企业价值(万元)",
+    "equity_value": "股权价值(万元)",
+    "fair_value_per_share": "每股内在价值(元)或无法计算",
+    "safety_margin": "高/中/低/未知",
+    "summary": "一句话结论，含买入/中性/回避"
   }}
 }}
 """
@@ -539,28 +938,36 @@ class FinancialReportAnalyzer(BaseLLMClient):
         messages = [
             {
                 "role": "system",
-                "content": "你是一名价值投资专家，擅长计算公司清算价值和评估安全边际。",
+                "content": "你是一名价值投资分析师，擅长用DCF估算内在价值并给出安全边际。务必输出可解析的JSON。",
             },
             {"role": "user", "content": prompt},
         ]
 
         try:
             response = self._call_chat_completion(
-                messages, temperature=0.3, max_tokens=3000
+                messages, temperature=0.3, max_tokens=3200
             )
             llm_response = (
                 response.get("choices", [{}])[0].get("message", {}).get("content", "")
             )
+            logger.debug(
+                "DCF/估值分析LLM返回: snippet=%s",
+                self._truncate_for_log(llm_response, 800),
+            )
 
-            # 解析JSON响应
             try:
                 analysis_result = json.loads(llm_response)
+                self._log_step_output("liquidation_value_parsed", analysis_result)
                 return analysis_result
             except json.JSONDecodeError:
                 json_match = re.search(r"\{.*\}", llm_response, re.DOTALL)
                 if json_match:
                     try:
-                        return json.loads(json_match.group())
+                        analysis_result = json.loads(json_match.group())
+                        self._log_step_output(
+                            "liquidation_value_parsed", analysis_result
+                        )
+                        return analysis_result
                     except json.JSONDecodeError:
                         pass
 
@@ -571,7 +978,7 @@ class FinancialReportAnalyzer(BaseLLMClient):
                 }
 
         except Exception as e:
-            logger.error(f"清算价值计算时出错: {e}")
+            logger.error(f"DCF估值计算时出错: {e}")
             return {"success": False, "error": f"计算失败: {e}"}
 
     def _generate_audit_insights(
@@ -620,16 +1027,23 @@ class FinancialReportAnalyzer(BaseLLMClient):
             llm_response = (
                 response.get("choices", [{}])[0].get("message", {}).get("content", "")
             )
+            logger.debug(
+                "审计风险分析LLM返回: snippet=%s",
+                self._truncate_for_log(llm_response, 800),
+            )
 
             # 解析JSON响应
             try:
                 analysis_result = json.loads(llm_response)
+                self._log_step_output("audit_insights_parsed", analysis_result)
                 return analysis_result
             except json.JSONDecodeError:
                 json_match = re.search(r"\{.*\}", llm_response, re.DOTALL)
                 if json_match:
                     try:
-                        return json.loads(json_match.group())
+                        analysis_result = json.loads(json_match.group())
+                        self._log_step_output("audit_insights_parsed", analysis_result)
+                        return analysis_result
                     except json.JSONDecodeError:
                         pass
 
@@ -709,16 +1123,25 @@ class FinancialReportAnalyzer(BaseLLMClient):
             llm_response = (
                 response.get("choices", [{}])[0].get("message", {}).get("content", "")
             )
+            logger.debug(
+                "综合评估LLM返回: snippet=%s",
+                self._truncate_for_log(llm_response, 800),
+            )
 
             # 解析JSON响应
             try:
                 analysis_result = json.loads(llm_response)
+                self._log_step_output("overall_assessment_parsed", analysis_result)
                 return analysis_result
             except json.JSONDecodeError:
                 json_match = re.search(r"\{.*\}", llm_response, re.DOTALL)
                 if json_match:
                     try:
-                        return json.loads(json_match.group())
+                        analysis_result = json.loads(json_match.group())
+                        self._log_step_output(
+                            "overall_assessment_parsed", analysis_result
+                        )
+                        return analysis_result
                     except json.JSONDecodeError:
                         pass
 

@@ -61,8 +61,10 @@ class BaseLLMClient:
         self.cache_manager = CacheManager(config)
         # LLM调用计数器（用于限制每轮调用次数）
         self._llm_calls_made = 0
-        self.max_llm_calls_per_run = config.get("announcements", {}).get(
-            "max_llm_calls_per_run", 5
+        # LLM调用上限：公告/基础分析与财报分析可能不同，取较大值
+        self.max_llm_calls_per_run = max(
+            config.get("announcements", {}).get("max_llm_calls_per_run", 5),
+            config.get("financial_reports", {}).get("max_llm_calls_per_run", 60),
         )
 
         # 初始化DeepSeek API配置（使用requests直接调用，避免httpx/OpenAI库问题）

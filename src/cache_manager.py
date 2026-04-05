@@ -30,6 +30,7 @@ class CacheManager:
         self.cache_dir = Path(cache_dir)
         self.data_cache_dir = self.cache_dir / "data"
         self.analysis_cache_dir = self.cache_dir / "analysis"
+        self.financial_analysis_cache_dir = self.cache_dir / "analysis_financial"
         self.announcement_content_cache_dir = self.cache_dir / "announcement_content"
         self.announcement_extraction_cache_dir = (
             self.cache_dir / "announcement_extraction"
@@ -49,6 +50,7 @@ class CacheManager:
             self.cache_dir,
             self.data_cache_dir,
             self.analysis_cache_dir,
+            self.financial_analysis_cache_dir,
             self.announcement_content_cache_dir,
             self.announcement_extraction_cache_dir,
             self.pdf_files_cache_dir,
@@ -65,6 +67,7 @@ class CacheManager:
             for cache_type, cache_dir in [
                 ("数据", self.data_cache_dir),
                 ("分析", self.analysis_cache_dir),
+                ("财报分析", self.financial_analysis_cache_dir),
             ]:
                 if cache_dir.exists():
                     for file_path in cache_dir.glob("*.json"):
@@ -232,6 +235,42 @@ class CacheManager:
         except Exception as e:
             logger.error(f"缓存股票 {stock_code} 分析结果失败: {e}")
 
+    def get_financial_analysis_cache(self, stock_code, date_str=None):
+        date_str = date_str or self._get_today_str()
+        cache_file = self.financial_analysis_cache_dir / f"{stock_code}_{date_str}.json"
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                cached_data = json.load(f)
+            reports = cached_data.get("reports") or cached_data.get("analysis")
+            return cached_data if reports else None
+        except FileNotFoundError:
+            return None
+        except Exception as e:
+            logger.error(f"读取财报分析缓存失败: {e}")
+            return None
+
+    def set_financial_analysis_cache(
+        self, stock_code, reports, date_str=None, content_hash=None
+    ):
+
+        try:
+            date_str = date_str or self._get_today_str()
+            cache_file = (
+                self.financial_analysis_cache_dir / f"{stock_code}_{date_str}.json"
+            )
+            cache_data = {
+                "stock_code": stock_code,
+                "date": date_str,
+                "cached_at": datetime.now().isoformat(),
+                "reports": reports,
+            }
+            if content_hash:
+                cache_data["content_hash"] = content_hash
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(cache_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"缓存财报分析失败: {e}")
+
     def clear_cache(self, days_old=None):
         """
         清理缓存
@@ -247,7 +286,11 @@ class CacheManager:
             deleted_count = 0
 
             # 清理所有缓存目录
-            for cache_dir in [self.data_cache_dir, self.analysis_cache_dir]:
+            for cache_dir in [
+                self.data_cache_dir,
+                self.analysis_cache_dir,
+                self.financial_analysis_cache_dir,
+            ]:
                 if cache_dir.exists():
                     for file_path in cache_dir.glob("*.json"):
                         try:

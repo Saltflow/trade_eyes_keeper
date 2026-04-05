@@ -7,7 +7,11 @@ import logging
 import requests
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
-import json
+from typing import Any
+
+# 为类型检查预先定义可选依赖
+ContentFetcher: Any = None
+LLMAnalyzer: Any = None
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +22,7 @@ try:
     CONTENT_FETCHER_AVAILABLE = True
 except ImportError as e:
     CONTENT_FETCHER_AVAILABLE = False
+    ContentFetcher = None  # type: ignore
     logger.warning(f"ContentFetcher不可用，内容抓取功能受限: {e}")
     logger.debug(f"ContentFetcher import error details", exc_info=True)
 
@@ -27,6 +32,7 @@ try:
     LLM_ANALYZER_AVAILABLE = True
 except ImportError as e:
     LLM_ANALYZER_AVAILABLE = False
+    LLMAnalyzer = None  # type: ignore
     logger.warning(f"LLMAnalyzer不可用，LLM提取功能受限: {e}")
     logger.debug(f"Import error details", exc_info=True)
 
@@ -71,14 +77,14 @@ class AnnouncementFetcher:
 
         if CONTENT_FETCHER_AVAILABLE and self.enable_content_fetching:
             try:
-                self.content_fetcher = ContentFetcher(config)
+                self.content_fetcher = ContentFetcher(config)  # type: ignore[operator]
                 logger.info("内容抓取器初始化成功")
             except Exception as e:
                 logger.warning(f"内容抓取器初始化失败: {e}")
 
         if LLM_ANALYZER_AVAILABLE and self.enable_llm_extraction:
             try:
-                self.llm_analyzer = LLMAnalyzer(config)
+                self.llm_analyzer = LLMAnalyzer(config)  # type: ignore[operator]
                 logger.info("LLM分析器初始化成功")
             except Exception as e:
                 logger.warning(f"LLM分析器初始化失败: {e}")
@@ -314,52 +320,27 @@ class AnnouncementFetcher:
                 f"_fetch_from_exchange: stock_code={stock_code}, exchange={exchange}, fetch_days={fetch_days}, original_days={original_days}, dividend_days={dividend_days}"
             )
 
-            # 尝试交易所官方接口
+            # 交易所官方接口长期失效，直接使用新浪公告页作为唯一来源
             if exchange == "sse":
-                result = self._fetch_from_sse(stock_code, fetch_days)
+                result = self._fetch_from_sse_backup(stock_code, fetch_days)
             elif exchange == "szse":
-                result = self._fetch_from_szse(stock_code, fetch_days)
+                result = self._fetch_from_szse_backup(stock_code, fetch_days)
             else:
                 logger.error(f"不支持的交易所: {exchange}")
                 result = []
 
-            # 如果获取到公告，返回结果
             if result:
-                # 应用时间窗口过滤
                 filtered_result = self._filter_announcements_by_window(
                     result, original_days, dividend_days
                 )
                 logger.info(
-                    f"股票 {stock_code} 从{exchange}获取到 {len(result)} 条公告，过滤后保留 {len(filtered_result)} 条"
+                    f"股票 {stock_code} 获取到 {len(result)} 条公告，过滤后保留 {len(filtered_result)} 条"
                 )
-                # 丰富公告信息（内容抓取和LLM提取）
                 enriched_result = self._enrich_announcements(filtered_result)
                 return enriched_result
-            else:
-                # 没有获取到公告，尝试备用接口
-                logger.info(f"从{exchange}未获取到{stock_code}的公告，尝试备用接口")
-                if exchange == "sse":
-                    result_backup = self._fetch_from_sse_backup(stock_code, fetch_days)
-                elif exchange == "szse":
-                    result_backup = self._fetch_from_szse_backup(stock_code, fetch_days)
-                else:
-                    result_backup = []
-                
-                if result_backup:
-                    # 应用时间窗口过滤
-                    filtered_result = self._filter_announcements_by_window(
-                        result_backup, original_days, dividend_days
-                    )
-                    logger.info(
-                        f"股票 {stock_code} 从{exchange}备用接口获取到 {len(result_backup)} 条公告，过滤后保留 {len(filtered_result)} 条"
-                    )
-                    # 丰富公告信息（内容抓取和LLM提取）
-                    enriched_result = self._enrich_announcements(filtered_result)
-                    return enriched_result
-                else:
-                    # 备用接口也未获取到公告，返回空列表
-                    logger.info(f"备用接口也未获取到{stock_code}的公告")
-                    return []
+
+            logger.info(f"未获取到{stock_code}的公告")
+            return []
 
         except Exception as e:
             logger.error(f"从 {exchange} 获取公告失败: {e}")
@@ -378,43 +359,8 @@ class AnnouncementFetcher:
         Returns:
             list: 公告列表
         """
-        try:
-            # 上海证券交易所公告查询API（需要分析实际接口）
-            # 这里使用一个公开的查询接口示例
-            url = "http://www.sse.com.cn/disclosure/listedinfo/announcement/"
-
-            # 构建查询参数
-            params = {
-                "stockCode": stock_code,
-                "startDate": (datetime.now() - timedelta(days=days)).strftime(
-                    "%Y-%m-%d"
-                ),
-                "endDate": datetime.now().strftime("%Y-%m-%d"),
-                "pageSize": "50",
-            }
-
-            headers = {
-                "User-Agent": self.user_agent,
-                "Referer": "http://www.sse.com.cn/",
-            }
-
-            response = requests.get(
-                url, params=params, headers=headers, timeout=self.timeout
-            )
-            response.raise_for_status()
-
-            # 尝试解析JSON响应（如果API返回JSON）
-            try:
-                data = response.json()
-                return self._parse_sse_api_response(data, stock_code)
-            except json.JSONDecodeError:
-                # 如果返回的是HTML，则解析HTML
-                return self._parse_sse_html(response.text, stock_code)
-
-        except Exception as e:
-            logger.error(f"从上交所获取公告失败: {e}")
-            # 尝试备用方法
-            return self._fetch_from_sse_backup(stock_code, days)
+        logger.warning("SSE主接口已弃用，直接返回空列表")
+        return []
 
     def _parse_sse_api_response(self, data, stock_code):
         """
@@ -427,35 +373,7 @@ class AnnouncementFetcher:
         Returns:
             list: 公告列表
         """
-        announcements = []
-
-        try:
-            # 根据实际API结构解析
-            # 这里是一个示例结构，需要根据实际API调整
-            if isinstance(data, dict) and "result" in data:
-                items = data["result"]
-            elif isinstance(data, list):
-                items = data
-            else:
-                logger.warning(f"上交所API返回格式未知: {data}")
-                return announcements
-
-            for item in items:
-                announcement = {
-                    "stock_code": stock_code,
-                    "exchange": "sse",
-                    "title": item.get("title", ""),
-                    "date": item.get("date", ""),
-                    "url": item.get("url", ""),
-                    "type": item.get("type", ""),
-                    "summary": item.get("summary", "")[:200],  # 截断摘要
-                }
-                announcements.append(announcement)
-
-        except Exception as e:
-            logger.error(f"解析上交所API响应失败: {e}")
-
-        return announcements
+        return []
 
     def _parse_sse_html(self, html, stock_code):
         """
@@ -468,52 +386,7 @@ class AnnouncementFetcher:
         Returns:
             list: 公告列表
         """
-        announcements = []
-
-        try:
-            soup = BeautifulSoup(html, "html.parser")
-
-            # 查找公告表格（根据实际页面结构调整）
-            tables = soup.find_all("table")
-
-            for table in tables:
-                rows = table.find_all("tr")
-                for row in rows[1:]:  # 跳过表头
-                    cols = row.find_all("td")
-                    if len(cols) >= 4:
-                        try:
-                            date = cols[0].text.strip()
-                            title_elem = cols[1].find("a")
-                            title = (
-                                title_elem.text.strip()
-                                if title_elem
-                                else cols[1].text.strip()
-                            )
-                            url = title_elem.get("href") if title_elem else ""
-                            type_text = cols[2].text.strip() if len(cols) > 2 else ""
-
-                            # 构建完整URL
-                            if url and not url.startswith("http"):
-                                url = f"http://www.sse.com.cn{url}"
-
-                            announcement = {
-                                "stock_code": stock_code,
-                                "exchange": "sse",
-                                "title": title,
-                                "date": date,
-                                "url": url,
-                                "type": type_text,
-                                "summary": title,  # 使用标题作为摘要
-                            }
-                            announcements.append(announcement)
-                        except Exception as e:
-                            logger.debug(f"解析表格行失败: {e}")
-                            continue
-
-        except Exception as e:
-            logger.error(f"解析上交所HTML失败: {e}")
-
-        return announcements
+        return []
 
     def _fetch_from_sse_backup(self, stock_code, days):
         """
@@ -559,42 +432,8 @@ class AnnouncementFetcher:
         Returns:
             list: 公告列表
         """
-        try:
-            # 深圳证券交易所公告查询
-            url = "http://www.szse.cn/api/disc/announcement/annList"
-
-            # 构建请求参数
-            params = {
-                "se-date": (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-                + "~"
-                + datetime.now().strftime("%Y-%m-%d"),
-                "stock": stock_code,
-                "pagesize": "50",
-                "pageno": "1",
-            }
-
-            headers = {
-                "User-Agent": self.user_agent,
-                "Referer": "http://www.szse.cn/disclosure/listed/notice/index.html",
-            }
-
-            response = requests.get(
-                url, params=params, headers=headers, timeout=self.timeout
-            )
-            response.raise_for_status()
-
-            # 尝试解析JSON响应
-            try:
-                data = response.json()
-                return self._parse_szse_api_response(data, stock_code)
-            except json.JSONDecodeError:
-                # 如果返回的是HTML，则解析HTML
-                return self._parse_szse_html(response.text, stock_code)
-
-        except Exception as e:
-            logger.error(f"从深交所获取公告失败: {e}")
-            # 尝试备用方法
-            return self._fetch_from_szse_backup(stock_code, days)
+        logger.warning("SZSE主接口已弃用，直接返回空列表")
+        return []
 
     def _parse_szse_api_response(self, data, stock_code):
         """
@@ -607,34 +446,7 @@ class AnnouncementFetcher:
         Returns:
             list: 公告列表
         """
-        announcements = []
-
-        try:
-            # 根据实际API结构解析
-            if isinstance(data, dict) and "data" in data:
-                items = data["data"]
-            elif isinstance(data, list):
-                items = data
-            else:
-                logger.warning(f"深交所API返回格式未知: {data}")
-                return announcements
-
-            for item in items:
-                announcement = {
-                    "stock_code": stock_code,
-                    "exchange": "szse",
-                    "title": item.get("title", ""),
-                    "date": item.get("date", ""),
-                    "url": item.get("url", ""),
-                    "type": item.get("type", ""),
-                    "summary": item.get("summary", "")[:200],
-                }
-                announcements.append(announcement)
-
-        except Exception as e:
-            logger.error(f"解析深交所API响应失败: {e}")
-
-        return announcements
+        return []
 
     def _parse_szse_html(self, html, stock_code):
         """
@@ -647,47 +459,7 @@ class AnnouncementFetcher:
         Returns:
             list: 公告列表
         """
-        announcements = []
-
-        try:
-            soup = BeautifulSoup(html, "html.parser")
-
-            # 查找公告列表（根据实际页面结构调整）
-            announcement_list = soup.find_all("div", class_="article-list")
-
-            for article_list in announcement_list:
-                articles = article_list.find_all("li")
-                for article in articles:
-                    try:
-                        date_elem = article.find("span", class_="time")
-                        title_elem = article.find("a")
-
-                        date = date_elem.text.strip() if date_elem else ""
-                        title = title_elem.text.strip() if title_elem else ""
-                        url = title_elem.get("href") if title_elem else ""
-
-                        # 构建完整URL
-                        if url and not url.startswith("http"):
-                            url = f"http://www.szse.cn{url}"
-
-                        announcement = {
-                            "stock_code": stock_code,
-                            "exchange": "szse",
-                            "title": title,
-                            "date": date,
-                            "url": url,
-                            "type": "",  # 深交所页面可能没有类型
-                            "summary": title,
-                        }
-                        announcements.append(announcement)
-                    except Exception as e:
-                        logger.debug(f"解析文章项失败: {e}")
-                        continue
-
-        except Exception as e:
-            logger.error(f"解析深交所HTML失败: {e}")
-
-        return announcements
+        return []
 
     def _fetch_from_szse_backup(self, stock_code, days):
         """
@@ -738,7 +510,7 @@ class AnnouncementFetcher:
 
         try:
             soup = BeautifulSoup(html, "html.parser")
-            
+
             # 尝试新样式：查找公告列表 (div.datelist > ul)
             datelist_div = soup.find("div", class_="datelist")
             if datelist_div:
@@ -752,19 +524,20 @@ class AnnouncementFetcher:
                             text = str(child)
                             # 查找日期模式 YYYY-MM-DD
                             import re
-                            date_match = re.search(r'(\d{4}-\d{2}-\d{2})', text)
+
+                            date_match = re.search(r"(\d{4}-\d{2}-\d{2})", text)
                             if date_match:
                                 current_date = date_match.group(1)
-                        elif child.name == 'a':  # 链接标签
+                        elif child.name == "a":  # 链接标签
                             if current_date:
-                                href = child.get('href', '')
+                                href = child.get("href", "")
                                 title = child.get_text(strip=True)
                                 # 构建完整URL
                                 if href and not href.startswith("http"):
                                     url = f"http://vip.stock.finance.sina.com.cn{href}"
                                 else:
                                     url = href
-                                
+
                                 announcement = {
                                     "stock_code": stock_code,
                                     "exchange": exchange,
@@ -778,11 +551,13 @@ class AnnouncementFetcher:
                                 # 重置当前日期，避免重复使用
                                 current_date = None
                         # <br>标签忽略，继续处理下一个节点
-                    
+
                     if announcements:
-                        logger.info(f"从新浪财经datelist解析到 {len(announcements)} 条公告")
+                        logger.info(
+                            f"从新浪财经datelist解析到 {len(announcements)} 条公告"
+                        )
                         return announcements
-            
+
             # 备用方法：查找旧样式公告表格
             tables = soup.find_all("table", class_="datatbl")
             for table in tables:

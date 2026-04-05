@@ -5,7 +5,9 @@
 协调财报获取、分析和集成到主工作流
 """
 
+import json
 import logging
+import random
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -62,19 +64,28 @@ class FinancialReportManager:
         llm_analyzer=None,
         financial_report_fetcher=None,
         content_fetcher=None,
+        cache_manager=None,
     ):
         """初始化管理器"""
         self.config = config
         self.announcement_fetcher = announcement_fetcher
         self.llm_analyzer = llm_analyzer
+        self.cache_manager = cache_manager
 
         # 读取配置
         fin_config = config.get("financial_reports", {})
+        self.financial_config = fin_config
+        self.force_analyze = fin_config.get("force_analyze", False)
         self.enabled = fin_config.get("enable", True)
         self.auto_enabled = fin_config.get("auto_enable", True)
         self.conditional_enabled = fin_config.get("conditional_enable", True)
         self.reports_per_stock = fin_config.get("reports_per_stock", 3)
         self.conditional_days = fin_config.get("conditional_days", 30)
+        self.analysis_days = fin_config.get("analysis_days", random.randint(180, 365))
+        self.max_stocks_per_run = fin_config.get("max_stocks_per_run", 3)
+        self.max_force_stocks = fin_config.get("max_force_stocks")
+        # 新增：是否读取财报分析缓存（默认关闭以避免旧结果掩盖代码更新效果）
+        self.use_financial_analysis_cache = fin_config.get("use_analysis_cache", False)
 
         # 获取时区配置
         scheduler_config = config.get("scheduler", {})
@@ -95,6 +106,14 @@ class FinancialReportManager:
             except ImportError as e:
                 logger.warning(f"无法导入FinancialReportFetcher: {e}")
                 self.financial_report_fetcher = None
+
+        if self.cache_manager is None:
+            try:
+                from .cache_manager import CacheManager
+
+                self.cache_manager = CacheManager(config)
+            except Exception:
+                self.cache_manager = None
 
         logger.info(
             f"财报管理器初始化: enabled={self.enabled}, llm_analyzer={llm_analyzer is not None}, timezone={self.timezone_str}"
@@ -264,6 +283,13 @@ class FinancialReportManager:
 
         stocks_to_analyze = []
 
+        # 强制分析模式：直接分析所有股票
+        if self.force_analyze:
+            all_stocks = self.config.get("stocks", [])
+            if all_stocks:
+                logger.info(f"强制分析模式: 将分析{len(all_stocks)}只股票")
+                return True, all_stocks
+
         # 自动触发：检查是否有昨天发布的财务报告
         if self.auto_enabled:
             auto_stocks = self._get_stocks_with_recent_reports()
@@ -299,7 +325,12 @@ class FinancialReportManager:
         results = {}
 
         # 限制分析数量，避免过多API调用
-        max_stocks = min(3, len(stocks))
+        if self.force_analyze:
+            max_allowed = self.max_force_stocks or len(stocks)
+        else:
+            max_allowed = self.max_stocks_per_run or len(stocks)
+
+        max_stocks = min(max_allowed, len(stocks))
         for stock_code in stocks[:max_stocks]:
             try:
                 stock_results = self._analyze_stock(stock_code)
@@ -319,18 +350,81 @@ class FinancialReportManager:
             return []
 
         try:
+            if self.use_financial_analysis_cache and self.cache_manager:
+                cached = self.cache_manager.get_financial_analysis_cache(stock_code)
+                if cached:
+                    reports = cached.get("reports") or cached.get("analysis")
+                    if reports:
+                        reports = [r for r in reports if r.get("success") is True]
+                        logger.info(
+                            "使用财报分析缓存: %s (date=%s)",
+                            stock_code,
+                            cached.get("date") or "today",
+                        )
+                        if reports:
+                            return reports
+
             # 使用财报获取器获取并分析报告
             analysis_results = self.financial_report_fetcher.analyze_financial_reports(
                 [stock_code],
                 self.llm_analyzer,
-                days=365,  # 查找最近一年的报告
+                days=self.analysis_days,
                 report_type=None,  # 所有类型
             )
 
             stock_analysis = analysis_results.get(stock_code, [])
+            if (
+                not stock_analysis
+                and self.use_financial_analysis_cache
+                and self.cache_manager
+            ):
+                cache_dir = getattr(
+                    self.cache_manager, "financial_analysis_cache_dir", None
+                )
+                if cache_dir and cache_dir.exists():
+                    for cache_file in sorted(
+                        cache_dir.glob(f"{stock_code}_*.json"), reverse=True
+                    ):
+                        try:
+                            with open(cache_file, "r", encoding="utf-8") as f:
+                                cached = json.load(f)
+                            reports = cached.get("reports") or cached.get("analysis")
+                            if reports:
+                                logger.info(
+                                    "使用最近缓存财报分析: %s (file=%s)",
+                                    stock_code,
+                                    cache_file.name,
+                                )
+                                return reports
+                        except Exception:
+                            continue
             if not stock_analysis:
                 logger.warning(f"股票 {stock_code} 没有找到可分析的财报")
                 return []
+
+            # 强制缓存原始分析结果，便于追踪/复用（即便后续格式化失败）
+            if self.cache_manager:
+                try:
+                    cache_dir = self.cache_manager.financial_analysis_cache_dir
+                    cache_dir.mkdir(parents=True, exist_ok=True)
+                    today_str = datetime.now().strftime("%Y%m%d")
+                    raw_file = cache_dir / f"{stock_code}_{today_str}_raw.json"
+                    with open(raw_file, "w", encoding="utf-8") as f:
+                        json.dump(
+                            {
+                                "stock_code": stock_code,
+                                "date": today_str,
+                                "raw_analysis_results": stock_analysis,
+                            },
+                            f,
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                    logger.info("已写入财报原始分析缓存: %s", raw_file)
+                except Exception as raw_cache_error:
+                    logger.warning(
+                        "写入财报原始分析缓存失败 %s: %s", stock_code, raw_cache_error
+                    )
 
             # 转换分析结果格式以匹配电子邮件模板
             formatted_reports = []
@@ -342,6 +436,34 @@ class FinancialReportManager:
                 )
                 if formatted_report:
                     formatted_reports.append(formatted_report)
+
+            # 如果存在原始分析但全部格式化失败，生成降级提示，避免结果缺失
+            if not formatted_reports and stock_analysis:
+                first = stock_analysis[0]
+                fallback = {
+                    "stock_code": stock_code,
+                    "report_type": first.get("report_type", "unknown"),
+                    "period_date": first.get("period_date", ""),
+                    "analysis": {
+                        "overall_assessment": f"财报分析失败或数据不足: {first.get('error', '原因未知')}"
+                    },
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "success": False,
+                }
+                formatted_reports.append(fallback)
+                logger.warning("格式化财报分析失败，已生成降级提示: %s", stock_code)
+
+            if self.cache_manager and formatted_reports:
+                try:
+                    first = formatted_reports[0] if formatted_reports else {}
+                    content_hash = first.get("content_hash")
+                    self.cache_manager.set_financial_analysis_cache(
+                        stock_code, formatted_reports, content_hash=content_hash
+                    )
+                except Exception as cache_error:
+                    logger.warning(
+                        "缓存财报分析结果失败 %s: %s", stock_code, cache_error
+                    )
 
             logger.info(f"股票 {stock_code} 成功分析 {len(formatted_reports)} 份财报")
             return formatted_reports
@@ -359,6 +481,12 @@ class FinancialReportManager:
             # 提取报告元数据
             report_type = analysis_result.get("report_type", "unknown")
             period_date = analysis_result.get("period_date", "")
+            report_metadata = analysis_result.get("report_metadata") or {}
+            content_hash = (
+                report_metadata.get("content_hash")
+                if isinstance(report_metadata, dict)
+                else None
+            )
 
             # 调试日志：记录分析结果中的可用字段
             if logger.isEnabledFor(logging.DEBUG):
@@ -396,24 +524,38 @@ class FinancialReportManager:
                     if isinstance(data, dict):
                         logger.debug(f"  {name} 键: {list(data.keys())}")
 
-            # 转换为电子邮件格式
-            email_analysis = {
-                "cost_structure": self._extract_summary_from_analysis(
-                    cost_analysis, "成本结构"
-                ),
-                "profit_changes": self._extract_summary_from_analysis(
-                    profit_analysis, "利润变化"
-                ),
-                "liquidation_value": self._extract_summary_from_analysis(
-                    liquidation_analysis, "清算价值"
-                ),
-                "audit_risks": self._extract_summary_from_analysis(
-                    audit_insights, "审计风险"
-                ),
-                "overall_assessment": self._extract_summary_from_analysis(
-                    overall_assessment, "总体评估"
-                ),
-            }
+            # 转换为电子邮件格式；若分析失败/短路，输出明确原因并附字段名
+            short_circuited = analysis_result.get("short_circuited", False)
+            if analysis_result.get("success", True) and not short_circuited:
+                email_analysis = {
+                    "cost_structure": self._extract_summary_from_analysis(
+                        cost_analysis, "成本结构"
+                    ),
+                    "profit_changes": self._extract_summary_from_analysis(
+                        profit_analysis, "利润变化"
+                    ),
+                    "liquidation_value": self._extract_summary_from_analysis(
+                        liquidation_analysis, "清算价值"
+                    ),
+                    "audit_risks": self._extract_summary_from_analysis(
+                        audit_insights, "审计风险"
+                    ),
+                    "overall_assessment": self._extract_summary_from_analysis(
+                        overall_assessment, "总体评估"
+                    ),
+                }
+            else:
+                reason = analysis_result.get("error") or "分析失败，原因未知"
+                numeric_fields = analysis_result.get("numeric_fields_detected")
+                field_names = analysis_result.get("numeric_field_names") or []
+                detail = (
+                    f"(字段 {numeric_fields}): {', '.join(field_names[:15])}"
+                    if numeric_fields is not None
+                    else ""
+                )
+                email_analysis = {
+                    "overall_assessment": f"财报分析未完成：{reason} {detail}"
+                }
 
             # 构建报告字典
             report = {
@@ -422,7 +564,18 @@ class FinancialReportManager:
                 "period_date": period_date,
                 "analysis": email_analysis,
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "success": analysis_result.get("success", True),
+                "short_circuited": short_circuited,
             }
+
+            numeric_fields = analysis_result.get("numeric_fields_detected")
+            if numeric_fields is not None:
+                report["numeric_fields_detected"] = numeric_fields
+
+            if content_hash:
+                report["content_hash"] = content_hash
+            if report_metadata:
+                report["report_metadata"] = report_metadata
 
             # 调试日志：记录最终生成的报告
             if logger.isEnabledFor(logging.DEBUG):
@@ -468,6 +621,28 @@ class FinancialReportManager:
                         # 如果有summary字段，使用它
                         if "summary" in nested_data:
                             return f"{default_prefix}: {nested_data['summary']}"
+                        if "liquidation_analysis" in nested_data:
+                            la = nested_data.get("liquidation_analysis", {})
+                            if isinstance(la, dict):
+                                if la.get("summary"):
+                                    return f"{default_prefix}: {la['summary']}"
+                                if "fair_value_per_share" in la:
+                                    fv = la.get("fair_value_per_share")
+                                    sm = la.get("safety_margin")
+                                    method = la.get("method", "DCF")
+                                    return (
+                                        f"{default_prefix}: {method} 每股内在价值={fv}, "
+                                        f"安全边际={sm or '未知'}"
+                                    )
+                        # DCF/估值特有字段
+                        if "fair_value_per_share" in nested_data:
+                            fv = nested_data.get("fair_value_per_share")
+                            sm = nested_data.get("safety_margin")
+                            method = nested_data.get("method", "DCF")
+                            return (
+                                f"{default_prefix}: {method} 每股内在价值={fv}, "
+                                f"安全边际={sm or '未知'}"
+                            )
                         # 尝试提取其他关键信息
                         elif (
                             "key_findings" in nested_data
@@ -486,6 +661,11 @@ class FinancialReportManager:
             # 如果analysis_data本身有summary字段（非嵌套情况）
             if "summary" in analysis_data:
                 return f"{default_prefix}: {analysis_data['summary']}"
+            if "fair_value_per_share" in analysis_data:
+                fv = analysis_data.get("fair_value_per_share")
+                sm = analysis_data.get("safety_margin")
+                method = analysis_data.get("method", "DCF")
+                return f"{default_prefix}: {method} 每股内在价值={fv}, 安全边际={sm or '未知'}"
 
             # 最后手段：转换为字符串表示
             return f"{default_prefix}: {str(analysis_data)[:200]}..."

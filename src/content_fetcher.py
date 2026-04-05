@@ -13,6 +13,10 @@ from datetime import datetime
 from urllib.parse import urlparse
 import io
 import re
+from typing import Any
+
+# 预声明以便静态检查通过
+BeautifulSoup = None  # type: ignore
 
 # 尝试导入PDF解析库
 try:
@@ -31,6 +35,7 @@ try:
     BEAUTIFULSOUP_AVAILABLE = True
 except ImportError:
     BEAUTIFULSOUP_AVAILABLE = False
+    BeautifulSoup = None  # type: ignore
     logger = logging.getLogger(__name__)
     logger.warning("beautifulsoup4未安装，HTML解析功能不可用")
 
@@ -61,7 +66,8 @@ class ContentFetcher:
         self.max_html_size = 5 * 1024 * 1024  # 5MB
 
         # 内容提取配置
-        self.extract_max_length = 50000  # 最大提取字符数
+        # 提升到128k，保证三大报表不会被截断
+        self.extract_max_length = 128000  # 最大提取字符数
         self.extract_timeout = 60  # 提取超时时间（秒）
 
         # 缓存管理器（可选）
@@ -319,6 +325,10 @@ class ContentFetcher:
             if content_type == "pdf" and PDFPLUMBER_AVAILABLE:
                 return self._extract_text_from_pdf(content_bytes)
             elif content_type == "html" and BEAUTIFULSOUP_AVAILABLE:
+                # HTML先尝试发现内嵌PDF链接，若成功则直接解析PDF
+                pdf_content = self._try_fetch_embedded_pdf(content_bytes, url)
+                if pdf_content:
+                    return self._extract_text_from_pdf(pdf_content)
                 return self._extract_text_from_html(content_bytes, url)
             elif content_type == "html":
                 # 简单文本提取（无BeautifulSoup）
@@ -337,7 +347,59 @@ class ContentFetcher:
             }
 
     def _extract_text_from_pdf(self, content_bytes):
-        """从PDF提取文本（使用pdfplumber）"""
+        """从PDF提取文本（优先PyMuPDF，失败回退pdfplumber；不做网络回退）"""
+
+        # 1) 首选 PyMuPDF (fitz)
+        try:
+            import fitz  # type: ignore
+
+            doc = fitz.open(stream=content_bytes, filetype="pdf")
+            metadata = {
+                "pdf_page_count": doc.page_count,
+                "pdf_has_text": False,
+                "pdf_has_images": False,
+                "pdf_tables_extracted": False,
+                "pdf_extractor": "pymupdf",
+            }
+
+            text_parts = []
+            for page_index in range(doc.page_count):
+                page = doc.load_page(page_index)
+                try:
+                    page_text = page.get_text("text")  # type: ignore[attr-defined]
+                    if page_text:
+                        text_parts.append(page_text)
+                        metadata["pdf_has_text"] = True
+                except Exception as e:
+                    logger.debug(f"PyMuPDF提取第{page_index + 1}页失败: {e}")
+
+                try:
+                    if page.get_images(full=True):
+                        metadata["pdf_has_images"] = True
+                except Exception:
+                    pass
+
+            extracted_text = "\n\n".join(text_parts)
+            # 可选：使用camelot解析表格并追加文本，提升数字保留率
+            table_text = self._extract_tables_with_camelot(content_bytes)  # type: ignore[attr-defined]
+            if table_text:
+                metadata["pdf_tables_extracted"] = True
+                extracted_text += "\n\n" + table_text
+
+            extracted_text = re.sub(r"\n{3,}", "\n\n", extracted_text)
+            extracted_text = re.sub(r"[ \t]{2,}", " ", extracted_text)
+
+            if len(extracted_text) > self.extract_max_length:
+                extracted_text = (
+                    extracted_text[: self.extract_max_length] + "... (内容过长，已截断)"
+                )
+
+            return {"success": True, "text": extracted_text, "metadata": metadata}
+
+        except Exception as e:
+            logger.debug(f"PyMuPDF解析失败，回退pdfplumber: {e}")
+
+        # 2) 回退 pdfplumber
         try:
             import pdfplumber
 
@@ -346,6 +408,8 @@ class ContentFetcher:
                 "pdf_page_count": 0,
                 "pdf_has_text": False,
                 "pdf_has_images": False,
+                "pdf_tables_extracted": False,
+                "pdf_extractor": "pdfplumber",
             }
 
             with pdfplumber.open(io.BytesIO(content_bytes)) as pdf:
@@ -357,22 +421,37 @@ class ContentFetcher:
                         if page_text:
                             text_parts.append(page_text)
                             metadata["pdf_has_text"] = True
+
+                        try:
+                            tables = page.extract_tables()
+                            if tables:
+                                metadata["pdf_tables_extracted"] = True
+                                for table in tables:
+                                    for row in table:
+                                        if not row:
+                                            continue
+                                        line = "\t".join(cell or "" for cell in row)
+                                        text_parts.append(line)
+                        except Exception as e:
+                            logger.debug(f"提取PDF第{page_num}页表格失败: {e}")
+
                     except Exception as e:
                         logger.debug(f"提取PDF第{page_num}页文本失败: {e}")
 
-                # 检查是否有图片（简单检查）
                 for page in pdf.pages:
                     if page.images:
                         metadata["pdf_has_images"] = True
                         break
 
             extracted_text = "\n\n".join(text_parts)
+            table_text = self._extract_tables_with_camelot(content_bytes)  # type: ignore[attr-defined]
+            if table_text:
+                metadata["pdf_tables_extracted"] = True
+                extracted_text += "\n\n" + table_text
 
-            # 清理文本：移除多余空格和换行
             extracted_text = re.sub(r"\n{3,}", "\n\n", extracted_text)
             extracted_text = re.sub(r"[ \t]{2,}", " ", extracted_text)
 
-            # 限制长度
             if len(extracted_text) > self.extract_max_length:
                 extracted_text = (
                     extracted_text[: self.extract_max_length] + "... (内容过长，已截断)"
@@ -393,8 +472,36 @@ class ContentFetcher:
                 "metadata": {},
             }
 
+    def _extract_tables_with_camelot(self, pdf_bytes: bytes) -> str:
+        """可选的表格解析（camelot），提取为制表文本用于保留数字，失败则返回空字符串"""
+
+        try:
+            import camelot  # type: ignore
+            import tempfile
+
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp.write(pdf_bytes)
+                tmp_path = tmp.name
+
+            tables = camelot.read_pdf(tmp_path, pages="all", flavor="lattice")
+            lines = []
+            for table in tables:
+                df = table.df
+                for _, row in df.iterrows():
+                    line = "\t".join(str(cell) for cell in row.tolist())
+                    lines.append(line)
+
+            return "\n".join(lines)
+        except Exception as e:
+            logger.debug(f"camelot解析表格失败，跳过表格补充: {e}")
+            return ""
+
     def _extract_text_from_html(self, content_bytes, url):
         """从HTML提取文本（使用BeautifulSoup）"""
+        # 如果缺少解析库，降级到简易HTML提取，避免运行时错误
+        if not BEAUTIFULSOUP_AVAILABLE or BeautifulSoup is None:
+            return self._extract_text_from_html_fallback(content_bytes)
+
         try:
             # 尝试多种编码
             encodings = ["utf-8", "gbk", "gb2312", "gb18030", "big5"]
@@ -532,6 +639,67 @@ class ContentFetcher:
                 "text": "",
                 "metadata": {},
             }
+
+    def _try_fetch_embedded_pdf(self, html_bytes, base_url):
+        """在HTML中查找PDF链接并下载，若成功返回PDF字节"""
+        try:
+            html_text = html_bytes.decode("utf-8", errors="ignore")
+        except Exception:
+            try:
+                html_text = html_bytes.decode("gbk", errors="ignore")
+            except Exception:
+                return None
+
+        # 优先匹配直接的pdf链接
+        import re
+
+        pdf_candidates = re.findall(
+            r"href=[\"']([^\"']+\.pdf)[\"']", html_text, re.IGNORECASE
+        )
+
+        # 如果未匹配到直接以.pdf结尾的链接，尝试解析HTML寻找<a>文本包含PDF的链接
+        if not pdf_candidates and BEAUTIFULSOUP_AVAILABLE and BeautifulSoup is not None:
+            try:
+                soup = BeautifulSoup(
+                    html_text, "lxml" if "lxml" in locals() else "html.parser"
+                )
+                anchors = soup.find_all("a")
+                for a in anchors:
+                    href = a.get("href")
+                    text = (a.get_text() or "").lower()
+                    if not href:
+                        continue
+                    if href.lower().endswith(".pdf") or "pdf" in text:
+                        pdf_candidates.append(href)
+            except Exception as e:
+                logger.debug(f"解析HTML寻找PDF链接失败: {e}")
+
+        if not pdf_candidates:
+            return None
+
+        pdf_url = pdf_candidates[0]
+        # 处理相对链接
+        if pdf_url.startswith("//"):
+            pdf_url = "https:" + pdf_url
+        elif pdf_url.startswith("/") and base_url:
+            from urllib.parse import urljoin
+
+            pdf_url = urljoin(base_url, pdf_url)
+
+        try:
+            headers = {"User-Agent": self.user_agent}
+            resp = requests.get(pdf_url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            if (
+                resp.headers.get("Content-Type", "")
+                .lower()
+                .startswith("application/pdf")
+            ):
+                logger.info("检测到并下载PDF: %s", pdf_url)
+                return resp.content
+        except Exception as e:
+            logger.debug(f"尝试下载嵌入PDF失败: {e}")
+        return None
 
     def _extract_text_generic(self, content_bytes, content_type):
         """通用文本提取（用于未知类型）"""

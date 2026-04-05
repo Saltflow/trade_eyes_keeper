@@ -380,6 +380,26 @@ class FinancialReportFetcher:
 
         analysis_results = {}
         for stock_code, reports in financial_reports.items():
+            # 仅保留最长且非“摘要”优先的报告，避免短版拖低字段
+            def _sort_key(r):
+                title = (r.get("title") or "").lower()
+                is_summary = any(
+                    key in title for key in ["摘要", "summary", "简报", "简要"]
+                )
+                content_len = len(r.get("content_text") or "")
+                return (is_summary, -content_len)
+
+            reports = sorted(reports, key=_sort_key)
+            if reports:
+                chosen = reports[0]
+                logger.info(
+                    "财报筛选: stock=%s chosen_title=%s len=%s",
+                    stock_code,
+                    chosen.get("title"),
+                    len(chosen.get("content_text") or ""),
+                )
+                reports = [chosen]
+
             stock_analysis = []
             for report in reports:
                 if not report.get("success") or not report.get("content_text"):
@@ -407,6 +427,27 @@ class FinancialReportFetcher:
 
                 except Exception as e:
                     logger.error(f"分析财报失败 {stock_code} {report['title']}: {e}")
+
+            # 如果存在报告但未生成任何分析结果，写入占位以便上层感知并告警
+            if reports and not stock_analysis:
+                placeholder = {
+                    "success": False,
+                    "error": "LLM分析未返回结果或被跳过",
+                    "report_type": reports[0].get("report_type", "unknown"),
+                    "period_date": reports[0].get("period_date", ""),
+                    "report_metadata": {
+                        "title": reports[0].get("title", ""),
+                        "date": reports[0].get("date", ""),
+                        "url": reports[0].get("url", ""),
+                        "content_hash": reports[0].get("content_hash", ""),
+                    },
+                }
+                stock_analysis.append(placeholder)
+                logger.warning(
+                    "未生成财报分析结果，已写入占位: %s (%s)",
+                    stock_code,
+                    placeholder.get("report_type"),
+                )
 
             analysis_results[stock_code] = stock_analysis
 

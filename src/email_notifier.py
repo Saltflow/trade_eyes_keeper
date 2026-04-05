@@ -12,6 +12,7 @@ import platform
 import subprocess
 import requests
 import re
+from html import escape
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email import policy
@@ -43,11 +44,16 @@ class EmailNotifier:
         self.enable_tls = self.email_config.get("enable_tls", False)
         self.enable_ssl = self.email_config.get("enable_ssl", True)  # yeah.net使用SSL
 
-        # 邮件副本配置
-        self.email_archive_dir = Path(
-            self.email_config.get("archive_dir", "./data/email_archive")
-        )
+        # 邮件副本配置：使用项目根目录的绝对路径避免工作目录漂移
+        archive_dir_config = self.email_config.get("archive_dir", "data/email_archive")
+        archive_dir_path = Path(archive_dir_config)
+        if not archive_dir_path.is_absolute():
+            project_root = Path(__file__).resolve().parent.parent
+            archive_dir_path = (project_root / archive_dir_config).resolve()
+
+        self.email_archive_dir = archive_dir_path
         self.email_archive_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("邮件副本目录已初始化为: %s", self.email_archive_dir)
 
         if not self.sender_email or not self.sender_password or not self.receiver_email:
             logger.warning("邮件配置不完整，邮件通知功能可能无法正常工作")
@@ -135,8 +141,7 @@ class EmailNotifier:
             str: HTML格式的财报分析部分
         """
         if not financial_analysis_results:
-            logger.info("财报分析结果为空，跳过构建财报分析部分")
-            return ""
+            return "<h3>财报分析</h3><p>暂无可用财报分析数据（可能无新财报或获取失败）。</p>"
 
         logger.info(
             f"构建财报分析部分: 收到{len(financial_analysis_results)}只股票的分析结果"
@@ -144,14 +149,7 @@ class EmailNotifier:
 
         html = """
             <h3>财报分析</h3>
-            <p>基于最新财务报告的分析结果：</p>
-            <table style="border-collapse: collapse; width: 100%; margin: 20px 0;">
-                <tr>
-                    <th style="border: 1px solid #ddd; padding: 8px; text-align: left; background-color: #f2f2f2;">股票代码</th>
-                    <th style="border: 1px solid #ddd; padding: 8px; text-align: left; background-color: #f2f2f2;">报告类型</th>
-                    <th style="border: 1px solid #ddd; padding: 8px; text-align: left; background-color: #f2f2f2;">报告期间</th>
-                    <th style="border: 1px solid #ddd; padding: 8px; text-align: left; background-color: #f2f2f2;">分析内容</th>
-                </tr>
+            <p>基于最新财报的结构化摘要（按股票展示最近2份）：</p>
         """
 
         for stock_code, reports in financial_analysis_results.items():
@@ -168,49 +166,61 @@ class EmailNotifier:
             max_reports = min(2, len(reports))
             selected_reports = reports[:max_reports]
 
-            for i, report in enumerate(selected_reports):
-                report_type = report.get("report_type", "未知")
-                period_date = report.get("period_date", "")
-                analysis = report.get("analysis", {})
+            for report in selected_reports:
+                report_type = str(report.get("report_type", "未知"))
+                period_date = str(report.get("period_date", ""))
+                analysis = report.get("analysis", {}) or {}
+                numeric_fields = report.get("numeric_fields_detected")
+                short_circuited = report.get("short_circuited", False)
+                success = report.get("success", True)
 
-                # 显示前2个分析字段
+                # 优先展示包含估值/综合判断的关键字段，最多3项
                 analysis_fields = [
-                    ("cost_structure", "成本结构"),
-                    ("profit_changes", "利润变化"),
-                    ("liquidation_value", "清算价值"),
-                    ("audit_risks", "审计风险"),
                     ("overall_assessment", "总体评估"),
+                    ("liquidation_value", "DCF估值"),
+                    ("profit_changes", "利润变化"),
+                    ("cost_structure", "成本结构"),
+                    ("audit_risks", "审计风险"),
                 ]
-                selected_fields = analysis_fields[: min(2, len(analysis_fields))]
+                selected_fields = analysis_fields[: min(3, len(analysis_fields))]
 
-                # 构建分析内容字符串
                 analysis_items = []
                 for field_key, field_name in selected_fields:
-                    value = analysis.get(field_key, "")
+                    value = analysis.get(field_key)
                     if value:
-                        analysis_items.append(f"{field_name}: {value}")
+                        value_str = escape(str(value))
+                        analysis_items.append(
+                            f"<li><strong>{field_name}：</strong>{value_str}</li>"
+                        )
 
-                analysis_text = (
-                    "<br>".join(analysis_items) if analysis_items else "无分析数据"
+                if analysis_items:
+                    analysis_html = "<ul>" + "".join(analysis_items) + "</ul>"
+                else:
+                    analysis_html = "<p>无分析数据</p>"
+
+                status_badge = ""
+                if not success:
+                    status_badge = "<span style='color:#e53935;'>未完成</span>"
+                    if short_circuited:
+                        status_badge += " · 短路"
+
+                numeric_badge = (
+                    f"<span style='font-size:0.85em; color:#666;'>数值字段数: {numeric_fields}</span>"
+                    if numeric_fields is not None
+                    else ""
                 )
 
-                # 固定行背景颜色（交替颜色）
-                row_color = "#f9f9f9" if i % 2 == 0 else "#ffffff"
-
                 html += f"""
-                <tr style="background-color: {row_color};">
-                    <td style="border: 1px solid #ddd; padding: 8px;">{stock_code}<br><small>{stock_name}</small></td>
-                    <td style="border: 1px solid #ddd; padding: 8px;">{report_type}</td>
-                    <td style="border: 1px solid #ddd; padding: 8px;">{period_date}</td>
-                    <td style="border: 1px solid #ddd; padding: 8px;">{analysis_text}</td>
-                </tr>
+                <div style=\"border: 1px solid #ddd; padding: 12px; margin: 10px 0; border-radius: 6px;\">
+                    <div style=\"display: flex; justify-content: space-between; align-items: center;\">
+                        <h4 style=\"margin: 0;\">{escape(str(stock_code))} {escape(str(stock_name))}</h4>
+                        <div style=\"font-size: 0.9em; color: #666;\">{escape(report_type)} · {escape(period_date)} {status_badge}</div>
+                    </div>
+                    <div style=\"margin-top: 6px;\">{numeric_badge}</div>
+                    <div style=\"margin-top: 8px;\">{analysis_html}</div>
+                </div>
                 """
 
-        html += """
-            </table>
-        """
-
-        # 固定免责声明
         html += "<p><em>注：财报分析基于最新财务报告，数据仅供参考。</em></p>"
 
         return html
@@ -928,7 +938,11 @@ class EmailNotifier:
         import os
 
         # 保存邮件副本（无论是否跳过发送）
-        self._save_email_copy(subject, body)
+        copy_path = self._save_email_copy(subject, body)
+        if copy_path:
+            logger.info("邮件副本保存成功，路径: %s", copy_path)
+        else:
+            logger.error("邮件副本未保存，目标目录: %s", self.email_archive_dir)
 
         if os.environ.get("SKIP_EMAIL") == "true":
             logger.info(f"跳过邮件发送（测试模式）: 主题={subject}")
@@ -1094,5 +1108,7 @@ class EmailNotifier:
             return filepath
 
         except Exception as e:
-            logger.error(f"保存邮件副本失败: {e}")
+            logger.error(
+                "保存邮件副本失败: %s, 目标目录: %s", e, self.email_archive_dir
+            )
             return None
