@@ -199,39 +199,34 @@ class FinancialReportManager:
             logger.warning("公告抓取器未提供，无法检查近期财务报告")
             return []
 
-        try:
-            all_stocks = self.config.get("stocks", [])
-            if not all_stocks:
-                return []
-
-            # 获取最近2天的公告（包含昨天和今天）
-            announcements = self.announcement_fetcher.fetch_announcements(
-                all_stocks, days=2
-            )
-            stocks_with_reports = []
-
-            for stock_code, stock_announcements in announcements.items():
-                if not stock_announcements:
-                    continue
-
-                for announcement in stock_announcements:
-                    title = announcement.get("title", "")
-                    date_str = announcement.get("date", "")
-
-                    if self._is_financial_report_title(title) and self._is_yesterday(
-                        date_str
-                    ):
-                        stocks_with_reports.append(stock_code)
-                        break  # 找到一份报告即可
-
-            logger.debug(
-                f"找到{len(stocks_with_reports)}只股票有昨天发布的财务报告: {stocks_with_reports}"
-            )
-            return stocks_with_reports
-
-        except Exception as e:
-            logger.error(f"检查近期财务报告失败: {e}")
+        all_stocks = self.config.get("stocks", [])
+        if not all_stocks:
             return []
+
+        # 获取最近2天的公告（包含昨天和今天）
+        announcements = self.announcement_fetcher.fetch_announcements(
+            all_stocks, days=2
+        )
+        stocks_with_reports = []
+
+        for stock_code, stock_announcements in announcements.items():
+            if not stock_announcements:
+                continue
+
+            for announcement in stock_announcements:
+                title = announcement.get("title", "")
+                date_str = announcement.get("date", "")
+
+                if self._is_financial_report_title(title) and self._is_yesterday(
+                    date_str
+                ):
+                    stocks_with_reports.append(stock_code)
+                    break  # 找到一份报告即可
+
+        logger.debug(
+            f"找到{len(stocks_with_reports)}只股票有昨天发布的财务报告: {stocks_with_reports}"
+        )
+        return stocks_with_reports
 
     def _filter_stocks_with_recent_reports(
         self, stocks: List[str], days: int = 30
@@ -240,36 +235,27 @@ class FinancialReportManager:
         if not self.announcement_fetcher or not stocks:
             return []
 
-        try:
-            # 获取指定天数内的公告
-            announcements = self.announcement_fetcher.fetch_announcements(
-                stocks, days=days
-            )
-            stocks_with_reports = []
+        # 获取指定天数内的公告
+        announcements = self.announcement_fetcher.fetch_announcements(stocks, days=days)
+        stocks_with_reports = []
 
-            for stock_code, stock_announcements in announcements.items():
-                if not stock_announcements:
-                    continue
+        for stock_code, stock_announcements in announcements.items():
+            if not stock_announcements:
+                continue
 
-                # 检查是否有财务报告
-                has_financial_report = False
-                for announcement in stock_announcements:
-                    title = announcement.get("title", "")
-                    if self._is_financial_report_title(title):
-                        has_financial_report = True
-                        break
+            # 检查是否有财务报告
+            has_financial_report = False
+            for announcement in stock_announcements:
+                title = announcement.get("title", "")
+                if self._is_financial_report_title(title):
+                    has_financial_report = True
+                    break
 
-                if has_financial_report:
-                    stocks_with_reports.append(stock_code)
+            if has_financial_report:
+                stocks_with_reports.append(stock_code)
 
-            logger.debug(
-                f"过滤出{len(stocks_with_reports)}只股票有最近{days}天的财务报告"
-            )
-            return stocks_with_reports
-
-        except Exception as e:
-            logger.error(f"过滤近期财务报告失败: {e}")
-            return []
+        logger.debug(f"过滤出{len(stocks_with_reports)}只股票有最近{days}天的财务报告")
+        return stocks_with_reports
 
     def should_analyze_financial_reports(
         self, alert_stocks: Optional[List[str]] = None

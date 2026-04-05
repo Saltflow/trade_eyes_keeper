@@ -315,38 +315,31 @@ class AnnouncementFetcher:
         Returns:
             list: 公告列表，每个公告为字典
         """
-        try:
-            logger.info(
-                f"_fetch_from_exchange: stock_code={stock_code}, exchange={exchange}, fetch_days={fetch_days}, original_days={original_days}, dividend_days={dividend_days}"
+        logger.info(
+            f"_fetch_from_exchange: stock_code={stock_code}, exchange={exchange}, fetch_days={fetch_days}, original_days={original_days}, dividend_days={dividend_days}"
+        )
+
+        # 交易所官方接口长期失效，直接使用新浪公告页作为唯一来源
+        if exchange == "sse":
+            result = self._fetch_from_sse_backup(stock_code, fetch_days)
+        elif exchange == "szse":
+            result = self._fetch_from_szse_backup(stock_code, fetch_days)
+        else:
+            logger.error(f"不支持的交易所: {exchange}")
+            result = []
+
+        if result:
+            filtered_result = self._filter_announcements_by_window(
+                result, original_days, dividend_days
             )
+            logger.info(
+                f"股票 {stock_code} 获取到 {len(result)} 条公告，过滤后保留 {len(filtered_result)} 条"
+            )
+            enriched_result = self._enrich_announcements(filtered_result)
+            return enriched_result
 
-            # 交易所官方接口长期失效，直接使用新浪公告页作为唯一来源
-            if exchange == "sse":
-                result = self._fetch_from_sse_backup(stock_code, fetch_days)
-            elif exchange == "szse":
-                result = self._fetch_from_szse_backup(stock_code, fetch_days)
-            else:
-                logger.error(f"不支持的交易所: {exchange}")
-                result = []
-
-            if result:
-                filtered_result = self._filter_announcements_by_window(
-                    result, original_days, dividend_days
-                )
-                logger.info(
-                    f"股票 {stock_code} 获取到 {len(result)} 条公告，过滤后保留 {len(filtered_result)} 条"
-                )
-                enriched_result = self._enrich_announcements(filtered_result)
-                return enriched_result
-
-            logger.info(f"未获取到{stock_code}的公告")
-            return []
-
-        except Exception as e:
-            logger.error(f"从 {exchange} 获取公告失败: {e}")
-            # 发生异常时返回空列表
-            logger.info("获取公告失败，返回空列表")
-            return []
+        logger.info(f"未获取到{stock_code}的公告")
+        return []
 
     def _fetch_from_sse(self, stock_code, days):
         """
@@ -399,27 +392,22 @@ class AnnouncementFetcher:
         Returns:
             list: 公告列表
         """
-        try:
-            # 尝试使用新浪财经公告接口
-            url = f"http://vip.stock.finance.sina.com.cn/corp/go.php/vCB_AllBulletin/stockid/{stock_code}.phtml"
+        # 尝试使用新浪财经公告接口
+        url = f"http://vip.stock.finance.sina.com.cn/corp/go.php/vCB_AllBulletin/stockid/{stock_code}.phtml"
 
-            headers = {
-                "User-Agent": self.user_agent,
-                "Referer": f"http://finance.sina.com.cn/realstock/company/sh{stock_code}/nc.shtml",
-            }
+        headers = {
+            "User-Agent": self.user_agent,
+            "Referer": f"http://finance.sina.com.cn/realstock/company/sh{stock_code}/nc.shtml",
+        }
 
-            response = requests.get(url, headers=headers, timeout=self.timeout)
-            response.encoding = "gb2312"
+        response = requests.get(url, headers=headers, timeout=self.timeout)
+        response.encoding = "gb2312"
 
-            if response.status_code != 200:
-                logger.warning(f"新浪财经公告页面请求失败: {response.status_code}")
-                return []
-
-            return self._parse_sina_announcements(response.text, stock_code, "sse")
-
-        except Exception as e:
-            logger.error(f"上交所备用方法失败: {e}")
+        if response.status_code != 200:
+            logger.warning(f"新浪财经公告页面请求失败: {response.status_code}")
             return []
+
+        return self._parse_sina_announcements(response.text, stock_code, "sse")
 
     def _fetch_from_szse(self, stock_code, days):
         """
@@ -472,27 +460,22 @@ class AnnouncementFetcher:
         Returns:
             list: 公告列表
         """
-        try:
-            # 尝试使用新浪财经公告接口（深交所股票）
-            url = f"http://vip.stock.finance.sina.com.cn/corp/go.php/vCB_AllBulletin/stockid/{stock_code}.phtml"
+        # 尝试使用新浪财经公告接口（深交所股票）
+        url = f"http://vip.stock.finance.sina.com.cn/corp/go.php/vCB_AllBulletin/stockid/{stock_code}.phtml"
 
-            headers = {
-                "User-Agent": self.user_agent,
-                "Referer": f"http://finance.sina.com.cn/realstock/company/sz{stock_code}/nc.shtml",
-            }
+        headers = {
+            "User-Agent": self.user_agent,
+            "Referer": f"http://finance.sina.com.cn/realstock/company/sz{stock_code}/nc.shtml",
+        }
 
-            response = requests.get(url, headers=headers, timeout=self.timeout)
-            response.encoding = "gb2312"
+        response = requests.get(url, headers=headers, timeout=self.timeout)
+        response.encoding = "gb2312"
 
-            if response.status_code != 200:
-                logger.warning(f"新浪财经公告页面请求失败: {response.status_code}")
-                return []
-
-            return self._parse_sina_announcements(response.text, stock_code, "szse")
-
-        except Exception as e:
-            logger.error(f"深交所备用方法失败: {e}")
+        if response.status_code != 200:
+            logger.warning(f"新浪财经公告页面请求失败: {response.status_code}")
             return []
+
+        return self._parse_sina_announcements(response.text, stock_code, "szse")
 
     def _parse_sina_announcements(self, html, stock_code, exchange):
         """
@@ -508,93 +491,82 @@ class AnnouncementFetcher:
         """
         announcements = []
 
-        try:
-            soup = BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
 
-            # 尝试新样式：查找公告列表 (div.datelist > ul)
-            datelist_div = soup.find("div", class_="datelist")
-            if datelist_div:
-                ul = datelist_div.find("ul")
-                if ul:
-                    # 解析ul中的内容：日期和链接被<br>分隔
-                    # 方法：遍历ul的所有子节点
-                    current_date = None
-                    for child in ul.children:
-                        if child.name is None:  # 文本节点
-                            text = str(child)
-                            # 查找日期模式 YYYY-MM-DD
-                            import re
+        # 尝试新样式：查找公告列表 (div.datelist > ul)
+        datelist_div = soup.find("div", class_="datelist")
+        if datelist_div:
+            ul = datelist_div.find("ul")
+            if ul:
+                # 解析ul中的内容：日期和链接被<br>分隔
+                # 方法：遍历ul的所有子节点
+                current_date = None
+                for child in ul.children:
+                    if child.name is None:  # 文本节点
+                        text = str(child)
+                        # 查找日期模式 YYYY-MM-DD
+                        import re
 
-                            date_match = re.search(r"(\d{4}-\d{2}-\d{2})", text)
-                            if date_match:
-                                current_date = date_match.group(1)
-                        elif child.name == "a":  # 链接标签
-                            if current_date:
-                                href = child.get("href", "")
-                                title = child.get_text(strip=True)
-                                # 构建完整URL
-                                if href and not href.startswith("http"):
-                                    url = f"http://vip.stock.finance.sina.com.cn{href}"
-                                else:
-                                    url = href
-
-                                announcement = {
-                                    "stock_code": stock_code,
-                                    "exchange": exchange,
-                                    "title": title,
-                                    "date": current_date,
-                                    "url": url,
-                                    "type": "",  # 新浪页面没有类型信息
-                                    "summary": title,
-                                }
-                                announcements.append(announcement)
-                                # 重置当前日期，避免重复使用
-                                current_date = None
-                        # <br>标签忽略，继续处理下一个节点
-
-                    if announcements:
-                        logger.info(
-                            f"从新浪财经datelist解析到 {len(announcements)} 条公告"
-                        )
-                        return announcements
-
-            # 备用方法：查找旧样式公告表格
-            tables = soup.find_all("table", class_="datatbl")
-            for table in tables:
-                rows = table.find_all("tr")
-                for row in rows[1:]:  # 跳过表头
-                    cols = row.find_all("td")
-                    if len(cols) >= 3:
-                        try:
-                            date = cols[0].text.strip()
-                            title_elem = cols[1].find("a")
-                            title = (
-                                title_elem.text.strip()
-                                if title_elem
-                                else cols[1].text.strip()
-                            )
-                            url = title_elem.get("href") if title_elem else ""
-
+                        date_match = re.search(r"(\d{4}-\d{2}-\d{2})", text)
+                        if date_match:
+                            current_date = date_match.group(1)
+                    elif child.name == "a":  # 链接标签
+                        if current_date:
+                            href = child.get("href", "")
+                            title = child.get_text(strip=True)
                             # 构建完整URL
-                            if url and not url.startswith("http"):
-                                url = f"http://vip.stock.finance.sina.com.cn{url}"
+                            if href and not href.startswith("http"):
+                                url = f"http://vip.stock.finance.sina.com.cn{href}"
+                            else:
+                                url = href
 
                             announcement = {
                                 "stock_code": stock_code,
                                 "exchange": exchange,
                                 "title": title,
-                                "date": date,
+                                "date": current_date,
                                 "url": url,
-                                "type": cols[2].text.strip() if len(cols) > 2 else "",
+                                "type": "",  # 新浪页面没有类型信息
                                 "summary": title,
                             }
                             announcements.append(announcement)
-                        except Exception as e:
-                            logger.debug(f"解析新浪公告行失败: {e}")
-                            continue
+                            # 重置当前日期，避免重复使用
+                            current_date = None
+                    # <br>标签忽略，继续处理下一个节点
 
-        except Exception as e:
-            logger.error(f"解析新浪财经公告页面失败: {e}")
+                if announcements:
+                    logger.info(f"从新浪财经datelist解析到 {len(announcements)} 条公告")
+                    return announcements
+
+        # 备用方法：查找旧样式公告表格
+        tables = soup.find_all("table", class_="datatbl")
+        for table in tables:
+            rows = table.find_all("tr")
+            for row in rows[1:]:  # 跳过表头
+                cols = row.find_all("td")
+                if len(cols) < 2:
+                    logger.debug("跳过缺少标题列的公告行")
+                    continue
+
+                date = cols[0].text.strip()
+                title_elem = cols[1].find("a")
+                title = title_elem.text.strip() if title_elem else cols[1].text.strip()
+                url = title_elem.get("href") if title_elem else ""
+
+                # 构建完整URL
+                if url and not url.startswith("http"):
+                    url = f"http://vip.stock.finance.sina.com.cn{url}"
+
+                announcement = {
+                    "stock_code": stock_code,
+                    "exchange": exchange,
+                    "title": title,
+                    "date": date,
+                    "url": url,
+                    "type": cols[2].text.strip() if len(cols) > 2 else "",
+                    "summary": title,
+                }
+                announcements.append(announcement)
 
         return announcements
 
