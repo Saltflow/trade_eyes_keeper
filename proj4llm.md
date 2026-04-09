@@ -609,6 +609,86 @@ src/llm_analyzer/
 
 ---
 
+## 🏗️ 历史数据缓存架构 (baostock集成)
+
+**决策**: baostock历史数据缓存，除权时全量更新，否则增量更新
+**时间**: 2026-04-09 (v2.8)
+**背景**: 回测框架需要稳定的历史数据源，web_crawler数据不稳定，baostock提供前复权数据更可靠
+**核心需求**: 回测一切以baostock为准，替代现有不稳定的web_crawler数据源
+
+### 架构设计
+1. **数据源**: baostock API (前复权数据，adjustflag=2)
+2. **缓存策略**: 除权时全量更新，否则增量更新，天级别数据持久化缓存
+3. **集成要求**: 保持与现有邮件工作流兼容，日报时刻（16:00）先更新数据再运行回测框架
+
+### 组件设计
+1. **BaostockFetcher** (`src/baostock_fetcher.py`)
+   - 封装baostock API登录、登出
+   - 查询历史K线数据 (`query_history_k_data`)
+   - 查询分红送股数据 (`query_dividend_data`)
+   - 检查除权变更 (`check_dividend_change`)
+
+2. **CacheManager扩展** (`src/cache_manager.py`)
+   - 新增历史数据缓存目录: `cache/historical/data/`, `cache/historical/metadata/`
+   - JSON Lines格式存储历史数据 (`股票代码_开始日期_结束日期.jsonl`)
+   - 元数据JSON文件存储哈希、记录数、最后更新等
+   - 数据完整性验证（哈希校验、记录数检查）
+
+3. **CacheStrategy** (`src/cache_strategy.py`)
+   - 决策何时使用缓存、何时更新缓存
+   - 更新策略: "full"全量更新, "incremental"增量更新, "none"不更新
+   - 考虑因素: 缓存存在性、过期时间、除权变更、数据缺失天数
+
+4. **HistoricalDataManager** (`src/historical_data_manager.py`)
+   - 整合CacheManager、BaostockFetcher和CacheStrategy
+   - 提供统一的历史数据访问接口 (`get_historical_data`)
+   - 自动处理缓存逻辑: 优先使用缓存，需要时更新
+
+5. **BacktestFramework集成** (`backtest_framework.py`)
+   - 修改`fetch_historical_data`方法优先使用HistoricalDataManager
+   - 后备方案: web_crawler (保持向后兼容)
+   - 自动初始化缓存管理器和历史数据管理器
+
+### 配置更新 (`config/config.yaml`)
+```yaml
+# baostock数据源配置
+baostock:
+  adjustflag: "2"           # 复权类型：2=前复权，3=后复权
+  login_retry_times: 3      # 登录重试次数
+  enable: true              # 是否启用baostock数据源
+
+# 历史数据缓存配置
+historical_cache:
+  enable: true                     # 是否启用历史数据缓存
+  historical_cache_days: 30        # 历史数据缓存保留天数
+  force_update_interval_days: 30   # 强制全量更新间隔天数
+  check_dividend_interval_days: 7  # 检查除权间隔天数
+  historical_lookback_days: 730    # 默认回溯天数（2年）
+
+data_source:
+  type: web_crawler           # 数据源类型：web_crawler 或 baostock
+  fallback_to_web_crawler: true  # baostock失败时是否回退到web_crawler
+```
+
+### 缓存更新逻辑
+1. **无缓存**: 全量从baostock获取数据并缓存
+2. **缓存过期** (超过`force_update_interval_days`): 全量更新
+3. **除权检测**: 检查分红送股数据，有新除权则全量更新
+4. **数据缺失** (缓存缺少最近几天数据): 增量更新仅获取缺失数据
+5. **缓存有效**: 直接使用缓存数据
+
+### 审计与监控
+- 所有缓存操作记录日志 (命中、更新、失败)
+- 数据完整性验证 (哈希校验、记录数检查)
+- 随机化测试 (1%概率强制更新，5%概率读取失败模拟)
+
+### 向后兼容性
+- web_crawler作为后备数据源 (当baostock不可用时)
+- 现有回测框架接口保持不变
+- 邮件工作流不受影响，回测结果自动集成到日报中
+
+---
+
 ## 📁 文档结构
 
 ### 核心文档

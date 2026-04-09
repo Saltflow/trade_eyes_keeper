@@ -1,5 +1,5 @@
 """
-近两年监控股票回测框架 - 步骤2：WebCrawler集成
+近两年监控股票回测框架 - 步骤7：baostock缓存集成
 """
 
 import logging
@@ -12,13 +12,15 @@ logger = logging.getLogger(__name__)
 
 
 class BacktestFramework:
-    """回测框架 - WebCrawler集成版本"""
+    """回测框架 - baostock缓存集成版本"""
 
     def __init__(self, config_path="config/config.yaml"):
         self.config_path = Path(config_path)
         self.config = None
         self.stock_codes = []
         self.web_crawler = None
+        self.cache_manager = None
+        self.historical_data_manager = None
         self.data_cache = {}
         self.random_seed = random.randint(1, 1000)
         random.seed(self.random_seed)
@@ -53,14 +55,72 @@ class BacktestFramework:
         except Exception:
             return False
 
+    def _init_cache_managers(self):
+        """初始化缓存管理器和历史数据管理器"""
+        try:
+            from src.cache_manager import CacheManager
+            from src.historical_data_manager import HistoricalDataManager
+
+            # 创建缓存管理器
+            self.cache_manager = CacheManager(self.config or {})
+
+            # 创建历史数据管理器
+            self.historical_data_manager = HistoricalDataManager(
+                config=self.config or {}, cache_manager=self.cache_manager
+            )
+
+            logger.info("缓存管理器和历史数据管理器初始化成功")
+            return True
+        except Exception as e:
+            logger.error(f"初始化缓存管理器失败: {e}")
+            return False
+
     def fetch_historical_data(self, stock_code, days=730):
+        """获取历史数据，优先使用缓存，后备使用web_crawler"""
+        # 检查内存缓存
         if stock_code in self.data_cache:
             return self.data_cache[stock_code]
 
+        # 尝试使用历史数据管理器（baostock缓存）
+        try:
+            if self.historical_data_manager is None:
+                if not self._init_cache_managers():
+                    logger.warning(
+                        f"缓存管理器初始化失败，回退到web_crawler: {stock_code}"
+                    )
+                    return self._fetch_from_web_crawler(stock_code, days)
+
+            # 计算日期范围
+            end_date = datetime.now().strftime("%Y%m%d")
+            start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+
+            # 从历史数据管理器获取
+            data = self.historical_data_manager.get_historical_data(
+                stock_code, start_date, end_date
+            )
+
+            if data is not None and not data.empty:
+                # 缓存到内存
+                self.data_cache[stock_code] = data
+                logger.info(
+                    f"从历史数据管理器获取数据成功: {stock_code} ({len(data)}条记录)"
+                )
+                return data
+            else:
+                logger.warning(
+                    f"历史数据管理器返回空数据，回退到web_crawler: {stock_code}"
+                )
+                return self._fetch_from_web_crawler(stock_code, days)
+
+        except Exception as e:
+            logger.error(f"历史数据管理器获取失败: {stock_code}, 错误: {e}")
+            return self._fetch_from_web_crawler(stock_code, days)
+
+    def _fetch_from_web_crawler(self, stock_code, days=730):
+        """从web_crawler获取数据（后备方案）"""
         if not self.web_crawler and not self._init_web_crawler():
             return None
 
-        # 确保web_crawler不为None
         if self.web_crawler is None:
             return None
 
@@ -68,9 +128,13 @@ class BacktestFramework:
             data = self.web_crawler.fetch_stock_data(stock_code, days)
             if data is not None and not data.empty:
                 self.data_cache[stock_code] = data
+                logger.info(
+                    f"从web_crawler获取数据成功: {stock_code} ({len(data)}条记录)"
+                )
                 return data
             return None
-        except Exception:
+        except Exception as e:
+            logger.error(f"web_crawler获取失败: {stock_code}, 错误: {e}")
             return None
 
     def _calculate_start_dates(self):
@@ -200,14 +264,32 @@ class BacktestFramework:
         if not self.load_config():
             return None
 
-        if not self._init_web_crawler():
-            return None
+        # 尝试初始化缓存管理器（不强制要求成功）
+        try:
+            self._init_cache_managers()
+        except Exception as e:
+            logger.warning(f"缓存管理器初始化失败，将使用web_crawler后备: {e}")
+
+        # 尝试初始化web_crawler（不强制要求成功）
+        try:
+            self._init_web_crawler()
+        except Exception as e:
+            logger.warning(f"web_crawler初始化失败: {e}")
 
         # 精简测试（可选，保持与run_backtest兼容）
         if self.stock_codes:
             test_stock = random.choice(self.stock_codes)
-            if self.fetch_historical_data(test_stock, days=10) is not None:
-                print(f"✅ 测试通过: {test_stock}")
+            test_data = self.fetch_historical_data(test_stock, days=10)
+            if test_data is not None:
+                print(f"✅ 测试通过: {test_stock} ({len(test_data)}条记录)")
+                if self.historical_data_manager:
+                    print("   数据源: baostock缓存")
+                elif self.web_crawler:
+                    print("   数据源: web_crawler")
+                else:
+                    print("   数据源: 未知")
+            else:
+                print(f"⚠️  测试失败: {test_stock} (无数据)")
 
         # 计算所有股票收益
         print("计算所有股票四个起始点收益...")
@@ -231,11 +313,11 @@ class BacktestFramework:
         table_html += "    <tbody>\n"
 
         for stock_result in results:
-            table_html += f"        <tr>\n"
+            table_html += "        <tr>\n"
             table_html += f'            <td style="border: 1px solid #ddd; padding: 12px; text-align: center;">{stock_result["stock_code"]}</td>\n'
             for ret in stock_result["returns"]:
                 if "error" in ret:
-                    table_html += f'            <td style="border: 1px solid #ddd; padding: 12px; text-align: center; color: red;">计算失败</td>\n'
+                    table_html += '            <td style="border: 1px solid #ddd; padding: 12px; text-align: center; color: red;">计算失败</td>\n'
                 else:
                     value = ret["current_value"]
                     profit_pct = ret["profit_pct"]

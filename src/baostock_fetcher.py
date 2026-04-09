@@ -147,3 +147,131 @@ class BaostockFetcher:
             result["_validated"] = True
 
         return result
+
+    def query_dividend_data(self, code, start_date=None, end_date=None):
+        """
+        查询分红送股数据
+
+        Args:
+            code: 股票代码
+            start_date: 开始日期 (YYYY-MM-DD格式)
+            end_date: 结束日期 (YYYY-MM-DD格式)
+
+        Returns:
+            DataFrame: 分红数据，包含dividOperateDate, dividCashPS, dividStocksPS等字段
+        """
+        import baostock as bs
+
+        if not self.connected and not self.login():
+            return pd.DataFrame()
+
+        if random.random() < 0.05:
+            time.sleep(random.uniform(0.1, 0.5))
+
+        # 如果没有指定日期范围，默认查询最近1年
+        if not start_date:
+            import datetime
+
+            end = end_date or datetime.datetime.now().strftime("%Y-%m-%d")
+            start = (datetime.datetime.now() - datetime.timedelta(days=365)).strftime(
+                "%Y-%m-%d"
+            )
+        else:
+            start = start_date
+            end = end_date or datetime.datetime.now().strftime("%Y-%m-%d")
+
+        try:
+            rs = bs.query_dividend_data(
+                code=code,
+                year=start[:4],  # baostock要求按年查询
+                yearType="operate",  # 操作日类型
+            )
+
+            if rs.error_code != "0":
+                logger.warning(f"分红查询失败: {rs.error_msg}")
+                return pd.DataFrame()
+
+            data = []
+            while (rs.error_code == "0") & rs.next():
+                data.append(rs.get_row_data())
+
+            if not data:
+                return pd.DataFrame()
+
+            # 获取字段名
+            fields = rs.fields
+            df = pd.DataFrame(data, columns=fields)
+
+            # 过滤日期范围
+            if "dividOperateDate" in df.columns:
+                df["dividOperateDate"] = pd.to_datetime(
+                    df["dividOperateDate"], errors="coerce"
+                )
+                df = df[
+                    (df["dividOperateDate"] >= pd.Timestamp(start))
+                    & (df["dividOperateDate"] <= pd.Timestamp(end))
+                ]
+
+            # 转换数值字段
+            numeric_cols = ["dividCashPS", "dividStocksPS", "dividCashStock"]
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+            logger.info(f"获取 {code} 分红数据 {len(df)} 条")
+            return df
+
+        except Exception as e:
+            logger.error(f"查询分红数据异常: {e}")
+            return pd.DataFrame()
+
+    def check_dividend_change(self, code, last_check_date=None):
+        """
+        检查是否有除权发生
+
+        Args:
+            code: 股票代码
+            last_check_date: 上次检查日期 (YYYY-MM-DD格式)
+
+        Returns:
+            tuple: (has_change, dividend_df, latest_date)
+                has_change: 是否有除权发生
+                dividend_df: 最近的分红数据DataFrame
+                latest_date: 最新的除权除息日
+        """
+        # 查询最近一年的分红数据
+        dividend_df = self.query_dividend_data(code)
+
+        if dividend_df.empty:
+            return False, pd.DataFrame(), None
+
+        # 找到最新的除权除息日
+        if "dividOperateDate" not in dividend_df.columns:
+            return False, dividend_df, None
+
+        # 过滤掉无效日期
+        valid_dividends = dividend_df[dividend_df["dividOperateDate"].notna()]
+        if valid_dividends.empty:
+            return False, dividend_df, None
+
+        # 获取最新日期
+        latest_date = valid_dividends["dividOperateDate"].max()
+
+        # 如果有上次检查日期，比较是否有新的除权
+        if last_check_date:
+            last_check = pd.Timestamp(last_check_date)
+            has_change = latest_date > last_check
+        else:
+            # 没有上次检查日期时，默认有分红就需要检查
+            has_change = not dividend_df.empty
+
+        # 如果有分红数据，确保有实际的分红金额
+        if has_change:
+            has_cash_dividend = valid_dividends["dividCashPS"].fillna(0).sum() > 0
+            has_stock_dividend = valid_dividends["dividStocksPS"].fillna(0).sum() > 0
+            has_change = has_cash_dividend or has_stock_dividend
+
+        logger.info(
+            f"股票 {code} 除权检查: 有变更={has_change}, 最新日期={latest_date}"
+        )
+        return has_change, dividend_df, latest_date

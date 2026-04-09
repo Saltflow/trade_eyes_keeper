@@ -36,6 +36,10 @@ class CacheManager:
             self.cache_dir / "announcement_extraction"
         )
         self.pdf_files_cache_dir = self.cache_dir / "pdf_files"
+        # 历史数据缓存目录
+        self.historical_cache_dir = self.cache_dir / "historical"
+        self.historical_data_dir = self.historical_cache_dir / "data"
+        self.historical_metadata_dir = self.historical_cache_dir / "metadata"
         self.cache_days = storage_config.get("cache_days", 7)  # 默认保留7天缓存
 
         # 创建缓存目录
@@ -54,6 +58,9 @@ class CacheManager:
             self.announcement_content_cache_dir,
             self.announcement_extraction_cache_dir,
             self.pdf_files_cache_dir,
+            self.historical_cache_dir,
+            self.historical_data_dir,
+            self.historical_metadata_dir,
         ]:
             dir_path.mkdir(parents=True, exist_ok=True)
             logger.debug(f"创建缓存目录: {dir_path}")
@@ -68,6 +75,8 @@ class CacheManager:
                 ("数据", self.data_cache_dir),
                 ("分析", self.analysis_cache_dir),
                 ("财报分析", self.financial_analysis_cache_dir),
+                ("历史数据", self.historical_data_dir),
+                ("历史元数据", self.historical_metadata_dir),
             ]:
                 if cache_dir.exists():
                     for file_path in cache_dir.glob("*.json"):
@@ -96,6 +105,195 @@ class CacheManager:
     def _get_today_str(self):
         """获取今天日期字符串 (YYYYMMDD)"""
         return datetime.now().strftime("%Y%m%d")
+
+    def _get_historical_cache_path(self, stock_code, start_date, end_date):
+        """
+        获取历史数据缓存文件路径
+
+        Args:
+            stock_code: 股票代码
+            start_date: 开始日期 (YYYYMMDD格式)
+            end_date: 结束日期 (YYYYMMDD格式)
+
+        Returns:
+            Path: 缓存文件路径
+        """
+        filename = f"{stock_code}_{start_date}_{end_date}.jsonl"
+        return self.historical_data_dir / filename
+
+    def _get_historical_metadata_path(self, stock_code):
+        """
+        获取历史数据元数据文件路径
+
+        Args:
+            stock_code: 股票代码
+
+        Returns:
+            Path: 元数据文件路径
+        """
+        filename = f"{stock_code}_metadata.json"
+        return self.historical_metadata_dir / filename
+
+    def get_historical_cache(self, stock_code, start_date, end_date):
+        """
+        获取历史数据缓存
+
+        Args:
+            stock_code: 股票代码
+            start_date: 开始日期 (YYYYMMDD格式)
+            end_date: 结束日期 (YYYYMMDD格式)
+
+        Returns:
+            tuple: (数据DataFrame, 元数据dict)，失败返回(None, None)
+        """
+        import random  # 随机化导入
+
+        cache_path = self._get_historical_cache_path(stock_code, start_date, end_date)
+        metadata_path = self._get_historical_metadata_path(stock_code)
+
+        if not cache_path.exists() or not metadata_path.exists():
+            return None, None
+
+        try:
+            # 随机化：5%概率模拟读取失败
+            if random.random() < 0.05:
+                logger.debug(f"随机模拟历史缓存读取失败: {stock_code}")
+                return None, None
+
+            # 读取元数据
+            with open(metadata_path, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+
+            # 验证数据哈希
+            expected_hash = metadata.get("data_hash")
+            if expected_hash:
+                # 读取数据文件计算哈希
+                import hashlib
+
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                actual_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
+                if actual_hash != expected_hash:
+                    logger.warning(f"历史缓存数据哈希不匹配: {stock_code}")
+                    return None, None
+
+            # 读取JSON Lines数据
+            import pandas as pd
+
+            data_lines = []
+            with open(cache_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        data_lines.append(json.loads(line))
+
+            if not data_lines:
+                return None, None
+
+            df = pd.DataFrame(data_lines)
+
+            # 验证点1：数据完整性检查
+            if df.empty:
+                logger.warning(f"历史缓存数据为空: {stock_code}")
+                return None, None
+
+            # 验证点2：日期字段检查
+            if "date" not in df.columns:
+                logger.warning(f"历史缓存缺少date字段: {stock_code}")
+                return None, None
+
+            # 验证点3：记录数检查
+            expected_count = metadata.get("total_records")
+            if expected_count and len(df) != expected_count:
+                logger.warning(f"历史缓存记录数不匹配: {stock_code}")
+                return None, None
+
+            logger.info(f"从缓存读取历史数据: {stock_code} ({len(df)}条记录)")
+            return df, metadata
+
+        except Exception as e:
+            logger.error(f"读取历史缓存失败 {stock_code}: {e}")
+            return None, None
+
+    def set_historical_cache(
+        self, stock_code, data_df, start_date, end_date, metadata=None
+    ):
+        """
+        设置历史数据缓存
+
+        Args:
+            stock_code: 股票代码
+            data_df: 数据DataFrame
+            start_date: 开始日期 (YYYYMMDD格式)
+            end_date: 结束日期 (YYYYMMDD格式)
+            metadata: 元数据字典 (可选)
+        """
+        import random  # 随机化导入
+
+        if data_df is None or data_df.empty:
+            logger.warning(f"无法缓存空数据: {stock_code}")
+            return False
+
+        cache_path = self._get_historical_cache_path(stock_code, start_date, end_date)
+        metadata_path = self._get_historical_metadata_path(stock_code)
+
+        try:
+            # 随机化：2%概率模拟写入失败
+            if random.random() < 0.02:
+                logger.debug(f"随机模拟历史缓存写入失败: {stock_code}")
+                return False
+
+            # 准备数据行
+            data_lines = []
+            for _, row in data_df.iterrows():
+                # 转换为可JSON序列化的字典
+                record = {}
+                for col in data_df.columns:
+                    val = row[col]
+                    # 处理特殊类型
+                    if hasattr(val, "isoformat"):  # datetime等
+                        val = val.isoformat()
+                    record[col] = val
+                data_lines.append(json.dumps(record, ensure_ascii=False))
+
+            # 写入JSON Lines文件
+            with open(cache_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(data_lines))
+
+            # 计算数据哈希
+            import hashlib
+
+            content = "\n".join(data_lines)
+            data_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
+
+            # 准备元数据
+            if metadata is None:
+                metadata = {}
+
+            metadata.update(
+                {
+                    "stock_code": stock_code,
+                    "last_updated": datetime.now().isoformat(),
+                    "data_start_date": start_date,
+                    "data_end_date": end_date,
+                    "data_hash": data_hash,
+                    "total_records": len(data_df),
+                    "file_size_kb": cache_path.stat().st_size / 1024
+                    if cache_path.exists()
+                    else 0,
+                }
+            )
+
+            # 写入元数据
+            with open(metadata_path, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+            logger.info(f"历史数据缓存成功: {stock_code} ({len(data_df)}条记录)")
+            return True
+
+        except Exception as e:
+            logger.error(f"写入历史缓存失败 {stock_code}: {e}")
+            return False
 
     def get_stock_data_cache(self, stock_code):
         """
