@@ -65,6 +65,7 @@ class EmailNotifier:
         analysis_results=None,
         announcements=None,
         financial_analysis_results=None,
+        backtest_results=None,
     ):
         """
          发送股票提醒邮件
@@ -75,6 +76,7 @@ class EmailNotifier:
             analysis_results: LLM分析结果字典（可选）
             announcements: 公告数据字典（可选）
             financial_analysis_results: 财报分析结果字典（可选）
+            backtest_results: 回测结果列表，格式与backtest_framework.py输出一致（可选）
         """
         try:
             # 构建邮件内容
@@ -85,6 +87,7 @@ class EmailNotifier:
                 analysis_results,
                 announcements,
                 financial_analysis_results,
+                backtest_results,
             )
 
             # 发送邮件
@@ -101,6 +104,7 @@ class EmailNotifier:
         analysis_results=None,
         announcements=None,
         financial_analysis_results=None,
+        backtest_results=None,
     ):
         """
          发送每日报告邮件（即使没有满足条件的股票也发送）
@@ -110,6 +114,7 @@ class EmailNotifier:
             analysis_results: LLM分析结果字典（可选）
             announcements: 公告数据字典（可选）
             financial_analysis_results: 财报分析结果字典（可选）
+            backtest_results: 回测结果列表，格式与backtest_framework.py输出一致（可选）
         """
         try:
             # 构建邮件内容（使用空提醒列表）
@@ -120,6 +125,7 @@ class EmailNotifier:
                 analysis_results,
                 announcements,
                 financial_analysis_results,
+                backtest_results,
             )
 
             # 发送邮件
@@ -225,6 +231,73 @@ class EmailNotifier:
 
         return html
 
+    def _build_backtest_section(self, backtest_results):
+        """
+        构建回测结果部分HTML
+
+        Args:
+            backtest_results: 回测结果列表，格式与backtest_framework.py输出一致
+
+        Returns:
+            str: HTML格式的回测部分
+        """
+        if not backtest_results:
+            return "<h3>回测分析</h3><p>暂无回测数据。</p>"
+
+        logger.info(f"构建回测分析部分: 收到{len(backtest_results)}只股票的回测结果")
+
+        # 生成表格部分
+        table_html = '<table style="border-collapse: collapse; width: 100%; margin-top: 20px;">\n'
+        table_html += "    <thead>\n"
+        table_html += "        <tr>\n"
+        table_html += '            <th style="border: 1px solid #ddd; padding: 12px; text-align: center; background-color: #f2f2f2; font-weight: bold;">股票代码</th>\n'
+        table_html += '            <th style="border: 1px solid #ddd; padding: 12px; text-align: center; background-color: #f2f2f2; font-weight: bold;">2年前持有至今</th>\n'
+        table_html += '            <th style="border: 1px solid #ddd; padding: 12px; text-align: center; background-color: #f2f2f2; font-weight: bold;">1年前持有至今</th>\n'
+        table_html += '            <th style="border: 1px solid #ddd; padding: 12px; text-align: center; background-color: #f2f2f2; font-weight: bold;">6个月前持有至今</th>\n'
+        table_html += '            <th style="border: 1px solid #ddd; padding: 12px; text-align: center; background-color: #f2f2f2; font-weight: bold;">2个月前持有至今</th>\n'
+        table_html += "        </tr>\n"
+        table_html += "    </thead>\n"
+        table_html += "    <tbody>\n"
+
+        for stock_result in backtest_results:
+            table_html += f"        <tr>\n"
+            table_html += f'            <td style="border: 1px solid #ddd; padding: 12px; text-align: center;">{stock_result["stock_code"]}</td>\n'
+            for ret in stock_result["returns"]:
+                if "error" in ret:
+                    table_html += f'            <td style="border: 1px solid #ddd; padding: 12px; text-align: center; color: red;">计算失败</td>\n'
+                else:
+                    value = ret["current_value"]
+                    profit_pct = ret["profit_pct"]
+                    color = "green" if profit_pct >= 0 else "red"
+                    table_html += f'            <td style="border: 1px solid #ddd; padding: 12px; text-align: center; color: {color};">{value:.2f}元<br><small>({profit_pct:+.2f}%)</small></td>\n'
+            table_html += "        </tr>\n"
+
+        table_html += "    </tbody>\n"
+        table_html += "</table>\n"
+
+        # 构建完整的回测部分HTML
+        html = f"""
+        <div style="margin-top: 40px; border-top: 1px solid #ddd; padding-top: 20px;">
+            <h3>近两年监控股票回测分析</h3>
+            <p style="color: #666; font-size: 14px;">假设每个起始点买入1万元，计算到今天的价值（交易成本：买入千分之2）</p>
+            
+            {table_html}
+            
+            <div style="margin-top: 20px; font-size: 12px; color: #888;">
+                <p>注：</p>
+                <ul>
+                    <li>数据来源：新浪财经/腾讯财经/东方财富公开数据</li>
+                    <li>交易成本：买入时收取千分之2（0.2%）手续费，卖出无费用</li>
+                    <li>最小交易单位：100股（手）</li>
+                    <li>不考虑分红和分红再投资</li>
+                    <li>日期处理：自动匹配最近的交易日</li>
+                </ul>
+            </div>
+        </div>
+        """
+
+        return html
+
     def _build_email_body(
         self,
         alert_stocks,
@@ -232,9 +305,10 @@ class EmailNotifier:
         analysis_results=None,
         announcements=None,
         financial_analysis_results=None,
+        backtest_results=None,
     ):
         """
-         构建邮件正文（完整版：4个表格 + LLM分析 + 公告 + 服务器信息 + 财报分析）
+         构建邮件正文（完整版：4个表格 + LLM分析 + 公告 + 服务器信息 + 财报分析 + 回测分析）
 
         Args:
             alert_stocks: 满足条件的股票列表
@@ -242,6 +316,7 @@ class EmailNotifier:
             analysis_results: LLM分析结果字典（可选）
             announcements: 公告数据字典（可选）
             financial_analysis_results: 财报分析结果字典（可选）
+            backtest_results: 回测结果列表，格式与backtest_framework.py输出一致（可选）
 
         Returns:
             str: 邮件正文（HTML格式）
@@ -692,10 +767,15 @@ class EmailNotifier:
                 </div>
                 """
             announcements_section += """
-            <p><em>注：公告信息仅供参考，请以交易所官方公告为准。</em></p>
+             <p><em>注：公告信息仅供参考，请以交易所官方公告为准。</em></p>
             """
 
-        # 6. 获取服务器信息
+        # 6. 构建回测分析部分
+        backtest_section = ""
+        if backtest_results:
+            backtest_section = self._build_backtest_section(backtest_results)
+
+        # 7. 获取服务器信息
         server_info = self._get_server_info()
 
         # 7. 构建报警股票部分
@@ -716,6 +796,7 @@ class EmailNotifier:
             llm_analysis_section=llm_analysis_section,
             financial_analysis_section=financial_analysis_section,
             announcements_section=announcements_section,
+            backtest_section=backtest_section,
             server_hostname=server_info["hostname"],
             server_ip=server_info["ip_address"],
             server_kernel=server_info["kernel_version"],

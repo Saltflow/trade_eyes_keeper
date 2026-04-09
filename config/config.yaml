@@ -18,6 +18,12 @@ financial_reports:
   max_llm_calls_per_run: 80  # 财报分析LLM调用上限，单独计入保护大模型额度
   reports_per_stock: 3
   conditional_days: 30
+
+backtest:
+  enable: true
+  run_in_daily_task: true
+  cache_days: 7
+
 data_source:
   type: web_crawler
 email:

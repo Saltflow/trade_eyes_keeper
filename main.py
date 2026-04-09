@@ -30,6 +30,7 @@ from src.llm_analyzer import LLMAnalyzer
 from src.scheduler_manager import SchedulerManager
 from src.announcement_fetcher import AnnouncementFetcher
 from src.financial_report_manager import FinancialReportManager
+from backtest_framework import BacktestFramework
 
 
 # 设置日志
@@ -195,7 +196,28 @@ def run_daily_task():
             except Exception as e:
                 logger.error(f"财报分析失败: {e}", exc_info=True)
 
-        # 7. 发送邮件（无论是否有满足条件的股票都发送日报）
+        # 7. 运行回测分析（可选）
+        backtest_results = None
+        # 读取回测配置
+        backtest_config = config.get("backtest", {})
+        backtest_enable = backtest_config.get("enable", True)  # 默认启用
+
+        if backtest_enable:
+            logger.info("回测功能已启用，开始回测分析")
+            try:
+                backtest_framework = BacktestFramework()
+                backtest_results = backtest_framework.get_backtest_results()
+                if backtest_results:
+                    logger.info(f"回测分析完成，共{len(backtest_results)}只股票")
+                else:
+                    logger.warning("回测分析未返回结果")
+            except Exception as e:
+                logger.error(f"回测分析失败: {e}", exc_info=True)
+                # 回测失败不影响主流程，继续发送邮件
+        else:
+            logger.info("回测功能已禁用，跳过回测分析")
+
+        # 8. 发送邮件（无论是否有满足条件的股票都发送日报）
         if alert_stocks:
             logger.info(f"发现{len(alert_stocks)}只满足条件的股票: {alert_stocks}")
             notifier.send_alert(
@@ -204,11 +226,16 @@ def run_daily_task():
                 analysis_results,
                 announcements,
                 financial_analysis_results,
+                backtest_results,
             )
         else:
             logger.info("没有满足条件的股票，发送每日报告")
             notifier.send_daily_report(
-                stock_data, analysis_results, announcements, financial_analysis_results
+                stock_data,
+                analysis_results,
+                announcements,
+                financial_analysis_results,
+                backtest_results,
             )
         logger.info("每日任务执行完成")
     except Exception as e:
