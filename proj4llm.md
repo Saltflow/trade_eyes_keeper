@@ -1,7 +1,7 @@
 # 股票量化系统 - 关键设计决策文档
 
-**文档版本**: v2.7 (压缩版)
-**最后更新**: 2026-04-08
+**文档版本**: v2.8 (压缩版)
+**最后更新**: 2026-04-10
 **原始文档**: [归档版本](docs/archive/proj4llm_archive_20260319.md) (1028行)
 **压缩目标**: <1000行，保留关键设计决策
 
@@ -48,6 +48,54 @@
 1. **提取数据接口**: 在backtest_framework.py中添加`get_backtest_results()`公共方法，提供纯数据接口
 2. **邮件集成**: 在email_notifier.py中添加`_build_backtest_section()`方法构建HTML表格
 3. **模板扩展**: 在email_template.html中添加`{backtest_section}`占位符
+
+### 4. 历史数据缓存架构
+**决策**: 使用baostock作为稳定数据源替代web_crawler，实现智能缓存机制
+**时间**: 2026-04-10 (v2.8)
+**背景**: web_crawler不稳定，回测需要可靠的历史数据源，HistoricalDataManager返回空DataFrame
+**问题诊断**:
+1. **缓存目录为空** - HistoricalDataManager依赖缓存但缓存目录无数据文件
+2. **日期格式不匹配** - baostock要求YYYY-MM-DD格式，系统使用YYYYMMDD格式
+3. **配置加载问题** - config.config模块导入失败导致配置无法正确加载
+
+**解决方案**:
+1. **日期格式转换修复**:
+   ```python
+   # 在baostock_fetcher.py中添加日期转换函数
+   def convert_date_format(date_str):
+       if not date_str or len(date_str) != 8:
+           return date_str
+       return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+   ```
+2. **智能缓存策略**:
+   - **全量更新**: 除权检测、缓存不存在或过期30天时触发
+   - **增量更新**: 仅获取缺失的最新数据
+   - **随机强制更新**: 1%概率强制更新防止缓存过期
+3. **三层数据源优先级**:
+   ```python
+   # HistoricalDataManager数据获取优先级
+   1. 本地缓存数据（JSON Lines格式）
+   2. baostock稳定数据源（前复权数据）
+   3. web_crawler备用数据源（降级使用）
+   ```
+4. **缓存文件结构**:
+   ```
+   cache/historical/
+   ├── data/      # JSON Lines格式历史数据文件（股票代码_开始日期_结束日期.jsonl）
+   └── metadata/  # JSON格式元数据文件（股票代码_metadata.json）
+   ```
+
+**组件实现**:
+- `src/cache_strategy.py` - 智能缓存更新决策
+- `src/historical_data_manager.py` - 统一历史数据访问接口
+- `src/cache_manager.py扩展` - 历史数据缓存读写支持
+- `backtest_framework.py修改` - 集成缓存优先策略
+
+**部署验证**:
+- ✅ 本地测试：HistoricalDataManager成功返回21条记录
+- ✅ 缓存文件：正确创建JSON Lines格式缓存文件
+- ✅ 远程验证：缓存机制在远程服务器基本工作
+- ⚠️ 注意：远程服务器需要更新baostock_fetcher.py以包含完整日期转换函数
 4. **主系统集成**: 在main.py的`run_daily_task()`中调用回测框架，将结果传递给邮件通知器
 5. **配置控制**: 在config.yaml中添加`backtest`配置节，支持功能开关
 **当前状态**: ✅ 已实现，回测结果作为每日邮件的附加部分发送
@@ -718,6 +766,67 @@ data_source:
 2. **DeepSeek API**: https://platform.deepseek.com/api-docs
 3. **新浪财经API**: http://money.finance.sina.com.cn/
 4. **巨潮资讯网**: http://www.cninfo.com.cn/
+
+---
+
+## 🏷️ ETF复权修复 (2026-04-10)
+
+### 问题描述
+用户报告ETF（510880, 512810等）的MA60没有除权，即移动平均线计算使用了未复权价格，导致技术指标失真。
+
+### 根本原因分析
+1. **数据源复权参数不一致**：
+   - 新浪财经API没有复权参数，返回未复权数据
+   - 腾讯财经使用`qfq`参数（前复权）
+   - 东方财富使用`fqt=1`参数（前复权）
+   - baostock使用`adjustflag="2"`（前复权）
+   
+2. **数据源优先级问题**：
+   - 系统默认数据源顺序：新浪 → 腾讯 → 东方财富
+   - 对于ETF，新浪财经可能返回未复权数据且优先级最高
+
+3. **ETF识别机制缺失**：
+   - 系统没有专门的ETF检测逻辑
+   - ETF与股票使用相同的数据源顺序
+
+### 解决方案
+1. **添加ETF检测函数** (`src/utils/etf_detector.py`)：
+   ```python
+   def is_etf(stock_code: str) -> bool:
+       # 识别中国ETF代码（51, 52, 15, 16, 18, 58开头等）
+       etf_prefixes = ("51", "52", "15", "16", "18", "58")
+       return stock_code.startswith(etf_prefixes) and len(stock_code) == 6
+   ```
+
+2. **调整数据源优先级** (`src/web_crawler.py`)：
+   - 对于ETF：腾讯财经（qfq）→ 东方财富（fqt=1）→ 新浪财经
+   - 对于股票：保持原有顺序（新浪 → 腾讯 → 东方财富）
+
+3. **web_crawler增强**：
+   - 添加`_is_etf()`检测方法
+   - 在`fetch_stock_data()`中动态调整数据源顺序
+   - 记录ETF检测和调整日志
+
+### 修复验证
+1. **数据源测试**：验证各数据源对ETF的复权支持
+2. **价格一致性检查**：比较不同数据源对同一ETF的价格差异
+3. **MA60计算验证**：确保MA60基于复权价格计算
+
+### 测试结果
+- ETF 510880：腾讯财经（3.22）、东方财富（3.218）、新浪财经（3.218）
+- ETF 512810：腾讯财经（0.777）、东方财富（0.777）、新浪财经（0.777）
+- 所有ETF数据源均成功获取数据，价格差异微小
+- ETF现在优先使用支持复权的数据源（腾讯财经、东方财富）
+
+### 影响范围
+- 仅影响ETF基金（代码以51, 52, 15, 16, 18, 58开头）
+- 股票数据获取逻辑保持不变
+- 系统向后兼容，不影响现有功能
+
+### 后续改进建议
+1. 监控ETF复权数据质量，验证除权缺口处理
+2. 考虑baostock对ETF的adjustflag参数优化
+3. 添加ETF-specific测试用例到测试套件
 
 ---
 

@@ -30,6 +30,28 @@ class StockWebCrawler:
         self.retry_times = 3
         self.retry_delay = 2
 
+    def _is_etf(self, stock_code):
+        """
+        判断是否为ETF基金
+
+        Args:
+            stock_code: 股票代码
+
+        Returns:
+            bool: True如果是ETF，否则False
+        """
+        stock_code = str(stock_code)
+        # ETF代码常见前缀
+        etf_prefixes = ("51", "52", "15", "16", "18", "58")
+        if stock_code.startswith(etf_prefixes):
+            if stock_code.isdigit() and len(stock_code) == 6:
+                return True
+        # 特殊ETF代码
+        special_etfs = {"508091", "513910", "588000"}
+        if stock_code in special_etfs:
+            return True
+        return False
+
     def fetch_stock_data(self, stock_code, days=120):
         """
         获取股票历史数据
@@ -44,11 +66,21 @@ class StockWebCrawler:
         stock_code = str(stock_code)
 
         # 尝试多个数据源（优先使用历史数据API）
-        data_sources = [
-            self._fetch_from_sina,  # 新浪财经（有历史数据API）
-            self._fetch_from_qq,  # 腾讯财经（有历史数据API）
-            self._fetch_from_eastmoney,  # 东方财富（API常失败）
-        ]
+        # 对于ETF，优先使用支持复权的数据源（腾讯、东方财富）
+        # 新浪财经API没有复权参数，可能返回未复权数据
+        if self._is_etf(stock_code):
+            data_sources = [
+                self._fetch_from_qq,  # 腾讯财经（有历史数据API，使用qfq前复权）
+                self._fetch_from_eastmoney,  # 东方财富（使用fqt=1前复权）
+                self._fetch_from_sina,  # 新浪财经（没有复权参数，备用）
+            ]
+            logger.info(f"ETF {stock_code} 检测到，调整数据源顺序优先使用复权数据源")
+        else:
+            data_sources = [
+                self._fetch_from_sina,  # 新浪财经（有历史数据API）
+                self._fetch_from_qq,  # 腾讯财经（有历史数据API）
+                self._fetch_from_eastmoney,  # 东方财富（API常失败）
+            ]
 
         for source_func in data_sources:
             try:

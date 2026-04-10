@@ -62,16 +62,34 @@ class BaostockFetcher:
 
         bs_code = f"sz.{code}" if code.startswith(("0", "3")) else f"sh.{code}"
 
+        # 转换日期格式：YYYYMMDD -> YYYY-MM-DD
+        def convert_date_format(date_str):
+            """将YYYYMMDD转换为YYYY-MM-DD格式"""
+            if not date_str or len(date_str) != 8:
+                return date_str
+            return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+
+        start_formatted = convert_date_format(start)
+        end_formatted = convert_date_format(end)
+
         try:
             rs = bs.query_history_k_data_plus(
                 code=bs_code,
                 fields="date,open,high,low,close,volume,amount,adjustflag",
-                start_date=start,
-                end_date=end,
+                start_date=start_formatted,
+                end_date=end_formatted,
                 frequency="d",
                 adjustflag=self.adjust,
             )
+            if rs is None:
+                logger.error(
+                    f"baostock查询返回None: {bs_code} [{start}({start_formatted}) - {end}({end_formatted})]"
+                )
+                return None
             if rs.error_code != "0":
+                logger.warning(
+                    f"baostock查询错误: {rs.error_msg} [{start}({start_formatted}) - {end}({end_formatted})]"
+                )
                 return None
 
             data = []
