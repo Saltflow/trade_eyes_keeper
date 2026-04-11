@@ -1,0 +1,19 @@
+{
+  "last_updated": "2026-04-11T20:59:30.372182",
+  "alerts": {
+    "601728_wma20_(-5%, 0%)": {
+      "stock_code": "601728",
+      "anchor_name": "wma20",
+      "interval_label": "(-5%, 0%)",
+      "last_date": "2026-04-11",
+      "consecutive_days": 1
+    },
+    "601728_ma60_(0%, 5%)": {
+      "stock_code": "601728",
+      "anchor_name": "ma60",
+      "interval_label": "(0%, 5%)",
+      "last_date": "2026-04-11",
+      "consecutive_days": 1
+    }
+  }
+}

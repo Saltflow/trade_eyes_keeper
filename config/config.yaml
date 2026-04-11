@@ -88,3 +88,8 @@ health_server:
   enabled: true
   host: 0.0.0.0
   port: 1933
+
+# 多层警报系统配置
+alerts:
+  config_path: "./config/alerts.yaml"  # 警报规则配置文件路径
+  enabled: true                         # 是否启用多层警报系统

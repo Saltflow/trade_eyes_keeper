@@ -1,0 +1,18 @@
+version: 1.1
+anchors:
+  - name: ma60
+    type: daily_ma
+    window: 60
+  - name: wma20
+    type: weekly_ma
+    window: 20
+thresholds: [-10, -5, 0, 5, 10, 15]
+boundary_rules:
+  neg_right_closed: true
+  pos_left_closed: true
+  exclude_zero: true
+  skip_zero_five: true
+# 连续天数阈值：达到此天数后不再发送重复警报
+consecutive_days_threshold: 5
+# 是否启用自动状态重置（当股票移动到新区间时自动重置旧区间状态）
+auto_reset: true

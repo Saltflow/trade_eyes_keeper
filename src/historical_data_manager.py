@@ -346,6 +346,94 @@ class HistoricalDataManager:
 
         return success
 
+    def get_weekly_data(self, stock_code, weeks=None):
+        """
+        获取周线数据（自然周计算，每周最后一个交易日）
+
+        Args:
+            stock_code: 股票代码
+            weeks: 需要多少周的数据，如果为None则使用默认值（约weeks*5个交易日）
+
+        Returns:
+            DataFrame: 周线数据，包含week_end_date, open, high, low, close, volume等字段
+        """
+        import pandas as pd
+        import random
+
+        # 随机化：0.5%概率模拟失败
+        if random.random() < 0.005:
+            logger.debug(f"随机模拟周线数据获取失败: {stock_code}")
+            return pd.DataFrame()
+
+        # 确定需要多少天的数据（每周约5个交易日）
+        if weeks is None:
+            # 默认获取52周（约1年）数据
+            days_needed = 52 * 5
+        else:
+            days_needed = weeks * 5
+
+        # 计算日期范围
+        end_date = datetime.now().strftime("%Y%m%d")
+        start_date = (datetime.now() - timedelta(days=days_needed * 2)).strftime(
+            "%Y%m%d"
+        )
+
+        # 获取日线数据
+        daily_data = self.get_historical_data(stock_code, start_date, end_date)
+
+        if daily_data.empty:
+            logger.warning(f"无法获取日线数据，周线数据为空: {stock_code}")
+            return pd.DataFrame()
+
+        # 确保日期列是datetime类型
+        daily_data["date"] = pd.to_datetime(daily_data["date"])
+
+        # 按自然周分组（周一为每周第一天）
+        # 创建周结束日期标识（每周最后一个交易日）
+        daily_data["week_year"] = daily_data["date"].dt.isocalendar().year
+        daily_data["week_num"] = daily_data["date"].dt.isocalendar().week
+
+        # 周线聚合：取每周最后一条记录作为周线数据
+        weekly_data = []
+
+        for (year, week), group in daily_data.groupby(["week_year", "week_num"]):
+            if group.empty:
+                continue
+
+            # 按日期排序，取最后一条记录
+            last_row = group.sort_values("date").iloc[-1]
+
+            weekly_row = {
+                "week_end_date": last_row["date"],
+                "open": group.iloc[0]["open"],  # 周开盘价（周一开盘）
+                "high": group["high"].max(),  # 周最高价
+                "low": group["low"].min(),  # 周最低价
+                "close": last_row["close"],  # 周收盘价（周五收盘）
+                "volume": group["volume"].sum(),  # 周成交量
+                "trading_days": len(group),  # 本周交易日数
+            }
+            weekly_data.append(weekly_row)
+
+        # 转换为DataFrame并排序
+        weekly_df = pd.DataFrame(weekly_data)
+        if not weekly_df.empty:
+            weekly_df = weekly_df.sort_values("week_end_date").reset_index(drop=True)
+
+        logger.info(f"生成周线数据: {stock_code}，共{len(weekly_df)}周")
+
+        # 数据验证：确保周线数据基本合理性
+        if not weekly_df.empty:
+            # 验证价格关系：high >= low, high >= close, low <= close
+            valid = (
+                (weekly_df["high"] >= weekly_df["low"]).all()
+                and (weekly_df["high"] >= weekly_df["close"]).all()
+                and (weekly_df["low"] <= weekly_df["close"]).all()
+            )
+            if not valid:
+                logger.warning(f"周线数据价格关系异常: {stock_code}")
+
+        return weekly_df
+
     def clear_cache(self, stock_code=None):
         """清理缓存"""
         # 注意：这里仅清理历史数据缓存，不清理其他缓存

@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Optional, Dict, cast
 
 from .cache_manager import CacheManager
+from .historical_data_manager import HistoricalDataManager
+from .technical_indicators import TechnicalIndicators
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,10 @@ class StockDataFetcher:
 
         timezone_str = scheduler_config.get("timezone", "Asia/Shanghai")
         self.timezone = pytz.timezone(timezone_str)
+
+        # 初始化技术指标计算器（用于多锚点警报）
+        self.historical_data_manager = HistoricalDataManager(config, self.cache_manager)
+        self.technical_indicators = TechnicalIndicators(self.historical_data_manager)
 
     def _should_bypass_cache(self, cached_data):
         """
@@ -184,6 +190,14 @@ class StockDataFetcher:
 
                     # 只保留最新一天的数据用于条件检查
                     latest_data = stock_data.iloc[-1:].copy()
+
+                    # 计算多锚点指标（日线MA60、周线MA20/30/50）
+                    anchors = self.technical_indicators.get_all_anchors(stock_code)
+                    for anchor_name, value in anchors.items():
+                        if value is not None:
+                            latest_data[anchor_name] = value
+                        else:
+                            latest_data[anchor_name] = np.nan
 
                     # 检查数据日期是否为今天
                     if not latest_data.empty:

@@ -337,117 +337,127 @@ class EmailNotifier:
         alert_rows_technical = ""
         alert_rows_fundamental = ""
         for alert in alert_stocks:
-            stock_code = alert.get("stock_code", "")
-            stock_name = self._get_stock_name(stock_code)
-            low_price = alert.get("low_price", 0)
-            ma60 = alert.get("ma60", 0)
-            low_ma60_diff = alert.get("price_difference", 0)  # 最低价与MA60差值
-            low_ma60_pct = alert.get(
-                "percentage_difference", 0
-            )  # 最低价与MA60百分比差值
+            if self._is_multi_alert_format(alert):
+                # 多层级警报格式
+                technical_row, fundamental_row = self._build_alert_rows_multi(
+                    alert, stock_data
+                )
+                alert_rows_technical += technical_row
+                alert_rows_fundamental += fundamental_row
+            else:
+                # 单锚点警报格式（向后兼容）
+                stock_code = alert.get("stock_code", "")
+                stock_name = self._get_stock_name(stock_code)
+                low_price = alert.get("low_price", 0)
+                ma60 = alert.get("ma60", 0)
+                low_ma60_diff = alert.get("price_difference", 0)  # 最低价与MA60差值
+                low_ma60_pct = alert.get(
+                    "percentage_difference", 0
+                )  # 最低价与MA60百分比差值
 
-            # 从stock_data中查找收盘价和其他数据
-            stock_row = stock_data[stock_data["stock_code"] == stock_code]
-            close_price = 0
-            if not stock_row.empty:
-                close_price = stock_row.iloc[0].get("close", 0)
+                # 从stock_data中查找收盘价和其他数据
+                stock_row = stock_data[stock_data["stock_code"] == stock_code]
+                close_price = 0
+                if not stock_row.empty:
+                    close_price = stock_row.iloc[0].get("close", 0)
 
-            # 计算收盘价与MA60差值
-            close_ma60_diff = close_price - ma60
-            close_ma60_pct = (close_ma60_diff / ma60 * 100) if ma60 != 0 else 0
+                # 计算收盘价与MA60差值
+                close_ma60_diff = close_price - ma60
+                close_ma60_pct = (close_ma60_diff / ma60 * 100) if ma60 != 0 else 0
 
-            # 获取基本面数据
-            dividend_per_share = None
-            dividend_yield = None
-            earnings_growth = None
-            pe_ratio = None
-            pb_ratio = None
-            roe = None
-            debt_ratio = None
+                # 获取基本面数据
+                dividend_per_share = None
+                dividend_yield = None
+                earnings_growth = None
+                pe_ratio = None
+                pb_ratio = None
+                roe = None
+                debt_ratio = None
 
-            if not stock_row.empty:
-                dividend_per_share = stock_row.iloc[0].get("dividend_per_share")
-                dividend_yield = stock_row.iloc[0].get("dividend_yield")
-                earnings_growth = stock_row.iloc[0].get("earnings_growth")
-                pe_ratio = stock_row.iloc[0].get("pe_ratio")
-                pb_ratio = stock_row.iloc[0].get("pb_ratio")
-                roe = stock_row.iloc[0].get("roe")
-                debt_ratio = stock_row.iloc[0].get("debt_ratio")
+                if not stock_row.empty:
+                    dividend_per_share = stock_row.iloc[0].get("dividend_per_share")
+                    dividend_yield = stock_row.iloc[0].get("dividend_yield")
+                    earnings_growth = stock_row.iloc[0].get("earnings_growth")
+                    pe_ratio = stock_row.iloc[0].get("pe_ratio")
+                    pb_ratio = stock_row.iloc[0].get("pb_ratio")
+                    roe = stock_row.iloc[0].get("roe")
+                    debt_ratio = stock_row.iloc[0].get("debt_ratio")
 
-            # 格式化基本面数据
-            dividend_per_share_str = (
-                f"{dividend_per_share:.3f}"
-                if dividend_per_share is not None and not pd.isna(dividend_per_share)
-                else "-"
-            )
-            dividend_yield_str = (
-                f"{dividend_yield:.2f}%"
-                if dividend_yield is not None and not pd.isna(dividend_yield)
-                else "-"
-            )
-            earnings_growth_str = (
-                f"{earnings_growth:+.2f}%"
-                if earnings_growth is not None and not pd.isna(earnings_growth)
-                else "-"
-            )
-            pe_ratio_str = (
-                f"{pe_ratio:.2f}"
-                if pe_ratio is not None and not pd.isna(pe_ratio)
-                else "-"
-            )
-            pb_ratio_str = (
-                f"{pb_ratio:.2f}"
-                if pb_ratio is not None and not pd.isna(pb_ratio)
-                else "-"
-            )
-            roe_str = f"{roe:.2f}%" if roe is not None and not pd.isna(roe) else "-"
-            debt_ratio_str = (
-                f"{debt_ratio:.2f}%"
-                if debt_ratio is not None and not pd.isna(debt_ratio)
-                else "-"
-            )
+                # 格式化基本面数据
+                dividend_per_share_str = (
+                    f"{dividend_per_share:.3f}"
+                    if dividend_per_share is not None
+                    and not pd.isna(dividend_per_share)
+                    else "-"
+                )
+                dividend_yield_str = (
+                    f"{dividend_yield:.2f}%"
+                    if dividend_yield is not None and not pd.isna(dividend_yield)
+                    else "-"
+                )
+                earnings_growth_str = (
+                    f"{earnings_growth:+.2f}%"
+                    if earnings_growth is not None and not pd.isna(earnings_growth)
+                    else "-"
+                )
+                pe_ratio_str = (
+                    f"{pe_ratio:.2f}"
+                    if pe_ratio is not None and not pd.isna(pe_ratio)
+                    else "-"
+                )
+                pb_ratio_str = (
+                    f"{pb_ratio:.2f}"
+                    if pb_ratio is not None and not pd.isna(pb_ratio)
+                    else "-"
+                )
+                roe_str = f"{roe:.2f}%" if roe is not None and not pd.isna(roe) else "-"
+                debt_ratio_str = (
+                    f"{debt_ratio:.2f}%"
+                    if debt_ratio is not None and not pd.isna(debt_ratio)
+                    else "-"
+                )
 
-            # 确定颜色类
-            close_diff_class = "positive" if close_ma60_diff >= 0 else "negative"
-            close_pct_class = "positive" if close_ma60_pct >= 0 else "negative"
-            earnings_growth_class = (
-                "positive"
-                if earnings_growth is not None and earnings_growth > 0
-                else "negative"
-                if earnings_growth is not None and earnings_growth < 0
-                else ""
-            )
+                # 确定颜色类
+                close_diff_class = "positive" if close_ma60_diff >= 0 else "negative"
+                close_pct_class = "positive" if close_ma60_pct >= 0 else "negative"
+                earnings_growth_class = (
+                    "positive"
+                    if earnings_growth is not None and earnings_growth > 0
+                    else "negative"
+                    if earnings_growth is not None and earnings_growth < 0
+                    else ""
+                )
 
-            # 技术指标行
-            alert_rows_technical += f"""
-                <tr class="alert-row">
-                    <td>{stock_code}</td>
-                    <td>{stock_name}</td>
-                    <td>{low_price:.2f}</td>
-                    <td>{ma60:.2f}</td>
-                    <td>{close_price:.2f}</td>
-                    <td class="{close_diff_class}">{close_ma60_diff:+.2f}</td>
-                    <td class="{close_pct_class}">{close_ma60_pct:+.2f}%</td>
-                    <td class="positive">{low_ma60_diff:.2f}</td>
-                    <td class="positive">{low_ma60_pct:.2f}%</td>
-                    <td>最低价 &lt; MA60</td>
-                </tr>
-            """
+                # 技术指标行
+                alert_rows_technical += f"""
+                    <tr class="alert-row">
+                        <td>{stock_code}</td>
+                        <td>{stock_name}</td>
+                        <td>{low_price:.2f}</td>
+                        <td>{ma60:.2f}</td>
+                        <td>{close_price:.2f}</td>
+                        <td class="{close_diff_class}">{close_ma60_diff:+.2f}</td>
+                        <td class="{close_pct_class}">{close_ma60_pct:+.2f}%</td>
+                        <td class="positive">{low_ma60_diff:.2f}</td>
+                        <td class="positive">{low_ma60_pct:.2f}%</td>
+                        <td>最低价 &lt; MA60</td>
+                    </tr>
+                """
 
-            # 基本面指标行
-            alert_rows_fundamental += f"""
-                <tr class="alert-row">
-                    <td>{stock_code}</td>
-                    <td>{stock_name}</td>
-                    <td>{dividend_per_share_str}</td>
-                    <td>{dividend_yield_str}</td>
-                    <td class="{earnings_growth_class}">{earnings_growth_str}</td>
-                    <td>{pe_ratio_str}</td>
-                    <td>{pb_ratio_str}</td>
-                    <td>{roe_str}</td>
-                    <td>{debt_ratio_str}</td>
-                </tr>
-            """
+                # 基本面指标行
+                alert_rows_fundamental += f"""
+                    <tr class="alert-row">
+                        <td>{stock_code}</td>
+                        <td>{stock_name}</td>
+                        <td>{dividend_per_share_str}</td>
+                        <td>{dividend_yield_str}</td>
+                        <td class="{earnings_growth_class}">{earnings_growth_str}</td>
+                        <td>{pe_ratio_str}</td>
+                        <td>{pb_ratio_str}</td>
+                        <td>{roe_str}</td>
+                        <td>{debt_ratio_str}</td>
+                    </tr>
+                """
 
         # 3. 构建所有监控股票行（拆分为价格技术指标和基本面指标）
         all_rows_price = ""
@@ -780,14 +790,73 @@ class EmailNotifier:
 
         # 7. 构建报警股票部分
         alert_section = ""
+        is_multi_format = False  # 保存格式标志供后续使用
         if alert_stocks:
-            alert_section = alert_section_template.format(
-                alert_count=len(alert_stocks),
-                alert_rows_technical=alert_rows_technical,
-                alert_rows_fundamental=alert_rows_fundamental,
+            # 确定警报格式（检查第一个警报）
+            if alert_stocks and len(alert_stocks) > 0:
+                is_multi_format = self._is_multi_alert_format(alert_stocks[0])
+
+            if is_multi_format:
+                # 多层级警报格式
+                alert_section = f"""
+                <h3>满足条件的股票 ({len(alert_stocks)} 只)</h3>
+                
+                <h4>多层级警报技术指标</h4>
+                <table>
+                    <tr>
+                        <th>股票代码</th>
+                        <th>股票名称</th>
+                        <th>价格</th>
+                        <th>锚点值</th>
+                        <th>价格差值</th>
+                        <th>百分比(%)</th>
+                        <th>锚点名称</th>
+                        <th>区间标签</th>
+                        <th>连续天数</th>
+                        <th>条件</th>
+                    </tr>
+                    {alert_rows_technical}
+                </table>
+                
+                <h4>基本面指标</h4>
+                <table>
+                    <tr>
+                        <th>股票代码</th>
+                        <th>股票名称</th>
+                        <th>每股分红(元)</th>
+                        <th>股息率(%)</th>
+                        <th>业绩增长(%)</th>
+                        <th>PE</th>
+                        <th>PB</th>
+                        <th>ROE(%)</th>
+                        <th>负债率(%)</th>
+                    </tr>
+                    {alert_rows_fundamental}
+                </table>
+                """
+            else:
+                # 单锚点警报格式（使用模板）
+                alert_section = alert_section_template.format(
+                    alert_count=len(alert_stocks),
+                    alert_rows_technical=alert_rows_technical,
+                    alert_rows_fundamental=alert_rows_fundamental,
+                )
+
+        # 8. 根据警报格式更新模板标题
+        if is_multi_format:
+            # 替换为多层级警报标题
+            email_template = email_template.replace(
+                "系统检测到以下股票满足条件：<strong>当天最低价 &lt; MA60（前复权）</strong>",
+                "系统检测到以下股票满足多层级警报条件：<strong>多锚点阈值区间突破</strong>",
+            )
+        else:
+            # 确保是单锚点标题（默认）
+            email_template = email_template.replace(
+                "系统检测到以下股票满足条件：<strong>多锚点阈值区间突破</strong>",
+                "系统检测到以下股票满足条件：<strong>当天最低价 &lt; MA60（前复权）</strong>",
             )
 
-        # 8. 替换主模板变量
+        # 9. 替换主模板变量
         html_content = email_template.format(
             current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             alert_section=alert_section,
@@ -805,6 +874,133 @@ class EmailNotifier:
         )
 
         return html_content
+
+    def _is_multi_alert_format(self, alert):
+        """
+        判断警报是否为多层级格式
+
+        Args:
+            alert: 警报字典
+
+        Returns:
+            bool: 如果是多层级格式返回True，否则返回False
+        """
+        # 多层级警报包含anchor_name字段，单锚点警报包含ma60字段
+        return "anchor_name" in alert and "interval_label" in alert
+
+    def _build_alert_rows_multi(self, alert, stock_data):
+        """
+        构建多层级警报的行HTML
+
+        Args:
+            alert: 多层级警报字典
+            stock_data: 股票数据DataFrame
+
+        Returns:
+            tuple: (technical_row, fundamental_row) HTML字符串
+        """
+        stock_code = alert.get("stock_code", "")
+        stock_name = self._get_stock_name(stock_code)
+        anchor_name = alert.get("anchor_name", "")
+        anchor_value = alert.get("anchor_value", 0)
+        interval_label = alert.get("interval_label", "")
+        percentage = alert.get("percentage", 0)
+        consecutive_days = alert.get("consecutive_days", 1)
+        price = alert.get("price", 0)
+        price_difference = alert.get("price_difference", 0)
+
+        # 从stock_data中查找基本面数据
+        stock_row = stock_data[stock_data["stock_code"] == stock_code]
+
+        # 获取基本面数据
+        dividend_per_share = None
+        dividend_yield = None
+        earnings_growth = None
+        pe_ratio = None
+        pb_ratio = None
+        roe = None
+        debt_ratio = None
+
+        if not stock_row.empty:
+            dividend_per_share = stock_row.iloc[0].get("dividend_per_share")
+            dividend_yield = stock_row.iloc[0].get("dividend_yield")
+            earnings_growth = stock_row.iloc[0].get("earnings_growth")
+            pe_ratio = stock_row.iloc[0].get("pe_ratio")
+            pb_ratio = stock_row.iloc[0].get("pb_ratio")
+            roe = stock_row.iloc[0].get("roe")
+            debt_ratio = stock_row.iloc[0].get("debt_ratio")
+
+        # 格式化基本面数据
+        dividend_per_share_str = (
+            f"{dividend_per_share:.3f}"
+            if dividend_per_share is not None and not pd.isna(dividend_per_share)
+            else "-"
+        )
+        dividend_yield_str = (
+            f"{dividend_yield:.2f}%"
+            if dividend_yield is not None and not pd.isna(dividend_yield)
+            else "-"
+        )
+        earnings_growth_str = (
+            f"{earnings_growth:+.2f}%"
+            if earnings_growth is not None and not pd.isna(earnings_growth)
+            else "-"
+        )
+        pe_ratio_str = (
+            f"{pe_ratio:.2f}" if pe_ratio is not None and not pd.isna(pe_ratio) else "-"
+        )
+        pb_ratio_str = (
+            f"{pb_ratio:.2f}" if pb_ratio is not None and not pd.isna(pb_ratio) else "-"
+        )
+        roe_str = f"{roe:.2f}%" if roe is not None and not pd.isna(roe) else "-"
+        debt_ratio_str = (
+            f"{debt_ratio:.2f}%"
+            if debt_ratio is not None and not pd.isna(debt_ratio)
+            else "-"
+        )
+
+        # 确定颜色类
+        earnings_growth_class = (
+            "positive"
+            if earnings_growth is not None and earnings_growth > 0
+            else "negative"
+            if earnings_growth is not None and earnings_growth < 0
+            else ""
+        )
+
+        # 构建技术指标行
+        condition = f"{anchor_name} 区间 {interval_label} (连续{consecutive_days}天)"
+        technical_row = f"""
+            <tr class="alert-row">
+                <td>{stock_code}</td>
+                <td>{stock_name}</td>
+                <td>{price:.2f}</td>
+                <td>{anchor_value:.2f}</td>
+                <td>{price_difference:+.2f}</td>
+                <td>{percentage:+.2f}%</td>
+                <td>{anchor_name}</td>
+                <td>{interval_label}</td>
+                <td>{consecutive_days}天</td>
+                <td>{condition}</td>
+            </tr>
+        """
+
+        # 构建基本面指标行
+        fundamental_row = f"""
+            <tr class="alert-row">
+                <td>{stock_code}</td>
+                <td>{stock_name}</td>
+                <td>{dividend_per_share_str}</td>
+                <td>{dividend_yield_str}</td>
+                <td class="{earnings_growth_class}">{earnings_growth_str}</td>
+                <td>{pe_ratio_str}</td>
+                <td>{pb_ratio_str}</td>
+                <td>{roe_str}</td>
+                <td>{debt_ratio_str}</td>
+            </tr>
+        """
+
+        return technical_row, fundamental_row
 
     def _get_stock_name(self, stock_code):
         """
