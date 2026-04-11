@@ -5,6 +5,7 @@
 从上市公司公告中获取财务报告（年报、半年报、季报）并提取文本内容
 """
 
+import copy
 import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
@@ -391,23 +392,88 @@ class FinancialReportFetcher:
 
             reports = sorted(reports, key=_sort_key)
             if reports:
+                # 记录筛选详情
+                filtered_reports = []
+                for i, report in enumerate(reports):
+                    title = report.get("title") or ""
+                    title_lower = title.lower()
+                    is_summary = any(
+                        key in title_lower
+                        for key in ["摘要", "summary", "简报", "简要"]
+                    )
+                    success = report.get("success", False)
+                    content_len = len(report.get("content_text") or "")
+                    filtered_reports.append(
+                        {
+                            "index": i,
+                            "title": title[:50] + "..." if len(title) > 50 else title,
+                            "is_summary": is_summary,
+                            "success": success,
+                            "content_len": content_len,
+                        }
+                    )
+
                 chosen = reports[0]
                 logger.info(
-                    "财报筛选: stock=%s chosen_title=%s len=%s",
+                    "财报筛选详情: stock=%s 总报告数=%s",
+                    stock_code,
+                    len(reports),
+                )
+                for fr in filtered_reports[:3]:  # 最多显示前3个报告
+                    logger.info(
+                        "  报告[%s]: title=%s is_summary=%s success=%s len=%s",
+                        fr["index"],
+                        fr["title"],
+                        fr["is_summary"],
+                        fr["success"],
+                        fr["content_len"],
+                    )
+                if len(filtered_reports) > 3:
+                    logger.info("  ... 还有%s个报告未显示", len(filtered_reports) - 3)
+
+                logger.info(
+                    "财报选择结果: stock=%s chosen_title=%s len=%s success=%s is_summary=%s",
                     stock_code,
                     chosen.get("title"),
                     len(chosen.get("content_text") or ""),
+                    chosen.get("success", False),
+                    any(
+                        key in (chosen.get("title") or "").lower()
+                        for key in ["摘要", "summary", "简报", "简要"]
+                    ),
                 )
                 reports = [chosen]
 
             stock_analysis = []
+            skip_count = 0
             for report in reports:
                 if not report.get("success") or not report.get("content_text"):
                     # 没有内容，跳过分析
+                    skip_count += 1
+                    logger.info(
+                        "跳过分析: stock=%s title=%s success=%s content_len=%s 原因=%s",
+                        stock_code,
+                        report.get("title"),
+                        report.get("success"),
+                        len(report.get("content_text") or ""),
+                        "success=False"
+                        if not report.get("success")
+                        else "content_text为空",
+                    )
                     continue
 
                 try:
                     # 调用LLM分析财报
+                    logger.info(
+                        "LLM分析器调用: stock=%s report_type=%s title=%s content_len=%s",
+                        stock_code,
+                        report["report_type"],
+                        report["title"][:80] + "..."
+                        if len(report["title"]) > 80
+                        else report["title"],
+                        len(report["content_text"]),
+                    )
+
                     analysis_result = llm_analyzer.analyze_financial_report(
                         stock_code=stock_code,
                         report_text=report["content_text"],
@@ -416,6 +482,41 @@ class FinancialReportFetcher:
                         report_title=report["title"],
                     )
 
+                    # 记录分析结果关键字段
+                    success = analysis_result.get("success", False)
+                    numeric_fields = analysis_result.get("numeric_fields_detected", 0)
+                    analysis_fields = [
+                        "cost_structure_analysis",
+                        "profit_competitiveness_analysis",
+                        "liquidation_value_analysis",
+                        "audit_risk_insights",
+                        "overall_assessment",
+                    ]
+                    filled_fields = sum(
+                        1 for field in analysis_fields if analysis_result.get(field)
+                    )
+
+                    logger.info(
+                        "LLM分析结果: stock=%s success=%s numeric_fields=%s analysis_fields_filled=%s/%s",
+                        stock_code,
+                        success,
+                        numeric_fields,
+                        filled_fields,
+                        len(analysis_fields),
+                    )
+
+                    if success and numeric_fields >= 15:
+                        logger.info(
+                            "分析结果验证: 满足年报分析条件 (numeric_fields≥15)"
+                        )
+                    elif success:
+                        logger.info(
+                            "分析结果验证: 成功但数值字段不足 (numeric_fields=%s)",
+                            numeric_fields,
+                        )
+                    else:
+                        logger.info("分析结果验证: 分析失败")
+
                     analysis_result["report_metadata"] = {
                         "title": report["title"],
                         "date": report["date"],
@@ -423,10 +524,28 @@ class FinancialReportFetcher:
                         "content_hash": report["content_hash"],
                     }
 
+                    logger.info(
+                        "DEBUG: 准备添加分析结果到stock_analysis, 当前长度=%s",
+                        len(stock_analysis),
+                    )
                     stock_analysis.append(analysis_result)
+                    logger.info(
+                        "DEBUG: 已添加分析结果, 新的长度=%s, analysis_result keys=%s",
+                        len(stock_analysis),
+                        list(analysis_result.keys())[:10],
+                    )
 
                 except Exception as e:
                     logger.error(f"分析财报失败 {stock_code} {report['title']}: {e}")
+
+            if skip_count > 0:
+                logger.info(
+                    "报告跳过统计: stock=%s 总报告数=%s 跳过数=%s 分析结果数=%s",
+                    stock_code,
+                    len(reports),
+                    skip_count,
+                    len(stock_analysis),
+                )
 
             # 如果存在报告但未生成任何分析结果，写入占位以便上层感知并告警
             if reports and not stock_analysis:
@@ -442,13 +561,40 @@ class FinancialReportFetcher:
                         "content_hash": reports[0].get("content_hash", ""),
                     },
                 }
+                logger.info(
+                    "DEBUG: 准备添加占位符到stock_analysis, 当前长度=%s",
+                    len(stock_analysis),
+                )
                 stock_analysis.append(placeholder)
+                logger.info("DEBUG: 已添加占位符, 新的长度=%s", len(stock_analysis))
                 logger.warning(
                     "未生成财报分析结果，已写入占位: %s (%s)",
                     stock_code,
                     placeholder.get("report_type"),
                 )
 
-            analysis_results[stock_code] = stock_analysis
+            logger.info(
+                "DEBUG: 最终stock_analysis长度=%s, 准备赋值给analysis_results[%s]",
+                len(stock_analysis),
+                stock_code,
+            )
+            logger.info(
+                "DEBUG: 复制前stock_analysis id=%s, 第一个元素id=%s",
+                id(stock_analysis),
+                id(stock_analysis[0]) if stock_analysis else None,
+            )
+            analysis_results[stock_code] = copy.deepcopy(stock_analysis)
+            logger.info(
+                "DEBUG: 复制后analysis_results[%s] id=%s, 长度=%s",
+                stock_code,
+                id(analysis_results[stock_code]),
+                len(analysis_results[stock_code]),
+            )
 
+        # 最终返回前的调试日志
+        logger.info(
+            "DEBUG: analyze_financial_reports 返回前, analysis_results keys=%s, 各key长度=%s",
+            list(analysis_results.keys()),
+            {k: len(v) for k, v in analysis_results.items()},
+        )
         return analysis_results

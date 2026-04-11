@@ -358,7 +358,63 @@ class FinancialReportManager:
                 report_type=None,  # 所有类型
             )
 
+            # 调试日志：记录返回的analysis_results完整结构
+            logger.info(
+                "DEBUG: analyze_financial_reports 返回后, analysis_results类型=%s, keys=%s (键类型: %s), 各key长度=%s, 各key列表id=%s",
+                type(analysis_results),
+                list(analysis_results.keys()),
+                [type(k) for k in analysis_results.keys()],
+                {k: len(v) for k, v in analysis_results.items()},
+                {k: id(v) for k, v in analysis_results.items()},
+            )
+
+            # 尝试多种键类型获取分析结果
             stock_analysis = analysis_results.get(stock_code, [])
+            if not stock_analysis:
+                # 如果未找到，尝试将stock_code转换为字符串（因为analysis_results键可能是字符串）
+                str_key = (
+                    str(stock_code) if not isinstance(stock_code, str) else stock_code
+                )
+                if str_key in analysis_results:
+                    stock_analysis = analysis_results[str_key]
+                    logger.info("DEBUG: 使用字符串键找到分析结果: %s", str_key)
+                # 如果仍为空，尝试整数键（如果stock_code是字符串且可转换为数字）
+                elif isinstance(stock_code, str) and stock_code.isdigit():
+                    int_key = int(stock_code)
+                    if int_key in analysis_results:
+                        stock_analysis = analysis_results[int_key]  # type: ignore
+                        logger.info("DEBUG: 使用整数键找到分析结果: %s", int_key)
+
+            # 记录analysis_results接收详情
+            logger.info(
+                "analysis_results接收: stock=%s (类型: %s) analysis_results.keys=%s stock_analysis长度=%s, stock_analysis id=%s",
+                stock_code,
+                type(stock_code),
+                list(analysis_results.keys()),
+                len(stock_analysis),
+                id(stock_analysis),
+            )
+            if stock_analysis and len(stock_analysis) > 0:
+                first_analysis = stock_analysis[0]
+                logger.info(
+                    "  首个分析结果: success=%s numeric_fields=%s 关键字段=%s",
+                    first_analysis.get("success"),
+                    first_analysis.get("numeric_fields_detected", 0),
+                    list(
+                        k
+                        for k in [
+                            "cost_structure_analysis",
+                            "profit_competitiveness_analysis",
+                            "liquidation_value_analysis",
+                            "audit_risk_insights",
+                            "overall_assessment",
+                        ]
+                        if k in first_analysis and first_analysis[k]
+                    ),
+                )
+            elif not stock_analysis:
+                logger.info("  无分析结果: stock_analysis为空列表或None")
+
             if (
                 not stock_analysis
                 and self.use_financial_analysis_cache
@@ -475,8 +531,14 @@ class FinancialReportManager:
             )
 
             # 调试日志：记录分析结果中的可用字段
+            available_fields = list(analysis_result.keys())
+            logger.info(
+                "格式化分析结果: 股票=%s, 报告类型=%s, 可用字段=%s",
+                stock_code,
+                report_type,
+                available_fields,
+            )
             if logger.isEnabledFor(logging.DEBUG):
-                available_fields = list(analysis_result.keys())
                 logger.debug(
                     f"格式化分析结果: 股票={stock_code}, 报告类型={report_type}, "
                     f"可用字段={available_fields}"
@@ -489,7 +551,35 @@ class FinancialReportManager:
             audit_insights = analysis_result.get("audit_risk_insights", {})
             overall_assessment = analysis_result.get("overall_assessment", {})
 
-            # 调试日志：记录提取的数据状态
+            # 检查字段匹配情况
+            expected_fields = [
+                "cost_structure_analysis",
+                "profit_competitiveness_analysis",
+                "liquidation_value_analysis",
+                "audit_risk_insights",
+                "overall_assessment",
+            ]
+            missing_fields = [
+                field for field in expected_fields if field not in analysis_result
+            ]
+            if missing_fields:
+                logger.info("字段匹配检查: 缺失字段=%s", missing_fields)
+
+            # 记录提取的数据状态
+            logger.info(
+                "提取分析数据: 股票=%s, "
+                "cost_analysis存在=%s, "
+                "profit_analysis存在=%s, "
+                "liquidation_analysis存在=%s, "
+                "audit_insights存在=%s, "
+                "overall_assessment存在=%s",
+                stock_code,
+                bool(cost_analysis),
+                bool(profit_analysis),
+                bool(liquidation_analysis),
+                bool(audit_insights),
+                bool(overall_assessment),
+            )
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
                     f"提取分析数据: 股票={stock_code}, "

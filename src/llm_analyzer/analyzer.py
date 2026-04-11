@@ -29,6 +29,12 @@ class LLMAnalyzer(BaseLLMClient):
         """
         super().__init__(config)
 
+        # 读取基本面分析配置开关
+        self.enable_fundamental_analysis = self.llm_config.get(
+            "enable_fundamental_analysis", True
+        )
+        logger.info(f"LLM基本面分析开关状态: {self.enable_fundamental_analysis}")
+
         # 初始化专用组件
         self.fundamental_analyzer = FundamentalAnalyzer(config)
         self.dividend_extractor = DividendExtractor(config)
@@ -53,6 +59,11 @@ class LLMAnalyzer(BaseLLMClient):
         Returns:
             dict: 分析结果，键为股票代码，值为分析结果字典
         """
+        # 检查基本面分析是否启用
+        if not self.enable_fundamental_analysis:
+            logger.info("LLM基本面分析已禁用（在analyzer内部检查），返回空结果")
+            return {}
+
         # 确保使用相同的LLM调用计数器
         self.fundamental_analyzer._llm_calls_made = self._llm_calls_made
         self.fundamental_analyzer.max_llm_calls_per_run = self.max_llm_calls_per_run
