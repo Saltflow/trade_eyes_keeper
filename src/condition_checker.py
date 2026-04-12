@@ -84,6 +84,7 @@ class ConditionChecker:
                     {
                         "stock_code": code,
                         "low_price": price,
+                        "price": price,
                         "anchor_name": anchor,
                         "anchor_value": anchor_val,
                         "interval_label": interval,

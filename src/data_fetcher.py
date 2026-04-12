@@ -194,6 +194,8 @@ class StockDataFetcher:
                     # 计算多锚点指标（日线MA60、周线MA20/30/50）
                     anchors = self.technical_indicators.get_all_anchors(stock_code)
                     for anchor_name, value in anchors.items():
+                        if anchor_name == "ma60":
+                            continue
                         if value is not None:
                             latest_data[anchor_name] = value
                         else:

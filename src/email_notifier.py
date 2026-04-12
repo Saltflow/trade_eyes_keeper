@@ -906,7 +906,7 @@ class EmailNotifier:
         interval_label = alert.get("interval_label", "")
         percentage = alert.get("percentage", 0)
         consecutive_days = alert.get("consecutive_days", 1)
-        price = alert.get("price", 0)
+        price = alert.get("low_price", alert.get("price", 0))
         price_difference = alert.get("price_difference", 0)
 
         # 从stock_data中查找基本面数据
