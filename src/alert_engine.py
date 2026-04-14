@@ -81,12 +81,23 @@ class AlertEngine:
 
         return None
 
-    def evaluate_anchor(self, stock_code, price, anchor_name, anchor_value):
-        """评估单个锚点"""
-        if anchor_value is None:
+    def evaluate_anchor(self, stock_code, low_price, anchor_name, anchor_value):
+        """
+        评估单个锚点
+
+        Args:
+            stock_code: 股票代码
+            low_price: 最低价（统一使用low_price字段名）
+            anchor_name: 锚点名称（如"ma60"）
+            anchor_value: 锚点值
+
+        Returns:
+            dict: 警报字典，包含low_price字段（统一命名）
+        """
+        if anchor_value is None or low_price is None:
             return None
 
-        pct = self._calc_pct(price, anchor_value)
+        pct = self._calc_pct(low_price, anchor_value)
         if pct is None:
             return None
 
@@ -98,17 +109,31 @@ class AlertEngine:
             "stock_code": stock_code,
             "anchor_name": anchor_name,
             "anchor_value": float(anchor_value),
-            "price": float(price),
+            "low_price": float(low_price),  # 统一使用low_price字段名
             "percentage": float(pct),
             "interval": interval,
         }
 
     def evaluate_stock(self, stock_data):
-        """评估单只股票的所有锚点"""
+        """
+        评估单只股票的所有锚点
+
+        Args:
+            stock_data: 股票数据Series，必须包含stock_code和low字段
+
+        Returns:
+            list: 警报字典列表，按百分比绝对值降序排序
+        """
         stock_code = stock_data.get("stock_code", "")
         low_price = stock_data.get("low")
 
-        if not stock_code or pd.isna(low_price):
+        # 数据验证：检查必需字段
+        if not stock_code:
+            logger.warning("股票代码为空，跳过评估")
+            return []
+
+        if pd.isna(low_price) or low_price is None:
+            logger.warning(f"股票 {stock_code} 缺少有效的low_price数据，跳过评估")
             return []
 
         results = []
@@ -118,7 +143,8 @@ class AlertEngine:
                 continue
 
             anchor_val = stock_data[anchor_name]
-            if pd.isna(anchor_val):
+            if pd.isna(anchor_val) or anchor_val is None:
+                logger.debug(f"股票 {stock_code} 锚点 {anchor_name} 值为None/nan，跳过")
                 continue
 
             result = self.evaluate_anchor(
@@ -129,4 +155,10 @@ class AlertEngine:
 
         # 按百分比绝对值排序
         results.sort(key=lambda x: abs(x["percentage"]), reverse=True)
+
+        if results:
+            logger.info(
+                f"股票 {stock_code} 生成 {len(results)} 个警报（价格={low_price:.2f}）"
+            )
+
         return results

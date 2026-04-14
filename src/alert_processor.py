@@ -74,6 +74,15 @@ class AlertProcessor:
                 alert["interval_label"] = interval_label
                 alerts_to_send.append(alert)
 
+                # 打印详细数据用于调试
+                logger.info(
+                    f"股票 {stock_code} 警报数据详情: "
+                    f"low_price={evaluation.get('low_price')}, "
+                    f"anchor_name={evaluation.get('anchor_name')}, "
+                    f"anchor_value={evaluation.get('anchor_value')}, "
+                    f"percentage={evaluation.get('percentage')}"
+                )
+
                 # 更新状态
                 self.state_manager.update(
                     stock_code, anchor_name, interval_label, self.current_date

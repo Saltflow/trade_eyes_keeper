@@ -75,16 +75,20 @@ class ConditionChecker:
                 code = alert.get("stock_code", "")
                 anchor = alert.get("anchor_name", "")
                 interval = alert.get("interval_label", "")
-                pct = alert.get("percentage", 0.0)
+                pct = alert.get("percentage")
                 days = alert.get("consecutive_days", 1)
-                price = alert.get("price", 0.0)
-                anchor_val = alert.get("anchor_value", 0.0)
+                low_price = alert.get("low_price")  # 统一使用low_price字段名
+                anchor_val = alert.get("anchor_value")
+
+                # 安全计算price_difference，避免None值导致的TypeError
+                price_difference = None
+                if anchor_val is not None and low_price is not None:
+                    price_difference = anchor_val - low_price
 
                 result.append(
                     {
                         "stock_code": code,
-                        "low_price": price,
-                        "price": price,
+                        "low_price": low_price,  # 直接使用low_price字段
                         "anchor_name": anchor,
                         "anchor_value": anchor_val,
                         "interval_label": interval,
@@ -92,7 +96,7 @@ class ConditionChecker:
                         "consecutive_days": days,
                         "date": self._get_date(stock_data, code),
                         "condition": f"{anchor} 区间 {interval}",
-                        "price_difference": anchor_val - price,
+                        "price_difference": price_difference,
                         "percentage_difference": pct,
                     }
                 )

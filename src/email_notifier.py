@@ -269,7 +269,10 @@ class EmailNotifier:
                     value = ret["current_value"]
                     profit_pct = ret["profit_pct"]
                     color = "green" if profit_pct >= 0 else "red"
-                    table_html += f'            <td style="border: 1px solid #ddd; padding: 12px; text-align: center; color: {color};">{value:.2f}元<br><small>({profit_pct:+.2f}%)</small></td>\n'
+                    if value is not None and not pd.isna(value):
+                        table_html += f'            <td style="border: 1px solid #ddd; padding: 12px; text-align: center; color: {color};">{value:.2f}元<br><small>({profit_pct:+.2f}%)</small></td>\n'
+                    else:
+                        table_html += f'            <td style="border: 1px solid #ddd; padding: 12px; text-align: center; color: red;">数据不可用</td>\n'
             table_html += "        </tr>\n"
 
         table_html += "    </tbody>\n"
@@ -348,8 +351,8 @@ class EmailNotifier:
                 # 单锚点警报格式（向后兼容）
                 stock_code = alert.get("stock_code", "")
                 stock_name = self._get_stock_name(stock_code)
-                low_price = alert.get("low_price", 0)
-                ma60 = alert.get("ma60", 0)
+                low_price = alert.get("low_price")
+                ma60 = alert.get("ma60")
                 low_ma60_diff = alert.get("price_difference", 0)  # 最低价与MA60差值
                 low_ma60_pct = alert.get(
                     "percentage_difference", 0
@@ -361,9 +364,17 @@ class EmailNotifier:
                 if not stock_row.empty:
                     close_price = stock_row.iloc[0].get("close", 0)
 
-                # 计算收盘价与MA60差值
-                close_ma60_diff = close_price - ma60
-                close_ma60_pct = (close_ma60_diff / ma60 * 100) if ma60 != 0 else 0
+                # 计算收盘价与MA60差值（安全处理None值）
+                close_ma60_diff = None
+                close_ma60_pct = None
+                if (
+                    close_price is not None
+                    and ma60 is not None
+                    and not pd.isna(close_price)
+                    and not pd.isna(ma60)
+                ):
+                    close_ma60_diff = close_price - ma60
+                    close_ma60_pct = (close_ma60_diff / ma60 * 100) if ma60 != 0 else 0
 
                 # 获取基本面数据
                 dividend_per_share = None
@@ -417,9 +428,21 @@ class EmailNotifier:
                     else "-"
                 )
 
-                # 确定颜色类
-                close_diff_class = "positive" if close_ma60_diff >= 0 else "negative"
-                close_pct_class = "positive" if close_ma60_pct >= 0 else "negative"
+                # 确定颜色类（安全处理None值）
+                close_diff_class = (
+                    "positive"
+                    if close_ma60_diff is not None and close_ma60_diff >= 0
+                    else "negative"
+                    if close_ma60_diff is not None
+                    else ""
+                )
+                close_pct_class = (
+                    "positive"
+                    if close_ma60_pct is not None and close_ma60_pct >= 0
+                    else "negative"
+                    if close_ma60_pct is not None
+                    else ""
+                )
                 earnings_growth_class = (
                     "positive"
                     if earnings_growth is not None and earnings_growth > 0
@@ -428,18 +451,45 @@ class EmailNotifier:
                     else ""
                 )
 
+                # 格式化技术指标数据（安全处理None值）
+                low_price_str = (
+                    f"{low_price:.2f}"
+                    if low_price is not None and not pd.isna(low_price)
+                    else "-"
+                )
+                ma60_str = (
+                    f"{ma60:.2f}" if ma60 is not None and not pd.isna(ma60) else "-"
+                )
+                close_price_str = (
+                    f"{close_price:.2f}"
+                    if close_price is not None and not pd.isna(close_price)
+                    else "-"
+                )
+                close_ma60_diff_str = (
+                    f"{close_ma60_diff:+.2f}" if close_ma60_diff is not None else "-"
+                )
+                close_ma60_pct_str = (
+                    f"{close_ma60_pct:+.2f}%" if close_ma60_pct is not None else "-"
+                )
+                low_ma60_diff_str = (
+                    f"{low_ma60_diff:.2f}" if low_ma60_diff is not None else "-"
+                )
+                low_ma60_pct_str = (
+                    f"{low_ma60_pct:.2f}%" if low_ma60_pct is not None else "-"
+                )
+
                 # 技术指标行
                 alert_rows_technical += f"""
                     <tr class="alert-row">
                         <td>{stock_code}</td>
                         <td>{stock_name}</td>
-                        <td>{low_price:.2f}</td>
-                        <td>{ma60:.2f}</td>
-                        <td>{close_price:.2f}</td>
-                        <td class="{close_diff_class}">{close_ma60_diff:+.2f}</td>
-                        <td class="{close_pct_class}">{close_ma60_pct:+.2f}%</td>
-                        <td class="positive">{low_ma60_diff:.2f}</td>
-                        <td class="positive">{low_ma60_pct:.2f}%</td>
+                        <td>{low_price_str}</td>
+                        <td>{ma60_str}</td>
+                        <td>{close_price_str}</td>
+                        <td class="{close_diff_class}">{close_ma60_diff_str}</td>
+                        <td class="{close_pct_class}">{close_ma60_pct_str}</td>
+                        <td class="positive">{low_ma60_diff_str}</td>
+                        <td class="positive">{low_ma60_pct_str}</td>
                         <td>最低价 &lt; MA60</td>
                     </tr>
                 """
@@ -467,17 +517,26 @@ class EmailNotifier:
             stock_name = self._get_stock_name(stock_code)
             open_price = row.get("open", 0)
             close_price = row.get("close", 0)
-            high_price = row.get("high", 0)
-            low_price = row.get("low", 0)
-            ma60 = row.get("ma60", 0)
+            high_price = row.get("high")
+            low_price = row.get("low")
+            ma60 = row.get("ma60")
 
-            # 计算收盘价与MA60差值
-            close_ma60_diff = close_price - ma60
-            close_ma60_pct = (close_ma60_diff / ma60 * 100) if ma60 != 0 else 0
-
-            # 确定颜色类
-            diff_class = "positive" if close_ma60_diff >= 0 else "negative"
-            pct_class = "positive" if close_ma60_pct >= 0 else "negative"
+            # 计算收盘价与MA60差值（仅在数据有效时计算）
+            if (
+                close_price is not None
+                and ma60 is not None
+                and not pd.isna(close_price)
+                and not pd.isna(ma60)
+            ):
+                close_ma60_diff = close_price - ma60
+                close_ma60_pct = (close_ma60_diff / ma60 * 100) if ma60 != 0 else 0
+                diff_class = "positive" if close_ma60_diff >= 0 else "negative"
+                pct_class = "positive" if close_ma60_pct >= 0 else "negative"
+            else:
+                close_ma60_diff = None
+                close_ma60_pct = None
+                diff_class = ""
+                pct_class = ""
 
             # 获取基本面数据
             dividend_per_share = row.get("dividend_per_share")
@@ -530,22 +589,57 @@ class EmailNotifier:
                 else ""
             )
 
-            # 检查是否满足条件（最低价 < MA60）
+            # 检查是否满足条件（最低价 < MA60）- 安全处理None值
             status = "正常"
-            if low_price < ma60:
+            if (
+                low_price is not None
+                and ma60 is not None
+                and not pd.isna(low_price)
+                and not pd.isna(ma60)
+                and low_price < ma60
+            ):
                 status = "<span style='color: #f44336;'>提醒</span>"
+
+            # 格式化价格数据（安全处理None值）
+            open_price_str = (
+                f"{open_price:.2f}"
+                if open_price is not None and not pd.isna(open_price)
+                else "-"
+            )
+            close_price_str = (
+                f"{close_price:.2f}"
+                if close_price is not None and not pd.isna(close_price)
+                else "-"
+            )
+            high_price_str = (
+                f"{high_price:.2f}"
+                if high_price is not None and not pd.isna(high_price)
+                else "-"
+            )
+            low_price_str = (
+                f"{low_price:.2f}"
+                if low_price is not None and not pd.isna(low_price)
+                else "-"
+            )
+            ma60_str = f"{ma60:.2f}" if ma60 is not None and not pd.isna(ma60) else "-"
+            close_ma60_diff_str = (
+                f"{close_ma60_diff:+.2f}" if close_ma60_diff is not None else "-"
+            )
+            close_ma60_pct_str = (
+                f"{close_ma60_pct:+.2f}%" if close_ma60_pct is not None else "-"
+            )
 
             # 价格技术指标行
             all_rows_price += f"""
                 <tr>
                     <td>{stock_code}</td>
-                    <td>{open_price:.2f}</td>
-                    <td>{close_price:.2f}</td>
-                    <td>{high_price:.2f}</td>
-                    <td>{low_price:.2f}</td>
-                    <td>{ma60:.2f}</td>
-                    <td class="{diff_class}">{close_ma60_diff:+.2f}</td>
-                    <td class="{pct_class}">{close_ma60_pct:+.2f}%</td>
+                    <td>{open_price_str}</td>
+                    <td>{close_price_str}</td>
+                    <td>{high_price_str}</td>
+                    <td>{low_price_str}</td>
+                    <td>{ma60_str}</td>
+                    <td class="{diff_class}">{close_ma60_diff_str}</td>
+                    <td class="{pct_class}">{close_ma60_pct_str}</td>
                     <td>{status}</td>
                 </tr>
             """
@@ -733,10 +827,19 @@ class EmailNotifier:
                         official_info = []
                         for detail in dividend_details:
                             announcement_date = detail.get("announcement_date", "未知")
-                            cash_dividend = detail.get("cash_dividend", 0)
-                            dividend_per_share = detail.get("dividend_per_share", 0)
-                            info = f"{announcement_date}: 分红{cash_dividend:.2f}元/股"
-                            official_info.append(info)
+                            cash_dividend = detail.get("cash_dividend")
+                            dividend_per_share = detail.get("dividend_per_share")
+                            # 格式化分红值，处理None情况
+                            if cash_dividend is not None and not pd.isna(cash_dividend):
+                                info = (
+                                    f"{announcement_date}: 分红{cash_dividend:.2f}元/股"
+                                )
+                                official_info.append(info)
+                            elif dividend_per_share is not None and not pd.isna(
+                                dividend_per_share
+                            ):
+                                info = f"{announcement_date}: 分红{dividend_per_share:.2f}元/股"
+                                official_info.append(info)
                         if official_info:
                             announcements_section += f"""
                             <div style="margin-left: 20px; margin-top: 5px; padding: 5px; background-color: #e8f4fd; border-left: 3px solid #2196f3; font-size: 0.9em;">
@@ -750,18 +853,24 @@ class EmailNotifier:
                     if llm_dividend and llm_dividend.get("success", False):
                         dividend_info = []
                         cash_dividend = llm_dividend.get("cash_dividend_per_share")
-                        if cash_dividend:
+                        if cash_dividend is not None and not pd.isna(cash_dividend):
                             dividend_info.append(f"现金分红: {cash_dividend:.3f}元/股")
                         dividend_per_share = llm_dividend.get("dividend_per_share")
-                        if dividend_per_share:
+                        if dividend_per_share is not None and not pd.isna(
+                            dividend_per_share
+                        ):
                             dividend_info.append(
                                 f"总分红: {dividend_per_share:.3f}元/股"
                             )
                         dividend_date = llm_dividend.get("dividend_date")
                         if dividend_date:
                             dividend_info.append(f"分红日期: {dividend_date}")
-                        confidence = llm_dividend.get("confidence", 0)
-                        confidence_pct = f"{confidence * 100:.0f}%"
+                        confidence = llm_dividend.get("confidence")
+                        confidence_pct = (
+                            f"{confidence * 100:.0f}%"
+                            if confidence is not None and not pd.isna(confidence)
+                            else "N/A"
+                        )
 
                         if dividend_info:
                             announcements_section += f"""
@@ -902,12 +1011,12 @@ class EmailNotifier:
         stock_code = alert.get("stock_code", "")
         stock_name = self._get_stock_name(stock_code)
         anchor_name = alert.get("anchor_name", "")
-        anchor_value = alert.get("anchor_value", 0)
+        anchor_value = alert.get("anchor_value")
         interval_label = alert.get("interval_label", "")
-        percentage = alert.get("percentage", 0)
+        percentage = alert.get("percentage")
         consecutive_days = alert.get("consecutive_days", 1)
-        price = alert.get("low_price", alert.get("price", 0))
-        price_difference = alert.get("price_difference", 0)
+        price = alert.get("low_price")
+        price_difference = alert.get("price_difference")
 
         # 从stock_data中查找基本面数据
         stock_row = stock_data[stock_data["stock_code"] == stock_code]
@@ -970,14 +1079,31 @@ class EmailNotifier:
 
         # 构建技术指标行
         condition = f"{anchor_name} 区间 {interval_label} (连续{consecutive_days}天)"
+        price_str = f"{price:.2f}" if price is not None and not pd.isna(price) else "-"
+        anchor_value_str = (
+            f"{anchor_value:.2f}"
+            if anchor_value is not None and not pd.isna(anchor_value)
+            else "-"
+        )
+        price_diff_str = (
+            f"{price_difference:+.2f}"
+            if price_difference is not None and not pd.isna(price_difference)
+            else "-"
+        )
+        pct_str = (
+            f"{percentage:+.2f}%"
+            if percentage is not None and not pd.isna(percentage)
+            else "-"
+        )
+
         technical_row = f"""
             <tr class="alert-row">
                 <td>{stock_code}</td>
                 <td>{stock_name}</td>
-                <td>{price:.2f}</td>
-                <td>{anchor_value:.2f}</td>
-                <td>{price_difference:+.2f}</td>
-                <td>{percentage:+.2f}%</td>
+                <td>{price_str}</td>
+                <td>{anchor_value_str}</td>
+                <td>{price_diff_str}</td>
+                <td>{pct_str}</td>
                 <td>{anchor_name}</td>
                 <td>{interval_label}</td>
                 <td>{consecutive_days}天</td>

@@ -835,3 +835,215 @@ data_source:
 2. 重大更改前创建备份
 3. 超过1000行时自动压缩
 4. 通过@cycle_guard防止文档循环更新
+
+---
+
+## 🐛 代码审查发现：None值处理Bug (2026-04-14)
+
+### 问题描述
+代码审查发现3个关键Bug，由于移除了`.get()`的默认值但未添加None检查导致系统崩溃。
+
+### Bug清单
+
+#### Bug #1: condition_checker.py:94 - TypeError from None subtraction
+**位置**: `src/condition_checker.py` 第94行
+**问题**: `anchor_val - price` 当任一值为None时崩溃
+**根因**: 移除默认值后未添加None检查
+**影响**: 多层级警报系统处理缺失数据时崩溃
+
+#### Bug #2: email_notifier.py:439 - TypeError from None formatting
+**位置**: `src/email_notifier.py` 第439行
+**问题**: `{low_price:.2f}` 当low_price为None时崩溃
+**影响**: 邮件格式化失败
+
+#### Bug #3: email_notifier.py:546 - TypeError from None comparison
+**位置**: `src/email_notifier.py` 第546行
+**问题**: `low_price < ma60` 当任一值为None时崩溃
+**影响**: 状态检查逻辑崩溃
+
+#### Bug #4: email_notifier.py:552-558 - Multiple None formatting errors
+**位置**: `src/email_notifier.py`` 第552-558行
+**问题**: 多个格式化操作未处理None值
+**影响**: 邮件构建失败
+
+### 解决方案
+在所有算术、格式化、比较操作前添加None检查：
+```python
+# 安全计算
+price_difference = (anchor_val - price) if anchor_val is not None and price is not None else None
+
+# 安全格式化
+formatted_value = f"{value:.2f}" if value is not None else "-"
+
+# 安全比较
+status = "提醒" if low_price is not None and ma60 is not None and low_price < ma60 else "正常"
+```
+
+### 状态**: ✅ 已修复
+
+### 修复详情
+
+**修复日期**: 2026-04-14
+
+**修复内容**:
+1. **condition_checker.py:85-86** - 添加None检查后计算price_difference
+2. **email_notifier.py:368-377** - 添加None检查后计算close_ma60_diff和close_ma60_pct
+3. **email_notifier.py:424-432** - 颜色类确定添加None检查处理
+4. **email_notifier.py:434-452** - 技术指标格式化添加None检查和fallback值
+5. **email_notifier.py:546-574** - 状态比较和所有价格数据格式化添加None检查
+
+**验证**:
+- ✅ cycle_guard验证通过：无循环编码模式
+- ✅ 验证测试通过：所有价格关系测试通过
+- ✅ 手动测试通过：None值处理逻辑验证正确
+- ✅ 集成测试：创建test_none_value_handling.py测试套件
+
+**代码模式**:
+```python
+# 安全算术操作
+price_difference = None
+if anchor_val is not None and price is not None:
+    price_difference = anchor_val - price
+
+# 安全格式化
+value_str = f"{value:.2f}" if value is not None and not pd.isna(value) else "-"
+
+# 安全比较
+status = "alert" if low_price is not None and ma60 is not None and low_price < ma60 else "normal"
+```
+
+**向后兼容性**: ✅ 完全兼容，所有修改都是防御性编程增强
+
+---
+
+## 🔧 字段名称统一修复 (2026-04-14)
+
+### 问题描述
+邮件中的"价格"列显示为0.00，但百分比计算正确，说明数据存在但字段映射有问题。
+
+### 根本原因：上下游接口字段名称不统一
+
+**数据流字段名称变化**：
+1. **web_crawler** → 返回 `low` 字段
+2. **alert_engine.evaluate_stock()** → 读取 `stock_data["low"]`
+3. **alert_engine.evaluate_anchor()** → 返回 `"price"` 字段 ❌（不统一）
+4. **condition_checker._check_multi()** → 读取 `"price"`，映射为 `"low_price"`
+5. **email_notifier._build_alert_rows_multi()** → 读取 `"low_price"` ❌（但值错误）
+
+**问题**：
+- `alert_engine`使用`"price"`字段名
+- `condition_checker`进行`"price"` → `"low_price"`映射
+- 映射过程中数据丢失或被覆盖
+- `email_notifier`读取`"low_price"`得到错误值（0）
+
+### 解决方案：统一使用"low_price"字段名
+
+**修改文件**：
+1. **alert_engine.py:84-104**:
+   - 更新`evaluate_anchor()`参数名为`low_price`
+   - 返回字典统一使用`"low_price"`字段（原来是`"price"`）
+
+2. **condition_checker.py:74-102**:
+   - 直接读取`alert.get("low_price")`（原来是读取`"price"`再映射）
+   - 移除中间映射逻辑
+
+3. **alert_engine.py:106-135**:
+   - 添加数据验证：检查`low`字段存在且有效
+   - 添加debug日志：记录生成的警报和价格值
+
+4. **alert_processor.py:78-81**:
+   - 更新debug日志使用`"low_price"`字段名
+
+5. **email_notifier.py:354, 1018**:
+   - 确认两个警报模式（单锚点/多层级）都读取`"low_price"`
+   - 已经正确，无需修改
+
+### 统一后的数据流
+
+```
+web_crawler.py
+  ↓ 返回 "low" 字段
+alert_engine.evaluate_stock()
+  ↓ 读取 stock_data.get("low")
+  ↓ 返回 "low_price" 字段 ✅ 统一命名
+alert_processor.process_stock()
+  ↓ 传递 evaluation (包含low_price)
+condition_checker._check_multi()
+  ↓ 读取 alert.get("low_price") ✅ 无需映射
+  ↓ 返回结果包含 "low_price"
+email_notifier._build_alert_rows_multi()
+  ↓ 读取 alert.get("low_price") ✅ 直接使用
+Email Display
+  ↓ 显示正确的最低价数据 ✅
+```
+
+### 验证结果
+- ✅ cycle_guard验证：风险分数0，无重复模式
+- ✅ 验证测试通过：所有价格关系测试通过
+- ✅ 向后兼容：单锚点系统已使用`"low_price"`，多层级现在也统一
+
+### 影响
+- 仅影响多层级警报系统的字段命名
+- 单锚点系统已经使用`"low_price"`，完全兼容
+- 邮件输出将显示正确的最低价（不再为0.00）
+
+### 状态**: ✅ 已修复并验证
+
+### 验证结果（2026-04-14 21:26）
+
+**系统运行测试**: ✅ 成功
+```bash
+python main.py --once
+```
+
+**邮件验证**:
+- 生成了34个警报行
+- 所有股票的价格列显示正确值
+- 0个股票显示0.00（修复前所有股票都是0.00）
+
+**价格数据抽样**:
+```
+✅ 601728 (中国电信): 5.76
+✅ 600938 (上海机场): 37.30
+✅ 601985 (中国核电): 8.66
+✅ 601919 (中远海控): 15.03
+✅ 600795 (国电电力): 4.77
+✅ 601398 (工商银行): 7.33
+✅ 512810 (军工ETF华宝): 0.78
+```
+
+**日志验证**:
+- Alert engine使用"low_price"字段（不是旧的"price"字段）
+- 17个警报生成日志都显示正确的low_price值
+- 无任何旧字段引用
+
+**数据流验证**:
+```
+web_crawler (low) 
+  ↓
+alert_engine (low_price=5.76) ✅
+  ↓
+condition_checker (low_price=5.76) ✅
+  ↓
+email_notifier (low_price=5.76) ✅
+Email Display (5.76) ✅
+```
+
+### 对比修复前后
+
+| 项目 | 修复前 | 修复后 |
+|------|--------|--------|
+| 字段名称 | alert_engine返回"price" | 统一使用"low_price" |
+| 数据映射 | condition_checker需要映射 | 直接传递 |
+| 邮件价格显示 | 所有股票0.00 | 所有股票显示正确值 |
+| 字段一致性 | 不统一，容易出错 | 完全统一 |
+
+### 影响范围
+- **修复影响**: 仅多层级警报系统的字段命名
+- **向后兼容**: 单锚点系统已使用"low_price"，完全兼容
+- **测试覆盖**: 创建test_field_name_unification.py验证
+- **文档更新**: proj4llm.md已记录完整修复过程
+
+### 最终结论
+
+✅ **问题已完全解决**: 上下游接口字段名称已统一，邮件正确显示价格数据
