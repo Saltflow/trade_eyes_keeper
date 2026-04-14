@@ -5,6 +5,7 @@
 
 import logging
 import pandas as pd
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -33,19 +34,6 @@ class ConditionChecker:
                 self.alert_processor = None
         else:
             self.alert_processor = None
-
-    def check_condition(self, stock_data):
-        """检查股票数据是否满足条件"""
-        if stock_data.empty:
-            logger.warning("股票数据为空")
-            return []
-
-        self._validate_price_relationships(stock_data)
-
-        if self.use_multi_alert and self.alert_processor:
-            return self._check_multi(stock_data)
-        else:
-            return self._check_single(stock_data)
 
     def _validate_price_relationships(self, stock_data):
         """验证价格关系"""
@@ -150,3 +138,39 @@ class ConditionChecker:
 
         logger.info(f"单锚点检查完成: {len(result)} 只股票")
         return result
+
+    def check_from_session(self, session, session_manager=None):
+        """
+        从Session读取数据并检查条件，结果存入Session（新数据流）
+
+        Args:
+            session: SessionContext对象
+            session_manager: SessionManager对象（可选，用于更新session）
+        """
+        if session_manager is None:
+            from .session_manager import SessionManager
+
+            session_manager = SessionManager(self.config)
+
+        # 从Session获取DataFrame
+        stock_data = session.get_all_dataframe()
+
+        if stock_data.empty:
+            logger.warning("Session中无股票数据")
+            return
+
+        # 复用现有检查逻辑
+        result = []
+
+        if self.use_multi_alert and self.alert_processor:
+            result = self._check_multi(stock_data)
+        else:
+            result = self._check_single(stock_data)
+
+        # 将结果存入Session
+        for alert_dict in result:
+            session_manager.add_alert_from_dict(session, alert_dict)
+
+        logger.info(
+            f"条件检查完成: {len(session.alerts)} 个警报, {len(session.errors)} 个错误"
+        )

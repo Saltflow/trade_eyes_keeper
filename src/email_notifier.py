@@ -58,29 +58,26 @@ class EmailNotifier:
         if not self.sender_email or not self.sender_password or not self.receiver_email:
             logger.warning("邮件配置不完整，邮件通知功能可能无法正常工作")
 
-    def send_alert(
-        self,
-        alert_stocks,
-        stock_data,
-        analysis_results=None,
-        announcements=None,
-        financial_analysis_results=None,
-        backtest_results=None,
-    ):
+    def send_from_session(self, session):
         """
-         发送股票提醒邮件
+        从Session读取数据并发送邮件（新数据流）
 
         Args:
-            alert_stocks: 满足条件的股票列表
-            stock_data: 完整的股票数据DataFrame
-            analysis_results: LLM分析结果字典（可选）
-            announcements: 公告数据字典（可选）
-            financial_analysis_results: 财报分析结果字典（可选）
-            backtest_results: 回测结果列表，格式与backtest_framework.py输出一致（可选）
+            session: SessionContext对象
         """
         try:
-            # 构建邮件内容
+            # 从Session读取所有数据
+            alert_stocks = session.get_alerts_as_dicts()
+            stock_data = session.get_all_dataframe()
+            analysis_results = session.analysis_results
+            announcements = session.announcements
+            financial_analysis_results = session.financial_analysis_results
+            backtest_results = session.backtest_results
+
+            # 构建邮件主题
             subject = f"股票提醒 - {datetime.now().strftime('%Y-%m-%d')}"
+
+            # 构建邮件内容
             body = self._build_email_body(
                 alert_stocks,
                 stock_data,
@@ -93,32 +90,33 @@ class EmailNotifier:
             # 发送邮件
             self._send_email(subject, body)
 
-            logger.info(f"成功发送提醒邮件给 {self.receiver_email}")
+            logger.info(
+                f"成功发送提醒邮件给 {self.receiver_email} "
+                f"(来自Session: {len(alert_stocks)}个警报)"
+            )
 
         except Exception as e:
-            logger.error(f"发送邮件失败: {e}")
+            logger.error(f"从Session发送邮件失败: {e}")
 
-    def send_daily_report(
-        self,
-        stock_data,
-        analysis_results=None,
-        announcements=None,
-        financial_analysis_results=None,
-        backtest_results=None,
-    ):
+    def send_daily_report_from_session(self, session):
         """
-         发送每日报告邮件（即使没有满足条件的股票也发送）
+        从Session读取数据并发送每日报告（新数据流）
 
         Args:
-            stock_data: 完整的股票数据DataFrame
-            analysis_results: LLM分析结果字典（可选）
-            announcements: 公告数据字典（可选）
-            financial_analysis_results: 财报分析结果字典（可选）
-            backtest_results: 回测结果列表，格式与backtest_framework.py输出一致（可选）
+            session: SessionContext对象
         """
         try:
-            # 构建邮件内容（使用空提醒列表）
+            # 从Session读取所有数据
+            stock_data = session.get_all_dataframe()
+            analysis_results = session.analysis_results
+            announcements = session.announcements
+            financial_analysis_results = session.financial_analysis_results
+            backtest_results = session.backtest_results
+
+            # 构建邮件主题
             subject = f"股票日报 - {datetime.now().strftime('%Y-%m-%d')}"
+
+            # 构建邮件内容（使用空警报列表）
             body = self._build_email_body(
                 [],
                 stock_data,
@@ -131,10 +129,10 @@ class EmailNotifier:
             # 发送邮件
             self._send_email(subject, body)
 
-            logger.info(f"成功发送每日报告邮件给 {self.receiver_email}")
+            logger.info(f"成功发送每日报告邮件给 {self.receiver_email} (来自Session)")
 
         except Exception as e:
-            logger.error(f"发送每日报告邮件失败: {e}")
+            logger.error(f"从Session发送每日报告邮件失败: {e}")
 
     def _build_financial_analysis_section(self, financial_analysis_results):
         """

@@ -9,10 +9,12 @@ import logging
 from typing import Optional
 import pandas as pd
 
-from .models import (
+from models.schemas import (
     SessionContext,
     StockPriceData,
     AlertStock,
+)
+from models.converters import (
     dataframe_to_stock_price_data,
     alert_dict_to_alert_stock,
 )

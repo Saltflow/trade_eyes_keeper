@@ -15,6 +15,7 @@ from typing import Optional, Dict, cast
 from .cache_manager import CacheManager
 from .historical_data_manager import HistoricalDataManager
 from .technical_indicators import TechnicalIndicators
+from .models.converters import dataframe_to_stock_price_data
 
 logger = logging.getLogger(__name__)
 
@@ -114,186 +115,6 @@ class StockDataFetcher:
         except Exception as e:
             logger.warning(f"检查缓存是否应绕过时出错: {e}")
             return True  # 出错时绕过缓存
-
-    def fetch_stock_data(self):
-        """
-        获取股票数据
-
-        Returns:
-            pandas.DataFrame: 包含股票代码、日期、开盘、收盘、最高、最低、
-                成交量、成交额、MA60的数据
-        """
-        all_data = []
-
-        for stock_code in self.stocks:
-            # 确保股票代码是字符串
-            stock_code = str(stock_code)
-
-            try:
-                # 首先尝试从缓存获取数据
-                cached_data = self.cache_manager.get_stock_data_cache(stock_code)
-                if (
-                    cached_data
-                    and "data" in cached_data
-                    and not self._should_bypass_cache(cached_data)
-                ):
-                    cached_latest_data = cached_data["data"]
-                    # 验证缓存数据包含必要字段
-                    required_fields = [
-                        "open",
-                        "close",
-                        "high",
-                        "low",
-                        "ma60",
-                        "dividend_per_share",
-                        "dividend_yield",
-                        "earnings_growth",
-                        "pe_ratio",
-                        "pb_ratio",
-                        "roe",
-                        "debt_ratio",
-                    ]
-                    has_all_fields = all(
-                        field in cached_latest_data for field in required_fields
-                    )
-
-                    if has_all_fields:
-                        logger.info(f"股票 {stock_code} 使用缓存数据")
-                        # 从缓存数据构建DataFrame
-                        latest_data = pd.DataFrame([cached_latest_data])
-                        all_data.append(latest_data)
-                        continue
-                    else:
-                        logger.warning(f"股票 {stock_code} 缓存数据不完整，重新获取")
-                elif cached_data and "data" in cached_data:
-                    # 缓存存在但需要绕过（例如数据不是今天的且时间>=15:05）
-                    logger.info(f"股票 {stock_code} 缓存数据已过期，重新获取")
-                # 缓存不存在或数据不完整或需要绕过，继续获取新数据
-
-                logger.info(f"获取股票 {stock_code} 数据（无缓存）")
-
-                # 获取历史数据（至少61天用于计算MA60）
-                # 获取120天数据
-
-                # 使用网页爬虫获取股票数据（已移除akshare）
-                if self.web_crawler is None:
-                    from .web_crawler import StockWebCrawler
-
-                    self.web_crawler = StockWebCrawler(self.config)
-
-                stock_data = self.web_crawler.fetch_stock_data(stock_code, days=120)
-
-                if stock_data is not None and not stock_data.empty:
-                    # 计算MA60
-                    stock_data["ma60"] = stock_data["close"].rolling(window=60).mean()
-                    stock_data["stock_code"] = stock_code
-
-                    # 只保留最新一天的数据用于条件检查
-                    latest_data = stock_data.iloc[-1:].copy()
-
-                    # 计算多锚点指标（日线MA60、周线MA20/30/50）
-                    anchors = self.technical_indicators.get_all_anchors(stock_code)
-                    for anchor_name, value in anchors.items():
-                        if value is not None:
-                            latest_data[anchor_name] = value
-                        else:
-                            latest_data[anchor_name] = np.nan
-
-                    # 检查数据日期是否为今天
-                    if not latest_data.empty:
-                        latest_date = latest_data.iloc[0].get("date")
-                        if latest_date:
-                            today = datetime.now(self.timezone).date()
-                            if latest_date.date() != today:
-                                logger.warning(
-                                    f"股票 {stock_code} 最新数据日期为 "
-                                    f"{latest_date.date()}，不是今天 {today}，"
-                                    f"数据可能已过期"
-                                )
-
-                    # 获取基本面数据（分红、股息率、业绩增长）
-                    fundamental_data = self._fetch_fundamental_data(stock_code)
-
-                    # 将基本面数据添加到latest_data
-                    latest_data["dividend_per_share"] = fundamental_data[
-                        "dividend_per_share"
-                    ]
-                    latest_data["earnings_growth"] = fundamental_data["earnings_growth"]
-                    latest_data["pe_ratio"] = fundamental_data["pe_ratio"]
-                    latest_data["pb_ratio"] = fundamental_data["pb_ratio"]
-                    latest_data["roe"] = fundamental_data["roe"]
-                    latest_data["debt_ratio"] = fundamental_data["debt_ratio"]
-
-                    # 计算股息率（需要收盘价）
-                    if (
-                        fundamental_data["dividend_per_share"] is not None
-                        and not latest_data.empty
-                    ):
-                        close_price = latest_data.iloc[0].get("close")
-                        if close_price and close_price > 0:
-                            dividend_per_share = fundamental_data["dividend_per_share"]
-                            dividend_yield = (dividend_per_share / close_price) * 100
-
-                            # 验证股息率合理性（调整阈值，仅记录警告不丢弃数据）
-                            # 股息率>30%或分红>股价可能为异常数据，但仅记录警告
-                            if dividend_yield > 30 or dividend_per_share > close_price:
-                                logger.warning(
-                                    f"股票 {stock_code} 股息率异常高: "
-                                    f"分红={dividend_per_share:.3f}元, "
-                                    f"股价={close_price:.2f}元, "
-                                    f"股息率={dividend_yield:.2f}% (请手动验证)"
-                                )
-                            # 总是计算并设置股息率
-                            latest_data["dividend_yield"] = round(dividend_yield, 2)
-                            logger.info(
-                                f"股票 {stock_code} 股息率计算: "
-                                f"分红={dividend_per_share:.3f}元, "
-                                f"股价={close_price:.2f}元, "
-                                f"股息率={dividend_yield:.2f}%"
-                            )
-                            # 检查股息率是否过低（<0.5%），可能数据不准确
-                            if dividend_yield < 0.5:
-                                logger.warning(
-                                    f"股票 {stock_code} 股息率过低: "
-                                    f"{dividend_yield:.2f}% "
-                                    f"(可能分红数据不准确或股价过高)"
-                                )
-                        else:
-                            latest_data["dividend_yield"] = None
-                    else:
-                        latest_data["dividend_yield"] = None
-
-                    all_data.append(latest_data)
-
-                    # 缓存处理后的最新数据
-                    try:
-                        if not latest_data.empty:
-                            latest_data_dict = latest_data.iloc[0].to_dict()
-                            # 转换非JSON可序列化的类型
-                            for key, value in latest_data_dict.items():
-                                if pd.isna(value):
-                                    latest_data_dict[key] = None
-                                elif isinstance(value, pd.Timestamp):
-                                    latest_data_dict[key] = value.isoformat()
-                                elif isinstance(value, (np.integer, np.floating)):
-                                    latest_data_dict[key] = float(value)
-                            self.cache_manager.set_stock_data_cache(
-                                stock_code, latest_data_dict
-                            )
-                            logger.debug(f"股票 {stock_code} 最新数据已缓存")
-                    except Exception as cache_error:
-                        logger.warning(f"缓存股票 {stock_code} 数据失败: {cache_error}")
-
-                    # 保存完整历史数据到CSV
-                    self._save_to_csv(stock_code, stock_data)
-
-            except Exception as e:
-                logger.error(f"获取股票 {stock_code} 数据失败: {e}")
-
-        if all_data:
-            return pd.concat(all_data, ignore_index=True)
-        else:
-            return pd.DataFrame()
 
     def _save_to_csv(self, stock_code, stock_data):
         """
@@ -510,3 +331,199 @@ class StockDataFetcher:
         else:
             logger.warning(f"股票 {stock_code} 未获取到估值指标数据")
             return None
+
+    def fetch_to_session(self, session, session_manager=None):
+        """
+        获取股票数据并存入Session（新数据流）
+
+        Args:
+            session: SessionContext对象
+            session_manager: SessionManager对象（可选，用于更新session）
+        """
+        if session_manager is None:
+            from .session_manager import SessionManager
+
+            session_manager = SessionManager(self.config)
+
+        # 直接实现数据获取逻辑（不依赖fetch_stock_data）
+        all_data = []
+
+        for stock_code in self.stocks:
+            # 确保股票代码是字符串
+            stock_code = str(stock_code)
+
+            try:
+                # 首先尝试从缓存获取数据
+                cached_data = self.cache_manager.get_stock_data_cache(stock_code)
+                if (
+                    cached_data
+                    and "data" in cached_data
+                    and not self._should_bypass_cache(cached_data)
+                ):
+                    cached_latest_data = cached_data["data"]
+                    # 验证缓存数据包含必要字段
+                    required_fields = [
+                        "open",
+                        "close",
+                        "high",
+                        "low",
+                        "ma60",
+                        "dividend_per_share",
+                        "dividend_yield",
+                        "earnings_growth",
+                        "pe_ratio",
+                        "pb_ratio",
+                        "roe",
+                        "debt_ratio",
+                    ]
+                    has_all_fields = all(
+                        field in cached_latest_data for field in required_fields
+                    )
+
+                    if has_all_fields:
+                        logger.info(f"股票 {stock_code} 使用缓存数据")
+                        # 从缓存数据构建DataFrame
+                        latest_data = pd.DataFrame([cached_latest_data])
+                        all_data.append(latest_data)
+                        continue
+                    else:
+                        logger.warning(f"股票 {stock_code} 缓存数据不完整，重新获取")
+                elif cached_data and "data" in cached_data:
+                    # 缓存存在但需要绕过（例如数据不是今天的且时间>=15:05）
+                    logger.info(f"股票 {stock_code} 缓存数据已过期，重新获取")
+
+                logger.info(f"获取股票 {stock_code} 数据（无缓存）")
+
+                # 获取历史数据（至少61天用于计算MA60）
+                if self.web_crawler is None:
+                    from .web_crawler import StockWebCrawler
+
+                    self.web_crawler = StockWebCrawler(self.config)
+
+                stock_data = self.web_crawler.fetch_stock_data(stock_code, days=120)
+
+                if stock_data is not None and not stock_data.empty:
+                    # 计算MA60
+                    stock_data["ma60"] = stock_data["close"].rolling(window=60).mean()
+                    stock_data["stock_code"] = stock_code
+
+                    # 只保留最新一天的数据
+                    latest_data = stock_data.iloc[-1:].copy()
+
+                    # 计算多锚点指标
+                    anchors = self.technical_indicators.get_all_anchors(stock_code)
+                    for anchor_name, value in anchors.items():
+                        if value is not None:
+                            latest_data[anchor_name] = value
+                        else:
+                            latest_data[anchor_name] = np.nan
+
+                    # 检查数据日期
+                    if not latest_data.empty:
+                        latest_date = latest_data.iloc[0].get("date")
+                        if latest_date:
+                            today = datetime.now(self.timezone).date()
+                            if latest_date.date() != today:
+                                logger.warning(
+                                    f"股票 {stock_code} 最新数据日期为 "
+                                    f"{latest_date.date()}，不是今天 {today}"
+                                )
+
+                    # 获取基本面数据
+                    fundamental_data = self._fetch_fundamental_data(stock_code)
+
+                    # 将基本面数据添加到latest_data
+                    latest_data["dividend_per_share"] = fundamental_data[
+                        "dividend_per_share"
+                    ]
+                    latest_data["earnings_growth"] = fundamental_data["earnings_growth"]
+                    latest_data["pe_ratio"] = fundamental_data["pe_ratio"]
+                    latest_data["pb_ratio"] = fundamental_data["pb_ratio"]
+                    latest_data["roe"] = fundamental_data["roe"]
+                    latest_data["debt_ratio"] = fundamental_data["debt_ratio"]
+
+                    # 计算股息率
+                    if (
+                        fundamental_data["dividend_per_share"] is not None
+                        and not latest_data.empty
+                    ):
+                        close_price = latest_data.iloc[0].get("close")
+                        if close_price and close_price > 0:
+                            dividend_per_share = fundamental_data["dividend_per_share"]
+                            dividend_yield = (dividend_per_share / close_price) * 100
+
+                            if dividend_yield > 30 or dividend_per_share > close_price:
+                                logger.warning(
+                                    f"股票 {stock_code} 股息率异常高: "
+                                    f"分红={dividend_per_share:.3f}元, "
+                                    f"股价={close_price:.2f}元, "
+                                    f"股息率={dividend_yield:.2f}%"
+                                )
+
+                            latest_data["dividend_yield"] = round(dividend_yield, 2)
+                            logger.info(
+                                f"股票 {stock_code} 股息率计算: "
+                                f"分红={dividend_per_share:.3f}元, "
+                                f"股价={close_price:.2f}元, "
+                                f"股息率={dividend_yield:.2f}%"
+                            )
+                        else:
+                            latest_data["dividend_yield"] = None
+                    else:
+                        latest_data["dividend_yield"] = None
+
+                    all_data.append(latest_data)
+
+                    # 缓存处理后的最新数据
+                    try:
+                        if not latest_data.empty:
+                            latest_data_dict = latest_data.iloc[0].to_dict()
+                            # 转换非JSON可序列化的类型
+                            for key, value in latest_data_dict.items():
+                                if pd.isna(value):
+                                    latest_data_dict[key] = None
+                                elif isinstance(value, pd.Timestamp):
+                                    latest_data_dict[key] = value.isoformat()
+                                elif isinstance(value, (np.integer, np.floating)):
+                                    latest_data_dict[key] = float(value)
+                            self.cache_manager.set_stock_data_cache(
+                                stock_code, latest_data_dict
+                            )
+                            logger.debug(f"股票 {stock_code} 最新数据已缓存")
+                    except Exception as cache_error:
+                        logger.warning(f"缓存股票 {stock_code} 数据失败: {cache_error}")
+
+                    # 保存完整历史数据到CSV
+                    self._save_to_csv(stock_code, stock_data)
+
+            except Exception as e:
+                logger.error(f"获取股票 {stock_code} 数据失败: {e}")
+                session.errors.append(f"获取股票 {stock_code} 数据失败: {e}")
+
+        if all_data:
+            stock_data_df = pd.concat(all_data, ignore_index=True)
+        else:
+            stock_data_df = pd.DataFrame()
+
+        if stock_data_df.empty:
+            logger.warning("未获取到股票数据")
+            return
+
+        # 按股票代码分组并转换
+        if "stock_code" not in stock_data_df.columns:
+            logger.error("股票数据缺少stock_code列")
+            session.errors.append("股票数据缺少stock_code列")
+            return
+
+        for stock_code in stock_data_df["stock_code"].unique():
+            stock_df = stock_data_df[stock_data_df["stock_code"] == stock_code]
+            success = session_manager.update_stock_from_dataframe(
+                session, stock_code, stock_df
+            )
+            if not success:
+                logger.warning(f"股票 {stock_code} 数据未成功存入Session")
+
+        logger.info(
+            f"数据已存入Session: {len(session.stocks_data)} 只股票, "
+            f"{len(session.errors)} 个错误"
+        )

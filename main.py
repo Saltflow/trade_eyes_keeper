@@ -30,6 +30,7 @@ from src.llm_analyzer import LLMAnalyzer
 from src.scheduler_manager import SchedulerManager
 from src.announcement_fetcher import AnnouncementFetcher
 from src.financial_report_manager import FinancialReportManager
+from src.session_manager import SessionManager
 from backtest_framework import BacktestFramework
 
 
@@ -103,8 +104,12 @@ def run_daily_task():
     # 加载配置
     config = load_config()
     try:
+        # 创建Session（新数据流）
+        session_manager = SessionManager(config)
+        session = session_manager.create_session(config)
+        logger.info(f"Session创建成功: {session.session_id}")
+
         # 1. 获取公告信息（可选） - 提前获取以填充股息数据缓存
-        announcements = {}
         announcement_config = config.get("announcements", {})
         # 创建公告抓取器用于公告信息获取
         announcement_fetcher = AnnouncementFetcher(config)
@@ -116,26 +121,33 @@ def run_daily_task():
                 announcements = announcement_fetcher.get_recent_important_announcements(
                     config["stocks"], days, dividend_days
                 )
+                # 存入session
+                session.announcements = announcements
                 logger.info(
                     f"公告获取完成，共获取{sum(len(v) for v in announcements.values())}条重要公告"
                 )
             except Exception as e:
                 logger.error(f"获取公告信息失败: {e}")
-        # 2. 获取股票数据
+                session.errors.append(f"获取公告信息失败: {e}")
+
+        # 2. 获取股票数据并存入Session
         logger.info("开始获取股票数据")
         fetcher = StockDataFetcher(config)
-        stock_data = fetcher.fetch_stock_data()
-        if stock_data.empty:
-            logger.warning("未获取到股票数据")
+        fetcher.fetch_to_session(session, session_manager)
+        if not session.stocks_data:
+            logger.warning("Session中无股票数据")
             return
-        # 3. 检查条件
+        logger.info(f"股票数据获取完成: {len(session.stocks_data)}只股票")
+
+        # 3. 检查条件并存入Session
         logger.info("开始检查交易条件")
         checker = ConditionChecker(config)
-        alert_stocks = checker.check_condition(stock_data)
+        checker.check_from_session(session, session_manager)
+        logger.info(f"条件检查完成: {len(session.alerts)}个警报")
+
         # 4. 创建邮件通知器
         notifier = EmailNotifier(config)
         # 5. LLM分析基本面（可选）
-        analysis_results = {}
         llm_config = config.get("llm", {})
         api_key = llm_config.get("api_key")
         analyzer = None  # 初始化分析器变量
@@ -149,15 +161,17 @@ def run_daily_task():
             )
             if enable_fundamental_analysis:
                 logger.info("开始LLM基本面分析")
-                # 将DataFrame转换为字典格式，键为股票代码，值为该股票的数据行
+                # 从Session获取数据并转换为字典格式
+                stock_data_df = session.get_all_dataframe()
                 stock_data_dict = {}
-                if not stock_data.empty and "stock_code" in stock_data.columns:
-                    for _, row in stock_data.iterrows():
+                if not stock_data_df.empty and "stock_code" in stock_data_df.columns:
+                    for _, row in stock_data_df.iterrows():
                         stock_code = str(row["stock_code"])
                         stock_data_dict[stock_code] = row.to_dict()
                 analysis_results = analyzer.analyze_stocks(
                     config["stocks"], stock_data_dict
                 )
+                session.analysis_results = analysis_results
                 logger.info(f"LLM基本面分析完成，共分析{len(analysis_results)}只股票")
             else:
                 logger.info("LLM基本面分析已禁用，跳过基本面分析")
@@ -165,7 +179,6 @@ def run_daily_task():
             logger.info("LLM API未配置，跳过LLM相关功能")
 
         # 6. 财报分析（可选）
-        financial_analysis_results = {}
         financial_config = config.get("financial_reports", {})
         if financial_config.get("enable", True):
             try:
@@ -189,6 +202,46 @@ def run_daily_task():
                     financial_report_fetcher=None,  # 让管理器自动创建
                     content_fetcher=content_fetcher,
                 )
+                # 从Session获取警报列表
+                alert_dicts = session.get_alerts_as_dicts()
+                # 提取股票代码列表
+                alert_stock_codes = (
+                    [
+                        alert.get("stock_code")
+                        for alert in alert_dicts
+                        if alert.get("stock_code")
+                    ]
+                    if alert_dicts
+                    else []
+                )
+                should_analyze, stocks_to_analyze = (
+                    financial_manager.should_analyze_financial_reports(
+                        alert_stock_codes
+                    )
+                )
+                # 从Session获取警报列表
+                alert_dicts = session.get_alerts_as_dicts()
+                # 提取股票代码列表
+                alert_stock_codes = (
+                    [alert.get("stock_code") for alert in alert_dicts]
+                    if alert_dicts
+                    else []
+                )
+                should_analyze, stocks_to_analyze = (
+                    financial_manager.should_analyze_financial_reports(
+                        alert_stock_codes
+                    )
+                )
+
+                financial_manager = FinancialReportManager(
+                    config,
+                    announcement_fetcher,
+                    financial_llm_analyzer,
+                    financial_report_fetcher=None,  # 让管理器自动创建
+                    content_fetcher=content_fetcher,
+                )
+                # 从Session获取警报列表
+                alert_stocks = session.get_alerts_as_dicts()
                 should_analyze, stocks_to_analyze = (
                     financial_manager.should_analyze_financial_reports(alert_stocks)
                 )
@@ -197,6 +250,7 @@ def run_daily_task():
                     financial_analysis_results = (
                         financial_manager.analyze_financial_reports(stocks_to_analyze)
                     )
+                    session.financial_analysis_results = financial_analysis_results
                     logger.info(
                         f"财报分析完成: {len(financial_analysis_results)}只股票有结果"
                     )
@@ -204,6 +258,7 @@ def run_daily_task():
                     logger.info("无需财报分析")
             except Exception as e:
                 logger.error(f"财报分析失败: {e}", exc_info=True)
+                session.errors.append(f"财报分析失败: {e}")
 
         # 7. 运行回测分析（可选）
         backtest_results = None
@@ -227,25 +282,12 @@ def run_daily_task():
             logger.info("回测功能已禁用，跳过回测分析")
 
         # 8. 发送邮件（无论是否有满足条件的股票都发送日报）
-        if alert_stocks:
-            logger.info(f"发现{len(alert_stocks)}只满足条件的股票: {alert_stocks}")
-            notifier.send_alert(
-                alert_stocks,
-                stock_data,
-                analysis_results,
-                announcements,
-                financial_analysis_results,
-                backtest_results,
-            )
+        if session.alerts:
+            logger.info(f"发现{len(session.alerts)}个满足条件的警报")
+            notifier.send_from_session(session)
         else:
             logger.info("没有满足条件的股票，发送每日报告")
-            notifier.send_daily_report(
-                stock_data,
-                analysis_results,
-                announcements,
-                financial_analysis_results,
-                backtest_results,
-            )
+            notifier.send_daily_report_from_session(session)
         logger.info("每日任务执行完成")
     except Exception as e:
         logger.error(f"执行任务时发生错误: {e}", exc_info=True)

@@ -183,6 +183,13 @@ class SessionContext(BaseModel):
     stocks_data: dict[str, StockPriceData] = Field(default_factory=dict)
     alerts: list[AlertStock] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)  # 错误日志字段
+    # 扩展字段：用于存储非股票数据流
+    analysis_results: dict[str, dict] = Field(default_factory=dict)  # LLM基本面分析
+    announcements: dict[str, list] = Field(default_factory=dict)  # 公告数据
+    financial_analysis_results: dict[str, list] = Field(
+        default_factory=dict
+    )  # 财报分析
+    backtest_results: Optional[list] = None  # 回测结果
 
     def get_all_dataframe(self):
         """获取所有股票合并DataFrame（兼容旧代码）"""
