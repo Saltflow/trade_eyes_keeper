@@ -202,48 +202,21 @@ def run_daily_task():
                     financial_report_fetcher=None,  # 让管理器自动创建
                     content_fetcher=content_fetcher,
                 )
-                # 从Session获取警报列表
-                alert_dicts = session.get_alerts_as_dicts()
-                # 提取股票代码列表
+                # 从Session获取警报列表并提取股票代码（确保类型为List[str]）
+                alert_stocks_dicts = session.get_alerts_as_dicts()
                 alert_stock_codes = (
                     [
-                        alert.get("stock_code")
-                        for alert in alert_dicts
-                        if alert.get("stock_code")
+                        str(alert.get("stock_code"))
+                        for alert in alert_stocks_dicts
+                        if alert.get("stock_code") is not None
                     ]
-                    if alert_dicts
+                    if alert_stocks_dicts
                     else []
                 )
                 should_analyze, stocks_to_analyze = (
                     financial_manager.should_analyze_financial_reports(
                         alert_stock_codes
                     )
-                )
-                # 从Session获取警报列表
-                alert_dicts = session.get_alerts_as_dicts()
-                # 提取股票代码列表
-                alert_stock_codes = (
-                    [alert.get("stock_code") for alert in alert_dicts]
-                    if alert_dicts
-                    else []
-                )
-                should_analyze, stocks_to_analyze = (
-                    financial_manager.should_analyze_financial_reports(
-                        alert_stock_codes
-                    )
-                )
-
-                financial_manager = FinancialReportManager(
-                    config,
-                    announcement_fetcher,
-                    financial_llm_analyzer,
-                    financial_report_fetcher=None,  # 让管理器自动创建
-                    content_fetcher=content_fetcher,
-                )
-                # 从Session获取警报列表
-                alert_stocks = session.get_alerts_as_dicts()
-                should_analyze, stocks_to_analyze = (
-                    financial_manager.should_analyze_financial_reports(alert_stocks)
                 )
                 if should_analyze:
                     logger.info(f"需要财报分析: {stocks_to_analyze}")

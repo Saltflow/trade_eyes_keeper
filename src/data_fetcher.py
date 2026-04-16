@@ -515,8 +515,15 @@ class StockDataFetcher:
             session.errors.append("股票数据缺少stock_code列")
             return
 
-        for stock_code in stock_data_df["stock_code"].unique():
-            stock_df = stock_data_df[stock_data_df["stock_code"] == stock_code]
+        # 获取所有唯一的股票代码（numpy.ndarray -> List[str]）
+        unique_stock_codes = stock_data_df["stock_code"].unique().tolist()
+        for stock_code in unique_stock_codes:
+            # 明确提取为DataFrame（处理loc可能返回Series的情况）
+            stock_df = stock_data_df.loc[stock_data_df["stock_code"] == stock_code]
+            if isinstance(stock_df, pd.Series):
+                stock_df = pd.DataFrame([stock_df])
+            else:
+                stock_df = stock_df.copy()
             success = session_manager.update_stock_from_dataframe(
                 session, stock_code, stock_df
             )
