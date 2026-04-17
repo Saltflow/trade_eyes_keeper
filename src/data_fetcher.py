@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Optional, Dict, cast
 
 from .cache_manager import CacheManager
-from .historical_data_manager import HistoricalDataManager
 from .technical_indicators import TechnicalIndicators
 from .models.converters import dataframe_to_stock_price_data
 
@@ -61,8 +60,8 @@ class StockDataFetcher:
         self.timezone = pytz.timezone(timezone_str)
 
         # 初始化技术指标计算器（用于多锚点警报）
-        self.historical_data_manager = HistoricalDataManager(config, self.cache_manager)
-        self.technical_indicators = TechnicalIndicators(self.historical_data_manager)
+        # 注意：需要在 fetch_to_session 中设置 session_context
+        self.technical_indicators = TechnicalIndicators()
 
     def _should_bypass_cache(self, cached_data):
         """
@@ -344,6 +343,9 @@ class StockDataFetcher:
             from .session_manager import SessionManager
 
             session_manager = SessionManager(self.config)
+
+        # 设置 technical_indicators 的 session_context
+        self.technical_indicators.session_context = session
 
         # 直接实现数据获取逻辑（不依赖fetch_stock_data）
         all_data = []

@@ -1,26 +1,66 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+技术指标计算器 - Session统一数据源版本
+从 SessionContext 读取锚点，不再实时计算
+"""
+
 import logging
-import random
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
+import warnings
 
 logger = logging.getLogger(__name__)
 
 
 class TechnicalIndicators:
-    def __init__(self, historical_data_manager):
-        self.hdm = historical_data_manager
+    """技术指标计算器 - 从 Session 读取版本"""
+
+    def __init__(self, session_manager=None, session_context=None):
+        """
+        初始化技术指标计算器
+
+        Args:
+            session_manager: SessionManager 实例（可选）
+            session_context: SessionContext 实例（可选，优先使用）
+        """
+        self.session_manager = session_manager
+        self.session_context = session_context
         self._cache = {}
-        random.seed(random.randint(1, 10000))
+        logger.info("TechnicalIndicators 初始化完成（Session读取版本）")
+
+    def _get_stock_data(self, stock_code: str):
+        """从 Session 获取股票数据"""
+        if self.session_context and stock_code in self.session_context.stocks_data:
+            return self.session_context.stocks_data[stock_code]
+
+        if self.session_manager:
+            # 如果有 session_manager，但没有直接的 session_context
+            # 这里假设我们需要通过其他方式获取，或者返回 None
+            logger.warning(
+                f"TechnicalIndicators 需要 SessionContext 才能获取 {stock_code} 的数据"
+            )
+
+        logger.warning(f"Session 中无股票数据: {stock_code}")
+        return None
 
     def calculate_ma(self, data, window, price_col="close"):
-        """计算移动平均"""
+        """
+        计算移动平均（保留用于向后兼容）
+
+        已废弃：建议从 SessionContext 读取预计算的锚点
+        """
+        warnings.warn(
+            "calculate_ma 已废弃，建议从 SessionContext 读取预计算的锚点",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        import pandas as pd
+        import numpy as np
+
         if data.empty or price_col not in data.columns:
             return pd.Series([], dtype=float)
 
         try:
             ma = data[price_col].rolling(window=window, min_periods=1).mean()
-            # 验证
             if ma.notnull().any():
                 valid = ma[ma.notnull()]
                 price = data[price_col][valid.index]
@@ -31,74 +71,85 @@ class TechnicalIndicators:
             return pd.Series([np.nan] * len(data), index=data.index)
 
     def calculate_weekly_ma(self, stock_code, window, weeks=None):
-        """计算周线MA"""
-        cache_key = f"weekly_ma_{stock_code}_{window}"
-        if cache_key in self._cache:
-            return self._cache[cache_key]
+        """
+        计算周线MA（保留用于向后兼容）
 
-        try:
-            weekly_data = self.hdm.get_weekly_data(stock_code, weeks)
-            if weekly_data.empty or len(weekly_data) < window:
-                return None
+        已废弃：建议从 SessionContext 读取预计算的锚点
+        """
+        warnings.warn(
+            "calculate_weekly_ma 已废弃，建议从 SessionContext 读取预计算的锚点",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
-            ma_series = self.calculate_ma(weekly_data, window, "close")
-            if ma_series.empty or ma_series.isnull().all():
-                return None
-
-            latest_ma = ma_series.iloc[-1]
-            latest_close = weekly_data["close"].iloc[-1]
-            if abs(latest_ma - latest_close) / latest_close > 0.5:
-                logger.warning(f"周线MA异常: {stock_code}")
-
-            self._cache[cache_key] = latest_ma
-            return latest_ma
-        except Exception as e:
-            logger.error(f"周线MA错误: {e}")
+        stock_data = self._get_stock_data(stock_code)
+        if stock_data is None:
             return None
+
+        if window == 20 and stock_data.wma20 is not None:
+            return stock_data.wma20
+        elif window == 30 and stock_data.wma30 is not None:
+            return stock_data.wma30
+        elif window == 50 and stock_data.wma50 is not None:
+            return stock_data.wma50
+
+        logger.warning(f"Session 中无 wma{window} 数据: {stock_code}")
+        return None
 
     def calculate_daily_ma(self, stock_code, window, days=None):
-        """计算日线MA"""
-        cache_key = f"daily_ma_{stock_code}_{window}"
-        if cache_key in self._cache:
-            return self._cache[cache_key]
+        """
+        计算日线MA（保留用于向后兼容）
 
-        try:
-            end_date = datetime.now().strftime("%Y%m%d")
-            start_date = (datetime.now() - timedelta(days=window * 2)).strftime(
-                "%Y%m%d"
-            )
+        已废弃：建议从 SessionContext 读取预计算的锚点
+        """
+        warnings.warn(
+            "calculate_daily_ma 已废弃，建议从 SessionContext 读取预计算的锚点",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
-            daily_data = self.hdm.get_historical_data(stock_code, start_date, end_date)
-            if daily_data.empty:
-                return None
-
-            ma_series = self.calculate_ma(daily_data, window, "close")
-            if ma_series.empty or ma_series.isnull().all():
-                return None
-
-            latest_ma = ma_series.iloc[-1]
-            if "close" in daily_data.columns:
-                latest_close = daily_data["close"].iloc[-1]
-                if abs(latest_ma - latest_close) / latest_close > 0.3:
-                    logger.warning(f"日线MA异常: {stock_code}")
-
-            self._cache[cache_key] = latest_ma
-            return latest_ma
-        except Exception as e:
-            logger.error(f"日线MA错误: {e}")
+        stock_data = self._get_stock_data(stock_code)
+        if stock_data is None:
             return None
 
+        if window == 60 and stock_data.ma60 is not None:
+            return stock_data.ma60
+
+        logger.warning(f"Session 中无 ma{window} 数据: {stock_code}")
+        return None
+
     def get_all_anchors(self, stock_code):
-        """计算所有锚点"""
+        """
+        获取所有锚点 - 从 Session 读取
+
+        Args:
+            stock_code: 股票代码
+
+        Returns:
+            dict: 包含所有锚点的字典 {'ma60': ..., 'wma20': ..., ...}
+        """
+        stock_data = self._get_stock_data(stock_code)
+        if stock_data is None:
+            logger.warning(f"无法获取股票数据，返回空锚点: {stock_code}")
+            return {
+                "ma60": None,
+                "wma20": None,
+                "wma30": None,
+                "wma50": None,
+            }
+
         anchors = {
-            "ma60": self.calculate_daily_ma(stock_code, 60),
-            "wma20": self.calculate_weekly_ma(stock_code, 20),
-            "wma30": self.calculate_weekly_ma(stock_code, 30),
-            "wma50": self.calculate_weekly_ma(stock_code, 50),
+            "ma60": stock_data.ma60,
+            "wma20": stock_data.wma20,
+            "wma30": stock_data.wma30,
+            "wma50": stock_data.wma50,
         }
-        valid = sum(1 for v in anchors.values() if v is not None)
-        logger.info(f"锚点计算: {stock_code}, 有效{valid}/4")
+
+        valid_count = sum(1 for v in anchors.values() if v is not None)
+        logger.info(f"锚点读取: {stock_code}, 有效{valid_count}/4")
         return anchors
 
     def clear_cache(self):
+        """清空缓存"""
         self._cache.clear()
+        logger.debug("TechnicalIndicators 缓存已清空")

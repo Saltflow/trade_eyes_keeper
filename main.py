@@ -246,6 +246,8 @@ def run_daily_task():
                 backtest_results = backtest_framework.get_backtest_results()
                 if backtest_results:
                     logger.info(f"回测分析完成，共{len(backtest_results)}只股票")
+                    # 把回测结果存入 session，供邮件发送器使用
+                    session.backtest_results = backtest_results
                 else:
                     logger.warning("回测分析未返回结果")
             except Exception as e:

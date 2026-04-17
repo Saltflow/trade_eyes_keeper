@@ -1,5 +1,5 @@
 """
-近两年监控股票回测框架 - 步骤7：baostock缓存集成
+近两年监控股票回测框架 - SessionManager统一数据源版本
 """
 
 import logging
@@ -12,15 +12,20 @@ logger = logging.getLogger(__name__)
 
 
 class BacktestFramework:
-    """回测框架 - baostock缓存集成版本"""
+    """回测框架 - SessionManager统一数据源版本"""
 
-    def __init__(self, config_path="config/config.yaml"):
+    def __init__(self, config_path="config/config.yaml", session_manager=None):
+        """
+        初始化回测框架
+
+        Args:
+            config_path: 配置文件路径
+            session_manager: SessionManager实例（可选，自动创建）
+        """
         self.config_path = Path(config_path)
         self.config = None
         self.stock_codes = []
-        self.web_crawler = None
-        self.cache_manager = None
-        self.historical_data_manager = None
+        self.session_manager = session_manager
         self.data_cache = {}
         self.random_seed = random.randint(1, 1000)
         random.seed(self.random_seed)
@@ -46,95 +51,62 @@ class BacktestFramework:
         except Exception:
             return False
 
-    def _init_web_crawler(self):
+    def _init_session_manager(self):
+        """初始化SessionManager（如果未提供）"""
         try:
-            from src.web_crawler import StockWebCrawler
+            if self.session_manager is None:
+                from src.session_manager import SessionManager
 
-            self.web_crawler = StockWebCrawler(self.config or {})
-            return True
-        except Exception:
-            return False
-
-    def _init_cache_managers(self):
-        """初始化缓存管理器和历史数据管理器"""
-        try:
-            from src.cache_manager import CacheManager
-            from src.historical_data_manager import HistoricalDataManager
-
-            # 创建缓存管理器
-            self.cache_manager = CacheManager(self.config or {})
-
-            # 创建历史数据管理器
-            self.historical_data_manager = HistoricalDataManager(
-                config=self.config or {}, cache_manager=self.cache_manager
-            )
-
-            logger.info("缓存管理器和历史数据管理器初始化成功")
+                self.session_manager = SessionManager(self.config or {})
+                logger.info("SessionManager 初始化成功")
             return True
         except Exception as e:
-            logger.error(f"初始化缓存管理器失败: {e}")
+            logger.error(f"SessionManager 初始化失败: {e}")
             return False
 
     def fetch_historical_data(self, stock_code, days=730):
-        """获取历史数据，优先使用缓存，后备使用web_crawler"""
+        """
+        获取历史数据 - 使用SessionManager统一入口
+
+        Args:
+            stock_code: 股票代码
+            days: 需要的历史天数
+
+        Returns:
+            DataFrame: 历史数据
+        """
         # 检查内存缓存
         if stock_code in self.data_cache:
             return self.data_cache[stock_code]
 
-        # 尝试使用历史数据管理器（baostock缓存）
+        # 使用SessionManager获取数据
         try:
-            if self.historical_data_manager is None:
-                if not self._init_cache_managers():
-                    logger.warning(
-                        f"缓存管理器初始化失败，回退到web_crawler: {stock_code}"
+            if self.session_manager is None:
+                if not self._init_session_manager():
+                    logger.error(
+                        f"SessionManager初始化失败，无法获取数据: {stock_code}"
                     )
-                    return self._fetch_from_web_crawler(stock_code, days)
+                    return None
 
-            # 计算日期范围
-            end_date = datetime.now().strftime("%Y%m%d")
-            start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
-
-            # 从历史数据管理器获取
-            data = self.historical_data_manager.get_historical_data(
-                stock_code, start_date, end_date
-            )
+            # 使用SessionManager的统一接口
+            if self.session_manager:
+                data = self.session_manager.get_backtest_data(stock_code, days)
+            else:
+                data = None
 
             if data is not None and not data.empty:
                 # 缓存到内存
                 self.data_cache[stock_code] = data
                 logger.info(
-                    f"从历史数据管理器获取数据成功: {stock_code} ({len(data)}条记录)"
+                    f"从SessionManager获取数据成功: {stock_code} ({len(data)}条记录)"
                 )
                 return data
             else:
-                logger.warning(
-                    f"历史数据管理器返回空数据，回退到web_crawler: {stock_code}"
-                )
-                return self._fetch_from_web_crawler(stock_code, days)
+                logger.warning(f"SessionManager返回空数据: {stock_code}")
+                return None
 
         except Exception as e:
-            logger.error(f"历史数据管理器获取失败: {stock_code}, 错误: {e}")
-            return self._fetch_from_web_crawler(stock_code, days)
-
-    def _fetch_from_web_crawler(self, stock_code, days=730):
-        """从web_crawler获取数据（后备方案）"""
-        if not self.web_crawler and not self._init_web_crawler():
-            return None
-
-        if self.web_crawler is None:
-            return None
-
-        try:
-            data = self.web_crawler.fetch_stock_data(stock_code, days)
-            if data is not None and not data.empty:
-                self.data_cache[stock_code] = data
-                logger.info(
-                    f"从web_crawler获取数据成功: {stock_code} ({len(data)}条记录)"
-                )
-                return data
-            return None
-        except Exception as e:
-            logger.error(f"web_crawler获取失败: {stock_code}, 错误: {e}")
+            logger.error(f"SessionManager获取数据失败: {stock_code}, 错误: {e}")
             return None
 
     def _calculate_start_dates(self):
@@ -198,196 +170,136 @@ class BacktestFramework:
             ]
             if start_price_row.empty or end_price_row.empty:
                 return None
+
             start_price = start_price_row.iloc[0]["close"]
             end_price = end_price_row.iloc[0]["close"]
+
             if start_price <= 0 or end_price <= 0:
                 return None
+
             shares = self._calculate_buy_shares(amount, start_price)
-            if shares == 0:
+            if shares <= 0:
                 return None
+
             buy_cost = self._calculate_buy_cost(shares, start_price)
-            current_value = shares * end_price
-            profit = current_value - buy_cost
-            profit_pct = profit / buy_cost if buy_cost > 0 else 0
+            sell_value = shares * end_price * (1 - 0.002)  # 卖出佣金
+            profit = sell_value - buy_cost
+            profit_pct = (profit / buy_cost) * 100 if buy_cost > 0 else 0
+
             return {
                 "stock_code": stock_code,
-                "start_date": start_date_trading,
-                "end_date": end_date_trading,
-                "start_price": round(start_price, 4),
-                "end_price": round(end_price, 4),
+                "start_date": start_date_trading.strftime("%Y-%m-%d"),
+                "end_date": end_date_trading.strftime("%Y-%m-%d"),
+                "start_price": round(start_price, 2),
+                "end_price": round(end_price, 2),
                 "shares": shares,
                 "buy_cost": round(buy_cost, 2),
-                "current_value": round(current_value, 2),
+                "sell_value": round(sell_value, 2),
                 "profit": round(profit, 2),
-                "profit_pct": round(profit_pct * 100, 2),
-                "amount": amount,
+                "profit_pct": round(profit_pct, 2),
             }
-        except Exception:
+        except Exception as e:
+            logger.warning(f"计算股票 {stock_code} 收益失败: {e}")
             return None
 
-    def _calculate_all_returns(self, amount=10000):
-        """计算所有股票四个起始点的收益"""
-        results = []
-        dates = self._calculate_start_dates()
-        date_labels = ["2年前", "1年前", "6个月前", "2个月前"]
+    def run_backtest(self, initial_amount=10000):
+        """
+        运行回测
+
+        Args:
+            initial_amount: 初始资金（每只股票）
+
+        Returns:
+            list: 回测结果列表（email_notifier期望的格式）
+        """
+        if not self.load_config():
+            logger.error("加载配置失败")
+            return []
+
+        if not self.stock_codes:
+            logger.warning("没有股票代码")
+            return []
+
+        logger.info(
+            f"开始回测，共{len(self.stock_codes)}只股票，初始资金{initial_amount}元"
+        )
+
+        start_dates = self._calculate_start_dates()
+        # 按股票分组的结果
+        stock_results_dict = {}
 
         for stock_code in self.stock_codes:
-            stock_results = {"stock_code": stock_code, "returns": []}
-            for label, start_date in zip(date_labels, dates):
+            stock_returns = []
+            for start_date in start_dates:
                 result = self._calculate_single_stock_return(
-                    stock_code, start_date, amount
+                    stock_code, start_date, initial_amount
                 )
                 if result:
-                    stock_results["returns"].append(
+                    # 转换为email_notifier期望的格式
+                    stock_returns.append(
                         {
-                            "period": label,
-                            "start_date": result["start_date"],
-                            "end_date": result["end_date"],
-                            "start_price": result["start_price"],
-                            "end_price": result["end_price"],
-                            "shares": result["shares"],
-                            "buy_cost": result["buy_cost"],
-                            "current_value": result["current_value"],
-                            "profit": result["profit"],
-                            "profit_pct": result["profit_pct"],
+                            "current_value": result.get("sell_value"),
+                            "profit_pct": result.get("profit_pct"),
                         }
                     )
                 else:
-                    stock_results["returns"].append(
-                        {"period": label, "error": "计算失败"}
-                    )
-            results.append(stock_results)
+                    stock_returns.append({"error": True})
+
+            stock_results_dict[stock_code] = stock_returns
+
+        # 转换为email_notifier期望的最终格式
+        results = []
+        for stock_code, returns in stock_results_dict.items():
+            results.append(
+                {
+                    "stock_code": stock_code,
+                    "returns": returns,
+                }
+            )
+
+        logger.info(f"回测完成，共{len(results)}只股票的结果")
         return results
 
-    def get_backtest_results(self):
-        """获取回测结果数据（公共接口，不包含邮件发送）"""
-        if not self.load_config():
-            return None
+    def get_backtest_results(self, initial_amount=10000):
+        """获取回测结果（向后兼容的别名）"""
+        return self.run_backtest(initial_amount)
 
-        # 尝试初始化缓存管理器（不强制要求成功）
-        try:
-            self._init_cache_managers()
-        except Exception as e:
-            logger.warning(f"缓存管理器初始化失败，将使用web_crawler后备: {e}")
+    def generate_report(self, results):
+        """生成回测报告"""
+        if not results:
+            return "没有回测结果"
 
-        # 尝试初始化web_crawler（不强制要求成功）
-        try:
-            self._init_web_crawler()
-        except Exception as e:
-            logger.warning(f"web_crawler初始化失败: {e}")
+        import pandas as pd
 
-        # 精简测试（可选，保持与run_backtest兼容）
-        if self.stock_codes:
-            test_stock = random.choice(self.stock_codes)
-            test_data = self.fetch_historical_data(test_stock, days=10)
-            if test_data is not None:
-                print(f"✅ 测试通过: {test_stock} ({len(test_data)}条记录)")
-                if self.historical_data_manager:
-                    print("   数据源: baostock缓存")
-                elif self.web_crawler:
-                    print("   数据源: web_crawler")
-                else:
-                    print("   数据源: 未知")
-            else:
-                print(f"⚠️  测试失败: {test_stock} (无数据)")
+        df = pd.DataFrame(results)
 
-        # 计算所有股票收益
-        print("计算所有股票四个起始点收益...")
-        results = self._calculate_all_returns(amount=10000)
+        report = []
+        report.append("=" * 80)
+        report.append("股票回测报告")
+        report.append("=" * 80)
+        report.append(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        report.append(f"回测股票数: {len(self.stock_codes)}")
+        report.append(f"回测结果数: {len(results)}")
+        report.append("")
 
-        return results
+        # 按时间段分组统计
+        for period_days in sorted(df["period_days"].unique()):
+            period_df = df[df["period_days"] == period_days]
+            avg_profit = period_df["profit_pct"].mean()
+            report.append(f"--- {period_days}天周期 ---")
+            report.append(f"平均收益率: {avg_profit:.2f}%")
+            report.append(f"样本数: {len(period_df)}")
+            report.append("")
 
-    def _generate_html_report(self, results):
-        """生成HTML报告表格"""
-        # 生成表格部分
-        table_html = '<table style="border-collapse: collapse; width: 100%; margin-top: 20px;">\n'
-        table_html += "    <thead>\n"
-        table_html += "        <tr>\n"
-        table_html += '            <th style="border: 1px solid #ddd; padding: 12px; text-align: center; background-color: #f2f2f2; font-weight: bold;">股票代码</th>\n'
-        table_html += '            <th style="border: 1px solid #ddd; padding: 12px; text-align: center; background-color: #f2f2f2; font-weight: bold;">2年前持有至今</th>\n'
-        table_html += '            <th style="border: 1px solid #ddd; padding: 12px; text-align: center; background-color: #f2f2f2; font-weight: bold;">1年前持有至今</th>\n'
-        table_html += '            <th style="border: 1px solid #ddd; padding: 12px; text-align: center; background-color: #f2f2f2; font-weight: bold;">6个月前持有至今</th>\n'
-        table_html += '            <th style="border: 1px solid #ddd; padding: 12px; text-align: center; background-color: #f2f2f2; font-weight: bold;">2个月前持有至今</th>\n'
-        table_html += "        </tr>\n"
-        table_html += "    </thead>\n"
-        table_html += "    <tbody>\n"
+        report.append("=" * 80)
+        report.append("详细结果:")
+        report.append(df.to_string(index=False))
+        report.append("=" * 80)
 
-        for stock_result in results:
-            table_html += "        <tr>\n"
-            table_html += f'            <td style="border: 1px solid #ddd; padding: 12px; text-align: center;">{stock_result["stock_code"]}</td>\n'
-            for ret in stock_result["returns"]:
-                if "error" in ret:
-                    table_html += '            <td style="border: 1px solid #ddd; padding: 12px; text-align: center; color: red;">计算失败</td>\n'
-                else:
-                    value = ret["current_value"]
-                    profit_pct = ret["profit_pct"]
-                    color = "green" if profit_pct >= 0 else "red"
-                    table_html += f'            <td style="border: 1px solid #ddd; padding: 12px; text-align: center; color: {color};">{value:.2f}元<br><small>({profit_pct:+.2f}%)</small></td>\n'
-            table_html += "        </tr>\n"
-
-        table_html += "    </tbody>\n"
-        table_html += "</table>\n"
-
-        # 生成完整的HTML内容（包含标题和说明）
-        html = f"""
-<div style="font-family: Arial, sans-serif; margin: 20px;">
-    <div style="text-align: center; margin-bottom: 30px;">
-        <h1 style="color: #333; border-bottom: 1px solid #ddd; padding-bottom: 10px;">近两年监控股票回测报告</h1>
-        <p style="color: #666; font-size: 14px;">生成时间：{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
-        <p>假设每个起始点买入1万元，计算到今天的价值（交易成本：买入千分之2）</p>
-    </div>
-    
-    {table_html}
-    
-    <div style="margin-top: 30px; font-size: 12px; color: #888;">
-        <p>注：</p>
-        <ul>
-            <li>数据来源：新浪财经/腾讯财经/东方财富公开数据</li>
-            <li>交易成本：买入时收取千分之2（0.2%）手续费，卖出无费用</li>
-            <li>最小交易单位：100股（手）</li>
-            <li>不考虑分红和分红再投资</li>
-            <li>日期处理：自动匹配最近的交易日</li>
-        </ul>
-    </div>
-</div>
-"""
-        return html
-
-    def run_backtest(self):
-        # 获取回测结果（调用公共接口）
-        results = self.get_backtest_results()
-        if results is None:
-            return False
-
-        # 打印摘要
-        for stock_result in results:
-            print(f"\n股票 {stock_result['stock_code']}:")
-            for ret in stock_result["returns"]:
-                if "error" in ret:
-                    print(f"  {ret['period']}: {ret['error']}")
-                else:
-                    print(
-                        f"  {ret['period']}: 买入{ret['shares']}股，当前价值{ret['current_value']:.2f}元 (收益{ret['profit_pct']:.2f}%)"
-                    )
-
-        # 生成HTML报告
-        print("\n生成HTML报告...")
-        html_content = self._generate_html_report(results)
-        report_path = "backtest_report.html"
-        with open(report_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
-        print(f"HTML报告已保存到: {report_path}")
-
-        return True
+        return "\n".join(report)
 
 
 if __name__ == "__main__":
     framework = BacktestFramework()
-    success = framework.run_backtest()
-
-    if success:
-        print("\n✅ 回测框架步骤8（邮件发送集成）运行成功!")
-    else:
-        print("\n❌ 回测框架步骤8运行失败")
-
-    exit(0 if success else 1)
+    results = framework.run_backtest()
+    print(framework.generate_report(results))

@@ -47,11 +47,22 @@ class StockPriceData(BaseModel):
     last_updated: datetime
     latest: PriceBar
     ma60: Optional[float] = None
+    wma20: Optional[float] = None
+    wma30: Optional[float] = None
+    wma50: Optional[float] = None
     dividend_per_share: Optional[float] = None
     dividend_yield: Optional[float] = None
     pe_ratio: Optional[float] = None
 
-    @validator("ma60", "dividend_per_share", "dividend_yield", "pe_ratio")
+    @validator(
+        "ma60",
+        "wma20",
+        "wma30",
+        "wma50",
+        "dividend_per_share",
+        "dividend_yield",
+        "pe_ratio",
+    )
     def round_indicators(cls, v):
         if v is not None:
             return round(v, 3)
@@ -98,6 +109,9 @@ class StockPriceData(BaseModel):
                     "volume": self.latest.volume,
                     "amount": self.latest.amount,
                     "ma60": self.ma60,
+                    "wma20": self.wma20,
+                    "wma30": self.wma30,
+                    "wma50": self.wma50,
                     "dividend_per_share": self.dividend_per_share,
                     "dividend_yield": self.dividend_yield,
                     "pe_ratio": self.pe_ratio,

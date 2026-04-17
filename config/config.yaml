@@ -25,7 +25,10 @@ backtest:
   cache_days: 7
 
 data_source:
-  type: web_crawler           # 数据源类型：web_crawler 或 baostock
+  type: web_crawler           # 数据源类型：web_crawler（主数据源）
+  primary: web_crawler        # 主数据源
+  secondary: baostock         # 备用数据源
+  etf_force_web_crawler: true  # ETF强制使用web_crawler（除权支持更好）
   fallback_to_web_crawler: true  # baostock失败时是否回退到web_crawler
 email:
   enable_ssl: true
