@@ -40,15 +40,12 @@ class DataSourceSelector:
 
     def _is_etf(self, stock_code: str) -> bool:
         """判断是否为ETF基金"""
-        stock_code = str(stock_code)
-        etf_prefixes = ("51", "52", "15", "16", "18", "58")
-        if stock_code.startswith(etf_prefixes):
-            if stock_code.isdigit() and len(stock_code) == 6:
-                return True
-        special_etfs = {"508091", "513910", "588000"}
-        if stock_code in special_etfs:
-            return True
-        return False
+        try:
+            from .utils.etf_detector import is_etf
+        except ImportError:
+            from utils.etf_detector import is_etf
+
+        return is_etf(stock_code)
 
     def get_historical_data(
         self,

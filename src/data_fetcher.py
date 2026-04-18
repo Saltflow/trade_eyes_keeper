@@ -405,20 +405,15 @@ class StockDataFetcher:
                 stock_data = self.web_crawler.fetch_stock_data(stock_code, days=120)
 
                 if stock_data is not None and not stock_data.empty:
-                    # 计算MA60
-                    stock_data["ma60"] = stock_data["close"].rolling(window=60).mean()
                     stock_data["stock_code"] = stock_code
+
+                    # 根据配置计算所有技术指标
+                    stock_data = self.technical_indicators.calculate_indicators(
+                        stock_data, stock_code=stock_code
+                    )
 
                     # 只保留最新一天的数据
                     latest_data = stock_data.iloc[-1:].copy()
-
-                    # 计算多锚点指标
-                    anchors = self.technical_indicators.get_all_anchors(stock_code)
-                    for anchor_name, value in anchors.items():
-                        if value is not None:
-                            latest_data[anchor_name] = value
-                        else:
-                            latest_data[anchor_name] = np.nan
 
                     # 检查数据日期
                     if not latest_data.empty:
