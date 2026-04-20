@@ -21,6 +21,7 @@ from models.converters import (
     dataframe_to_stock_price_data,
     alert_dict_to_alert_stock,
 )
+from utils import safe_session_write
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +188,7 @@ class SessionManager:
         """获取Session"""
         return self._sessions.get(session_id)
 
+    @safe_session_write
     def update_stock_data(
         self, session: SessionContext, stock_code: str, data: StockPriceData
     ) -> bool:
@@ -195,6 +197,9 @@ class SessionManager:
         if session is None:
             logger.error("update_stock_data失败: Session为None")
             return False
+        # 支持整数和字符串类型的股票代码
+        if isinstance(stock_code, int):
+            stock_code = str(stock_code)
         if not stock_code or not isinstance(stock_code, str):
             logger.error(f"update_stock_data失败: 股票代码无效 {stock_code}")
             return False
@@ -224,6 +229,7 @@ class SessionManager:
             session.errors.append(error_msg)
             return False
 
+    @safe_session_write
     def update_stock_from_dataframe(
         self, session: SessionContext, stock_code: str, df: pd.DataFrame, **kwargs
     ) -> bool:
@@ -232,6 +238,9 @@ class SessionManager:
         if session is None:
             logger.error("update_stock_from_dataframe失败: Session为None")
             return False
+        # 支持整数和字符串类型的股票代码
+        if isinstance(stock_code, int):
+            stock_code = str(stock_code)
         if not stock_code or not isinstance(stock_code, str):
             logger.error(f"update_stock_from_dataframe失败: 股票代码无效 {stock_code}")
             return False

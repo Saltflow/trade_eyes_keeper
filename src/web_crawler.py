@@ -609,32 +609,6 @@ class StockWebCrawler:
             # 实际生产环境可以接入雅虎财经等补充历史数据
             records = [current_data]
 
-            # 为了满足技术指标计算，我们生成一些模拟历史数据（仅用于演示）
-            # 实际应该接入雅虎财经API获取真实历史数据
-            base_price = current_data["close"]
-            for i in range(1, min(days, 30)):
-                date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-                # 简单的随机波动，价格在±5%范围内
-                import random
-
-                change_ratio = 1 + (random.random() - 0.5) * 0.1
-                price = base_price * change_ratio
-                records.append(
-                    {
-                        "date": date,
-                        "open": price * (1 + (random.random() - 0.5) * 0.02),
-                        "close": price,
-                        "high": price * 1.02,
-                        "low": price * 0.98,
-                        "volume": current_data["volume"] * (0.5 + random.random()),
-                        "amount": current_data["amount"] * (0.5 + random.random()),
-                        "amplitude": 2.0,
-                        "change_pct": (change_ratio - 1) * 100,
-                        "change": price - base_price,
-                        "turnover": 0.0,
-                    }
-                )
-
             df = pd.DataFrame(records)
             df["date"] = pd.to_datetime(df["date"])
             df = df.sort_values("date").reset_index(drop=True)
