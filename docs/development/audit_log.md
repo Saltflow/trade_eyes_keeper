@@ -23,8 +23,8 @@
 4. **防循环**：定期运行`@cycle_guard`检查，确保类似问题不重复出现
 
 ### 🗂️ 相关文档
-- [proj4llm.md](../proj4llm.md) - 关键设计决策文档
-- [AGENTS.md](../AGENTS.md) - 开发规范与历史记录
+- [proj4llm.md](../llm/proj4llm.md) - 关键设计决策文档
+- [AGENTS.md](../../AGENTS.md) - 开发规范与历史记录
 
 ---
 
@@ -43,8 +43,8 @@
 2. 建议定期审查本日志以识别系统性错误模式
 
 ### 🗂️ 相关文档
-- [股息数据回归问题调查报告](../docs/股息数据回归问题调查报告.md)
-- [编码问题处理记录](../docs/encoding_issues.md)
+- [股息数据回归问题调查报告](../reports/dividend_regression_report.md)
+- [编码问题处理记录](../reports/encoding_issues.md)
 
 ## [2026-03-19 00:42:57] | 手动调用
 
@@ -64,7 +64,7 @@
 3. 如需添加实验性依赖，应设定评估期限和退出计划
 
 ### 🗂️ 相关文档
-- [AGENTS.md](../AGENTS.md) - 记录了akshare依赖移除的详细决策
+- [AGENTS.md](../../AGENTS.md) - 记录了akshare依赖移除的详细决策
 
 ## [2026-03-21] | src/announcement_fetcher.py
 
@@ -85,8 +85,8 @@
 4. 为公告解析器添加针对新旧HTML结构的专项测试
 
 ### 🗂️ 相关文档
-- [proj4llm.md](../proj4llm.md) - 关键设计决策文档
-- [AGENTS.md](../AGENTS.md) - 开发规范与历史记录
+- [proj4llm.md](../llm/proj4llm.md) - 关键设计决策文档
+- [AGENTS.md](../../AGENTS.md) - 开发规范与历史记录
 
 ---
 
@@ -110,8 +110,8 @@
 3. 继续执行防循环编码验证，重点关注新功能开发
 
 ### 🗂️ 相关文档
-- [proj4llm.md](../proj4llm.md) - 关键设计决策文档
-- [AGENTS.md](../AGENTS.md) - 开发规范与历史记录
+- [proj4llm.md](../llm/proj4llm.md) - 关键设计决策文档
+- [AGENTS.md](../../AGENTS.md) - 开发规范与历史记录
 
 ---
 

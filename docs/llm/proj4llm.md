@@ -303,9 +303,10 @@
 
 ## 🔗 相关文档
 
-- [AGENTS.md](./AGENTS.md) - 开发规范和代理使用指南
-- [README.md](./README.md) - 项目概述和使用说明
-- [pytest.ini](./pytest.ini) - 测试配置
+- [AGENTS.md](../../AGENTS.md) - 开发规范和代理使用指南
+- [README.md](../../README.md) - 项目概述和使用说明
+- [开发规范](../development/conventions.md) - 代码风格与开发实践
+- [架构说明](../architecture.md) - 系统架构与模块职责
 
 ---
 

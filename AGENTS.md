@@ -146,15 +146,14 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 - Run tests before submitting changes (`pytest tests/validation/`)
 - Follow existing patterns and conventions (ruff linting, 88 char lines, double quotes)
 - Prioritize real data over simulated data
-- Document significant changes in `proj4llm.md`
+- Document significant changes in `docs/llm/proj4llm.md` (moved from root `proj4llm.md`)
 - Check for sensitive information before committing
 - Use specialized agents defined in `.opencode/agents/` for specific tasks:
   - `data-source-validator`: Run real system to validate external data sources
   - `narrow-down-designer`: Analyze requirements and break down work
   - `checkpoint-acceptor`: Focus on table checking and sub-function acceptance
   - `cycle_guard`: Detect repetitive error patterns, prevent circular coding
-  - `todosaver`: Save pending todos to docs/todo_backlog.md and clear context
-  - `compaction`: Override built-in English compactor with Chinese version
+  - `todosaver`: Save pending todos to `docs/development/todo_backlog.md` and clear context
   - `mail_checker`: Run system and validate latest email archive for data readiness and format compliance
   - `net-checker`: SSH to remote server, check health-server status and verify endpoint compliance
 
