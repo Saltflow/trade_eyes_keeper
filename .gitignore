@@ -89,3 +89,7 @@ deploy_key*
 
 # Cache files
 cache/
+
+# Config - sensitive (passwords, API keys, email config)
+config/config.yaml
+config/.env
