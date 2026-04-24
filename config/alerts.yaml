@@ -6,6 +6,12 @@ anchors:
   - name: wma20
     type: weekly_ma
     window: 20
+  - name: wma30
+    type: weekly_ma
+    window: 30
+  - name: wma50
+    type: weekly_ma
+    window: 50
 thresholds: [-10, -5, 0, 5, 10, 15]
 boundary_rules:
   neg_right_closed: true

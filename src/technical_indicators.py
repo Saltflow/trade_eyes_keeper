@@ -100,6 +100,57 @@ class TechnicalIndicators:
             logger.warning(f"计算MA{window}失败: {e}")
             return pd.Series([np.nan] * len(data), index=data.index)
 
+    def _calculate_weekly_ma(
+        self,
+        data: pd.DataFrame,
+        window: int,
+        price_col: str = "close",
+    ) -> pd.Series:
+        """
+        计算周线移动平均
+
+        步骤：
+        1. 按周重采样，取每周最后收盘价
+        2. 在周线上算简单MA
+        3. 前向填充回日线
+
+        Args:
+            data: 日线DataFrame，必须含 date 和 price_col 列
+            window: 周窗口数
+            price_col: 价格列名
+
+        Returns:
+            pd.Series: 与原始日线长度一致的周MA值
+        """
+        if data.empty or "date" not in data.columns or price_col not in data.columns:
+            logger.warning(f"数据不足以计算周MA{window}")
+            return pd.Series([np.nan] * len(data), index=data.index)
+
+        try:
+            df = data.copy()
+            # 记录原始行号索引（RangeIndex 0,1,2...），最后恢复用
+            original_index = data.index
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.set_index("date").sort_index()
+
+            # 按周重采样，取每周最后一天收盘价
+            weekly = df[price_col].resample("W-FRI").last()
+
+            # 计算周线MA（min_periods=1 确保数据尚不足时也出值）
+            weekly_ma = weekly.rolling(window=window, min_periods=1).mean()
+
+            # 前向填充回日线：将周MA值填充到对应周的每一天
+            daily_ma = weekly_ma.reindex(df.index, method="ffill")
+
+            # 按日期对齐回原始行号索引：daily_ma 是 DatetimeIndex，
+            # 用 data["date"] 的日期做映射，恢复成 RangeIndex
+            result = daily_ma.reindex(pd.to_datetime(data["date"]))
+            result.index = original_index
+            return result
+        except Exception as e:
+            logger.warning(f"计算周MA{window}失败: {e}")
+            return pd.Series([np.nan] * len(data), index=data.index)
+
     def calculate_indicators(
         self, data: pd.DataFrame, stock_code: Optional[str] = None
     ) -> pd.DataFrame:
@@ -138,9 +189,15 @@ class TechnicalIndicators:
                         + (f" for {stock_code}" if stock_code else "")
                     )
                 elif anchor_type == "weekly_ma":
-                    # 周线移动平均（暂未实现，标记为 None）
-                    result_data[name] = np.nan
-                    logger.debug(f"周线指标 {name} 暂未实现")
+                    # 周线移动平均：日线重采样到周频 → 算MA → 前向填充回日线
+                    weekly = self._calculate_weekly_ma(
+                        result_data, window=window, price_col="close"
+                    )
+                    result_data[name] = weekly
+                    logger.debug(
+                        f"计算指标 {name} (周MA{window}) 完成"
+                        + (f" for {stock_code}" if stock_code else "")
+                    )
                 else:
                     logger.warning(f"未知的指标类型: {anchor_type}")
             except Exception as e:
