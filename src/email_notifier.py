@@ -17,6 +17,8 @@ from email import policy
 from datetime import datetime
 from pathlib import Path
 
+from .chart_generator import generate_combined_chart
+
 logger = logging.getLogger(__name__)
 
 
@@ -71,6 +73,8 @@ class EmailNotifier:
             announcements = session.announcements
             financial_analysis_results = session.financial_analysis_results
             backtest_results = session.backtest_results
+            # 历史数据（由 data_fetcher 暂存，供图表使用）
+            historical_data = getattr(session, "_historical", {})
 
             # 构建邮件主题
             subject = f"股票提醒 - {datetime.now().strftime('%Y-%m-%d')}"
@@ -83,6 +87,7 @@ class EmailNotifier:
                 announcements,
                 financial_analysis_results,
                 backtest_results,
+                historical_data=historical_data,
             )
 
             # 发送邮件
@@ -110,6 +115,8 @@ class EmailNotifier:
             announcements = session.announcements
             financial_analysis_results = session.financial_analysis_results
             backtest_results = session.backtest_results
+            # 历史数据（由 data_fetcher 暂存，供图表使用）
+            historical_data = getattr(session, "_historical", {})
 
             # 构建邮件主题
             subject = f"股票日报 - {datetime.now().strftime('%Y-%m-%d')}"
@@ -122,6 +129,7 @@ class EmailNotifier:
                 announcements,
                 financial_analysis_results,
                 backtest_results,
+                historical_data=historical_data,
             )
 
             # 发送邮件
@@ -314,9 +322,10 @@ class EmailNotifier:
         announcements=None,
         financial_analysis_results=None,
         backtest_results=None,
+        historical_data=None,
     ):
         """
-         构建邮件正文（完整版：4个表格 + LLM分析 + 公告 + 服务器信息 + 财报分析 + 回测分析）
+         构建邮件正文（完整版：4个表格 + LLM分析 + 公告 + 服务器信息 + 财报分析 + 回测分析 + 图表）
 
         Args:
             alert_stocks: 满足条件的股票列表
@@ -325,6 +334,7 @@ class EmailNotifier:
             announcements: 公告数据字典（可选）
             financial_analysis_results: 财报分析结果字典（可选）
             backtest_results: 回测结果列表，格式与backtest_framework.py输出一致（可选）
+            historical_data: 完整历史DataFrame字典 stock_code → DataFrame（可选，供图表使用）
 
         Returns:
             str: 邮件正文（HTML格式）
@@ -905,7 +915,31 @@ class EmailNotifier:
         if backtest_results:
             backtest_section = self._build_backtest_section(backtest_results)
 
-        # 7. 获取服务器信息
+        # 7. 生成走势图表（告警股票的价格 + 最长锚点MA曲线）
+        chart_section = ""
+        if alert_stocks and historical_data:
+            try:
+                b64_png = generate_combined_chart(
+                    historical_data=historical_data,
+                    alerts=alert_stocks,
+                    stock_data=stock_data,
+                    trading_days=60,
+                )
+                if b64_png:
+                    chart_section = f"""
+                    <h3>价格走势图</h3>
+                    <p>近2个月最低价与最长告警锚点移动平均线：</p>
+                    <div style="text-align: center; margin: 20px 0;">
+                        <img src="data:image/png;base64,{b64_png}"
+                             alt="价格走势图"
+                             style="max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 4px;" />
+                    </div>
+                    """
+                    logger.info("走势图表已生成并嵌入邮件")
+            except Exception as e:
+                logger.warning(f"生成走势图表失败: {e}")
+
+        # 8. 获取服务器信息
         server_info = self._get_server_info()
 
         # 7. 构建报警股票部分
@@ -985,6 +1019,7 @@ class EmailNotifier:
             llm_analysis_section=llm_analysis_section,
             financial_analysis_section=financial_analysis_section,
             announcements_section=announcements_section,
+            chart_section=chart_section,
             backtest_section=backtest_section,
             server_hostname=server_info["hostname"],
             server_ip=server_info["ip_address"],

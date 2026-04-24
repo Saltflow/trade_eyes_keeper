@@ -349,6 +349,9 @@ class StockDataFetcher:
 
         # 直接实现数据获取逻辑（不依赖fetch_stock_data）
         all_data = []
+        # 初始化历史数据暂存区（供图表模块使用，不触 Pydantic 模型）
+        if not hasattr(session, "_historical"):
+            object.__setattr__(session, "_historical", {})
 
         for stock_code in self.stocks:
             # 确保股票代码是字符串
@@ -387,6 +390,22 @@ class StockDataFetcher:
                         # 从缓存数据构建DataFrame
                         latest_data = pd.DataFrame([cached_latest_data])
                         all_data.append(latest_data)
+                        # 尝试从CSV加载历史数据供图表使用
+                        try:
+                            data_dir = self.config.get("storage", {}).get(
+                                "data_dir", "./data"
+                            )
+                            csv_file = Path(data_dir) / f"{stock_code}_history.csv"
+                            if csv_file.exists():
+                                hist_df = pd.read_csv(csv_file, parse_dates=["date"])
+                                session._historical[stock_code] = hist_df
+                                logger.debug(
+                                    f"图表: 从CSV加载 {stock_code} 历史数据 ({len(hist_df)} 行)"
+                                )
+                        except Exception as csv_err:
+                            logger.debug(
+                                f"图表: 无法从CSV加载 {stock_code} 历史数据: {csv_err}"
+                            )
                         continue
                     else:
                         logger.warning(f"股票 {stock_code} 缓存数据不完整，重新获取")
@@ -492,6 +511,9 @@ class StockDataFetcher:
 
                     # 保存完整历史数据到CSV
                     self._save_to_csv(stock_code, stock_data)
+
+                    # 暂存完整历史 DataFrame 供图表模块使用
+                    session._historical[stock_code] = stock_data
 
             except Exception as e:
                 logger.error(f"获取股票 {stock_code} 数据失败: {e}")
