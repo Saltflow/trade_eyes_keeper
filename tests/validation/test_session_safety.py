@@ -20,7 +20,7 @@ from unittest.mock import patch, MagicMock
 
 # 导入要测试的模块
 from session_manager import SessionManager
-from schemas import SessionContext, StockPriceData, PriceBar, DataSource, AdjustmentType
+from schemas import SessionContext, StockPriceData, DataSource, AdjustmentType
 from models.converters import dataframe_to_stock_price_data
 from utils import (
     SessionDataSafetyError,
@@ -61,14 +61,13 @@ class TestSessionDataSafety:
         """测试正常数据不会被误报"""
         clear_random_calls()
 
-        # 创建正常的StockPriceData
-        price_bar = PriceBar(**valid_price_data)
+        # 创建正常的扁平StockPriceData
         stock_data = StockPriceData(
             stock_code="600000",
             data_source=DataSource.SINA,
             adjustment_type=AdjustmentType.NONE,
             last_updated=datetime.now(),
-            latest=price_bar,
+            **valid_price_data,
             ma60=10.2,
         )
 
@@ -110,21 +109,20 @@ class TestSessionDataSafety:
                 _check_dataframe_for_random(df, "600000")
 
     def test_random_data_in_stock_price_data_throws_exception(self, valid_price_data):
-        """测试StockPriceData中的随机数据会被检测到（直接调用检测函数）"""
+        """测试扁平StockPriceData中的随机数据会被检测到（直接调用检测函数）"""
         from utils.session_safety_check import _check_stock_price_data_for_random
 
         # 注意：不要先clear，先生成随机值
         # 生成随机的ma60值
         random_ma60 = random.uniform(9.0, 11.0)
 
-        # 创建StockPriceData
-        price_bar = PriceBar(**valid_price_data)
+        # 创建扁平StockPriceData
         stock_data = StockPriceData(
             stock_code="600000",
             data_source=DataSource.SINA,
             adjustment_type=AdjustmentType.NONE,
             last_updated=datetime.now(),
-            latest=price_bar,
+            **valid_price_data,
             ma60=random_ma60,  # 随机生成的值
         )
 

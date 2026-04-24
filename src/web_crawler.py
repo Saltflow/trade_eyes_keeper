@@ -105,16 +105,10 @@ class StockWebCrawler:
             qq_symbol = f"hk{code}"
             sina_symbol = f"hk{code}"
             eastmoney_secid = f"116.{code}"
-            # 雅虎港股需要保留至少一位前导零，如00883变成0883.HK
+            # 雅虎港股统一补齐4位，如00883→0883.HK
             if code.isdigit():
-                # 去掉前导零，但如果结果为空，保留一个零
-                yahoo_code = code.lstrip("0")
-                if not yahoo_code:
-                    yahoo_code = "0"
-                # 如果原代码长度>=4位且去掉前导零后长度<3位，补一个零
-                # 例如：00883 -> 883 -> 0883 (补零后)
-                if len(code) >= 4 and len(yahoo_code) < 3:
-                    yahoo_code = "0" + yahoo_code
+                yahoo_code = code.lstrip("0") or "0"
+                yahoo_code = yahoo_code.zfill(4)
             else:
                 yahoo_code = code
             yahoo_symbol = f"{yahoo_code}.HK"
@@ -481,6 +475,23 @@ class StockWebCrawler:
             # 按日期排序
             df = df.sort_values("date")
 
+            # 获取股票名称（通过实时行情API提取简称）
+            try:
+                name_url = f"http://hq.sinajs.cn/list={market}{stock_code}"
+                name_headers = {
+                    "User-Agent": self.user_agent,
+                    "Referer": "http://finance.sina.com.cn/",
+                }
+                name_resp = requests.get(name_url, headers=name_headers, timeout=5)
+                name_resp.raise_for_status()
+                name_match = re.search(r'="(.+)"', name_resp.text)
+                if name_match:
+                    name_items = name_match.group(1).split(",")
+                    if name_items and name_items[0].strip():
+                        df["stock_name"] = name_items[0].strip()
+            except Exception:
+                pass  # 名称获取失败不影响数据本身
+
             logger.info(
                 f"从新浪财经历史API获取股票 {stock_code} 的 {len(df)} 条真实历史数据"
             )
@@ -540,6 +551,7 @@ class StockWebCrawler:
                     # 获取历史数据（新浪历史数据API比较复杂，这里只返回最新数据）
                     df = pd.DataFrame([current_data])
                     df["date"] = pd.to_datetime(df["date"])
+                    df["stock_name"] = items[0].strip()
 
                     # 无法获取真实历史数据，返回空DataFrame（不生成模拟数据）
                     logger.warning(
@@ -605,12 +617,16 @@ class StockWebCrawler:
                 "turnover": 0.0,
             }
 
+            # 提取股票名称（腾讯格式 items[1] 为股票简称）
+            stock_name = items[1].strip() if len(items) > 1 else ""
+
             # 第二步：尝试获取历史数据（腾讯国际历史数据接口格式不同，先用最近30天模拟）
             # 实际生产环境可以接入雅虎财经等补充历史数据
             records = [current_data]
 
             df = pd.DataFrame(records)
             df["date"] = pd.to_datetime(df["date"])
+            df["stock_name"] = stock_name
             df = df.sort_values("date").reset_index(drop=True)
 
             # 计算涨跌幅
@@ -717,6 +733,24 @@ class StockWebCrawler:
                 df["change_pct"] = df["close"].pct_change() * 100
                 df["change"] = df["close"].diff()
 
+            # 通过Yahoo search API获取股票名称（v7 quote已锁，search可正常使用）
+            try:
+                search_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={yahoo_symbol}"
+                search_resp = requests.get(
+                    search_url, headers=headers, timeout=self.timeout
+                )
+                search_resp.raise_for_status()
+                search_data = search_resp.json()
+                quotes = search_data.get("quotes", [])
+                if quotes:
+                    stock_name = quotes[0].get(
+                        "shortname", quotes[0].get("longname", "")
+                    )
+                    if stock_name:
+                        df["stock_name"] = stock_name
+            except Exception:
+                pass  # 名称获取失败不影响数据本身
+
             logger.info(f"从雅虎财经获取股票 {stock_code} 的 {len(df)} 条数据")
             return df
 
@@ -822,6 +856,18 @@ class StockWebCrawler:
 
                         # 按日期排序
                         df = df.sort_values("date")
+
+                        # 获取股票名称（通过QQ实时行情API提取简称，items[1]为股票名称）
+                        try:
+                            name_url = f"http://qt.gtimg.cn/q={market}{stock_code}"
+                            name_resp = requests.get(
+                                name_url, headers=headers, timeout=5
+                            )
+                            name_items = name_resp.text.split("~")
+                            if len(name_items) > 1 and name_items[1].strip():
+                                df["stock_name"] = name_items[1].strip()
+                        except Exception:
+                            pass  # 名称获取失败不影响数据本身
 
                         logger.info(
                             f"从腾讯财经历史API获取股票 {stock_code} 的 {len(df)} 条真实历史数据"

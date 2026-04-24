@@ -71,7 +71,7 @@ def _check_dataframe_for_random(df: pd.DataFrame, stock_code: str):
 
 
 def _check_stock_price_data_for_random(stock_data: Any, stock_code: str):
-    """检查StockPriceData对象中的数据是否来自random"""
+    """检查扁平StockPriceData对象中的数据是否来自random"""
     if stock_data is None:
         return
 
@@ -82,44 +82,29 @@ def _check_stock_price_data_for_random(stock_data: Any, stock_code: str):
     if _is_caller_from_test():
         return
 
-    # 检查PriceBar
-    if hasattr(stock_data, "latest"):
-        latest = stock_data.latest
-        fields_to_check = [
-            ("open", latest.open),
-            ("close", latest.close),
-            ("high", latest.high),
-            ("low", latest.low),
-            ("volume", latest.volume),
-            ("amount", latest.amount),
-        ]
-
-        for field_name, value in fields_to_check:
-            if value is None:
-                continue
-
-            is_random, call_info = is_value_from_random(value)
-            if is_random:
-                error_msg = (
-                    f"安全违规：检测到随机生成的数据被写入Session！\n"
-                    f"股票代码: {stock_code}\n"
-                    f"字段: latest.{field_name}\n"
-                    f"值: {value}\n"
-                    f"Random函数: {call_info.get('function')}\n"
-                    f"调用位置:\n{_format_stack(call_info.get('stack', []))}"
-                )
-                logger.critical(error_msg)
-                raise SessionDataSafetyError(error_msg, call_info, value)
+    # 检查扁平模型中的行情字段（直接访问 stock_data.open 等，不再通过 latest 嵌套）
+    price_fields = ["open", "close", "high", "low", "volume", "amount"]
+    for field_name in price_fields:
+        value = getattr(stock_data, field_name, None)
+        if value is None:
+            continue
+        is_random, call_info = is_value_from_random(value)
+        if is_random:
+            error_msg = (
+                f"安全违规：检测到随机生成的数据被写入Session！\n"
+                f"股票代码: {stock_code}\n"
+                f"字段: {field_name}\n"
+                f"值: {value}\n"
+                f"Random函数: {call_info.get('function')}\n"
+                f"调用位置:\n{_format_stack(call_info.get('stack', []))}"
+            )
+            logger.critical(error_msg)
+            raise SessionDataSafetyError(error_msg, call_info, value)
 
     # 检查技术指标
-    indicator_fields = [
-        ("ma60", stock_data.ma60),
-        ("wma20", getattr(stock_data, "wma20", None)),
-        ("wma30", getattr(stock_data, "wma30", None)),
-        ("wma50", getattr(stock_data, "wma50", None)),
-    ]
-
-    for field_name, value in indicator_fields:
+    indicator_fields = ["ma60", "wma20", "wma30", "wma50"]
+    for field_name in indicator_fields:
+        value = getattr(stock_data, field_name, None)
         if value is None:
             continue
 

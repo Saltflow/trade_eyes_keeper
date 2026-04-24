@@ -10,8 +10,6 @@ import pandas as pd
 import socket
 import platform
 import subprocess
-import requests
-import re
 from html import escape
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -161,10 +159,8 @@ class EmailNotifier:
                 logger.info(f"股票{stock_code}没有分析报告，跳过")
                 continue
 
-            stock_name = self._get_stock_name(stock_code)
-            logger.info(
-                f"处理股票{stock_code}({stock_name})的财报分析，共{len(reports)}份报告"
-            )
+            stock_name = stock_code
+            logger.info(f"处理股票{stock_code}的财报分析，共{len(reports)}份报告")
 
             # 限制显示的报告数量，显示前2份报告
             max_reports = min(2, len(reports))
@@ -348,7 +344,6 @@ class EmailNotifier:
             else:
                 # 单锚点警报格式（向后兼容）
                 stock_code = alert.get("stock_code", "")
-                stock_name = self._get_stock_name(stock_code)
                 low_price = alert.get("low_price")
                 ma60 = alert.get("ma60")
                 low_ma60_diff = alert.get("price_difference", 0)  # 最低价与MA60差值
@@ -356,10 +351,12 @@ class EmailNotifier:
                     "percentage_difference", 0
                 )  # 最低价与MA60百分比差值
 
-                # 从stock_data中查找收盘价和其他数据
+                # 从stock_data中查找股票名称、收盘价和其他数据
                 stock_row = stock_data[stock_data["stock_code"] == stock_code]
+                stock_name = stock_code
                 close_price = 0
                 if not stock_row.empty:
+                    stock_name = stock_row.iloc[0].get("stock_name", stock_code)
                     close_price = stock_row.iloc[0].get("close", 0)
 
                 # 计算收盘价与MA60差值（安全处理None值）
@@ -512,7 +509,7 @@ class EmailNotifier:
         all_rows_fundamental = ""
         for _, row in stock_data.iterrows():
             stock_code = row.get("stock_code", "")
-            stock_name = self._get_stock_name(stock_code)
+            stock_name = row.get("stock_name", stock_code)
             open_price = row.get("open", 0)
             close_price = row.get("close", 0)
             high_price = row.get("high")
@@ -663,7 +660,12 @@ class EmailNotifier:
             <h3>LLM基本面分析</h3>
             """
             for stock_code, analysis in analysis_results.items():
-                stock_name = self._get_stock_name(stock_code)
+                # 从stock_data管道获取股票名称
+                stock_name = stock_code
+                if stock_data is not None:
+                    match_s = stock_data[stock_data["stock_code"] == stock_code]
+                    if not match_s.empty:
+                        stock_name = match_s.iloc[0].get("stock_name", stock_code)
 
                 # 提取分析文本
                 analysis_text = analysis.get("analysis_text", "")
@@ -1007,7 +1009,11 @@ class EmailNotifier:
             tuple: (technical_row, fundamental_row) HTML字符串
         """
         stock_code = alert.get("stock_code", "")
-        stock_name = self._get_stock_name(stock_code)
+        # 从stock_data管道获取股票名称
+        stock_name = stock_code
+        stock_row_lookup = stock_data[stock_data["stock_code"] == stock_code]
+        if not stock_row_lookup.empty:
+            stock_name = stock_row_lookup.iloc[0].get("stock_name", stock_code)
         anchor_name = alert.get("anchor_name", "")
         anchor_value = alert.get("anchor_value")
         interval_label = alert.get("interval_label", "")
@@ -1125,72 +1131,6 @@ class EmailNotifier:
         """
 
         return technical_row, fundamental_row
-
-    def _get_stock_name(self, stock_code):
-        """
-        获取股票名称
-
-        Args:
-            stock_code: 股票代码
-
-        Returns:
-            str: 股票名称（如果无法获取名称，则返回股票代码）
-        """
-        stock_code_str = str(stock_code)
-
-        # 尝试从新浪财经实时API获取股票名称
-        try:
-            # 确定市场代码
-            if stock_code_str.startswith(("6", "5", "9")):
-                market = "sh"  # 沪市
-            elif stock_code_str.startswith(("0", "3", "2")):
-                market = "sz"  # 深市
-            else:
-                # 默认沪市
-                market = "sh"
-
-            # 新浪财经实时API
-            url = f"http://hq.sinajs.cn/list={market}{stock_code_str}"
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                "Referer": "http://finance.sina.com.cn/",
-            }
-
-            response = requests.get(url, headers=headers, timeout=5)
-            response.raise_for_status()
-
-            # 解析响应格式: var hq_str_sh601728="中国联通,5.83,5.82,..."
-            content = response.text
-            match = re.search(r'="(.+)"', content)
-            if match:
-                data_str = match.group(1)
-                items = data_str.split(",")
-                if len(items) > 0:
-                    stock_name = items[0].strip()
-                    if stock_name and stock_name != "暂无该股票信息":
-                        logger.info(
-                            f"从新浪财经API获取股票 {stock_code_str} 名称: {stock_name}"
-                        )
-                        return stock_name
-
-        except Exception as e:
-            logger.warning(f"从新浪财经API获取股票 {stock_code_str} 名称失败: {e}")
-
-        # 如果API失败，尝试从配置文件读取（向后兼容）
-        stocks_config = self.config.get("stocks", [])
-        for stock_item in stocks_config:
-            stock_str = str(stock_item).strip()
-            if stock_str.startswith(stock_code_str) and "#" in stock_str:
-                parts = stock_str.split("#", 1)
-                if len(parts) > 1:
-                    name = parts[1].strip()
-                    if name:
-                        logger.info(f"从配置文件获取股票 {stock_code_str} 名称: {name}")
-                        return name
-
-        # 所有方法都失败，返回股票代码
-        logger.warning(f"无法获取股票 {stock_code_str} 名称，返回股票代码")
-        return stock_code_str
 
     def _markdown_to_html(self, text):
         """

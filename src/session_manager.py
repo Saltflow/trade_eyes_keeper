@@ -208,14 +208,16 @@ class SessionManager:
             return False
 
         try:
-            # 数据有效性校验：价格不能为0或None
+            # 数据有效性校验：价格不能为0或None（扁平模型，直接访问 data.low / data.close）
             if (
-                data.latest.low is None
-                or data.latest.close is None
-                or data.latest.low <= 0
-                or data.latest.close <= 0
+                data.low is None
+                or data.close is None
+                or data.low <= 0
+                or data.close <= 0
             ):
-                error_msg = f"股票 {stock_code} 价格无效: low={data.latest.low}, close={data.latest.close}"
+                error_msg = (
+                    f"股票 {stock_code} 价格无效: low={data.low}, close={data.close}"
+                )
                 logger.error(error_msg)
                 session.errors.append(error_msg)
                 return False

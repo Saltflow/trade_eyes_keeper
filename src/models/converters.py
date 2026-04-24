@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-数据转换工具 - 最小化版本
-DataFrame ↔ Model 双向转换
+数据转换工具 - 扁平化版本
+DataFrame ↔ StockPriceData 双向转换，无字段丢失
 """
 
 import logging
-from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 import pandas as pd
 
 from .schemas import (
-    PriceBar,
     StockPriceData,
-    DataSource,
-    AdjustmentType,
     AlertStock,
 )
 
@@ -28,7 +24,8 @@ def dataframe_to_stock_price_data(
     adjustment_type: str = "none",
 ) -> Optional[StockPriceData]:
     """
-    将DataFrame转换为StockPriceData
+    将DataFrame最后一行转换为StockPriceData（统一入口）
+    委托给 StockPriceData.from_dataframe_row，映射ALL列
     """
     # 入参校验
     if df is None:
@@ -43,70 +40,38 @@ def dataframe_to_stock_price_data(
 
     try:
         latest_row = df.iloc[-1]
-
-        # 必要字段校验
-        required_price_fields = ["open", "close", "high", "low"]
-        for field in required_price_fields:
-            if (
-                field not in latest_row
-                or pd.isna(latest_row.get(field))
-                or latest_row.get(field) <= 0
-            ):
-                logger.error(
-                    f"股票 {stock_code} 字段 {field} 无效: {latest_row.get(field)}"
-                )
-                return None
-
-        ds = (
-            DataSource(data_source)
-            if data_source in DataSource.__members__
-            else DataSource.SINA
-        )
-        at = (
-            AdjustmentType(adjustment_type)
-            if adjustment_type in AdjustmentType.__members__
-            else AdjustmentType.NONE
-        )
-
-        latest_bar = PriceBar(
-            date=latest_row.get("date"),
-            open=float(latest_row.get("open", 0)),
-            close=float(latest_row.get("close", 0)),
-            high=float(latest_row.get("high", 0)),
-            low=float(latest_row.get("low"))
-            if latest_row.get("low") is not None
-            else None,
-            volume=float(latest_row.get("volume", 0)),
-            amount=float(latest_row.get("amount"))
-            if pd.notna(latest_row.get("amount"))
-            else None,
-        )
-
-        return StockPriceData(
+        return StockPriceData.from_dataframe_row(
+            latest_row,
             stock_code=stock_code,
-            data_source=ds,
-            adjustment_type=at,
-            last_updated=datetime.now(),
-            latest=latest_bar,
-            ma60=float(latest_row.get("ma60"))
-            if pd.notna(latest_row.get("ma60"))
-            else None,
-            dividend_per_share=float(latest_row.get("dividend_per_share"))
-            if pd.notna(latest_row.get("dividend_per_share"))
-            else None,
-            dividend_yield=float(latest_row.get("dividend_yield"))
-            if pd.notna(latest_row.get("dividend_yield"))
-            else None,
-            pe_ratio=float(latest_row.get("pe_ratio"))
-            if pd.notna(latest_row.get("pe_ratio"))
-            else None,
+            data_source=data_source,
+            adjustment_type=adjustment_type,
         )
-
     except Exception as e:
-        logger.error(
-            f"股票 {stock_code} 转换StockPriceData失败: {str(e)}，行数据: {latest_row.to_dict() if 'latest_row' in locals() else '无'}"
-        )
+        logger.error(f"股票 {stock_code} 转换StockPriceData失败: {e}")
         return None
+
+
+def stock_price_data_list_to_dataframe(
+    data_list: list[StockPriceData],
+) -> pd.DataFrame:
+    """
+    多个StockPriceData → 合并DataFrame（ALL列，无丢失）
+
+    Args:
+        data_list: StockPriceData列表
+
+    Returns:
+        pd.DataFrame: 包含所有股票最新数据的合并DataFrame
+    """
+    if not data_list:
+        return pd.DataFrame()
+
+    dfs = []
+    for spd in data_list:
+        d = spd.to_dict()
+        dfs.append(pd.DataFrame([d]))
+
+    return pd.concat(dfs, ignore_index=True)
 
 
 def alert_dict_to_alert_stock(alert_dict: dict) -> Optional[AlertStock]:
@@ -114,7 +79,7 @@ def alert_dict_to_alert_stock(alert_dict: dict) -> Optional[AlertStock]:
     将警报dict转换为AlertStock对象
     """
     try:
-        # 安全地获取数值字段
+
         def safe_float(value, default=None):
             if value is None:
                 return default
