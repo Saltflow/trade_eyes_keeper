@@ -132,26 +132,30 @@ class EmailNotifier:
         except Exception as e:
             logger.error(f"从Session发送每日报告邮件失败: {e}")
 
-    def _build_financial_analysis_section(self, financial_analysis_results):
+    def _build_financial_analysis_section(
+        self, financial_analysis_results, analysis_results=None, stock_data=None
+    ):
         """
-         构建财报分析部分HTML
+        构建财报分析部分HTML
 
         Args:
             financial_analysis_results: 财报分析结果字典
+            analysis_results: LLM分析结果字典（可选，用于整合展示）
+            stock_data: 完整的股票数据DataFrame（用于获取股票名称）
 
         Returns:
             str: HTML格式的财报分析部分
         """
         if not financial_analysis_results:
-            return "<h3>财报分析</h3><p>暂无可用财报分析数据（可能无新财报或获取失败）。</p>"
+            return "&lt;h3&gt;财报分析&lt;/h3&gt;&lt;p&gt;暂无可用财报分析数据（可能无新财报或获取失败）。&lt;/p&gt;"
 
         logger.info(
             f"构建财报分析部分: 收到{len(financial_analysis_results)}只股票的分析结果"
         )
 
         html = """
-            <h3>财报分析</h3>
-            <p>基于最新财报的结构化摘要（按股票展示最近2份）：</p>
+            &lt;h3&gt;财报分析&lt;/h3&gt;
+            &lt;p&gt;基于最新财报的结构化摘要（按股票展示最近2份）：&lt;/p&gt;
         """
 
         for stock_code, reports in financial_analysis_results.items():
@@ -159,8 +163,15 @@ class EmailNotifier:
                 logger.info(f"股票{stock_code}没有分析报告，跳过")
                 continue
 
+            # 从stock_data中查找股票名称
             stock_name = stock_code
-            logger.info(f"处理股票{stock_code}的财报分析，共{len(reports)}份报告")
+            if stock_data is not None:
+                stock_row = stock_data[stock_data["stock_code"] == stock_code]
+                if not stock_row.empty:
+                    stock_name = stock_row.iloc[0].get("stock_name", stock_code)
+            logger.info(
+                f"处理股票{stock_code}({stock_name})的财报分析，共{len(reports)}份报告"
+            )
 
             # 限制显示的报告数量，显示前2份报告
             max_reports = min(2, len(reports))
@@ -790,7 +801,7 @@ class EmailNotifier:
 
         # 5. 构建财报分析部分
         financial_analysis_section = self._build_financial_analysis_section(
-            financial_analysis_results
+            financial_analysis_results, analysis_results, stock_data
         )
 
         # 6. 构建公告部分
