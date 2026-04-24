@@ -62,9 +62,9 @@ def generate_combined_chart(
     alerts: List[dict],
     stock_data: "pd.DataFrame",
     trading_days: int = 60,
-) -> Optional[str]:
+) -> tuple[Optional[str], Optional[bytes]]:
     """
-    生成所有告警股票的合并走势图，返回 base64 PNG 字符串
+    生成所有告警股票的合并走势图，返回 (base64 PNG, 原始 PNG bytes)
 
     Args:
         historical_data: stock_code → 完整历史 DataFrame（含 date, low, wma* 等列）
@@ -73,15 +73,15 @@ def generate_combined_chart(
         trading_days: 显示近多少交易日（默认60 ≈ 2个月）
 
     Returns:
-        base64 编码的 PNG 图片字符串，失败时返回 None
+        (base64 编码的 PNG 字符串, 原始 PNG bytes)，失败时返回 (None, None)
     """
     if not MATPLOTLIB_AVAILABLE:
         logger.warning("matplotlib 不可用，跳过图表生成")
-        return None
+        return (None, None)
 
     if not alerts or not historical_data:
         logger.info("无告警数据或历史数据，跳过图表生成")
-        return None
+        return (None, None)
 
     import pandas as pd
 
@@ -96,7 +96,7 @@ def generate_combined_chart(
 
     if not stock_anchors:
         logger.info("告警数据无有效锚点，跳过图表生成")
-        return None
+        return (None, None)
 
     # ── 配色方案 ──
     colors = [
@@ -204,7 +204,7 @@ def generate_combined_chart(
     if plotted == 0:
         plt.close(fig)
         logger.info("没有可绘制的股票数据")
-        return None
+        return (None, None)
 
     # ── 格式化 X 轴日期 ──
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
@@ -228,16 +228,17 @@ def generate_combined_chart(
     # ── 紧凑布局 ──
     fig.tight_layout()
 
-    # ── 转 base64 PNG ──
+    # ── 转 PNG bytes & base64 ──
     try:
         buf = BytesIO()
         fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
         buf.seek(0)
-        b64_str = base64.b64encode(buf.read()).decode("utf-8")
+        png_bytes = buf.read()
+        b64_str = base64.b64encode(png_bytes).decode("utf-8")
         plt.close(fig)
         logger.info(f"图表生成成功: {plotted} 只股票")
-        return b64_str
+        return (b64_str, png_bytes)
     except Exception as e:
         logger.error(f"图表生成失败: {e}")
         plt.close(fig)
-        return None
+        return (None, None)

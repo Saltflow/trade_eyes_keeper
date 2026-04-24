@@ -12,6 +12,7 @@ import platform
 import subprocess
 from html import escape
 from email.mime.text import MIMEText
+from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email import policy
 from datetime import datetime
@@ -76,6 +77,14 @@ class EmailNotifier:
             # 历史数据（由 data_fetcher 暂存，供图表使用）
             historical_data = getattr(session, "_historical", {})
 
+            # 生成走势图表（PNG bytes + CID 内嵌，兼容 Gmail）
+            _, chart_png_bytes = generate_combined_chart(
+                historical_data=historical_data,
+                alerts=alert_stocks,
+                stock_data=stock_data,
+                trading_days=60,
+            )
+
             # 构建邮件主题
             subject = f"股票提醒 - {datetime.now().strftime('%Y-%m-%d')}"
 
@@ -88,10 +97,11 @@ class EmailNotifier:
                 financial_analysis_results,
                 backtest_results,
                 historical_data=historical_data,
+                chart_png_bytes=chart_png_bytes,
             )
 
             # 发送邮件
-            self._send_email(subject, body)
+            self._send_email(subject, body, chart_png_bytes=chart_png_bytes)
 
             logger.info(
                 f"成功发送提醒邮件给 {self.receiver_email} "
@@ -323,6 +333,7 @@ class EmailNotifier:
         financial_analysis_results=None,
         backtest_results=None,
         historical_data=None,
+        chart_png_bytes=None,
     ):
         """
          构建邮件正文（完整版：4个表格 + LLM分析 + 公告 + 服务器信息 + 财报分析 + 回测分析 + 图表）
@@ -335,6 +346,7 @@ class EmailNotifier:
             financial_analysis_results: 财报分析结果字典（可选）
             backtest_results: 回测结果列表，格式与backtest_framework.py输出一致（可选）
             historical_data: 完整历史DataFrame字典 stock_code → DataFrame（可选，供图表使用）
+            chart_png_bytes: 图表 PNG 原始字节（可选），有值时用 cid:chart001 嵌入
 
         Returns:
             str: 邮件正文（HTML格式）
@@ -915,29 +927,18 @@ class EmailNotifier:
         if backtest_results:
             backtest_section = self._build_backtest_section(backtest_results)
 
-        # 7. 生成走势图表（告警股票的价格 + 最长锚点MA曲线）
+        # 7. 走势图表（由调用方生成，通过 chart_png_bytes 传入，使用 CID 内嵌）
         chart_section = ""
-        if alert_stocks and historical_data:
-            try:
-                b64_png = generate_combined_chart(
-                    historical_data=historical_data,
-                    alerts=alert_stocks,
-                    stock_data=stock_data,
-                    trading_days=60,
-                )
-                if b64_png:
-                    chart_section = f"""
-                    <h3>价格走势图</h3>
-                    <p>近2个月最低价与最长告警锚点移动平均线：</p>
-                    <div style="text-align: center; margin: 20px 0;">
-                        <img src="data:image/png;base64,{b64_png}"
-                             alt="价格走势图"
-                             style="max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 4px;" />
-                    </div>
-                    """
-                    logger.info("走势图表已生成并嵌入邮件")
-            except Exception as e:
-                logger.warning(f"生成走势图表失败: {e}")
+        if chart_png_bytes:
+            chart_section = """
+            <h3>价格走势图</h3>
+            <p>近2个月最低价与最长告警锚点移动平均线：</p>
+            <div style="text-align: center; margin: 20px 0;">
+                <img src="cid:chart001"
+                     alt="价格走势图"
+                     style="max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 4px;" />
+            </div>
+            """
 
         # 8. 获取服务器信息
         server_info = self._get_server_info()
@@ -1314,13 +1315,14 @@ class EmailNotifier:
                 "machine": "未知",
             }
 
-    def _send_email(self, subject, body):
+    def _send_email(self, subject, body, chart_png_bytes=None):
         """
         发送邮件
 
         Args:
             subject: 邮件主题
             body: 邮件正文（HTML格式）
+            chart_png_bytes: 图表 PNG 原始字节（可选），有值时用 CID 内嵌
         """
         import os
 
@@ -1336,9 +1338,33 @@ class EmailNotifier:
             return
 
         try:
-            # 创建邮件消息，设置UTF-8编码策略
-            msg = MIMEMultipart("alternative")
-            msg.policy = policy.default
+            # 创建 HTML 部分
+            html_part = MIMEText(body, "html", "utf-8")
+            html_part.set_charset("utf-8")
+            html_part["Content-Transfer-Encoding"] = "quoted-printable"
+
+            if chart_png_bytes:
+                # 有图表：MIMEMultipart("related") 容器，HTML + 内嵌图片
+                msg = MIMEMultipart("related")
+                msg.policy = policy.default
+
+                # 内嵌 alternative（HTML）
+                alt = MIMEMultipart("alternative")
+                alt.attach(html_part)
+                msg.attach(alt)
+
+                # 添加图表图片（CID: chart001）
+                image = MIMEImage(chart_png_bytes, "png")
+                image.add_header("Content-ID", "<chart001>")
+                image.add_header("Content-Disposition", "inline", filename="chart.png")
+                msg.attach(image)
+
+                logger.info("图表以 CID 方式嵌入邮件，兼容 Gmail 渲染")
+            else:
+                # 无图表：保持原逻辑
+                msg = MIMEMultipart("alternative")
+                msg.policy = policy.default
+                msg.attach(html_part)
 
             # 邮件主题（使用UTF-8编码策略自动处理）
             msg["Subject"] = subject
@@ -1346,12 +1372,6 @@ class EmailNotifier:
             # 编码发件人和收件人
             msg["From"] = self.sender_email
             msg["To"] = self.receiver_email
-
-            # 添加HTML内容，确保UTF-8编码
-            html_part = MIMEText(body, "html", "utf-8")
-            html_part.set_charset("utf-8")
-            html_part["Content-Transfer-Encoding"] = "quoted-printable"
-            msg.attach(html_part)
 
             # 连接到SMTP服务器并发送邮件
             if self.enable_ssl:
