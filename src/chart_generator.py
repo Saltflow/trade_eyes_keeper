@@ -1,13 +1,17 @@
 """
 图表生成模块
 为邮件生成股票价格走势图（base64 PNG，内嵌到HTML）
+使用 subplots 布局，每只告警股票独立子图
 """
 
 import logging
+import math
 import re
 from typing import Optional, Dict, List
 from io import BytesIO
 import base64
+
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +23,10 @@ try:
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
     from matplotlib.ticker import MaxNLocator
+
+    # 设置中文字体（修复方块显示问题）
+    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
 
     MATPLOTLIB_AVAILABLE = True
 except ImportError:
@@ -57,6 +65,17 @@ def _pick_longest_anchor(anchor_names: List[str]) -> str:
     return max(anchor_names, key=lambda n: _extract_window(n))
 
 
+def _get_stock_name(stock_code: str, stock_data: "pd.DataFrame") -> str:
+    """从 stock_data DataFrame 中查找股票名称，找不到返回 stock_code"""
+    if stock_data is not None and not stock_data.empty:
+        match = stock_data[stock_data["stock_code"] == stock_code]
+        if not match.empty:
+            name = match.iloc[0].get("stock_name")
+            if pd.notna(name) and str(name).strip():
+                return str(name).strip()
+    return stock_code
+
+
 def generate_combined_chart(
     historical_data: Dict[str, "pd.DataFrame"],
     alerts: List[dict],
@@ -64,7 +83,7 @@ def generate_combined_chart(
     trading_days: int = 60,
 ) -> tuple[Optional[str], Optional[bytes]]:
     """
-    生成所有告警股票的合并走势图，返回 (base64 PNG, 原始 PNG bytes)
+    生成所有告警股票的合并走势图（subplots 布局），返回 (base64 PNG, 原始 PNG bytes)
 
     Args:
         historical_data: stock_code → 完整历史 DataFrame（含 date, low, wma* 等列）
@@ -83,10 +102,7 @@ def generate_combined_chart(
         logger.info("无告警数据或历史数据，跳过图表生成")
         return (None, None)
 
-    import pandas as pd
-
     # ── 收集每只告警股票要画的数据 ──
-    # 按 stock_code 聚合告警锚点
     stock_anchors: Dict[str, List[str]] = {}
     for alert in alerts:
         code = alert.get("stock_code", "")
@@ -98,145 +114,128 @@ def generate_combined_chart(
         logger.info("告警数据无有效锚点，跳过图表生成")
         return (None, None)
 
-    # ── 配色方案 ──
-    colors = [
-        "#1f77b4",
-        "#ff7f0e",
-        "#2ca02c",
-        "#d62728",
-        "#9467bd",
-        "#8c564b",
-        "#e377c2",
-        "#7f7f7f",
-        "#bcbd22",
-        "#17becf",
-    ]
-    linestyles = ["-", "--", "-.", ":"]
+    # ── 筛选有有效历史数据的股票 ──
+    valid_codes: List[str] = []
+    for code in stock_anchors:
+        full_df = historical_data.get(code)
+        if full_df is not None and not full_df.empty:
+            df = full_df.tail(trading_days).copy()
+            if not df.empty and "date" in df.columns and "low" in df.columns:
+                valid_codes.append(code)
 
-    # ── 创建图表 ──
-    fig, ax = plt.subplots(figsize=(11, 6))
-    ax.set_title(
-        "价格走势与告警锚点（近2个月）",
+    if not valid_codes:
+        logger.info("无有效历史数据可绘制")
+        return (None, None)
+
+    # ── 确定 subplots 布局 ──
+    n_stocks = len(valid_codes)
+    cols = 4
+    rows = math.ceil(n_stocks / cols)
+
+    # 根据股票数量动态调整 figure 尺寸
+    fig_height = max(3, rows * 2.2)
+    fig_width = 12
+    fig, axes = plt.subplots(
+        nrows=rows,
+        ncols=cols,
+        figsize=(fig_width, fig_height),
+        squeeze=False,  # 始终返回二维 ndarray
+    )
+
+    fig.suptitle(
+        "告警股票价格走势与锚点（近2个月）",
         fontsize=13,
         fontweight="bold",
-        pad=12,
+        y=0.98,
     )
-    ax.set_xlabel("日期", fontsize=10)
-    ax.set_ylabel("价格", fontsize=10)
-    ax.grid(True, alpha=0.3, linestyle="--")
 
-    plotted = 0
-    color_idx = 0
+    # ── 展平 axes 以便按顺序迭代 ──
+    flat_axes = axes.flatten()
 
-    for stock_code, anchor_names in stock_anchors.items():
-        # 从 historical_data 取完整 DataFrame
+    # ── 逐只股票绘制 ──
+    for idx, stock_code in enumerate(valid_codes):
+        ax = flat_axes[idx]
+
         full_df = historical_data.get(stock_code)
-        if full_df is None or full_df.empty:
-            logger.debug(f"股票 {stock_code} 无历史数据，跳过图表绘制")
-            continue
-
-        # 取最近 trading_days 天
         df = full_df.tail(trading_days).copy()
-        if df.empty:
-            continue
 
-        # 确保 date 列是 datetime
-        if "date" in df.columns:
-            dates = pd.to_datetime(df["date"]).to_numpy()
-        else:
-            logger.debug(f"股票 {stock_code} 缺少 date 列，跳过")
-            continue
-
-        low = df.get("low")
-        if low is None or low.isna().all():
-            logger.debug(f"股票 {stock_code} 无有效 low 数据，跳过")
-            continue
-        low_values = low.to_numpy()
+        dates = pd.to_datetime(df["date"]).to_numpy()
+        low_values = df["low"].to_numpy()
 
         # 确定"最长"告警锚点
+        anchor_names = stock_anchors[stock_code]
         longest = _pick_longest_anchor(anchor_names)
-        anchor_col = longest  # 列名直接是锚点名，如 'wma50'
 
-        # 从 stock_data 取股票名称
-        stock_name = stock_code
-        if stock_data is not None and not stock_data.empty:
-            match = stock_data[stock_data["stock_code"] == stock_code]
-            if not match.empty:
-                stock_name = match.iloc[0].get("stock_name", stock_code)
+        # 股票名称
+        stock_name = _get_stock_name(stock_code, stock_data)
 
-        # 标签
-        label_low = f"{stock_code}({stock_name}) 最低价"
-        label_ma = f"{stock_code} {longest}"
-
-        c = colors[color_idx % len(colors)]
-        ls = linestyles[(color_idx // len(colors)) % len(linestyles)]
-        color_idx += 1
+        # 标题：代码 + 名称
+        ax.set_title(f"{stock_code}\n{stock_name}", fontsize=8, fontweight="bold")
 
         # 画最低价线（实线）
         ax.plot(
             dates,
             low_values,
-            color=c,
+            color="#1f77b4",
             linestyle="-",
             linewidth=1.2,
             alpha=0.9,
-            label=label_low,
-            marker="",
-            markersize=0,
+            label="最低价",
         )
 
-        # 画锚点MA曲线（虚线），如果列存在且有有效值
-        if anchor_col and anchor_col in df.columns:
-            anchor_values = df[anchor_col].to_numpy()
+        # 画锚点 MA 曲线（虚线）
+        if longest and longest in df.columns:
+            anchor_values = df[longest].to_numpy()
             if not pd.isna(anchor_values).all():
                 ax.plot(
                     dates,
                     anchor_values,
-                    color=c,
-                    linestyle=ls,
+                    color="#ff7f0e",
+                    linestyle="--",
                     linewidth=1.0,
                     alpha=0.7,
-                    label=label_ma,
+                    label=longest,
                 )
 
-        plotted += 1
+        # 网格
+        ax.grid(True, alpha=0.25, linestyle="--")
 
-    if plotted == 0:
-        plt.close(fig)
-        logger.info("没有可绘制的股票数据")
-        return (None, None)
+        # 格式化 X 轴（日期）
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
+        ax.xaxis.set_major_locator(MaxNLocator(5))
+        ax.tick_params(axis="x", labelsize=7)
+        ax.tick_params(axis="y", labelsize=7)
 
-    # ── 格式化 X 轴日期 ──
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-    fig.autofmt_xdate(rotation=30, ha="right")
+        # Y 轴自动留白 5%
+        ymin, ymax = ax.get_ylim()
+        margin = (ymax - ymin) * 0.05
+        ax.set_ylim(ymin - margin, ymax + margin)
 
-    # ── 自动调整 Y 轴留白 ──
-    ymin, ymax = ax.get_ylim()
-    margin = (ymax - ymin) * 0.05
-    ax.set_ylim(ymin - margin, ymax + margin)
+        # Legend（小字体，紧凑）
+        ax.legend(
+            loc="upper left",
+            fontsize=6,
+            framealpha=0.7,
+            edgecolor="#ccc",
+            ncol=1,
+        )
 
-    # ── Legend ──
-    legend = ax.legend(
-        loc="upper left",
-        fontsize=8,
-        framealpha=0.8,
-        edgecolor="#ccc",
-        ncol=2,
-    )
+    # ── 隐藏多余的 subplot ──
+    for j in range(idx + 1, len(flat_axes)):
+        flat_axes[j].set_visible(False)
 
-    # ── 紧凑布局 ──
-    fig.tight_layout()
+    # ── 自动调整布局 ──
+    fig.tight_layout(rect=[0, 0, 1, 0.95])  # 为 suptitle 留空间
 
     # ── 转 PNG bytes & base64 ──
     try:
         buf = BytesIO()
-        fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
+        fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
         buf.seek(0)
         png_bytes = buf.read()
         b64_str = base64.b64encode(png_bytes).decode("utf-8")
         plt.close(fig)
-        logger.info(f"图表生成成功: {plotted} 只股票")
+        logger.info(f"图表生成成功: {n_stocks} 只股票, {rows}x{cols} 布局")
         return (b64_str, png_bytes)
     except Exception as e:
         logger.error(f"图表生成失败: {e}")

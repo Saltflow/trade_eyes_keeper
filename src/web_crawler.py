@@ -618,7 +618,9 @@ class StockWebCrawler:
             }
 
             # 提取股票名称（腾讯格式 items[1] 为股票简称）
-            stock_name = items[1].strip() if len(items) > 1 else ""
+            stock_name = (
+                items[1].strip() if len(items) > 1 and items[1].strip() else stock_code
+            )
 
             # 第二步：尝试获取历史数据（腾讯国际历史数据接口格式不同，先用最近30天模拟）
             # 实际生产环境可以接入雅虎财经等补充历史数据
