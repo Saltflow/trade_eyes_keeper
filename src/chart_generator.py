@@ -24,21 +24,22 @@ try:
     import matplotlib.dates as mdates
     from matplotlib.ticker import MaxNLocator
 
-    # 设置中文字体（跨平台字体回退链）
+    # 设置中文字体（跨平台字体回退链，matplotlib 3.6+ 支持逐字形回退）
+    # DejaVu Sans 放首位：包含完整拉丁字母和数字字形（解决数字方框）
+    # Droid Sans Fallback / 其他 CJK 字体放后面：提供中文支持
     # Windows: Microsoft YaHei / SimHei
     # Linux:   Droid Sans Fallback / WenQuanYi Micro Hei / Noto Sans CJK SC
     # macOS:   PingFang SC / Heiti SC
-    # 最后回退到 DejaVu Sans（无中文支持，但至少不崩溃）
     plt.rcParams["font.sans-serif"] = [
+        "DejaVu Sans",  # 首位：完整拉丁/数字字形（服务器上可用）
         "Microsoft YaHei",  # Windows 微软雅黑
         "SimHei",  # Windows 黑体
-        "Droid Sans Fallback",  # Ubuntu Droid（已确认在服务器上存在）
+        "Droid Sans Fallback",  # Ubuntu Droid（已确认在服务器上存在，有CJK）
         "WenQuanYi Micro Hei",  # Ubuntu 文泉驿
         "Noto Sans CJK SC",  # Google Noto CJK
         "Noto Sans SC",  # Google Noto SC 变体名
         "PingFang SC",  # macOS 苹方
         "Heiti SC",  # macOS 黑体-简
-        "DejaVu Sans",  # 最后兜底（无中文但保不崩溃）
     ]
     plt.rcParams["axes.unicode_minus"] = False
 

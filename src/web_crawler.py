@@ -207,12 +207,24 @@ class StockWebCrawler:
 
         # 根据市场选择数据源
         if market in ("us", "hk", "sg"):
-            # 美港股新：优先雅虎财经获取真实历史数据，腾讯财经国际版作为备用
-            data_sources = [
-                self._fetch_from_yahoo,  # 雅虎财经（真实历史数据）
-                self._fetch_from_qq_international,  # 腾讯财经国际版（备用）
-            ]
-            logger.info(f"美港股新 {stock_code} 使用国际数据源")
+            # 美港股新：
+            #   东方财富（支持美股secid=105.*、港股secid=116.*，国内可访问）
+            #   雅虎财经（真实历史数据，但国内服务器可能被屏蔽）
+            #   腾讯财经国际版（备用，仅返回1条实时数据）
+            if market == "sg":
+                # 新加坡：东方财富不支持（测试返回rc=102），只用Yahoo+QQ
+                data_sources = [
+                    self._fetch_from_yahoo,
+                    self._fetch_from_qq_international,
+                ]
+            else:
+                # 美股和港股：东方财富优先（国内可正常访问），Yahoo次之
+                data_sources = [
+                    self._fetch_from_eastmoney,  # 东方财富（国内可访问，有完整历史）
+                    self._fetch_from_yahoo,  # 雅虎财经（备用）
+                    self._fetch_from_qq_international,  # 腾讯财经国际版（仅实时）
+                ]
+            logger.info(f"美港股 {stock_code} 使用东方财富+雅虎数据源")
         elif market == "a_share":
             # A股原有逻辑
             if self._is_etf(stock_code):
@@ -271,9 +283,11 @@ class StockWebCrawler:
             pandas.DataFrame: 股票数据
         """
         try:
-            # 东方财富API
-            # 首先获取实时数据确定股票市场
-            market = "0" if stock_code.startswith(("0", "3")) else "1"  # 0:深市, 1:沪市
+            # 统一使用标准化函数获取东方财富secid（支持A股/美股/港股/新加坡）
+            _, _, _, eastmoney_secid, _ = self._normalize_stock_code(stock_code)
+            if not eastmoney_secid:
+                logger.warning(f"无法确定股票 {stock_code} 的东方财富secid")
+                return pd.DataFrame()
 
             # 东方财富日线数据API
             end_date = datetime.now().strftime("%Y%m%d")
@@ -283,7 +297,7 @@ class StockWebCrawler:
 
             url = "http://push2his.eastmoney.com/api/qt/stock/kline/get"
             params = {
-                "secid": f"{market}.{stock_code}",
+                "secid": eastmoney_secid,
                 "fields1": "f1,f2,f3,f4,f5,f6",
                 "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
                 "klt": "101",  # 日线
