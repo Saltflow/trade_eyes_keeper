@@ -28,6 +28,8 @@ openai>=1.0.0  # 兼容DeepSeek API
 matplotlib>=3.4.0
 # 文本处理
 markdown>=3.5
+# 数据模型
+pydantic>=1.10.0,<2.0.0
 # 日志
 colorlog>=6.7.0
 # 开发依赖（测试等）
