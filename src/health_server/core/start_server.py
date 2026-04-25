@@ -18,13 +18,19 @@ logger = logging.getLogger(__name__)
 def start_health_server(config_path=None):
     """启动健康服务器（独立运行）"""
 
+    # 定位项目根目录（从 src/health_server/core/start_server.py 向上4级到达项目根）
+    _script_dir = Path(__file__).resolve().parent
+    _project_root = (
+        _script_dir.parent.parent.parent
+    )  # core/ -> health_server/ -> src/ -> project root
+
     # 加载环境变量
-    env_path = Path(__file__).parent.parent / "config" / ".env"
+    env_path = _project_root / "config" / ".env"
     load_dotenv(dotenv_path=env_path)
 
     # 加载配置
     if config_path is None:
-        config_path = Path(__file__).parent.parent / "config" / "config.yaml"
+        config_path = _project_root / "config" / "config.yaml"
 
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
