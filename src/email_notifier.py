@@ -1411,12 +1411,16 @@ class EmailNotifier:
             logger.error(f"发送邮件时发生未知错误: {e}", exc_info=True)
             raise
 
-    def send_deployment_notification(self, deployment_info=None):
+    def send_deployment_notification(
+        self, deployment_info=None, version=None, summary=None
+    ):
         """
         发送部署通知邮件
 
         Args:
             deployment_info: 部署信息字典，包含部署详情
+            version: 部署版本号 (git commit hash)
+            summary: 部署摘要
         """
         try:
             # 获取服务器信息
@@ -1447,6 +1451,8 @@ class EmailNotifier:
         <p><strong>部署服务器:</strong> {server_info["hostname"]}</p>
         <p><strong>服务器IP:</strong> {server_info["ip_address"]}</p>
         <p><strong>系统信息:</strong> {server_info["system"]} {server_info["machine"]} (内核: {server_info["kernel_version"]})</p>
+        {f"<p><strong>部署版本:</strong> {version}</p>" if version else ""}
+        {f"<p><strong>部署摘要:</strong> {summary}</p>" if summary else ""}
     </div>
     
     {f'<div class="info"><p><strong>部署详情:</strong> {deployment_info}</p></div>' if deployment_info else ""}
@@ -1457,7 +1463,7 @@ class EmailNotifier:
 
             # 发送邮件
             self._send_email(subject, body)
-            logger.info(f"部署通知邮件发送成功: {subject}")
+            logger.info(f"部署通知邮件发送成功: {subject} (version={version})")
 
         except Exception as e:
             logger.error(f"发送部署通知邮件失败: {e}")
