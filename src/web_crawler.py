@@ -284,10 +284,19 @@ class StockWebCrawler:
         """
         try:
             # 统一使用标准化函数获取东方财富secid（支持A股/美股/港股/新加坡）
-            _, _, _, eastmoney_secid, _ = self._normalize_stock_code(stock_code)
+            market, _, _, eastmoney_secid, _ = self._normalize_stock_code(stock_code)
             if not eastmoney_secid:
                 logger.warning(f"无法确定股票 {stock_code} 的东方财富secid")
                 return pd.DataFrame()
+
+            # 构建待尝试的secid列表（美股可能有不同市场前缀：105=NASDAQ, 106=NYSE, 107=AMEX）
+            secids_to_try = [eastmoney_secid]
+            if market == "us":
+                code = stock_code.upper().replace("US", "")
+                for prefix in ["106", "107", "108"]:
+                    alt_secid = f"{prefix}.{code}"
+                    if alt_secid not in secids_to_try:
+                        secids_to_try.append(alt_secid)
 
             # 东方财富日线数据API
             end_date = datetime.now().strftime("%Y%m%d")
@@ -296,58 +305,82 @@ class StockWebCrawler:
             )  # 多取一些
 
             url = "http://push2his.eastmoney.com/api/qt/stock/kline/get"
-            params = {
-                "secid": eastmoney_secid,
-                "fields1": "f1,f2,f3,f4,f5,f6",
-                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-                "klt": "101",  # 日线
-                "fqt": "1",  # 前复权
-                "beg": start_date,
-                "end": end_date,
-                "lmt": "10000",  # 足够大的数量
-            }
 
             headers = {
                 "User-Agent": self.user_agent,
                 "Referer": "http://quote.eastmoney.com/",
             }
 
-            response = requests.get(
-                url, params=params, headers=headers, timeout=self.timeout
-            )
-            response.raise_for_status()
+            last_error = None
+            for secid in secids_to_try:
+                try:
+                    params = {
+                        "secid": secid,
+                        "fields1": "f1,f2,f3,f4,f5,f6",
+                        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+                        "klt": "101",  # 日线
+                        "fqt": "1",  # 前复权
+                        "beg": start_date,
+                        "end": end_date,
+                        "lmt": "10000",  # 足够大的数量
+                    }
 
-            data_json = response.json()
-            if data_json.get("data") and data_json["data"].get("klines"):
-                klines = data_json["data"]["klines"]
+                    response = requests.get(
+                        url, params=params, headers=headers, timeout=self.timeout
+                    )
+                    response.raise_for_status()
 
-                data_list = []
-                for kline in klines:
-                    items = kline.split(",")
-                    if len(items) >= 11:
-                        data_list.append(
-                            {
-                                "date": items[0],
-                                "open": float(items[1]),
-                                "close": float(items[2]),
-                                "high": float(items[3]),
-                                "low": float(items[4]),
-                                "volume": float(items[5]),
-                                "amount": float(items[6]),
-                                "amplitude": float(items[7]) if items[7] else 0.0,
-                                "change_pct": float(items[8]) if items[8] else 0.0,
-                                "change": float(items[9]) if items[9] else 0.0,
-                                "turnover": float(items[10])
-                                if len(items) > 10 and items[10]
-                                else 0.0,
-                            }
-                        )
+                    data_json = response.json()
+                    if data_json.get("data") and data_json["data"].get("klines"):
+                        klines = data_json["data"]["klines"]
 
-                if data_list:
-                    df = pd.DataFrame(data_list)
-                    df["date"] = pd.to_datetime(df["date"])
-                    df = df.sort_values("date")
-                    return df
+                        data_list = []
+                        for kline in klines:
+                            items = kline.split(",")
+                            if len(items) >= 11:
+                                data_list.append(
+                                    {
+                                        "date": items[0],
+                                        "open": float(items[1]),
+                                        "close": float(items[2]),
+                                        "high": float(items[3]),
+                                        "low": float(items[4]),
+                                        "volume": float(items[5]),
+                                        "amount": float(items[6]),
+                                        "amplitude": float(items[7])
+                                        if items[7]
+                                        else 0.0,
+                                        "change_pct": float(items[8])
+                                        if items[8]
+                                        else 0.0,
+                                        "change": float(items[9]) if items[9] else 0.0,
+                                        "turnover": float(items[10])
+                                        if len(items) > 10 and items[10]
+                                        else 0.0,
+                                    }
+                                )
+
+                        if data_list:
+                            df = pd.DataFrame(data_list)
+                            df["date"] = pd.to_datetime(df["date"])
+                            df = df.sort_values("date")
+                            logger.info(
+                                f"从东方财富({secid})成功获取股票 {stock_code} 的 {len(df)} 条数据"
+                            )
+                            return df
+                    else:
+                        logger.debug(f"东方财富secid={secid} 返回空数据，尝试下一个")
+
+                except Exception as e:
+                    last_error = e
+                    logger.debug(f"东方财富secid={secid} 请求失败: {e}，尝试下一个")
+                    continue
+
+            # 所有secid都失败了
+            if last_error:
+                logger.warning(
+                    f"从东方财富获取股票 {stock_code} 数据失败(已尝试{len(secids_to_try)}个secid): {last_error}"
+                )
 
         except Exception as e:
             logger.warning(f"从东方财富获取股票 {stock_code} 数据失败: {e}")
