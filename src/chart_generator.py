@@ -25,19 +25,17 @@ try:
     from matplotlib.ticker import MaxNLocator
 
     # 设置中文字体（跨平台字体回退链，matplotlib 3.6+ 支持逐字形回退）
-    # DejaVu Sans 放首位：包含完整拉丁字母和数字字形（解决数字方框）
-    # Droid Sans Fallback / 其他 CJK 字体放后面：提供中文支持
-    # Windows: Microsoft YaHei / SimHei
-    # Linux:   Droid Sans Fallback / WenQuanYi Micro Hei / Noto Sans CJK SC
-    # macOS:   PingFang SC / Heiti SC
+    # Noto Sans CJK SC：Google 出品，同时包含完整拉丁/数字和中文（推荐首选）
+    #   已在服务器上通过 fonts-noto-cjk 安装，从 TTC 提取后注册到 matplotlib
+    # 回退链：Windows → Linux → macOS
     plt.rcParams["font.sans-serif"] = [
-        "DejaVu Sans",  # 首位：完整拉丁/数字字形（服务器上可用）
+        "Noto Sans CJK SC",  # Linux 首选（同时支持拉丁/数字 + 中文，刚安装）
+        "DejaVu Sans",  # 备用：完整拉丁/数字（无中文，但可回退到后续CJK字体）
         "Microsoft YaHei",  # Windows 微软雅黑
         "SimHei",  # Windows 黑体
-        "Droid Sans Fallback",  # Ubuntu Droid（已确认在服务器上存在，有CJK）
+        "Droid Sans Fallback",  # Ubuntu 旧版Droid（有CJK但缺拉丁）
         "WenQuanYi Micro Hei",  # Ubuntu 文泉驿
-        "Noto Sans CJK SC",  # Google Noto CJK
-        "Noto Sans SC",  # Google Noto SC 变体名
+        "Noto Sans CJK JP",  # Google Noto CJK JP（有拉丁+日文汉字）
         "PingFang SC",  # macOS 苹方
         "Heiti SC",  # macOS 黑体-简
     ]
