@@ -100,11 +100,11 @@ class EmailNotifier:
                 chart_png_bytes=chart_png_bytes,
             )
 
-            # 发送邮件
+            # 发送邮件（_send_email内部会跳过SKIP_EMAIL模式并打印日志）
             self._send_email(subject, body, chart_png_bytes=chart_png_bytes)
 
             logger.info(
-                f"成功发送提醒邮件给 {self.receiver_email} "
+                f"邮件任务完成 ({self.receiver_email}) "
                 f"(来自Session: {len(alert_stocks)}个警报)"
             )
 
@@ -145,7 +145,7 @@ class EmailNotifier:
             # 发送邮件
             self._send_email(subject, body)
 
-            logger.info(f"成功发送每日报告邮件给 {self.receiver_email} (来自Session)")
+            logger.info(f"每日报告邮件任务完成 ({self.receiver_email}) (来自Session)")
 
         except Exception as e:
             logger.error(f"从Session发送每日报告邮件失败: {e}")

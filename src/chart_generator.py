@@ -24,8 +24,22 @@ try:
     import matplotlib.dates as mdates
     from matplotlib.ticker import MaxNLocator
 
-    # 设置中文字体（修复方块显示问题）
-    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
+    # 设置中文字体（跨平台字体回退链）
+    # Windows: Microsoft YaHei / SimHei
+    # Linux:   Droid Sans Fallback / WenQuanYi Micro Hei / Noto Sans CJK SC
+    # macOS:   PingFang SC / Heiti SC
+    # 最后回退到 DejaVu Sans（无中文支持，但至少不崩溃）
+    plt.rcParams["font.sans-serif"] = [
+        "Microsoft YaHei",  # Windows 微软雅黑
+        "SimHei",  # Windows 黑体
+        "Droid Sans Fallback",  # Ubuntu Droid（已确认在服务器上存在）
+        "WenQuanYi Micro Hei",  # Ubuntu 文泉驿
+        "Noto Sans CJK SC",  # Google Noto CJK
+        "Noto Sans SC",  # Google Noto SC 变体名
+        "PingFang SC",  # macOS 苹方
+        "Heiti SC",  # macOS 黑体-简
+        "DejaVu Sans",  # 最后兜底（无中文但保不崩溃）
+    ]
     plt.rcParams["axes.unicode_minus"] = False
 
     MATPLOTLIB_AVAILABLE = True
