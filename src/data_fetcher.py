@@ -386,11 +386,8 @@ class StockDataFetcher:
                     )
 
                     if has_all_fields:
-                        logger.info(f"股票 {stock_code} 使用缓存数据")
-                        # 从缓存数据构建DataFrame
-                        latest_data = pd.DataFrame([cached_latest_data])
-                        all_data.append(latest_data)
-                        # 尝试从CSV加载历史数据供图表使用
+                        # 验证CSV历史数据的完整性（至少30行才使用缓存）
+                        _csv_has_enough_data = False
                         try:
                             data_dir = self.config.get("storage", {}).get(
                                 "data_dir", "./data"
@@ -398,15 +395,34 @@ class StockDataFetcher:
                             csv_file = Path(data_dir) / f"{stock_code}_history.csv"
                             if csv_file.exists():
                                 hist_df = pd.read_csv(csv_file, parse_dates=["date"])
-                                session._historical[stock_code] = hist_df
-                                logger.debug(
-                                    f"图表: 从CSV加载 {stock_code} 历史数据 ({len(hist_df)} 行)"
-                                )
+                                if len(hist_df) >= 30:
+                                    _csv_has_enough_data = True
+                                    session._historical[stock_code] = hist_df
+                                    logger.debug(
+                                        f"图表: 从CSV加载 {stock_code} 历史数据 "
+                                        f"({len(hist_df)} 行)"
+                                    )
+                                else:
+                                    logger.warning(
+                                        f"股票 {stock_code} CSV历史数据不足 "
+                                        f"({len(hist_df)} 行 < 30)，跳过缓存"
+                                    )
                         except Exception as csv_err:
                             logger.debug(
                                 f"图表: 无法从CSV加载 {stock_code} 历史数据: {csv_err}"
                             )
-                        continue
+
+                        if _csv_has_enough_data:
+                            logger.info(f"股票 {stock_code} 使用缓存数据")
+                            # 从缓存数据构建DataFrame
+                            latest_data = pd.DataFrame([cached_latest_data])
+                            all_data.append(latest_data)
+                            continue
+                        else:
+                            # CSV数据不足，保证走fetch流程重新获取完整历史
+                            logger.info(
+                                f"股票 {stock_code} 缓存历史数据不完整，重新获取"
+                            )
                     else:
                         logger.warning(f"股票 {stock_code} 缓存数据不完整，重新获取")
                 elif cached_data and "data" in cached_data:

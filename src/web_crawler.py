@@ -218,13 +218,23 @@ class StockWebCrawler:
                     self._fetch_from_qq_international,
                 ]
             else:
-                # 美股和港股：东方财富优先（国内可正常访问），Yahoo次之
-                data_sources = [
-                    self._fetch_from_eastmoney,  # 东方财富（国内可访问，有完整历史）
-                    self._fetch_from_yahoo,  # 雅虎财经（备用）
-                    self._fetch_from_qq_international,  # 腾讯财经国际版（仅实时）
-                ]
-            logger.info(f"美港股 {stock_code} 使用东方财富+雅虎数据源")
+                # 美股：东方财富优先 → 新浪美股K线（国内可稳定访问）→ Yahoo（备用）
+                if market == "us":
+                    data_sources = [
+                        self._fetch_from_eastmoney,  # 东方财富（有完整历史+复权数据）
+                        self._fetch_from_sina_us,  # 新浪美股K线API（国内稳定，历史完整）
+                        self._fetch_from_yahoo,  # 雅虎财经（备用，国内可能403）
+                        self._fetch_from_qq_international,  # 腾讯国际版（仅1条实时数据）
+                    ]
+                    logger.info(f"美股 {stock_code} 使用东方财富+新浪+雅虎数据源")
+                else:
+                    # 港股：东方财富优先，Yahoo次之
+                    data_sources = [
+                        self._fetch_from_eastmoney,  # 东方财富（港股secid=116.*）
+                        self._fetch_from_yahoo,  # 雅虎财经（备用）
+                        self._fetch_from_qq_international,  # 腾讯国际版（仅实时）
+                    ]
+                    logger.info(f"港股 {stock_code} 使用东方财富+雅虎数据源")
         elif market == "a_share":
             # A股原有逻辑
             if self._is_etf(stock_code):
@@ -805,6 +815,117 @@ class StockWebCrawler:
 
         except Exception as e:
             logger.warning(f"从雅虎财经获取股票 {stock_code} 数据失败: {e}")
+            return pd.DataFrame()
+
+    def _fetch_from_sina_us(self, stock_code, days):
+        """
+        从新浪财经美股K线API获取历史数据
+
+        接口：US_MinKService.getDailyK
+        参数 symbol 直接使用原始股票代码（如 VOO, UPRO）
+        返回完整历史数据，适合用作东方财富/雅虎的备用源
+
+        Args:
+            stock_code: 美股股票代码（如 VOO, UPRO, AAPL）
+            days: 需要的天数（接口本身返回全部历史，此参数仅控制截取行数）
+
+        Returns:
+            pandas.DataFrame: 股票历史数据
+        """
+        try:
+            # 去除可能的 US 前缀
+            code = stock_code.upper().replace("US", "")
+
+            url = (
+                "http://stock.finance.sina.com.cn/usstock/"
+                "api/json_v2.php/US_MinKService.getDailyK"
+            )
+            params = {
+                "symbol": code,
+                "type": "daily",
+            }
+            headers = {
+                "User-Agent": self.user_agent,
+                "Referer": "http://finance.sina.com.cn",
+            }
+
+            response = requests.get(
+                url, params=params, headers=headers, timeout=self.timeout
+            )
+            response.raise_for_status()
+
+            data_json = response.json()
+            if not data_json or not isinstance(data_json, list):
+                logger.warning(f"新浪美股K线API返回空数据: {code}")
+                return pd.DataFrame()
+
+            records = []
+            for item in data_json:
+                try:
+                    records.append(
+                        {
+                            "date": item["d"],
+                            "open": float(item["o"]),
+                            "close": float(item["c"]),
+                            "high": float(item["h"]),
+                            "low": float(item["l"]),
+                            "volume": int(float(item["v"])),
+                            "amount": float(item["a"]) if item.get("a") else 0.0,
+                        }
+                    )
+                except (KeyError, ValueError, TypeError) as parse_err:
+                    logger.debug(f"解析新浪美股K线行失败: {parse_err}, item={item}")
+                    continue
+
+            if not records:
+                logger.warning(f"新浪美股K线API无有效数据: {code}")
+                return pd.DataFrame()
+
+            df = pd.DataFrame(records)
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.sort_values("date").reset_index(drop=True)
+
+            # 只保留需要的天数（+30天确保有足够数据计算指标）
+            if len(df) > days + 30:
+                df = df.tail(days + 30).reset_index(drop=True)
+
+            # 计算派生字段（与雅虎数据源一致）
+            if len(df) > 1:
+                df["amplitude"] = (df["high"] - df["low"]) / df["open"] * 100
+                df["change_pct"] = df["close"].pct_change() * 100
+                df["change"] = df["close"].diff()
+            else:
+                df["amplitude"] = 0.0
+                df["change_pct"] = 0.0
+                df["change"] = 0.0
+            df["turnover"] = 0.0
+
+            # 通过新浪实时行情获取股票名称
+            try:
+                name_url = f"http://hq.sinajs.cn/list=gb_{code.lower()}"
+                name_resp = requests.get(
+                    name_url,
+                    headers={"Referer": "http://finance.sina.com.cn"},
+                    timeout=self.timeout,
+                )
+                if name_resp.status_code == 200:
+                    # 响应格式: var hq_str_gb_voo="名称,价格,..."
+                    text = name_resp.text
+                    if "=" in text:
+                        quote_str = text.split("=", 1)[1].strip().strip('"').strip("'")
+                        parts = quote_str.split(",")
+                        if parts and parts[0]:
+                            stock_name = parts[0].strip()
+                            if stock_name:
+                                df["stock_name"] = stock_name
+            except Exception:
+                pass  # 名称获取失败不影响数据本身
+
+            logger.info(f"从新浪美股K线API获取股票 {stock_code} 的 {len(df)} 条数据")
+            return df
+
+        except Exception as e:
+            logger.warning(f"从新浪美股K线API获取股票 {stock_code} 数据失败: {e}")
             return pd.DataFrame()
 
     def _fetch_from_qq(self, stock_code, days):
