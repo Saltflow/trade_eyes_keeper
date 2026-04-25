@@ -3,7 +3,7 @@
 pandas>=2.0.0
 numpy>=1.24.0
 # 数据获取
-baostock>=1.2.0
+baostock>=0.9.1
 # akshare>=1.12.0  # Removed - using web crawler instead
 # 邮件发送
 yagmail>=0.15.0
