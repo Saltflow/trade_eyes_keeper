@@ -88,6 +88,20 @@ class EmailNotifier:
             # 构建邮件主题
             subject = f"股票提醒 - {datetime.now().strftime('%Y-%m-%d')}"
 
+            # 获取投资组合策略结果
+            portfolio_results = getattr(session, "portfolio_results", None)
+
+            # 生成投资组合走势图（两张: A股 / 非A股）
+            portfolio_chart_dict = None
+            if portfolio_results:
+                try:
+                    from src.portfolio_strategy import generate_portfolio_chart
+                    portfolio_chart_dict = generate_portfolio_chart(portfolio_results)
+                    n_charts = len(portfolio_chart_dict) if portfolio_chart_dict else 0
+                    logger.info(f"投资组合图表生成: {n_charts}张" if n_charts else "投资组合图表跳过")
+                except Exception as e:
+                    logger.error(f"投资组合图表生成失败: {e}")
+
             # 构建邮件内容
             body = self._build_email_body(
                 alert_stocks,
@@ -98,10 +112,12 @@ class EmailNotifier:
                 backtest_results,
                 historical_data=historical_data,
                 chart_png_bytes=chart_png_bytes,
+                portfolio_results=portfolio_results,
+                portfolio_chart_dict=portfolio_chart_dict,
             )
 
             # 发送邮件（_send_email内部会跳过SKIP_EMAIL模式并打印日志）
-            self._send_email(subject, body, chart_png_bytes=chart_png_bytes)
+            self._send_email(subject, body, chart_png_bytes=chart_png_bytes, portfolio_chart_dict=portfolio_chart_dict)
 
             logger.info(
                 f"邮件任务完成 ({self.receiver_email}) "
@@ -131,6 +147,18 @@ class EmailNotifier:
             # 构建邮件主题
             subject = f"股票日报 - {datetime.now().strftime('%Y-%m-%d')}"
 
+            # 获取投资组合策略结果
+            portfolio_results = getattr(session, "portfolio_results", None)
+
+            # 生成投资组合走势图（两张）
+            portfolio_chart_dict = None
+            if portfolio_results:
+                try:
+                    from src.portfolio_strategy import generate_portfolio_chart
+                    portfolio_chart_dict = generate_portfolio_chart(portfolio_results)
+                except Exception as e:
+                    logger.error(f"投资组合图表生成失败: {e}")
+
             # 构建邮件内容（使用空警报列表）
             body = self._build_email_body(
                 [],
@@ -140,10 +168,12 @@ class EmailNotifier:
                 financial_analysis_results,
                 backtest_results,
                 historical_data=historical_data,
+                portfolio_results=portfolio_results,
+                portfolio_chart_dict=portfolio_chart_dict,
             )
 
             # 发送邮件
-            self._send_email(subject, body)
+            self._send_email(subject, body, portfolio_chart_dict=portfolio_chart_dict)
 
             logger.info(f"每日报告邮件任务完成 ({self.receiver_email}) (来自Session)")
 
@@ -165,15 +195,15 @@ class EmailNotifier:
             str: HTML格式的财报分析部分
         """
         if not financial_analysis_results:
-            return "&lt;h3&gt;财报分析&lt;/h3&gt;&lt;p&gt;暂无可用财报分析数据（可能无新财报或获取失败）。&lt;/p&gt;"
+            return "<h3>财报分析</h3><p>暂无可用财报分析数据（可能无新财报或获取失败）。</p>"
 
         logger.info(
             f"构建财报分析部分: 收到{len(financial_analysis_results)}只股票的分析结果"
         )
 
         html = """
-            &lt;h3&gt;财报分析&lt;/h3&gt;
-            &lt;p&gt;基于最新财报的结构化摘要（按股票展示最近2份）：&lt;/p&gt;
+            <h3>财报分析</h3>
+            <p>基于最新财报的结构化摘要（按股票展示最近2份）：</p>
         """
 
         for stock_code, reports in financial_analysis_results.items():
@@ -324,6 +354,170 @@ class EmailNotifier:
 
         return html
 
+    def _build_portfolio_section(self, portfolio_results, portfolio_chart_dict=None):
+        """
+        构建投资组合策略分析部分HTML
+
+        Args:
+            portfolio_results: PortfolioOptimizer.run()返回的结果字典
+                {
+                    "a_share": {
+                        "max_return": PortfolioResult,
+                        "min_drawdown": PortfolioResult,
+                        "max_sharpe": PortfolioResult
+                    },
+                    "non_a_share": { ... }
+                }
+
+        Returns:
+            str: HTML格式的投资组合策略分析部分
+        """
+        if not portfolio_results:
+            return ""
+
+        logger.info("构建投资组合策略分析部分")
+
+        group_labels = {
+            "a_share": "A股组合",
+            "non_a_share": "非A股组合（港股/美股/新加坡）",
+        }
+        metric_labels = {
+            "max_return": "最高收益",
+            "min_drawdown": "最小回撤",
+            "max_sharpe": "最优夏普",
+        }
+
+        html = """
+        <div style="margin-top: 40px; border-top: 1px solid #ddd; padding-top: 20px;">
+            <h3>投资组合预期回报</h3>
+            <p style="color: #666; font-size: 14px;">基于MA60锚点择时策略，搜索最优投资组合（月度买入/卖出各限15000元）</p>
+        """
+
+        for group_key, group_label in group_labels.items():
+            group_data = portfolio_results.get(group_key)
+            if not group_data:
+                continue
+
+            html += f"""
+            <div style="margin-top: 25px;">
+                <h4 style="color: #333; border-left: 4px solid #2196f3; padding-left: 10px;">{group_label}</h4>
+            """
+
+            for metric_key, metric_label in metric_labels.items():
+                result = group_data.get(metric_key)
+                if not result:
+                    continue
+
+                # PortfolioResult is a dataclass, use attribute access
+                total_return = (
+                    result.total_return if hasattr(result, "total_return") else 0
+                )
+                max_drawdown = (
+                    result.max_drawdown if hasattr(result, "max_drawdown") else 0
+                )
+                sharpe_ratio = (
+                    result.sharpe_ratio if hasattr(result, "sharpe_ratio") else 0
+                )
+                expected_position = (
+                    result.expected_position
+                    if hasattr(result, "expected_position")
+                    else 0
+                )
+                trade_count = (
+                    result.trade_count if hasattr(result, "trade_count") else 0
+                )
+                composition = (
+                    result.composition if hasattr(result, "composition") else []
+                )
+                details = (
+                    result.stock_details if hasattr(result, "stock_details") else []
+                )
+
+                # 构造组合成分字符串
+                composition_str = ", ".join(composition) if composition else "无"
+                # 各股详情（简要展示前5只）
+                details_html = ""
+                if details:
+                    details_html = "<ul style='margin: 5px 0; padding-left: 20px; font-size: 12px;'>"
+                    for d in details[:5]:
+                        d_return = (
+                            d.get("total_return", 0)
+                            if isinstance(d, dict)
+                            else getattr(d, "total_return", 0)
+                        )
+                        d_sharpe = (
+                            d.get("sharpe_ratio", 0)
+                            if isinstance(d, dict)
+                            else getattr(d, "sharpe_ratio", 0)
+                        )
+                        d_trades = (
+                            d.get("trades", 0)
+                            if isinstance(d, dict)
+                            else getattr(d, "total_trades", 0)
+                        )
+                        d_code = (
+                            d.get("stock_code", "")
+                            if isinstance(d, dict)
+                            else getattr(d, "stock_code", "")
+                        )
+                        ret_color = "green" if d_return >= 0 else "red"
+                        details_html += (
+                            f"<li>{d_code}: "
+                            f"收益率 <span style='color:{ret_color};'>{d_return:+.2f}%</span>, "
+                            f"夏普 {d_sharpe:.2f}, "
+                            f"交易 {d_trades}次"
+                            f"</li>"
+                        )
+                    details_html += "</ul>"
+
+                return_color = "green" if total_return >= 0 else "red"
+                dd_color = "red" if max_drawdown < 0 else "green"
+
+                html += f"""
+                <div style="border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 6px; background-color: #fafafa;">
+                    <h5 style="margin: 0 0 10px 0; color: #1565c0;">{metric_label}</h5>
+                    <table style="border-collapse: collapse; width: 100%; font-size: 13px;">
+                        <tr>
+                            <td style="padding: 4px 8px; width: 25%;"><strong>组合收益率</strong></td>
+                            <td style="padding: 4px 8px; color: {return_color};">{total_return:+.2f}%</td>
+                            <td style="padding: 4px 8px; width: 25%;"><strong>最大回撤</strong></td>
+                            <td style="padding: 4px 8px; color: {dd_color};">{max_drawdown:+.2f}%</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px 8px;"><strong>夏普比率</strong></td>
+                            <td style="padding: 4px 8px;">{sharpe_ratio:.2f}</td>
+                            <td style="padding: 4px 8px;"><strong>期末持仓市值</strong></td>
+                            <td style="padding: 4px 8px;">{expected_position:,.2f}元</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px 8px;"><strong>交易次数</strong></td>
+                            <td style="padding: 4px 8px;">{trade_count}</td>
+                            <td style="padding: 4px 8px;"><strong>成分股数</strong></td>
+                            <td style="padding: 4px 8px;">{len(composition)}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 4px 8px; vertical-align: top;"><strong>成分股</strong></td>
+                            <td style="padding: 4px 8px;" colspan="3">{composition_str}</td>
+                        </tr>
+                    </table>
+                    {details_html}
+                </div>
+                """
+
+            html += "</div>"
+
+        html += """
+            <p style="color: #888; font-size: 12px; margin-top: 15px;">
+                <strong>策略说明：</strong>以MA60为锚点，价格跌破-5%/-10%时分批买入（每笔≤5000元），
+                突破+5%/+10%/+15%时分批卖出1/4持仓（每笔≤10000元，低于2500元清仓）。
+                月度买入/卖出各限15000元（组合级）。A股无风险利率2%，非A股4.5%。
+                初始资金每只股票10000元。
+            </p>
+        </div>
+        """
+
+        return html
+
     def _build_email_body(
         self,
         alert_stocks,
@@ -334,6 +528,8 @@ class EmailNotifier:
         backtest_results=None,
         historical_data=None,
         chart_png_bytes=None,
+        portfolio_results=None,
+        portfolio_chart_dict=None,
     ):
         """
          构建邮件正文（完整版：4个表格 + LLM分析 + 公告 + 服务器信息 + 财报分析 + 回测分析 + 图表）
@@ -366,6 +562,7 @@ class EmailNotifier:
         # 2. 构建满足条件的股票行（拆分为技术指标和基本面指标）
         alert_rows_technical = ""
         alert_rows_fundamental = ""
+        seen_fundamental = set()  # 基本面去重：每个股票只加一次
         for alert in alert_stocks:
             if self._is_multi_alert_format(alert):
                 # 多层级警报格式
@@ -373,7 +570,11 @@ class EmailNotifier:
                     alert, stock_data
                 )
                 alert_rows_technical += technical_row
-                alert_rows_fundamental += fundamental_row
+                # 基本面去重：同一股票只加一次
+                multi_code = alert.get("stock_code", "")
+                if multi_code and multi_code not in seen_fundamental:
+                    alert_rows_fundamental += fundamental_row
+                    seen_fundamental.add(multi_code)
             else:
                 # 单锚点警报格式（向后兼容）
                 stock_code = alert.get("stock_code", "")
@@ -522,8 +723,9 @@ class EmailNotifier:
                     </tr>
                 """
 
-                # 基本面指标行
-                alert_rows_fundamental += f"""
+                # 基本面指标行（去重：同一股票只加一次）
+                if stock_code and stock_code not in seen_fundamental:
+                    alert_rows_fundamental += f"""
                     <tr class="alert-row">
                         <td>{stock_code}</td>
                         <td>{stock_name}</td>
@@ -536,6 +738,7 @@ class EmailNotifier:
                         <td>{debt_ratio_str}</td>
                     </tr>
                 """
+                    seen_fundamental.add(stock_code)
 
         # 3. 构建所有监控股票行（拆分为价格技术指标和基本面指标）
         all_rows_price = ""
@@ -927,6 +1130,11 @@ class EmailNotifier:
         if backtest_results:
             backtest_section = self._build_backtest_section(backtest_results)
 
+        # 6b. 构建投资组合策略分析部分
+        portfolio_section = ""
+        if portfolio_results:
+            portfolio_section = self._build_portfolio_section(portfolio_results, portfolio_chart_dict)
+
         # 7. 走势图表（由调用方生成，通过 chart_png_bytes 传入，使用 CID 内嵌）
         chart_section = ""
         if chart_png_bytes:
@@ -936,6 +1144,24 @@ class EmailNotifier:
             <div style="text-align: center; margin: 20px 0;">
                 <img src="cid:chart001"
                      alt="价格走势图"
+                     style="max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 4px;" />
+            </div>
+            """
+
+        # 7b. 投资组合走势图（紧贴报警图后面，chart002=A股, chart003=非A股）
+        portfolio_chart_section = ""
+        if portfolio_chart_dict:
+            cid_map = {"a_share": "chart002", "non_a_share": "chart003"}
+            group_titles = {"a_share": "A股投资组合净值走势", "non_a_share": "非A股投资组合净值走势"}
+            for group_key in ("a_share", "non_a_share"):
+                if group_key in portfolio_chart_dict:
+                    cid = cid_map[group_key]
+                    title = group_titles.get(group_key, group_key)
+                    portfolio_chart_section += f"""
+            <h3>{title}</h3>
+            <div style="text-align: center; margin: 10px 0 20px 0;">
+                <img src="cid:{cid}"
+                     alt="{title}"
                      style="max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 4px;" />
             </div>
             """
@@ -1021,7 +1247,9 @@ class EmailNotifier:
             financial_analysis_section=financial_analysis_section,
             announcements_section=announcements_section,
             chart_section=chart_section,
+            portfolio_chart_section=portfolio_chart_section,
             backtest_section=backtest_section,
+            portfolio_section=portfolio_section,
             server_hostname=server_info["hostname"],
             server_ip=server_info["ip_address"],
             server_kernel=server_info["kernel_version"],
@@ -1315,14 +1543,16 @@ class EmailNotifier:
                 "machine": "未知",
             }
 
-    def _send_email(self, subject, body, chart_png_bytes=None):
+    def _send_email(self, subject, body, chart_png_bytes=None, portfolio_chart_dict=None):
         """
         发送邮件
 
         Args:
             subject: 邮件主题
             body: 邮件正文（HTML格式）
-            chart_png_bytes: 图表 PNG 原始字节（可选），有值时用 CID 内嵌
+            chart_png_bytes: 告警走势图 PNG 字节（可选），CID=chart001
+            portfolio_chart_dict: 投资组合走势图 {"a_share": bytes, "non_a_share": bytes}
+                                   CID: chart002=A股, chart003=非A股
         """
         import os
 
@@ -1343,8 +1573,10 @@ class EmailNotifier:
             html_part.set_charset("utf-8")
             html_part["Content-Transfer-Encoding"] = "quoted-printable"
 
-            if chart_png_bytes:
-                # 有图表：MIMEMultipart("related") 容器，HTML + 内嵌图片
+            has_any_chart = chart_png_bytes or portfolio_chart_dict
+
+            if has_any_chart:
+                # 有任意图表：MIMEMultipart("related") 容器，HTML + 内嵌图片
                 msg = MIMEMultipart("related")
                 msg.policy = policy.default
 
@@ -1353,13 +1585,26 @@ class EmailNotifier:
                 alt.attach(html_part)
                 msg.attach(alt)
 
-                # 添加图表图片（CID: chart001）
-                image = MIMEImage(chart_png_bytes, "png")
-                image.add_header("Content-ID", "<chart001>")
-                image.add_header("Content-Disposition", "inline", filename="chart.png")
-                msg.attach(image)
+                # 添加告警走势图（CID: chart001）
+                if chart_png_bytes:
+                    image = MIMEImage(chart_png_bytes, "png")
+                    image.add_header("Content-ID", "<chart001>")
+                    image.add_header("Content-Disposition", "inline", filename="chart.png")
+                    msg.attach(image)
+                    logger.info("告警走势图以 CID chart001 嵌入邮件")
 
-                logger.info("图表以 CID 方式嵌入邮件，兼容 Gmail 渲染")
+                # 添加投资组合走势图（CID: chart002=A股, chart003=非A股）
+                if portfolio_chart_dict:
+                    cid_map = {"a_share": "chart002", "non_a_share": "chart003"}
+                    for group_key, png_bytes in portfolio_chart_dict.items():
+                        if png_bytes and group_key in cid_map:
+                            cid = cid_map[group_key]
+                            img = MIMEImage(png_bytes, "png")
+                            img.add_header("Content-ID", f"<{cid}>")
+                            img.add_header("Content-Disposition", "inline",
+                                           filename=f"portfolio_{group_key}.png")
+                            msg.attach(img)
+                            logger.info(f"投资组合走势图以 CID {cid} 嵌入邮件")
             else:
                 # 无图表：保持原逻辑
                 msg = MIMEMultipart("alternative")

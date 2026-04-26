@@ -256,6 +256,22 @@ def run_daily_task():
         else:
             logger.info("回测功能已禁用，跳过回测分析")
 
+        # 7b. 投资组合策略分析（可选）
+        if backtest_enable:
+            try:
+                from src.portfolio_strategy import PortfolioOptimizer
+
+                logger.info("开始投资组合策略分析")
+                optimizer = PortfolioOptimizer(config)
+                portfolio_results = optimizer.run()
+                if portfolio_results:
+                    session.portfolio_results = portfolio_results
+                    logger.info("投资组合策略分析完成")
+                else:
+                    logger.warning("投资组合策略分析未返回结果")
+            except Exception as e:
+                logger.error(f"投资组合策略分析失败: {e}", exc_info=True)
+
         # 8. 发送邮件（无论是否有满足条件的股票都发送日报）
         if session.alerts:
             logger.info(f"发现{len(session.alerts)}个满足条件的警报")

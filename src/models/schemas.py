@@ -325,6 +325,7 @@ class SessionContext(BaseModel):
     announcements: dict[str, list] = Field(default_factory=dict)
     financial_analysis_results: dict[str, list] = Field(default_factory=dict)
     backtest_results: Optional[list] = None
+    portfolio_results: Optional[dict] = None
 
     def get_all_dataframe(self):
         """获取所有股票合并DataFrame（ALL列，无丢失）"""

@@ -93,7 +93,9 @@ class DataSource:
                     f"DataSource 缓存命中: {stock_code} "
                     f"({len(cached_df)} 行, {cache_start.date()}~{cache_end.date()})"
                 )
-                return cached_df
+                return cached_df[
+                    cached_df["date"] >= pd.Timestamp(requested_start)
+                ]
 
         # 2. 确定需要拉取的天数
         if (
@@ -118,7 +120,9 @@ class DataSource:
         if new_data is None or new_data.empty:
             if cached_df is not None and not cached_df.empty:
                 logger.warning(f"{stock_code} 拉取新数据失败, 返回缓存")
-                return cached_df
+                return cached_df[
+                    cached_df["date"] >= pd.Timestamp(requested_start)
+                ]
             return pd.DataFrame()
 
         # 4. 检测前复权修正（缓存 vs 新数据的重叠日期收盘价比对）
@@ -127,10 +131,17 @@ class DataSource:
                 logger.warning(f"{stock_code} 检测到前复权修正, 重新全量拉取")
                 new_data = self._fetch_with_verify(stock_code, days + 30)
                 if new_data is None or new_data.empty:
-                    return cached_df if cached_df is not None else pd.DataFrame()
+                    result = cached_df if cached_df is not None else pd.DataFrame()
+                    if not result.empty:
+                        result = result[
+                            result["date"] >= pd.Timestamp(requested_start)
+                        ]
+                    return result
                 # 全量覆盖写缓存（不复用旧缓存）
                 self._write_cache(stock_code, new_data)
-                return new_data
+                return new_data[
+                    new_data["date"] >= pd.Timestamp(requested_start)
+                ]
 
         # 5. 合并缓存 + 新数据
         if cached_df is not None and not cached_df.empty:
@@ -146,7 +157,9 @@ class DataSource:
 
         # 6. 写缓存
         self._write_cache(stock_code, merged)
-        return merged
+        return merged[
+            merged["date"] >= pd.Timestamp(requested_start)
+        ]
 
     def fetch_raw_data(self, stock_code: str, days: int = 120) -> pd.DataFrame:
         """
