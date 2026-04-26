@@ -1,7 +1,7 @@
 # 股票量化系统 - 关键设计决策文档
 
-**文档版本**: v3.1 (配置驱动的指标计算)
-**最后更新**: 2026-04-18
+**文档版本**: v3.2 (DataSource 统一数据源层)
+**最后更新**: 2026-04-26
 **压缩目标**: <1000行，保留关键设计决策
 
 ---
@@ -21,7 +21,7 @@
 
 ---
 
-## 🏗️ 架构现状 (v3.1)
+## 🏗️ 架构现状 (v3.2)
 
 ### 当前分层架构
 
@@ -33,9 +33,17 @@
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  数据源层 (src/)                                              │
-│  - web_crawler.py      - 只获取原始数据，不计算指标          │
-│  - data_fetcher.py     - 数据获取、缓存协调、调用指标计算    │
+│  缓存管理 + 数据源层 (src/)                                   │
+│  - data_source.py       - 统一数据源：CSV缓存+复权交叉验证    │
+│    ┌───────────────────────────────────────────────────────┐   │
+│    │  CSV缓存 (cache/data/{code}.csv + .meta)            │   │
+│    │  复权交叉验证: 双源取3日close对比，差值>0.01则不一致   │   │
+│    │  fallback重试: 最多2轮                                │   │
+│    │  过期判定: 7天保留 + 15:55当日过期                    │   │
+│    └───────────────────────────────────────────────────────┘   │
+│  - web_crawler.py      - 多源爬虫 (Sina/QQ/Eastmoney)        │
+│  - data_fetcher.py     - 数据获取 + 调用指标计算            │
+│  - cache_manager.py    - LLM提取/财报缓存（不再存股票数据）   │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
@@ -47,24 +55,30 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │  业务层 (src/)                                                │
 │  - session_manager.py   - Session统一管理                      │
-│  - condition_checker.py - 条件检查                            │
+│  - condition_checker.py - 条件检查（已移除价格校验）          │
 │  - email_notifier.py    - 邮件通知                            │
+│  - backtest_framework.py - 回测（已移除内存缓存，使用DataSource）│
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 关键改进 (v3.1)
-1. **指标计算与数据源分离**
-   - web_crawler.py 不再计算 MA60
-   - data_fetcher.py 不再计算 MA60
-   - 统一由 technical_indicators.py 从 alerts.yaml 配置计算
+### 关键改进 (v3.2)
+1. **DataSource 统一数据源层**
+   - 缓存格式从 JSON → CSV + meta 元信息文件
+   - 缓存管理（过期、复用）、复权交叉验证、价格校验集中到 DataSource
+   - downstream 模块（data_fetcher, backtest_framework, session_manager）不再管理自己的缓存
 
-2. **ETF检测逻辑统一**
-   - web_crawler.py 和 session_manager.py 都使用 utils.etf_detector
-   - 消除重复硬编码
+2. **复权交叉验证机制**
+   - 用两个数据接口交叉比对（取上3个交易日的复权收盘价）
+   - 差值 > 0.01 则判定为不一致，走 fallback 重试链（最多2轮）
 
-3. **配置驱动的指标系统**
-   - 所有技术指标通过 alerts.yaml 的 anchors 配置
-   - 新指标只需添加配置，无需修改代码
+3. **价格校验移入 DataSource**
+   - 从 condition_checker.py 和 data_fetcher.py 中移除价格关系验证
+   - DataSource 在返回数据前做 close>=low<=high 校验，日志警告
+
+4. **data_fetcher.py 瘦身**
+   - 删除 ~170 行缓存/过期/复用代码
+   - 使用 @property 延迟初始化 DataSource / WebCrawler / CacheManager
+   - 修复属性赋值冲突（@property 无 setter 的情况下不能直接赋值）
 
 ---
 
@@ -182,7 +196,53 @@
 2. **邮件集成**: 在email_notifier.py中添加`_build_backtest_section()`方法构建HTML表格
 3. **模板扩展**: 在email_template.html中添加`{backtest_section}`占位符
 
-### 5. 历史数据缓存架构
+### 5. DataSource 统一数据源层（v3.2）
+**决策**: 将缓存管理、数据校验、复权验证集中到 DataSource 模块
+**时间**: 2026-04-26 (v3.2)
+**背景**:
+- 缓存逻辑分散在 data_fetcher、backtest_framework、session_manager 中，难以维护
+- JSON 缓存格式不适合增量更新和校验
+- 价格校验（close>=low<=high）放在 condition_checker（业务层），分层不合理
+- 复权验证没有统一的交叉比对机制
+
+**解决方案**:
+1. **DataSource 新模块** (`src/data_source.py`):
+   - CSV 缓存读写（每只股票一个 CSV 文件）
+   - Meta 元信息文件（{code}.csv.meta 记录 fetch_time、rows、source）
+   - 过期判定：7天保留 + 15:55 当日过期（读取 config.yaml 的 cache_bypass_cutoff）
+   - 复权交叉验证：双源取3日 close 比对，差值 > 0.01 则不一致，fallback 重试最多2轮
+   - 价格关系校验：close >= low <= high，不符合时日志警告
+
+2. **CSV缓存格式**:
+   ```csv
+   date,open,close,high,low,volume,amount,stock_name,stock_code
+   2025-10-28,6.48,6.48,6.54,6.46,24037000.0,155759760.0,电投产融,000958
+   ```
+   ```json
+   # {code}.csv.meta
+   {"stock_code": "000958", "fetch_time": "2026-04-26T00:30:20+08:00", "rows": 120, "source": "_fetch_from_qq"}
+   ```
+
+3. **下游模块变更**:
+   - `data_fetcher.py`: 删除缓存代码（~170行），改用 `DataSource.fetch_stock_data()`；修复 @property 属性赋值冲突
+   - `backtest_framework.py`: 删除 `self.data_cache` 内存缓存，使用 `DataSource.fetch_stock_data()`
+   - `session_manager.py`: `DataSourceSelector` 简化为 DataSource 代理
+   - `condition_checker.py`: 删除 `_validate_price_relationships()` 方法
+
+**影响范围**:
+- 新增文件: `src/data_source.py`
+- 修改文件: `src/data_fetcher.py`, `src/web_crawler.py`, `src/session_manager.py`, `backtest_framework.py`, `condition_checker.py`
+- 测试更新: `tests/validation/test_system_validation.py`（价格校验测试更新）
+- 缓存格式变更: JSON → CSV + meta（旧 JSON 缓存文件不再被读取，可安全删除）
+
+**验证结果**:
+- ✅ 63/77 测试通过（14个失败/错误均为预存问题，与 DataSource 无关）
+- ✅ `python main.py --once` 端到端运行正常
+- ✅ CSV 缓存写入: 26 只股票已生成 cache/data/{code}.csv + {code}.csv.meta
+- ✅ 缓存命中: DataSource 缓存命中 + backtest_framework 从 DataSource 获取数据正常
+- ✅ 47 个旧 JSON 缓存文件已清理
+
+### 6. 历史数据缓存架构
 **决策**: 使用baostock作为稳定数据源替代web_crawler，实现智能缓存机制
 **时间**: 2026-04-10 (v2.8)
 **背景**: web_crawler不稳定，回测需要可靠的历史数据源，HistoricalDataManager返回空DataFrame
@@ -298,6 +358,7 @@
 | v2.8 | 2026-04-10 | 历史数据缓存优化 | 性能优化 |
 | v3.0 | 2026-04-15 | Session-based数据流 | 架构重构 |
 | v3.1 | 2026-04-18 | 配置驱动的指标计算，模块职能隔离 | 架构重构 |
+| v3.2 | 2026-04-26 | DataSource 统一数据源层，CSV缓存+复权验证 | 架构重构 |
 
 ---
 

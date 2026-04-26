@@ -27,133 +27,43 @@ logger = logging.getLogger(__name__)
 
 
 class DataSourceSelector:
-    """数据源选择器 - 只使用 web_crawler（ETF除权支持更好）"""
+    """数据源选择器 - 代理到 DataSource（缓存管理 + 复权验证统一在 DataSource 内部）"""
 
-    def __init__(
-        self,
-        config: dict,
-        web_crawler=None,
-        cache_manager=None,
-    ):
+    def __init__(self, config: dict):
         self.config = config
-        self.web_crawler = web_crawler
-        self.cache_manager = cache_manager
+        self._data_source = None
 
-    def _is_etf(self, stock_code: str) -> bool:
-        """判断是否为ETF基金"""
-        try:
-            from .utils.etf_detector import is_etf
-        except ImportError:
-            from utils.etf_detector import is_etf
+    @property
+    def data_source(self):
+        if self._data_source is None:
+            from .data_source import DataSource
 
-        return is_etf(stock_code)
+            self._data_source = DataSource(self.config)
+        return self._data_source
 
     def get_historical_data(
         self,
         stock_code: str,
         start_date: str,
         end_date: str,
-        source: str = "web_crawler",
+        source: str = "auto",
     ) -> pd.DataFrame:
-        """获取历史数据 - 统一入口（只使用 web_crawler）
+        """获取历史数据 - 统一入口（代理到 DataSource）
 
         Args:
             stock_code: 股票代码
             start_date: 开始日期 (YYYYMMDD)
             end_date: 结束日期 (YYYYMMDD)
-            source: 数据源（忽略，始终使用 web_crawler）
+            source: 忽略（DataSource 内部管理）
 
         Returns:
-            DataFrame: 历史数据，包含 date, open, high, low, close 等字段
+            DataFrame: 历史数据，包含 date, open, high, low, close 等字段（已复权）
         """
-        # 转换日期格式为天数
         start_dt = datetime.strptime(start_date, "%Y%m%d")
         end_dt = datetime.strptime(end_date, "%Y%m%d")
         days = (end_dt - start_dt).days + 1
 
-        # 所有股票都使用 web_crawler（ETF除权支持更好）
-        return self._fetch_from_web_crawler(stock_code, days)
-
-    def _fetch_from_web_crawler(self, stock_code: str, days: int) -> pd.DataFrame:
-        """从 web_crawler 获取数据"""
-        if self.web_crawler is None:
-            try:
-                from .web_crawler import StockWebCrawler
-
-                self.web_crawler = StockWebCrawler(self.config)
-                logger.debug("web_crawler 延迟初始化完成")
-            except Exception as e:
-                logger.error(f"web_crawler 初始化失败: {e}")
-                return pd.DataFrame()
-
-        try:
-            data = self.web_crawler.fetch_stock_data(stock_code, days=days)
-            if data is not None and not data.empty:
-                logger.debug(f"web_crawler 获取 {stock_code} 数据成功: {len(data)}条")
-                return data
-            else:
-                logger.warning(f"web_crawler 返回空数据: {stock_code}")
-                return pd.DataFrame()
-        except Exception as e:
-            logger.error(f"web_crawler 获取数据异常 {stock_code}: {e}")
-            return pd.DataFrame()
-
-        try:
-            data = self.web_crawler.fetch_stock_data(stock_code, days=days)
-            if data is not None and not data.empty:
-                logger.debug(f"web_crawler 获取 {stock_code} 数据成功: {len(data)}条")
-                return data
-            else:
-                logger.warning(f"web_crawler 返回空数据: {stock_code}")
-                return pd.DataFrame()
-        except Exception as e:
-            logger.error(f"web_crawler 获取数据异常 {stock_code}: {e}")
-            return pd.DataFrame()
-
-    def _fetch_from_baostock(
-        self, stock_code: str, start_date: str, end_date: str
-    ) -> pd.DataFrame:
-        """从 baostock 获取数据"""
-        if self.baostock_fetcher is None:
-            try:
-                from .baostock_fetcher import BaostockFetcher
-
-                baostock_config = self.config.get("baostock", {})
-                self.baostock_fetcher = BaostockFetcher(baostock_config)
-                logger.debug("baostock_fetcher 延迟初始化完成")
-            except Exception as e:
-                logger.error(f"baostock_fetcher 初始化失败: {e}")
-                return pd.DataFrame()
-
-        try:
-            # 发出废弃警告
-            warnings.warn(
-                "baostock_fetcher 已废弃，建议使用 web_crawler 作为主数据源",
-                DeprecationWarning,
-            )
-
-            # 登录
-            if not self.baostock_fetcher.login():
-                logger.error(f"baostock 登录失败: {stock_code}")
-                return pd.DataFrame()
-
-            # 获取数据
-            raw_data = self.baostock_fetcher.query_history_k_data(
-                stock_code, start_date, end_date
-            )
-
-            if raw_data is None or raw_data.empty:
-                logger.warning(f"baostock 返回空数据: {stock_code}")
-                return pd.DataFrame()
-
-            # 转换为标准格式
-            standard_data = self.baostock_fetcher.convert_to_standard(raw_data)
-            logger.debug(f"baostock 获取 {stock_code} 数据成功: {len(standard_data)}条")
-            return standard_data
-
-        except Exception as e:
-            logger.error(f"baostock 获取数据异常 {stock_code}: {e}")
-            return pd.DataFrame()
+        return self.data_source.fetch_stock_data(stock_code, days)
 
 
 class SessionManager:
@@ -168,12 +78,8 @@ class SessionManager:
         self.global_config = config or {}
         self._sessions: dict[str, SessionContext] = {}
 
-        # 初始化数据源选择器
-        self.data_source_selector = DataSourceSelector(
-            config=self.global_config,
-            web_crawler=web_crawler,
-            cache_manager=cache_manager,
-        )
+        # 初始化数据源选择器（代理到 DataSource）
+        self.data_source_selector = DataSourceSelector(config=self.global_config)
 
     def create_session(self, config: Optional[dict] = None) -> SessionContext:
         """创建新Session"""

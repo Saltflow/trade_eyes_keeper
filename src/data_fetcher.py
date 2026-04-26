@@ -35,25 +35,13 @@ class StockDataFetcher:
         data_source_type = config.get("data_source", {}).get("type", "web_crawler")
         if data_source_type == "akshare":
             logger.warning("akshare数据源已移除，将使用web_crawler作为替代")
-            data_source_type = "web_crawler"
-        self.data_source = data_source_type
-        # 初始化缓存管理器
-        self.cache_manager = CacheManager(config)
-        # 延迟导入web_crawler，避免循环依赖
-        self.web_crawler = None
-
-        # 缓存绕过配置
-        scheduler_config = config.get("scheduler", {})
-        cutoff_str = scheduler_config.get("cache_bypass_cutoff", "15:05")
-        try:
-            cutoff_hour, cutoff_minute = map(int, cutoff_str.split(":"))
-            self.cache_bypass_cutoff_hour = cutoff_hour
-            self.cache_bypass_cutoff_minute = cutoff_minute
-        except ValueError:
-            self.cache_bypass_cutoff_hour = 15
-            self.cache_bypass_cutoff_minute = 5
+        # data_source 通过 @property 延迟初始化 DataSource 实例
+        self._data_source = None
+        self._web_crawler = None
+        self._cache_manager = None
 
         # 时区配置
+        scheduler_config = config.get("scheduler", {})
         import pytz
 
         timezone_str = scheduler_config.get("timezone", "Asia/Shanghai")
@@ -63,57 +51,29 @@ class StockDataFetcher:
         # 注意：需要在 fetch_to_session 中设置 session_context
         self.technical_indicators = TechnicalIndicators()
 
-    def _should_bypass_cache(self, cached_data):
-        """
-        判断是否应绕过缓存
-        规则：如果当前时间 >= 15:05 且缓存数据日期不是今天，则绕过缓存
-        """
-        try:
-            # 获取缓存中的股票数据日期
-            if not cached_data or "data" not in cached_data:
-                return True
+    @property
+    def data_source(self):
+        if self._data_source is None:
+            from .data_source import DataSource
 
-            cached_stock_data = cached_data["data"]
-            if "date" not in cached_stock_data:
-                return True
+            self._data_source = DataSource(self.config)
+        return self._data_source
 
-            # 解析缓存股票日期（转换为本地时区日期）
-            cached_date_str = cached_stock_data["date"]
-            cached_dt = datetime.fromisoformat(cached_date_str.replace("Z", "+00:00"))
-            # 转换为配置的时区再比较日期
-            cached_date_local = cached_dt.astimezone(self.timezone).date()
+    @property
+    def web_crawler(self):
+        if self._web_crawler is None:
+            from .web_crawler import StockWebCrawler
 
-            # 获取当前时间（使用时区）
-            now = datetime.now(self.timezone)
-            today = now.date()
+            self._web_crawler = StockWebCrawler(self.config)
+        return self._web_crawler
 
-            # 检查日期是否为今天
-            if cached_date_local == today:
-                return False  # 缓存数据是今天的，可以使用
+    @property
+    def cache_manager(self):
+        if self._cache_manager is None:
+            from .cache_manager import CacheManager
 
-            # 缓存数据不是今天的，检查当前时间
-            cutoff_time = now.replace(
-                hour=self.cache_bypass_cutoff_hour,
-                minute=self.cache_bypass_cutoff_minute,
-                second=0,
-                microsecond=0,
-            )
-
-            if now >= cutoff_time:
-                # 当前时间 >= 配置的截止时间，需要今天的数据，但缓存数据不是今天的
-                logger.info(
-                    f"缓存数据日期 {cached_date_str} 不是今天，"
-                    f"当前时间 {now.strftime('%H:%M')} >= "
-                    f"{self.cache_bypass_cutoff_hour:02d}:{self.cache_bypass_cutoff_minute:02d}，绕过缓存"
-                )
-                return True
-            else:
-                # 当前时间 < 配置的截止时间，可以使用旧数据
-                return False
-
-        except Exception as e:
-            logger.warning(f"检查缓存是否应绕过时出错: {e}")
-            return True  # 出错时绕过缓存
+            self._cache_manager = CacheManager(self.config)
+        return self._cache_manager
 
     def _save_to_csv(self, stock_code, stock_data):
         """
@@ -164,12 +124,6 @@ class StockDataFetcher:
             pandas.DataFrame: 股票真实数据
         """
         try:
-            # 延迟导入，避免循环依赖
-            if self.web_crawler is None:
-                from .web_crawler import StockWebCrawler
-
-                self.web_crawler = StockWebCrawler(self.config)
-
             logger.info(f"使用网页爬虫获取股票 {stock_code} 真实数据")
 
             # 计算需要的历史天数
@@ -268,11 +222,6 @@ class StockDataFetcher:
 
         # 2. 如果LLM提取缓存没有，尝试网页爬虫作为备选
         try:
-            if self.web_crawler is None:
-                from .web_crawler import StockWebCrawler
-
-                self.web_crawler = StockWebCrawler(self.config)
-
             dividend_data = self.web_crawler.fetch_dividend_data(stock_code)
             if dividend_data and dividend_data.get("dividend_per_share"):
                 dividend = dividend_data["dividend_per_share"]
@@ -288,11 +237,6 @@ class StockDataFetcher:
         self, stock_code: str
     ) -> Optional[Dict[str, Optional[float]]]:
         """从网页爬虫获取估值指标数据"""
-        if self.web_crawler is None:
-            from .web_crawler import StockWebCrawler
-
-            self.web_crawler = StockWebCrawler(self.config)
-
         valuation_data = None
         try:
             valuation_data = self.web_crawler.fetch_valuation_data(stock_code)
@@ -347,102 +291,23 @@ class StockDataFetcher:
         # 设置 technical_indicators 的 session_context
         self.technical_indicators.session_context = session
 
-        # 直接实现数据获取逻辑（不依赖fetch_stock_data）
+        # 通过 DataSource 统一获取（缓存管理 + 复权验证由 DataSource 内部处理）
         all_data = []
         # 初始化历史数据暂存区（供图表模块使用，不触 Pydantic 模型）
         if not hasattr(session, "_historical"):
             object.__setattr__(session, "_historical", {})
 
         for stock_code in self.stocks:
-            # 确保股票代码是字符串
             stock_code = str(stock_code)
 
             try:
-                # 首先尝试从缓存获取数据
-                cached_data = self.cache_manager.get_stock_data_cache(stock_code)
-                if (
-                    cached_data
-                    and "data" in cached_data
-                    and not self._should_bypass_cache(cached_data)
-                ):
-                    cached_latest_data = cached_data["data"]
-                    # 验证缓存数据包含必要字段
-                    required_fields = [
-                        "open",
-                        "close",
-                        "high",
-                        "low",
-                        "ma60",
-                        "dividend_per_share",
-                        "dividend_yield",
-                        "earnings_growth",
-                        "pe_ratio",
-                        "pb_ratio",
-                        "roe",
-                        "debt_ratio",
-                    ]
-                    has_all_fields = all(
-                        field in cached_latest_data for field in required_fields
-                    )
-
-                    if has_all_fields:
-                        # 验证CSV历史数据的完整性（至少30行才使用缓存）
-                        _csv_has_enough_data = False
-                        try:
-                            data_dir = self.config.get("storage", {}).get(
-                                "data_dir", "./data"
-                            )
-                            csv_file = Path(data_dir) / f"{stock_code}_history.csv"
-                            if csv_file.exists():
-                                hist_df = pd.read_csv(csv_file, parse_dates=["date"])
-                                if len(hist_df) >= 30:
-                                    _csv_has_enough_data = True
-                                    session._historical[stock_code] = hist_df
-                                    logger.debug(
-                                        f"图表: 从CSV加载 {stock_code} 历史数据 "
-                                        f"({len(hist_df)} 行)"
-                                    )
-                                else:
-                                    logger.warning(
-                                        f"股票 {stock_code} CSV历史数据不足 "
-                                        f"({len(hist_df)} 行 < 30)，跳过缓存"
-                                    )
-                        except Exception as csv_err:
-                            logger.debug(
-                                f"图表: 无法从CSV加载 {stock_code} 历史数据: {csv_err}"
-                            )
-
-                        if _csv_has_enough_data:
-                            logger.info(f"股票 {stock_code} 使用缓存数据")
-                            # 从缓存数据构建DataFrame
-                            latest_data = pd.DataFrame([cached_latest_data])
-                            all_data.append(latest_data)
-                            continue
-                        else:
-                            # CSV数据不足，保证走fetch流程重新获取完整历史
-                            logger.info(
-                                f"股票 {stock_code} 缓存历史数据不完整，重新获取"
-                            )
-                    else:
-                        logger.warning(f"股票 {stock_code} 缓存数据不完整，重新获取")
-                elif cached_data and "data" in cached_data:
-                    # 缓存存在但需要绕过（例如数据不是今天的且时间>=15:05）
-                    logger.info(f"股票 {stock_code} 缓存数据已过期，重新获取")
-
-                logger.info(f"获取股票 {stock_code} 数据（无缓存）")
-
-                # 获取历史数据（至少61天用于计算MA60）
-                if self.web_crawler is None:
-                    from .web_crawler import StockWebCrawler
-
-                    self.web_crawler = StockWebCrawler(self.config)
-
-                stock_data = self.web_crawler.fetch_stock_data(stock_code, days=120)
+                # 从 DataSource 获取历史数据（含缓存管理 + 复权交叉验证）
+                stock_data = self.data_source.fetch_stock_data(stock_code, days=120)
 
                 if stock_data is not None and not stock_data.empty:
                     stock_data["stock_code"] = stock_code
 
-                    # 根据配置计算所有技术指标
+                    # 计算所有技术指标
                     stock_data = self.technical_indicators.calculate_indicators(
                         stock_data, stock_code=stock_code
                     )
@@ -506,26 +371,7 @@ class StockDataFetcher:
 
                     all_data.append(latest_data)
 
-                    # 缓存处理后的最新数据
-                    try:
-                        if not latest_data.empty:
-                            latest_data_dict = latest_data.iloc[0].to_dict()
-                            # 转换非JSON可序列化的类型
-                            for key, value in latest_data_dict.items():
-                                if pd.isna(value):
-                                    latest_data_dict[key] = None
-                                elif isinstance(value, pd.Timestamp):
-                                    latest_data_dict[key] = value.isoformat()
-                                elif isinstance(value, (np.integer, np.floating)):
-                                    latest_data_dict[key] = float(value)
-                            self.cache_manager.set_stock_data_cache(
-                                stock_code, latest_data_dict
-                            )
-                            logger.debug(f"股票 {stock_code} 最新数据已缓存")
-                    except Exception as cache_error:
-                        logger.warning(f"缓存股票 {stock_code} 数据失败: {cache_error}")
-
-                    # 保存完整历史数据到CSV
+                    # 保存完整历史数据到CSV（兼容图表模块）
                     self._save_to_csv(stock_code, stock_data)
 
                     # 暂存完整历史 DataFrame 供图表模块使用

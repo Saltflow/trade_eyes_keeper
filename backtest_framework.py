@@ -14,21 +14,17 @@ logger = logging.getLogger(__name__)
 class BacktestFramework:
     """回测框架 - SessionManager统一数据源版本"""
 
-    def __init__(self, config_path="config/config.yaml", session_manager=None):
+    def __init__(self, config_path="config/config.yaml"):
         """
         初始化回测框架
 
         Args:
             config_path: 配置文件路径
-            session_manager: SessionManager实例（可选，自动创建）
         """
         self.config_path = Path(config_path)
         self.config = None
         self.stock_codes = []
-        self.session_manager = session_manager
-        self.data_cache = {}
-        self.random_seed = random.randint(1, 1000)
-        random.seed(self.random_seed)
+        self._data_source = None
         self._init_logging()
 
     def _init_logging(self):
@@ -51,22 +47,22 @@ class BacktestFramework:
         except Exception:
             return False
 
-    def _init_session_manager(self):
-        """初始化SessionManager（如果未提供）"""
-        try:
-            if self.session_manager is None:
-                from src.session_manager import SessionManager
+    @property
+    def data_source(self):
+        if self._data_source is None:
+            try:
+                from src.data_source import DataSource
 
-                self.session_manager = SessionManager(self.config or {})
-                logger.info("SessionManager 初始化成功")
-            return True
-        except Exception as e:
-            logger.error(f"SessionManager 初始化失败: {e}")
-            return False
+                self._data_source = DataSource(self.config or {})
+                logger.info("DataSource 初始化成功")
+            except Exception as e:
+                logger.error(f"DataSource 初始化失败: {e}")
+                return None
+        return self._data_source
 
     def fetch_historical_data(self, stock_code, days=730):
         """
-        获取历史数据 - 使用SessionManager统一入口
+        获取历史数据 - 使用DataSource统一入口（含缓存管理 + 复权验证）
 
         Args:
             stock_code: 股票代码
@@ -75,38 +71,22 @@ class BacktestFramework:
         Returns:
             DataFrame: 历史数据
         """
-        # 检查内存缓存
-        if stock_code in self.data_cache:
-            return self.data_cache[stock_code]
+        if self.data_source is None:
+            logger.error(f"DataSource未初始化，无法获取数据: {stock_code}")
+            return None
 
-        # 使用SessionManager获取数据
         try:
-            if self.session_manager is None:
-                if not self._init_session_manager():
-                    logger.error(
-                        f"SessionManager初始化失败，无法获取数据: {stock_code}"
-                    )
-                    return None
-
-            # 使用SessionManager的统一接口
-            if self.session_manager:
-                data = self.session_manager.get_backtest_data(stock_code, days)
-            else:
-                data = None
-
+            data = self.data_source.fetch_stock_data(stock_code, days)
             if data is not None and not data.empty:
-                # 缓存到内存
-                self.data_cache[stock_code] = data
                 logger.info(
-                    f"从SessionManager获取数据成功: {stock_code} ({len(data)}条记录)"
+                    f"从DataSource获取数据成功: {stock_code} ({len(data)}条记录)"
                 )
                 return data
             else:
-                logger.warning(f"SessionManager返回空数据: {stock_code}")
+                logger.warning(f"DataSource返回空数据: {stock_code}")
                 return None
-
         except Exception as e:
-            logger.error(f"SessionManager获取数据失败: {stock_code}, 错误: {e}")
+            logger.error(f"DataSource获取数据失败: {stock_code}, 错误: {e}")
             return None
 
     def _calculate_start_dates(self):

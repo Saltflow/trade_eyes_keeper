@@ -71,10 +71,13 @@ class TestPriceRelationshipValidation:
             ("low_gt_high", "最低价>最高价"),
         ],
     )
-    def test_price_anomalies_trigger_warnings(
+    def test_price_anomalies_no_longer_in_condition_checker(
         self, checker_session, random_stock_code, anomaly_type, desc
     ):
-        """各类价格异常应触发相应警告"""
+        """
+        价格校验已移至 DataSource，ConditionChecker 不再触发价格异常警告。
+        验证 ConditionChecker 不产⽣价格相关 warning。
+        """
         checker, session, session_manager = checker_session
         base = random.uniform(10.0, 50.0)
 
@@ -111,16 +114,8 @@ class TestPriceRelationshipValidation:
             mock_logger.warning = mock_warning
             checker.check_from_session(session, session_manager)
 
-            assert mock_warning.call_count > 0, f"{desc}未触发警告"
-
-            # 验证警告消息包含关键词
-            msg = mock_warning.call_args[0][0]
-            if anomaly_type == "close_lt_lt":
-                assert "收盘价" in msg and "最低价" in msg
-            elif anomaly_type == "close_gt_high":
-                assert "收盘价" in msg and "最高价" in msg
-            else:
-                assert "最低价" in msg and "最高价" in msg
+            # ConditionChecker 不再校验价格关系，不应触发价格警告
+            assert mock_warning.call_count == 0, f"{desc}不应触发警告"
 
     def test_randomized_stock_codes_and_prices(self, checker_session):
         """随机股票代码和价格组合验证（系统稳定性）"""

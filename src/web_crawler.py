@@ -29,6 +29,8 @@ class StockWebCrawler:
         self.timeout = 30
         self.retry_times = 3
         self.retry_delay = 2
+        # 记录最后一次成功的数据源名称（供 DataSource 交叉验证使用）
+        self._last_source_name = None
 
     def _detect_market(self, stock_code):
         """
@@ -190,18 +192,42 @@ class StockWebCrawler:
 
         return False
 
-    def fetch_stock_data(self, stock_code, days=120):
+    def fetch_stock_data(self, stock_code, days=120, source_name=None):
         """
         获取股票历史数据
 
         Args:
             stock_code: 股票代码
             days: 需要的历史天数
+            source_name: 指定数据源名称（如 "_fetch_from_qq"），跳过 fallback 链直接使用该源
 
         Returns:
             pandas.DataFrame: 股票历史数据
         """
+        self._last_source_name = None  # 重置
         stock_code = str(stock_code)
+
+        # 指定数据源模式：跳过 fallback，直接调用指定源
+        if source_name is not None:
+            source_func = getattr(self, source_name, None)
+            if source_func is None:
+                logger.error(f"未知数据源: {source_name}")
+                return pd.DataFrame()
+            try:
+                logger.info(f"指定数据源 {source_name} 获取股票 {stock_code} 数据")
+                data = source_func(stock_code, days)
+                if data is not None and not data.empty:
+                    self._last_source_name = source_name
+                    data["stock_code"] = stock_code
+                    logger.info(
+                        f"从 {source_name} 成功获取股票 {stock_code} 的 {len(data)} 条数据"
+                    )
+                    return data
+                logger.warning(f"指定数据源 {source_name} 返回空数据: {stock_code}")
+            except Exception as e:
+                logger.warning(f"指定数据源 {source_name} 失败: {e}")
+            return pd.DataFrame()
+
         market = self._detect_market(stock_code)
         logger.info(f"检测到股票 {stock_code} 属于 {market} 市场")
 
@@ -260,21 +286,23 @@ class StockWebCrawler:
                 self._fetch_from_qq,
             ]
 
+        source_func_name = ""
         for source_func in data_sources:
             try:
-                logger.info(f"尝试从 {source_func.__name__} 获取股票 {stock_code} 数据")
+                source_func_name = source_func.__name__
+                logger.info(f"尝试从 {source_func_name} 获取股票 {stock_code} 数据")
                 data = source_func(stock_code, days)
                 if data is not None and not data.empty:
                     logger.info(
-                        f"从 {source_func.__name__} 成功获取股票 {stock_code} 的 {len(data)} 条数据"
+                        f"从 {source_func_name} 成功获取股票 {stock_code} 的 {len(data)} 条数据"
                     )
-
+                    self._last_source_name = source_func_name
                     data["stock_code"] = stock_code
 
                     return data
             except Exception as e:
                 logger.warning(
-                    f"从 {source_func.__name__} 获取股票 {stock_code} 数据失败: {e}"
+                    f"从 {source_func_name} 获取股票 {stock_code} 数据失败: {e}"
                 )
                 continue
 

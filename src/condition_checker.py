@@ -35,21 +35,6 @@ class ConditionChecker:
         else:
             self.alert_processor = None
 
-    def _validate_price_relationships(self, stock_data):
-        """验证价格关系"""
-        for _, row in stock_data.iterrows():
-            code = row.get("stock_code", "")
-            close = row.get("close")
-            low = row.get("low")
-            high = row.get("high")
-
-            if close and low and close < low:
-                logger.warning(f"股票 {code} 收盘价{close:.2f} < 最低价{low:.2f}")
-            if close and high and close > high:
-                logger.warning(f"股票 {code} 收盘价{close:.2f} > 最高价{high:.2f}")
-            if low and high and low > high:
-                logger.warning(f"股票 {code} 最低价{low:.2f} > 最高价{high:.2f}")
-
     def _check_multi(self, stock_data):
         """使用多层级警报系统"""
         try:
