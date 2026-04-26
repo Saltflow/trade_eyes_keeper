@@ -238,10 +238,10 @@ class StockWebCrawler:
             #   雅虎财经（真实历史数据，但国内服务器可能被屏蔽）
             #   腾讯财经国际版（备用，仅返回1条实时数据）
             if market == "sg":
-                # 新加坡：东方财富不支持（测试返回rc=102），只用Yahoo+QQ
+                # 新加坡：雅虎（唯一有历史数据的源，国内可能403）→ QQ国际（仅实时）
                 data_sources = [
-                    self._fetch_from_yahoo,
-                    self._fetch_from_qq_international,
+                    self._fetch_from_yahoo,  # 雅虎（唯一有历史数据的源）
+                    self._fetch_from_qq_international,  # 腾讯国际版（仅实时）
                 ]
             else:
                 # 美股：东方财富优先 → 新浪美股K线（国内可稳定访问）→ Yahoo（备用）
