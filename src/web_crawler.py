@@ -254,13 +254,17 @@ class StockWebCrawler:
                     ]
                     logger.info(f"美股 {stock_code} 使用东方财富+新浪+雅虎数据源")
                 else:
-                    # 港股：东方财富优先，Yahoo次之
+                    # 港股：东方财富优先 → 新浪港股（国内稳定，有完整历史）→ 腾讯财经 → Yahoo
                     data_sources = [
                         self._fetch_from_eastmoney,  # 东方财富（港股secid=116.*）
-                        self._fetch_from_yahoo,  # 雅虎财经（备用）
+                        self._fetch_from_sina_hk,  # 新浪港股历史API（国内稳定）
+                        self._fetch_from_qq,  # 腾讯财经历史API（支持港股）
+                        self._fetch_from_yahoo,  # 雅虎财经（备用，国内可能403）
                         self._fetch_from_qq_international,  # 腾讯国际版（仅实时）
                     ]
-                    logger.info(f"港股 {stock_code} 使用东方财富+雅虎数据源")
+                    logger.info(
+                        f"港股 {stock_code} 使用东方财富+新浪港股+腾讯+雅虎数据源"
+                    )
         elif market == "a_share":
             # A股原有逻辑
             if self._is_etf(stock_code):
@@ -956,6 +960,127 @@ class StockWebCrawler:
             logger.warning(f"从新浪美股K线API获取股票 {stock_code} 数据失败: {e}")
             return pd.DataFrame()
 
+    def _fetch_from_sina_hk(self, stock_code, days):
+        """
+        从新浪财经获取港股历史数据
+
+        接口：CN_MarketData.getKLineData（与A股历史API相同）
+        参数 symbol 使用 hk 前缀（如 hk00883）
+        返回完整历史数据，适合用作东方财富/雅虎的备用源
+
+        Args:
+            stock_code: 港股股票代码（如 00883, 01816）
+            days: 需要的天数
+
+        Returns:
+            pandas.DataFrame: 股票历史数据
+        """
+        try:
+            # 获取港股 symbol（hk + 5位数字代码）
+            market, _, sina_symbol, _, _ = self._normalize_stock_code(stock_code)
+            if market != "hk":
+                logger.warning(f"非港股代码: {stock_code}")
+                return pd.DataFrame()
+
+            code = stock_code.replace("HK", "").replace("hk", "")
+
+            # 新浪财经港股历史数据API（与A股同一接口，symbol不同）
+            url = "http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData"
+            params = {
+                "symbol": sina_symbol,  # 如 hk00883
+                "scale": "240",  # 日线
+                "datalen": str(days),
+            }
+            headers = {
+                "User-Agent": self.user_agent,
+                "Referer": "http://finance.sina.com.cn/",
+            }
+
+            response = requests.get(
+                url, params=params, headers=headers, timeout=self.timeout
+            )
+            if response.status_code != 200:
+                logger.warning(
+                    f"新浪港股历史API返回状态码 {response.status_code}: {code}"
+                )
+                return pd.DataFrame()
+
+            data_list = response.json()
+            if not data_list or not isinstance(data_list, list):
+                logger.warning(f"新浪港股历史API返回空数据: {code}")
+                return pd.DataFrame()
+
+            # 转换为DataFrame（格式与A股一致）
+            records = []
+            for item in data_list:
+                try:
+                    records.append(
+                        {
+                            "date": item["day"],
+                            "open": float(item["open"]),
+                            "close": float(item["close"]),
+                            "high": float(item["high"]),
+                            "low": float(item["low"]),
+                            "volume": float(item["volume"]),
+                            "amount": float(item["volume"])
+                            * float(item["close"]),  # 估算成交额
+                            "amplitude": (float(item["high"]) - float(item["low"]))
+                            / float(item["open"])
+                            * 100
+                            if float(item["open"]) > 0
+                            else 0.0,
+                            "change_pct": 0.0,  # 稍后计算
+                            "change": float(item["close"]) - float(item["open"]),
+                            "turnover": 0.0,
+                        }
+                    )
+                except (KeyError, ValueError, TypeError) as parse_err:
+                    logger.debug(f"解析新浪港股K线行失败: {parse_err}, item={item}")
+                    continue
+
+            if not records:
+                logger.warning(f"新浪港股历史API无有效数据: {code}")
+                return pd.DataFrame()
+
+            df = pd.DataFrame(records)
+            df["date"] = pd.to_datetime(df["date"])
+
+            # 计算涨跌幅
+            if len(df) > 1:
+                df["change_pct"] = df["close"].pct_change() * 100
+                if len(df) > 0:
+                    df.loc[0, "change_pct"] = (
+                        (df.loc[0, "close"] - df.loc[0, "open"])
+                        / df.loc[0, "open"]
+                        * 100
+                    )
+
+            df = df.sort_values("date")
+
+            # 通过新浪实时行情获取股票名称（港股 symbol 为 hk00883）
+            try:
+                name_url = f"http://hq.sinajs.cn/list={sina_symbol}"
+                name_headers = {
+                    "User-Agent": self.user_agent,
+                    "Referer": "http://finance.sina.com.cn/",
+                }
+                name_resp = requests.get(name_url, headers=name_headers, timeout=5)
+                name_resp.raise_for_status()
+                name_match = re.search(r'="(.+)"', name_resp.text)
+                if name_match:
+                    name_items = name_match.group(1).split(",")
+                    if name_items and name_items[0].strip():
+                        df["stock_name"] = name_items[0].strip()
+            except Exception:
+                pass  # 名称获取失败不影响数据本身
+
+            logger.info(f"从新浪港股历史API获取股票 {stock_code} 的 {len(df)} 条数据")
+            return df
+
+        except Exception as e:
+            logger.warning(f"从新浪港股历史API获取股票 {stock_code} 数据失败: {e}")
+            return pd.DataFrame()
+
     def _fetch_from_qq(self, stock_code, days):
         """
         从腾讯财经获取股票数据
@@ -980,14 +1105,29 @@ class StockWebCrawler:
     def _fetch_historical_from_qq(self, stock_code, days):
         """
         从腾讯财经历史数据API获取真实历史数据
+        支持 A 股（sh/sz 前缀）和港股（hk 前缀）
         """
         try:
-            market = (
-                "sh"
-                if stock_code.startswith("6") or stock_code.startswith("5")
-                else "sz"
-            )
-            symbol = f"{market}{stock_code}"
+            # 通过 _normalize_stock_code 获取正确的 QQ symbol
+            raw_market, qq_symbol, _, _, _ = self._normalize_stock_code(stock_code)
+            if raw_market == "us":
+                # 美股走其他数据源，QQ 不提供美股历史
+                return pd.DataFrame()
+            if raw_market == "hk":
+                # 港股使用 hk 前缀（如 hk00883）
+                symbol = qq_symbol
+            elif raw_market == "a_share":
+                market = (
+                    "sh"
+                    if stock_code.startswith("6") or stock_code.startswith("5")
+                    else "sz"
+                )
+                symbol = f"{market}{stock_code}"
+            else:
+                logger.warning(
+                    f"腾讯财经历史API不支持该市场: {stock_code} (market={raw_market})"
+                )
+                return pd.DataFrame()
 
             # 腾讯财经历史数据API
             url = "http://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
@@ -1011,66 +1151,67 @@ class StockWebCrawler:
 
                 if data.get("code") == 0 and "data" in data:
                     stock_data = data["data"].get(symbol)
-                    if stock_data and "qfqday" in stock_data:
-                        qfqday = stock_data["qfqday"]
+                    if stock_data:
+                        # A 股走 qfqday（前复权），港股走 day（未复权）
+                        kline_data = stock_data.get("qfqday") or stock_data.get("day")
+                        if kline_data:
+                            records = []
+                            for item in kline_data:
+                                # 每个item格式: ["2025-08-29","7.379","7.429","7.439","7.359","1237045.000"]
+                                # 可能还有额外字段，我们只取前6个
+                                if len(item) >= 5:
+                                    record = {
+                                        "date": item[0],
+                                        "open": float(item[1]),
+                                        "close": float(item[2]),
+                                        "high": float(item[3]),
+                                        "low": float(item[4]),
+                                        "volume": float(item[5])
+                                        if len(item) > 5
+                                        else 0.0,
+                                        "amount": 0.0,  # 腾讯不直接提供成交额
+                                        "amplitude": (float(item[3]) - float(item[4]))
+                                        / float(item[1])
+                                        * 100
+                                        if float(item[1]) > 0
+                                        else 0.0,
+                                        "change_pct": 0.0,  # 稍后计算
+                                        "change": float(item[2]) - float(item[1]),
+                                        "turnover": 0.0,  # 腾讯不直接提供换手率
+                                    }
+                                    records.append(record)
 
-                        records = []
-                        for item in qfqday:
-                            # 每个item格式: ["2025-08-29","7.379","7.429","7.439","7.359","1237045.000"]
-                            # 可能还有额外字段，我们只取前6个
-                            if len(item) >= 5:
-                                record = {
-                                    "date": item[0],
-                                    "open": float(item[1]),
-                                    "close": float(item[2]),
-                                    "high": float(item[3]),
-                                    "low": float(item[4]),
-                                    "volume": float(item[5]) if len(item) > 5 else 0.0,
-                                    "amount": 0.0,  # 腾讯不直接提供成交额
-                                    "amplitude": (float(item[3]) - float(item[4]))
-                                    / float(item[1])
-                                    * 100
-                                    if float(item[1]) > 0
-                                    else 0.0,
-                                    "change_pct": 0.0,  # 稍后计算
-                                    "change": float(item[2]) - float(item[1]),
-                                    "turnover": 0.0,  # 腾讯不直接提供换手率
-                                }
-                                records.append(record)
+                            df = pd.DataFrame(records)
+                            df["date"] = pd.to_datetime(df["date"])
 
-                        df = pd.DataFrame(records)
-                        df["date"] = pd.to_datetime(df["date"])
+                            # 计算涨跌幅（基于前一日收盘价）
+                            if len(df) > 1:
+                                df["change_pct"] = df["close"].pct_change() * 100
+                                if len(df) > 0:
+                                    df.loc[0, "change_pct"] = (
+                                        (df.loc[0, "close"] - df.loc[0, "open"])
+                                        / df.loc[0, "open"]
+                                        * 100
+                                    )
 
-                        # 计算涨跌幅（基于前一日收盘价）
-                        if len(df) > 1:
-                            df["change_pct"] = df["close"].pct_change() * 100
-                            # 第一天的涨跌幅用当天变化计算
-                            if len(df) > 0:
-                                df.loc[0, "change_pct"] = (
-                                    (df.loc[0, "close"] - df.loc[0, "open"])
-                                    / df.loc[0, "open"]
-                                    * 100
+                            df = df.sort_values("date")
+
+                            # 获取股票名称（通过QQ实时行情API提取简称）
+                            try:
+                                name_url = f"http://qt.gtimg.cn/q={symbol}"
+                                name_resp = requests.get(
+                                    name_url, headers=headers, timeout=5
                                 )
+                                name_items = name_resp.text.split("~")
+                                if len(name_items) > 1 and name_items[1].strip():
+                                    df["stock_name"] = name_items[1].strip()
+                            except Exception:
+                                pass  # 名称获取失败不影响数据本身
 
-                        # 按日期排序
-                        df = df.sort_values("date")
-
-                        # 获取股票名称（通过QQ实时行情API提取简称，items[1]为股票名称）
-                        try:
-                            name_url = f"http://qt.gtimg.cn/q={market}{stock_code}"
-                            name_resp = requests.get(
-                                name_url, headers=headers, timeout=5
+                            logger.info(
+                                f"从腾讯财经历史API获取股票 {stock_code} 的 {len(df)} 条真实历史数据"
                             )
-                            name_items = name_resp.text.split("~")
-                            if len(name_items) > 1 and name_items[1].strip():
-                                df["stock_name"] = name_items[1].strip()
-                        except Exception:
-                            pass  # 名称获取失败不影响数据本身
-
-                        logger.info(
-                            f"从腾讯财经历史API获取股票 {stock_code} 的 {len(df)} 条真实历史数据"
-                        )
-                        return df
+                            return df
 
             logger.warning("腾讯财经历史数据API返回数据格式异常")
             return pd.DataFrame()
