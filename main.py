@@ -31,7 +31,6 @@ from src.core.scheduler_manager import SchedulerManager
 from src.data.announcement_fetcher import AnnouncementFetcher
 from src.analysis.financial_report_manager import FinancialReportManager
 from src.session.session_manager import SessionManager
-from backtest_framework import BacktestFramework
 
 
 # 设置日志
@@ -233,44 +232,20 @@ def run_daily_task():
                 logger.error(f"财报分析失败: {e}", exc_info=True)
                 session.errors.append(f"财报分析失败: {e}")
 
-        # 7. 运行回测分析（可选）
-        backtest_results = None
-        # 读取回测配置
-        backtest_config = config.get("backtest", {})
-        backtest_enable = backtest_config.get("enable", True)  # 默认启用
+        # 7. 投资组合策略分析
+        try:
+            from src.analysis.portfolio_strategy import PortfolioOptimizer
 
-        if backtest_enable:
-            logger.info("回测功能已启用，开始回测分析")
-            try:
-                backtest_framework = BacktestFramework()
-                backtest_results = backtest_framework.get_backtest_results()
-                if backtest_results:
-                    logger.info(f"回测分析完成，共{len(backtest_results)}只股票")
-                    # 把回测结果存入 session，供邮件发送器使用
-                    session.backtest_results = backtest_results
-                else:
-                    logger.warning("回测分析未返回结果")
-            except Exception as e:
-                logger.error(f"回测分析失败: {e}", exc_info=True)
-                # 回测失败不影响主流程，继续发送邮件
-        else:
-            logger.info("回测功能已禁用，跳过回测分析")
-
-        # 7b. 投资组合策略分析（可选）
-        if backtest_enable:
-            try:
-                from src.analysis.portfolio_strategy import PortfolioOptimizer
-
-                logger.info("开始投资组合策略分析")
-                optimizer = PortfolioOptimizer(config)
-                portfolio_results = optimizer.run()
-                if portfolio_results:
-                    session.portfolio_results = portfolio_results
-                    logger.info("投资组合策略分析完成")
-                else:
-                    logger.warning("投资组合策略分析未返回结果")
-            except Exception as e:
-                logger.error(f"投资组合策略分析失败: {e}", exc_info=True)
+            logger.info("开始投资组合策略分析")
+            optimizer = PortfolioOptimizer(config)
+            portfolio_results = optimizer.run()
+            if portfolio_results:
+                session.portfolio_results = portfolio_results
+                logger.info("投资组合策略分析完成")
+            else:
+                logger.warning("投资组合策略分析未返回结果")
+        except Exception as e:
+            logger.error(f"投资组合策略分析失败: {e}", exc_info=True)
 
         # 8. 发送邮件（无论是否有满足条件的股票都发送日报）
         if session.alerts:
