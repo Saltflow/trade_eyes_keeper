@@ -50,6 +50,7 @@ scheduler:
 # 投资组合策略（可选，不配置使用默认MA60锚点择时）
 # portfolio_strategy:
 #   lookback_days: 730
+#   bollinger_window: 90   # 布林带窗口（交易日数）
 #   rules:
 #     - id: buy_minus5
 #       type: buy

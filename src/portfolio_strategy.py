@@ -32,7 +32,8 @@ MIN_SELL_PER_TRADE = 2500.0  # 每笔卖出下限(元)
 COMMISSION_RATE = 0.002  # 手续费率
 MONTHLY_BUY_LIMIT = 15000.0  # 组合月买入限额
 MONTHLY_SELL_LIMIT = 15000.0  # 组合月卖出限额
-INITIAL_CASH_PER_STOCK = 10000.0  # 每只股票初始资金
+INITIAL_CASH_PER_STOCK = 10000.0  # 每只股票初始资金（兼容旧调用）
+TOTAL_CAPITAL = 100000.0  # 每组总资金池（A股10万 / 非A股10万）
 RISK_FREE_A = 0.02  # A股无风险利率
 RISK_FREE_NON_A = 0.045  # 非A股无风险利率
 MIN_TRADING_DAYS = 400  # 最少交易日数（≈2年）
@@ -477,164 +478,241 @@ class PortfolioEvaluator:
 
     def evaluate(self, stock_codes: list[str]) -> PortfolioResult:
         """
-        评估指定股票组合
+        评估指定股票组合（共享资金池模拟）。
 
-        Args:
-            stock_codes: 组合中包含的股票代码列表
-
-        Returns:
-            PortfolioResult
+        所有标的共享 10 万元资金池 + 月度 1.5 万买卖限额，
+        标的间竞争资金——这才是贪心搜索的意义。
         """
         if not stock_codes:
             return PortfolioResult(
-                name="",
-                group=self.group,
-                total_return=0.0,
-                max_drawdown=0.0,
-                sharpe_ratio=0.0,
-                expected_position=0.0,
-                composition=[],
-                trade_count=0,
+                name="", group=self.group,
+                total_return=0.0, max_drawdown=0.0, sharpe_ratio=0.0,
+                expected_position=0.0, composition=[], trade_count=0,
             )
 
-        # 分配合计月度限额
-        n = len(stock_codes)
-        monthly_buy_per_stock = MONTHLY_BUY_LIMIT / n if n > 0 else MONTHLY_BUY_LIMIT
-        monthly_sell_per_stock = MONTHLY_SELL_LIMIT / n if n > 0 else MONTHLY_SELL_LIMIT
-
-        # 运行各股策略
-        all_metrics: list[StockMetrics] = []
-        for code in stock_codes:
-            if code not in self.stocks_data:
-                logger.warning(f"股票 {code} 无数据，跳过")
-                continue
-            engine = TimingStrategyEngine(code, self.stocks_data[code])
-            metrics = engine.run_simulation(
-                monthly_buy_limit=monthly_buy_per_stock,
-                monthly_sell_limit=monthly_sell_per_stock,
-                initial_cash=INITIAL_CASH_PER_STOCK,
-                rules=self.rules,
-            )
-            all_metrics.append(metrics)
-
-        if not all_metrics:
+        # ── 过滤有数据的标的 ──
+        active_codes = [c for c in stock_codes if c in self.stocks_data]
+        if not active_codes:
             return PortfolioResult(
-                name="",
-                group=self.group,
-                total_return=0.0,
-                max_drawdown=0.0,
-                sharpe_ratio=0.0,
-                expected_position=0.0,
-                composition=stock_codes,
-                trade_count=0,
+                name="", group=self.group,
+                total_return=0.0, max_drawdown=0.0, sharpe_ratio=0.0,
+                expected_position=0.0, composition=stock_codes, trade_count=0,
             )
+        n = len(active_codes)
 
-        # ── 组合级汇总 ──
-        # 按真实日期对齐：每只股票仅在自己有数据的日期贡献净值
-        # （数据起点不同的股票不会提前参与组合）
-        date_to_values: dict[str, float] = {}
-        for code, m in zip(stock_codes, all_metrics):
-            stock_df = self.stocks_data[code]
-            stock_df_dates = stock_df["date"].dt.date.astype(str)
-            n_min = min(len(stock_df_dates), len(m.daily_values))
-            for i in range(n_min):
-                date_str = stock_df_dates.iloc[i]
-                date_to_values[date_str] = (
-                    date_to_values.get(date_str, 0.0) + m.daily_values[i]
-                )
+        # ── 共享状态 ──
+        cash = TOTAL_CAPITAL
+        positions: dict[str, int] = {c: 0 for c in active_codes}
+        last_prices: dict[str, float] = {c: 0.0 for c in active_codes}
+        prev_deviations: dict[str, float | None] = {c: None for c in active_codes}
+        trade_count = 0
+        daily_navs: list[float] = []
+        nav_dates: list[str] = []
+        monthly_buys: dict[str, float] = {}
+        monthly_sells: dict[str, float] = {}
 
-        nav_dates = sorted(date_to_values.keys())
-        portfolio_daily_nav = [date_to_values[d] for d in nav_dates]
-
-        if len(portfolio_daily_nav) < 2:
-            return PortfolioResult(
-                name="",
-                group=self.group,
-                total_return=0.0,
-                max_drawdown=0.0,
-                sharpe_ratio=0.0,
-                expected_position=0.0,
-                composition=stock_codes,
-                trade_count=0,
-            )
-
-        # 组合总收益率
-        initial_nav = portfolio_daily_nav[0]
-        final_nav = portfolio_daily_nav[-1]
-        total_return = (
-            ((final_nav - initial_nav) / initial_nav * 100) if initial_nav > 0 else 0.0
-        )
-
-        # 年化
-        num_days = len(portfolio_daily_nav)
-        years = num_days / 252.0
-        if years > 0 and initial_nav > 0:
-            annual_return = ((final_nav / initial_nav) ** (1.0 / years) - 1) * 100
+        # Rule engines per stock
+        if self.rules is None:
+            rules = get_default_rules()
         else:
-            annual_return = 0.0
+            rules = self.rules
+        engines: dict[str, RuleEngine] = {}
+        for c in active_codes:
+            engines[c] = RuleEngine(rules)
 
-        # 最大回撤
-        peak = portfolio_daily_nav[0]
+        # ── 构建统一日期轴（同时计算 MA60 和 deviation）──
+        date_map: dict[str, dict[str, dict]] = {}
+        for code in active_codes:
+            df = self.stocks_data[code].copy()
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.sort_values("date").reset_index(drop=True)
+            df["ma60"] = df["close"].rolling(window=60, min_periods=1).mean()
+            df["deviation"] = (df["close"] - df["ma60"]) / df["ma60"]
+            dates = df["date"].dt.date.astype(str)
+            for i in range(len(df)):
+                d = dates.iloc[i]
+                if d not in date_map:
+                    date_map[d] = {}
+                row = df.iloc[i]
+                date_map[d][code] = {
+                    "close": float(row["close"]),
+                    "ma60": float(row.get("ma60", 0) or 0),
+                    "deviation": float(row.get("deviation", 0) or 0),
+                }
+
+        # ── 逐日模拟 ──
+        for date_str, day_data in sorted(date_map.items()):
+            month_key = _get_month_key(date_str)
+            month_buy_used = monthly_buys.get(month_key, 0.0)
+            month_sell_used = monthly_sells.get(month_key, 0.0)
+
+            # 当天所有标的价格（用于算 NAV）
+            day_prices: dict[str, float] = {}
+
+            for code, info in day_data.items():
+                close = info["close"]
+                ma60 = info["ma60"]
+                deviation = info["deviation"]
+                day_prices[code] = close
+                last_prices[code] = close  # 追踪最后已知价格
+                lot = _get_lot_size(code)
+
+                # 跳过无锚点的早期数据
+                if ma60 <= 0:
+                    prev_deviations[code] = deviation
+                    continue
+
+                # 上下文
+                ctx = {
+                    "close": close,
+                    "ma60": ma60,
+                    "deviation": deviation,
+                    "prev_deviation": prev_deviations.get(code),
+                    "cash": cash,
+                    "shares": positions[code],
+                    "position_value": positions[code] * close,
+                    "monthly_buy_used": month_buy_used,
+                    "monthly_sell_used": month_sell_used,
+                    "monthly_buy_limit": MONTHLY_BUY_LIMIT,
+                    "monthly_sell_limit": MONTHLY_SELL_LIMIT,
+                    "lot_size": lot,
+                    "commission_rate": COMMISSION_RATE,
+                }
+
+                engine = engines[code]
+                for rule, amount in engine.evaluate_day(ctx):
+                    if rule.type == "buy":
+                        buy_amount = min(float(amount), cash)
+                        remaining = max(0, MONTHLY_BUY_LIMIT - month_buy_used)
+                        buy_amount = min(buy_amount, remaining)
+                        if buy_amount >= close * lot:
+                            available = buy_amount * (1 - COMMISSION_RATE)
+                            qty = int(available / close / lot) * lot
+                            if qty > 0:
+                                cost = qty * close
+                                fee = cost * COMMISSION_RATE
+                                if cost + fee <= buy_amount:
+                                    positions[code] += qty
+                                    cash -= cost + fee
+                                    month_buy_used += cost + fee
+                                    trade_count += 1
+
+                    elif rule.type == "sell" and positions[code] > 0:
+                        fraction = rule.action_fraction or 0.25
+                        mn = rule.action_min or 2500.0
+                        mx = rule.action_max or 10000.0
+                        raw = int(positions[code] * fraction)
+                        sell_qty = max(lot, int(raw / lot) * lot)
+                        sell_amount = sell_qty * close
+
+                        # 最低卖出额
+                        if sell_amount < mn:
+                            if positions[code] * close < mn:
+                                sell_qty = positions[code]
+                            else:
+                                tgt = int(mn / close / lot) * lot
+                                sell_qty = max(lot, min(tgt, positions[code]))
+                            sell_amount = sell_qty * close
+
+                        if sell_amount > mx:
+                            capped = int(mx / close / lot) * lot
+                            sell_qty = max(lot, min(capped, positions[code]))
+                            sell_amount = sell_qty * close
+
+                        remaining = max(0, MONTHLY_SELL_LIMIT - month_sell_used)
+                        if remaining <= 0:
+                            continue
+                        sell_value = min(sell_amount, remaining)
+                        if sell_value < sell_amount:
+                            ratio = sell_value / sell_amount
+                            sell_qty = int(int(positions[code] * ratio) / lot) * lot
+                            sell_qty = max(lot, sell_qty)
+                            sell_value = sell_qty * close
+
+                        if sell_qty <= 0 or sell_qty > positions[code]:
+                            continue
+
+                        fee = sell_value * COMMISSION_RATE
+                        cash += sell_value - fee
+                        positions[code] -= sell_qty
+                        month_sell_used += sell_value + fee
+                        trade_count += 1
+
+                prev_deviations[code] = deviation
+
+            # ── 当日 NAV（缺数据标的用最后已知价，避免毛刺）──
+            position_value = sum(
+                positions[c] * (
+                    day_prices.get(c) if day_prices.get(c) is not None
+                    else last_prices.get(c, 0)
+                )
+                for c in active_codes
+            )
+            daily_navs.append(cash + position_value)
+            nav_dates.append(date_str)
+            monthly_buys[month_key] = month_buy_used
+            monthly_sells[month_key] = month_sell_used
+
+        # ── 指标计算 ──
+        if len(daily_navs) < 2:
+            return PortfolioResult(
+                name="", group=self.group,
+                total_return=0.0, max_drawdown=0.0, sharpe_ratio=0.0,
+                expected_position=0.0, composition=stock_codes, trade_count=0,
+                nav_series=daily_navs, nav_dates=nav_dates,
+            )
+
+        initial_nav = daily_navs[0]
+        final_nav = daily_navs[-1]
+        total_return = (
+            (final_nav - initial_nav) / initial_nav * 100
+            if initial_nav > 0 else 0.0
+        )
+        num_days = len(daily_navs)
+        years = num_days / 252.0
+        annual_return = (
+            (final_nav / initial_nav) ** (1.0 / years) - 1
+        ) * 100 if years > 0 and initial_nav > 0 else 0.0
+        peak = daily_navs[0]
         max_drawdown = 0.0
-        for v in portfolio_daily_nav:
+        for v in daily_navs:
             if v > peak:
                 peak = v
             dd = (v - peak) / peak * 100
             if dd < max_drawdown:
                 max_drawdown = dd
 
-        # 夏普比率（组合级）
         daily_returns = []
-        for i in range(1, len(portfolio_daily_nav)):
-            if portfolio_daily_nav[i - 1] > 0:
-                dr = (
-                    portfolio_daily_nav[i] - portfolio_daily_nav[i - 1]
-                ) / portfolio_daily_nav[i - 1]
-                daily_returns.append(dr)
-
+        for i in range(1, len(daily_navs)):
+            if daily_navs[i - 1] > 0:
+                daily_returns.append(
+                    (daily_navs[i] - daily_navs[i - 1]) / daily_navs[i - 1]
+                )
         risk_free = RISK_FREE_A if self.group == "a_share" else RISK_FREE_NON_A
+        sharpe = 0.0
         if len(daily_returns) > 5:
-            excess_returns = [r - risk_free / 252 for r in daily_returns]
-            mean_excess = np.mean(excess_returns)
-            std_excess = np.std(excess_returns, ddof=1)
-            sharpe_ratio = (
-                (mean_excess / std_excess * np.sqrt(252)) if std_excess > 1e-10 else 0.0
-            )
-        else:
-            sharpe_ratio = 0.0
+            excess = [r - risk_free / 252 for r in daily_returns]
+            mean_ex = np.mean(excess)
+            std_ex = np.std(excess, ddof=1)
+            sharpe = (mean_ex / std_ex * np.sqrt(252)) if std_ex > 1e-10 else 0.0
 
-        # 期末持仓市值
-        expected_position = sum(m.final_position_value for m in all_metrics)
-
-        # 总交易次数
-        total_trades = sum(m.total_trades for m in all_metrics)
-
-        # 各股详情
-        stock_details = []
-        for m in all_metrics:
-            stock_details.append(
-                {
-                    "stock_code": m.stock_code,
-                    "total_return": m.total_return,
-                    "max_drawdown": m.max_drawdown,
-                    "sharpe_ratio": m.sharpe_ratio,
-                    "final_position": m.final_position_value,
-                    "trades": m.total_trades,
-                }
-            )
+        position_value = sum(
+            positions[c] * float(
+                self.stocks_data[c].iloc[-1]["close"]
+            ) for c in active_codes if positions[c] > 0
+        )
 
         return PortfolioResult(
-            name="",
-            group=self.group,
+            name="", group=self.group,
             total_return=round(total_return, 2),
             max_drawdown=round(max_drawdown, 2),
-            sharpe_ratio=round(sharpe_ratio, 4),
-            expected_position=round(expected_position, 2),
-            composition=stock_codes,
-            trade_count=total_trades,
-            stock_details=stock_details,
-            nav_series=[round(v, 2) for v in portfolio_daily_nav],
+            sharpe_ratio=round(sharpe, 4),
+            expected_position=round(position_value, 2),
+            composition=list(active_codes),
+            trade_count=trade_count,
+            nav_series=[round(v, 2) for v in daily_navs],
             nav_dates=nav_dates,
+            stock_details=[],
         )
 
 
@@ -882,20 +960,22 @@ def _setup_cjk_font():
     return False
 
 
-def generate_portfolio_chart(portfolio_results: dict) -> dict[str, bytes] | None:
+def generate_portfolio_chart(
+    portfolio_results: dict,
+    bollinger_window: int = 90,
+) -> dict[str, bytes] | None:
     """
     生成投资组合NAV走势图（每组一张独立PNG）
 
     - A股：3条投资组合净值曲线 + 布林带
     - 非A股：3条曲线 + 布林带
-    - 每条曲线上叠加布林带（20日SMA ± 2×标准差，半透明填充）
+    - 每条曲线上叠加布林带（SMA ± 2×标准差，半透明填充）
 
     Args:
         portfolio_results: PortfolioOptimizer.run() 返回的字典
-
-    Returns:
-        {"a_share": PNG bytes, "non_a_share": PNG bytes} 或 None
+        bollinger_window: 布林带窗口天数，默认 90
     """
+
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -950,42 +1030,62 @@ def generate_portfolio_chart(portfolio_results: dict) -> dict[str, bytes] | None
             label = metric_labels[metric_key]
 
             nav_arr = np.array(navs)
-            # 归一化到起点100，消除绝对金额差异
+            # 归一化到起点100
             base = nav_arr[0] if nav_arr[0] > 0 else 1.0
             nav_arr = nav_arr / base * 100
+
+            # 判断曲线波动幅度
+            data_range = nav_arr.max() - nav_arr.min()
+            if data_range < 2.0:
+                # 几乎平的线 → 虚线 + 图例注明"(近似水平)"
+                linestyle = "--"
+                label_with_note = f"{label} (≈水平, 波动<2%)"
+                alpha = 0.55
+            else:
+                linestyle = "-"
+                label_with_note = label
+                alpha = 0.85
             try:
                 dt_arr = pd.to_datetime(dates)
             except Exception:
                 dt_arr = pd.date_range(end=pd.Timestamp.now(), periods=len(navs), freq="B")
 
-            # 主曲线
-            ax.plot(dt_arr, nav_arr, color=color, linewidth=1.8, alpha=0.85, label=label)
+            # 主曲线（zorder=5 确保画在最上层）
+            ax.plot(dt_arr, nav_arr, color=color, linewidth=2.0,
+                    alpha=alpha, linestyle=linestyle, label=label_with_note,
+                    zorder=5)
 
-            # 布林带 (20日窗口) — 填充区 + SMA + 上下边界线
-            if len(nav_arr) >= 20:
-                window = 20
+            # 布林带 — 填充 + 上下界（平线不画带）
+            if len(nav_arr) >= bollinger_window and data_range >= 2.0:
+                window = bollinger_window
                 sma = pd.Series(nav_arr).rolling(window=window, min_periods=1).mean()
                 std = pd.Series(nav_arr).rolling(window=window, min_periods=1).std()
                 upper = sma + 2 * std
                 lower = sma - 2 * std
-                sma = sma.bfill().values
                 upper = upper.bfill().values
                 lower = lower.bfill().values
 
+                # 填充区 zorder=1（最底层）
                 ax.fill_between(dt_arr, lower, upper,
-                                alpha=0.12, color=color, linewidth=0)
-                ax.plot(dt_arr, sma, color=color,
-                        linewidth=1.0, alpha=0.7, linestyle="-")
+                                alpha=0.10, color=color, linewidth=0,
+                                zorder=1)
+                # 上下边界线 zorder=2
                 ax.plot(dt_arr, upper, color=color,
-                        linewidth=0.6, alpha=0.30, linestyle="--")
+                        linewidth=0.6, alpha=0.25, linestyle="--",
+                        zorder=2)
                 ax.plot(dt_arr, lower, color=color,
-                        linewidth=0.6, alpha=0.30, linestyle="--")
+                        linewidth=0.6, alpha=0.25, linestyle="--",
+                        zorder=2)
 
         # X轴
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
         ax.xaxis.set_major_locator(mdates.YearLocator())
         ax.tick_params(axis="x", labelsize=9, rotation=30)
         ax.tick_params(axis="y", labelsize=9)
+
+        # 强制 Y 轴贴合数据范围（避免平线被超大 margin 吃没）
+        ax.relim()
+        ax.autoscale_view(scalex=False, scaley=True)
 
         # Legend
         ax.legend(loc="upper left", fontsize=10, framealpha=0.85, edgecolor="#ccc", ncol=3)

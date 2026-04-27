@@ -1,7 +1,7 @@
 # 股票量化系统 - 关键设计决策文档
 
-**文档版本**: v3.3 (投资组合策略分析)
-**最后更新**: 2026-04-26
+**文档版本**: v3.4 (规则引擎 + 早盘简报)
+**最后更新**: 2026-04-27
 **压缩目标**: <1000行，保留关键设计决策
 
 ---
@@ -21,64 +21,91 @@
 
 ---
 
-## 🏗️ 架构现状 (v3.2)
+## 🏗️ 架构现状 (v3.4)
 
 ### 当前分层架构
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  配置层 (config/)                                              │
-│  - config.yaml          - 股票列表、数据源配置                  │
+│  - config.yaml          - 股票列表/调度/简报/组合策略          │
 │  - alerts.yaml          - 技术指标锚点配置 (ma60, wma20...) │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │  缓存管理 + 数据源层 (src/)                                   │
-│  - data_source.py       - 统一数据源：CSV缓存+复权交叉验证    │
-│    ┌───────────────────────────────────────────────────────┐   │
-│    │  CSV缓存 (cache/data/{code}.csv + .meta)            │   │
-│    │  复权交叉验证: 双源取3日close对比，差值>0.01则不一致   │   │
-│    │  fallback重试: 最多2轮                                │   │
-│    │  过期判定: 7天保留 + 15:55当日过期                    │   │
-│    └───────────────────────────────────────────────────────┘   │
-│  - web_crawler.py      - 多源爬虫 (Sina/QQ/Eastmoney)        │
-│  - data_fetcher.py     - 数据获取 + 调用指标计算            │
-│  - cache_manager.py    - LLM提取/财报缓存（不再存股票数据）   │
+│  - data_source.py       - 统一数据源: CSV缓存+复权交叉验证    │
+│    ★ 返回数据按 requested_days 裁剪 (5处返回路径)             │
+│  - web_crawler.py       - 多源爬虫 (Sina/QQ/Eastmoney)        │
+│  - data_fetcher.py      - 数据获取 + 调用指标计算            │
+│  - cache_manager.py     - LLM提取/财报缓存                   │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │  指标计算层 (src/)                                            │
-│  - technical_indicators.py - 统一指标计算器，从配置读取       │
-│  - utils/etf_detector.py - ETF检测工具                        │
+│  - technical_indicators.py - 统一指标计算器，配置驱动          │
+│  - utils/etf_detector.py   - ETF检测工具                      │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  策略层 (src/)                                                │
+│  - rule_engine.py       - 动态规则引擎 (YAML→Python表达式)   │
+│    表达式沙箱: eval() + 受限 __builtins__                   │
+│    默认规则: 5条 MA60 锚点择时 (2买3卖)                     │
+│    扩展: 配置增减规则无需改代码                              │
+│  - portfolio_strategy.py - 投资组合分析 (MA60择时+贪心搜索) │
+│    已重构: 用 RuleEngine 替代硬编码 if/elif                  │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  简报层 (src/)                                                │
+│  - email_notifier.py → send_brief_report()  (早盘简报)       │
+│  - main.py → run_brief_report()  (轻量任务: 仅价格+锚点)    │
+│  - scheduler_manager.py → 遍历 brief_reports 注册 CronJob   │
+│  - templates/brief_email.html                                 │
+│    锚点择优: ma60(60d) > wma20(~100d) > wma30 > wma50        │
+│    仅显示落入警报阈值区间的锚点, 最近3天有数据=活跃标的       │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │  业务层 (src/)                                                │
-│  - session_manager.py   - Session统一管理                      │
-│  - condition_checker.py - 条件检查（已移除价格校验）          │
-│  - email_notifier.py    - 邮件通知                            │
-│  - backtest_framework.py - 回测（已移除内存缓存，使用DataSource）│
+│  - condition_checker.py - 条件检查（多层级警报）              │
+│  - alert_engine.py / alert_processor.py - 警报规则+状态管理   │
+│  - email_notifier.py    - 邮件通知 (日报/简报/告警)          │
+│  - backtest_framework.py - 回测                               │
+│  - health_server/       - 健康检查+管理界面+OTP认证          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 关键改进 (v3.2)
-1. **DataSource 统一数据源层**
-   - 缓存格式从 JSON → CSV + meta 元信息文件
-   - 缓存管理（过期、复用）、复权交叉验证、价格校验集中到 DataSource
-   - downstream 模块（data_fetcher, backtest_framework, session_manager）不再管理自己的缓存
+### 关键改进 (v3.4)
 
-2. **复权交叉验证机制**
-   - 用两个数据接口交叉比对（取上3个交易日的复权收盘价）
-   - 差值 > 0.01 则判定为不一致，走 fallback 重试链（最多2轮）
+1. **规则引擎 (rule_engine.py, 372行)**
+   - 安全的 Python 表达式沙箱，YAML 配置驱动买卖规则
+   - 默认规则与 MA60 锚点择时完全一致（2买3卖）
+   - 用户可通过配置调整阈值/金额、增减规则（如"只买不卖"）
+   - TimingStrategyEngine.run_simulation() 已重构为使用 RuleEngine
 
-3. **价格校验移入 DataSource**
-   - 从 condition_checker.py 和 data_fetcher.py 中移除价格关系验证
-   - DataSource 在返回数据前做 close>=low<=high 校验，日志警告
+2. **早盘简报系统**
+   - 每日 9:50 (交易日) 自动发送简报邮件
+   - 每标的显示: 开盘价/现价 + 最短锚点 + 偏离率 (仅警报区间)
+   - 轻量任务: 跳过 LLM/财报/回测/投资组合，只获取价格+锚点数据
+   - 可扩展: config.brief_reports 列表添加新节点即可
+   - CLI: `python main.py --brief [report_id]`
 
-4. **data_fetcher.py 瘦身**
-   - 删除 ~170 行缓存/过期/复用代码
-   - 使用 @property 延迟初始化 DataSource / WebCrawler / CacheManager
-   - 修复属性赋值冲突（@property 无 setter 的情况下不能直接赋值）
+3. **DataSource 缓存裁剪**
+   - 5处返回路径 (缓存命中/拉取失败/复权回退/合并) 全部按 requested_days 过滤
+   - 修复缓存囤积全量历史数据导致图表/回测使用超过请求天数的问题
+
+4. **字体统一**
+   - chart_generator.py 和 portfolio_strategy.py 统一调用 _setup_cjk_font()
+   - Windows 优先 Microsoft YaHei, Linux 优先 Noto Sans CJK SC
+   - DejaVu Sans 不再拦截中文字体回退链
+
+5. **投资组合优化**
+   - portfolio_strategy.py (952行): MA60锚点择时引擎 + 贪心前向搜索
+   - 净值归一化起点100 + 布林带填充/边界线可视化
+   - 组合日期对齐改为按真实日期而非索引
+   - A股/非A股分组独立优化，每组3个组合
 
 ---
 
@@ -97,8 +124,9 @@
 - [ ] 考虑引入依赖注入容器
 
 ### 3. 可扩展性增强 (Phase 3)
-- [ ] 支持插件式指标计算
-- [ ] 支持自定义指标配置
+- [x] 规则引擎: YAML 配置驱动买卖规则 (rule_engine.py)
+- [x] 早盘简报: 可扩展简报注册机制 (scheduler.brief_reports)
+- [x] 投资组合策略: 贪心前向搜索 + 可配置回看天数
 - [ ] 支持多时间框架指标
 - [ ] 支持指标组合策略
 
@@ -125,6 +153,7 @@
        announcements: Dict[str, List]           # 公告数据
        financial_analysis_results: Dict[str, List] # 财报分析
        backtest_results: Optional[List]         # 回测结果
+       portfolio_results: Optional[Dict]        # 投资组合分析 (v3.3新增)
        errors: List[str]                      # 错误日志
    ```
 
@@ -363,46 +392,71 @@
 
 ---
 
-## 🧩 投资组合策略 (v3.3)
+## 🧩 投资组合策略 + 规则引擎 (v3.4)
 
 ### 文件
-- `src/portfolio_strategy.py` — 主模块（~450行）
-- `tests/test_portfolio_strategy.py` — 15个测试全部通过
+- `src/portfolio_strategy.py` — 主模块（952行，已用 RuleEngine 重构）
+- `src/rule_engine.py` — 动态规则引擎（372行）
+- `tests/test_portfolio_strategy.py` — 15个测试
+- `tests/test_rule_engine.py` — 23个测试
 
-### 架构
+### 规则引擎
 
+YAML 配置驱动，Python 表达式描述条件/动作：
+
+```yaml
+rules:
+  - id: buy_minus5
+    type: buy
+    condition: "deviation <= -0.05 and prev_deviation > -0.05"
+    action_amount: "min(5000, cash)"
+    reset_when: "deviation > 0 and prev_deviation <= 0"
 ```
-PortfolioOptimizer.run()
-  ├── 1. DataSource获取所有股票2年数据
-  ├── 2. 过滤≥400交易日 → 分A股/非A股两组
-  ├── 3. 每只股票独立运行TimingStrategyEngine
-  └── 4. 每组执行3个贪心搜索 → 6个PortfolioResult
+
+- **表达式沙箱**: `eval()` + 受限 `__builtins__`（仅 min/max/abs/int/float/round）
+- **规则锁**: 触发一次后锁定，满足 `reset_when` 才解锁
+- **优先级**: 同天多条命中按 `priority` 顺序执行
+- **默认规则**: 5条（2买3卖）与原有硬编码完全一致
+- **扩展**: 新增/修改规则只用改配置，不碰 Python 代码
+
+### 投资组合优化
+- 贪心前向选择: 3个目标 (max_return/min_drawdown/max_sharpe)
+- 净值归一化起点100，布林带可视化 (填充+SMA+边界虚线)
+- 日期对齐: 按真实日期而非索引，数据起点不同的股票不提前参与
+
+## 📊 早盘简报 (v3.4 新增)
+
+### 触发
+- 每个交易日 9:50 AM 自动发送（config: `scheduler.brief_reports`）
+- CLI: `python main.py --brief [report_id]`
+- 周末/非交易日自动跳过，不在交易时段的标的自动过滤
+
+### 锚点择优算法
+```
+对每只股票:
+  1. 遍历锚点 (ma60, wma20, wma30, wma50)
+  2. 过滤: 保留偏离率在警报阈值区间内的
+      (≤-10% / -10~-5 / -5~0 / 5~10 / 10~15 / ≥15%)
+  3. 择优: 实际回溯最短优先 (ma60:60d > wma20:~100d > wma30:~150d > wma50:~250d)
+  4. 无锚点在区间 → 显示"-"
 ```
 
-### 择时策略参数
+### 扩展性
+```yaml
+brief_reports:
+  - id: morning_snapshot
+    run_time: '09:50'
+    label: '早盘简报'
+  # 未来新加:
+  - id: pre_close_alert
+    run_time: '14:50'
+    label: '收盘前警报'
+```
+调度器自动注册，无需改代码。
 
-| 参数 | 值 |
-|------|-----|
-| 买入阈值 | -5%, -10% below MA60 |
-| 买入每笔上限 | 5000元 |
-| 卖出规则 | 每次卖1/4持仓，最多10000元，最少2500元 |
-| 清仓线 | 整仓<2500元时全部清仓 |
-| 月度限额 | 买入≤15000, 卖出≤15000 (各分组独立) |
-| 整手 | A股=100股，非A股=1股 |
-| 无风险利率 | A股=2%，非A股=4.5% |
-| 初始资金 | 10000元/只 |
-| 手续费 | 买入0.2%，卖出0.2% |
-| 数据要求 | ≥400交易日 |
-
-### 优化算法
-- **贪心前向选择**: 从空集开始，迭代添加使目标函数最优的股票
-- **3个目标**: max_return / min_max_drawdown / max_sharpe
-- 月度限额(15000)自然限制组合规模（多标的分摊资本降低收益）
-
-### 集成点
-- `models/schemas.py` SessionContext: +`portfolio_results: Optional[dict]`
-- `main.py`: 回测后调用 PortfolioOptimizer
-- `email_notifier.py`: 新增 `_build_portfolio_section()`，在回测板块后插入
+### 文件
+- `src/templates/brief_email.html`
+- `tests/test_brief_report.py` — 19个测试
 
 ---
 

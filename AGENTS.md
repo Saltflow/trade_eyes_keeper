@@ -21,6 +21,9 @@ pip install pytest pytest-mock
 # Single run (for testing)
 python main.py --once
 
+# Brief report (morning snapshot, only price + anchor data)
+python main.py --brief [report_id]
+
 # Scheduled run (default)
 python main.py
 
@@ -172,11 +175,12 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 | Health Server Security | `src/health_server.py` | ✅ HTML escaping, rate limiting, HTTPS, IP validation |
 | ROE Inconsistency | `src/web_crawler.py:563-578` | ✅ Added validation (5% threshold) |
 | Price Validation | `src/condition_checker.py:46-58` | ✅ Checks close≥low≤high, logs warnings |
-| Timezone Bug | `src/data_fetcher.py:78-96` | ✅ Proper Asia/Shanghai timezone handling |
-| Management Interface | `src/health_server.py` | ✅ OTP authentication, watchlist management |
-| Schedule Optimization | `config/config.yaml` | ✅ Run time 16:00, bypass cutoff 15:55 |
-| Akshare Removal | `announcement_fetcher.py` | ✅ Consolidated to web crawler + LLM cache |
+| Cache Oversharing | `src/data_source.py:96,121,130,133,149` | ✅ 5 return paths trimmed to requested days |
+| CJK Font (Windows) | `src/chart_generator.py` → `_setup_cjk_font()` | ✅ Unified platform-aware font setup |
+| Date Alignment | `src/portfolio_strategy.py:evaluate()` | ✅ Real-date alignment instead of index-based |
 | Dividend Architecture | `cache_manager.py`, `data_fetcher.py` | ✅ LLM extraction cache prioritized |
+| Brief Report Trading Day | `src/email_notifier.py:send_brief_report()` | ✅ 3-day window + weekend skip |
+| Rule Engine Extensibility | `src/rule_engine.py` | ✅ YAML-driven config, no code change needed |
 
 ## Cursor/Copilot Rules
 - No `.cursorrules` or `.cursor/rules/` files found
@@ -186,5 +190,5 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 - **Flake8 configuration**: `.flake8` (max-line-length 88, ignore E203/W503)
 - **YAPF configuration**: `.style.yapf` (pep8 style, column_limit 88)
 
-**Last Updated**: 2026-04-03  
-**Project Version**: v1.12+
+**Last Updated**: 2026-04-27  
+**Project Version**: v1.13 (规则引擎 + 早盘简报 + 投资组合策略)

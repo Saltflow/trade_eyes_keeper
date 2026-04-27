@@ -96,7 +96,12 @@ class EmailNotifier:
             if portfolio_results:
                 try:
                     from src.portfolio_strategy import generate_portfolio_chart
-                    portfolio_chart_dict = generate_portfolio_chart(portfolio_results)
+                    bw = self.config.get("portfolio_strategy", {}).get(
+                        "bollinger_window", 90
+                    )
+                    portfolio_chart_dict = generate_portfolio_chart(
+                        portfolio_results, bollinger_window=bw
+                    )
                     n_charts = len(portfolio_chart_dict) if portfolio_chart_dict else 0
                     logger.info(f"投资组合图表生成: {n_charts}张" if n_charts else "投资组合图表跳过")
                 except Exception as e:
@@ -155,7 +160,12 @@ class EmailNotifier:
             if portfolio_results:
                 try:
                     from src.portfolio_strategy import generate_portfolio_chart
-                    portfolio_chart_dict = generate_portfolio_chart(portfolio_results)
+                    bw = self.config.get("portfolio_strategy", {}).get(
+                        "bollinger_window", 90
+                    )
+                    portfolio_chart_dict = generate_portfolio_chart(
+                        portfolio_results, bollinger_window=bw
+                    )
                 except Exception as e:
                     logger.error(f"投资组合图表生成失败: {e}")
 
@@ -510,8 +520,8 @@ class EmailNotifier:
             <p style="color: #888; font-size: 12px; margin-top: 15px;">
                 <strong>策略说明：</strong>以MA60为锚点，价格跌破-5%/-10%时分批买入（每笔≤5000元），
                 突破+5%/+10%/+15%时分批卖出1/4持仓（每笔≤10000元，低于2500元清仓）。
-                月度买入/卖出各限15000元（组合级）。A股无风险利率2%，非A股4.5%。
-                初始资金每只股票10000元。
+                 月度买入/卖出各限15000元（组合级）。A股无风险利率2%，非A股4.5%。
+                 初始资金每组10万元（组合内标的共享）。
             </p>
         </div>
         """
