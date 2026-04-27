@@ -23,14 +23,14 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "config", ".env"))
 # 添加src目录到Python路径
 sys.path.insert(0, str(Path(__file__).parent / "src"))
-from src.data_fetcher import StockDataFetcher
-from src.condition_checker import ConditionChecker
-from src.email_notifier import EmailNotifier
-from src.llm_analyzer import LLMAnalyzer
-from src.scheduler_manager import SchedulerManager
-from src.announcement_fetcher import AnnouncementFetcher
-from src.financial_report_manager import FinancialReportManager
-from src.session_manager import SessionManager
+from src.core.data_fetcher import StockDataFetcher
+from src.core.condition_checker import ConditionChecker
+from src.notification.email_notifier import EmailNotifier
+from src.analysis.llm_analyzer import LLMAnalyzer
+from src.core.scheduler_manager import SchedulerManager
+from src.data.announcement_fetcher import AnnouncementFetcher
+from src.analysis.financial_report_manager import FinancialReportManager
+from src.session.session_manager import SessionManager
 from backtest_framework import BacktestFramework
 
 
@@ -259,7 +259,7 @@ def run_daily_task():
         # 7b. 投资组合策略分析（可选）
         if backtest_enable:
             try:
-                from src.portfolio_strategy import PortfolioOptimizer
+                from src.analysis.portfolio_strategy import PortfolioOptimizer
 
                 logger.info("开始投资组合策略分析")
                 optimizer = PortfolioOptimizer(config)

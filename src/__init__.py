@@ -1,12 +1,12 @@
 """
-股票量化系统 - 核心模块
+股票量化系统 — 核心模块 (v3.4 重组后)
 """
 
-from .data_fetcher import StockDataFetcher
-from .condition_checker import ConditionChecker
-from .email_notifier import EmailNotifier
-from .llm_analyzer import LLMAnalyzer
-from .scheduler_manager import SchedulerManager
+from .core.data_fetcher import StockDataFetcher
+from .core.condition_checker import ConditionChecker
+from .notification.email_notifier import EmailNotifier
+from .analysis.llm_analyzer import LLMAnalyzer
+from .core.scheduler_manager import SchedulerManager
 
 __all__ = [
     "StockDataFetcher",

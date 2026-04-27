@@ -8,8 +8,8 @@ Tests bug fixes for:
 import pandas as pd
 import pytest
 
-from src.condition_checker import ConditionChecker
-from src.email_notifier import EmailNotifier
+from src.core.condition_checker import ConditionChecker
+from src.notification.email_notifier import EmailNotifier
 
 
 class TestNoneValueHandling:

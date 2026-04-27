@@ -737,7 +737,7 @@ class PortfolioOptimizer:
     @property
     def data_source(self):
         if self._data_source is None:
-            from .data_source import DataSource
+            from ..data.data_source import DataSource
 
             self._data_source = DataSource(self.config)
         return self._data_source
@@ -927,37 +927,6 @@ class PortfolioOptimizer:
 
 # ── 投资组合图表生成 ──
 
-def _setup_cjk_font():
-    """跨平台中文字体检测 & 设置。返回 True 表示已设置 CJK 字体。"""
-    import matplotlib.pyplot as plt
-    import matplotlib.font_manager as fm
-    import platform
-
-    # matplotlib 3.8+ 支持逐字形回退
-    # 在 Windows 上优先微软雅黑，Linux/其他优先 Noto Sans CJK SC
-    system = platform.system()
-    preferred = []
-    if system == "Windows":
-        preferred = ["Microsoft YaHei", "SimHei", "KaiTi", "FangSong", "SimSun"]
-    else:
-        preferred = ["Noto Sans CJK SC", "WenQuanYi Micro Hei", "Droid Sans Fallback",
-                     "Noto Sans CJK JP", "PingFang SC", "Heiti SC"]
-
-    # 保留 DejaVu Sans 作为拉丁回退
-    all_fonts = preferred + ["DejaVu Sans", "Arial", "sans-serif"]
-
-    plt.rcParams["font.sans-serif"] = all_fonts
-    plt.rcParams["font.family"] = "sans-serif"
-    plt.rcParams["axes.unicode_minus"] = False
-
-    # 检查是否有至少一个 CJK 字体真实可用
-    available = {f.name for f in fm.fontManager.ttflist}
-    for pf in preferred:
-        if pf in available:
-            logger.debug(f"CJK字体已设置: {pf} (platform={system})")
-            return True
-    logger.warning(f"未找到CJK字体，图表中文可能显示为方块。可用字体: {sorted(available)[:20]}")
-    return False
 
 
 def generate_portfolio_chart(
@@ -984,7 +953,8 @@ def generate_portfolio_chart(
     from io import BytesIO
 
     # ── 设置中文字体 ──
-    _setup_cjk_font()
+    from ..utils.font_setup import setup_cjk_font
+    setup_cjk_font()
 
     # ── 图表配置 ──
     metric_labels = {

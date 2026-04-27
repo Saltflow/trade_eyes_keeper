@@ -6,7 +6,7 @@ FinancialReportManager behavior tests (force analyze & limits)
 
 import pytest
 
-from src.financial_report_manager import FinancialReportManager
+from src.analysis.financial_report_manager import FinancialReportManager
 
 
 def _build_config(force=True, max_force=None, max_per_run=3):

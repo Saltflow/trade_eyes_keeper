@@ -9,7 +9,7 @@ from .core.start_server import start_health_server
 # 导出工具类（可选）
 from .auth.rate_limiter import RateLimiter
 from .auth.otp_manager import OTPManager
-from .auth.session_manager import SessionManager
+from .auth.auth_session import AuthSessionManager
 
 # 全局实例（保持向后兼容）
 from .core.global_instances import (
@@ -25,7 +25,7 @@ __all__ = [
     "start_health_server",
     "RateLimiter",
     "OTPManager",
-    "SessionManager",
+    "AuthSessionManager",
     "rate_limiter",
     "otp_rate_limiter",
     "otp_manager",

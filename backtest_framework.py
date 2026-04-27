@@ -51,7 +51,7 @@ class BacktestFramework:
     def data_source(self):
         if self._data_source is None:
             try:
-                from src.data_source import DataSource
+                from src.data.data_source import DataSource
 
                 self._data_source = DataSource(self.config or {})
                 logger.info("DataSource 初始化成功")

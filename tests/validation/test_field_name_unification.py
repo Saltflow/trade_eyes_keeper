@@ -7,9 +7,9 @@ import pandas as pd
 import pytest
 
 from config import get_alerts_config
-from src.alert_engine import AlertEngine
-from src.alert_processor import AlertProcessor
-from src.condition_checker import ConditionChecker
+from src.alerting.alert_engine import AlertEngine
+from src.alerting.alert_processor import AlertProcessor
+from src.core.condition_checker import ConditionChecker
 
 
 class TestFieldNameUnification:

@@ -25,8 +25,8 @@ try:
     from matplotlib.ticker import MaxNLocator
 
     # 设置中文字体（统一使用 portfolio_strategy 的平台感知检测）
-    from .portfolio_strategy import _setup_cjk_font
-    _setup_cjk_font()
+    from ..utils.font_setup import setup_cjk_font
+    setup_cjk_font()
 
     MATPLOTLIB_AVAILABLE = True
 except ImportError:

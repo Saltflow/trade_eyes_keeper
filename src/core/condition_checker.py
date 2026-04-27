@@ -19,7 +19,7 @@ class ConditionChecker:
 
         if self.use_multi_alert:
             try:
-                from .alert_processor import AlertProcessor
+                from ..alerting.alert_processor import AlertProcessor
                 from config import get_alerts_config
 
                 alerts_config = get_alerts_config(
@@ -133,7 +133,7 @@ class ConditionChecker:
             session_manager: SessionManager对象（可选，用于更新session）
         """
         if session_manager is None:
-            from .session_manager import SessionManager
+            from ..session.session_manager import SessionManager
 
             session_manager = SessionManager(self.config)
 

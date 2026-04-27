@@ -149,7 +149,7 @@ class TestLLMConfigSwitch:
         }
 
         # 导入并创建实例（mock会拦截__init__）
-        from src.llm_analyzer.analyzer import LLMAnalyzer
+        from src.analysis.llm_analyzer.analyzer import LLMAnalyzer
 
         # 验证__init__被调用时传递了正确的配置
         analyzer = LLMAnalyzer(test_config)

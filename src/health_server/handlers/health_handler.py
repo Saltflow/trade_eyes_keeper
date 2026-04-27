@@ -182,7 +182,7 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
     def _send_otp_email(self, client_ip, otp_code):
         """发送OTP邮件（使用模板）"""
         try:
-            from src.email_notifier import EmailNotifier
+            from src.notification.email_notifier import EmailNotifier
 
             if not self.health_server or not self.health_server.config:
                 logger.error("无法获取系统配置发送OTP邮件")
@@ -222,7 +222,7 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
     ):
         """发送监控列表变更确认邮件（使用模板）"""
         try:
-            from src.email_notifier import EmailNotifier
+            from src.notification.email_notifier import EmailNotifier
 
             if not self.health_server or not self.health_server.config:
                 logger.error("无法获取系统配置发送确认邮件")
@@ -704,7 +704,7 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
     def send_test_email_response(self):
         """发送测试邮件"""
         try:
-            from src.email_notifier import EmailNotifier
+            from src.notification.email_notifier import EmailNotifier
 
             if not self.health_server or not self.health_server.config:
                 self._send_error_page("配置错误", "无法获取系统配置", "/")

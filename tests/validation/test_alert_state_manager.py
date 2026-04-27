@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from src.alert_state_manager import AlertStateManager
+from src.alerting.alert_state_manager import AlertStateManager
 
 
 @pytest.fixture

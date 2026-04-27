@@ -9,7 +9,7 @@ import pandas as pd
 from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime
 
-from src.email_notifier import EmailNotifier
+from src.notification.email_notifier import EmailNotifier
 
 
 # ════════════════════════════════════════════════════════

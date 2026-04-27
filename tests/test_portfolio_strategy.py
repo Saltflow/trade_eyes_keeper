@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
-from src.portfolio_strategy import (
+from src.analysis.portfolio_strategy import (
     TimingStrategyEngine,
     PortfolioEvaluator,
     PortfolioOptimizer,

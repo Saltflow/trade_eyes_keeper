@@ -5,7 +5,7 @@
 """
 
 import pytest
-from src.rule_engine import ExpressionEngine, Rule, RuleEngine
+from src.analysis.rule_engine import ExpressionEngine, Rule, RuleEngine
 
 
 # ════════════════════════════════════════════════════════
@@ -313,7 +313,7 @@ class TestDefaultRules:
     """默认规则（与当前硬编码行为一致）"""
 
     def test_default_rules_exist(self):
-        from src.rule_engine import get_default_rules
+        from src.analysis.rule_engine import get_default_rules
         rules = get_default_rules()
         assert len(rules) == 5  # 2 buy + 3 sell
         types = {r.type for r in rules}
@@ -322,7 +322,7 @@ class TestDefaultRules:
 
     def test_default_buy_minus5_trigger(self):
         """跌破-5%时触发默认买入"""
-        from src.rule_engine import get_default_rules
+        from src.analysis.rule_engine import get_default_rules
         rules = get_default_rules()
         engine = RuleEngine(rules)
 
@@ -340,7 +340,7 @@ class TestDefaultRules:
 
     def test_default_sell_plus5_trigger(self):
         """突破+5%时触发默认卖出（有持仓）"""
-        from src.rule_engine import get_default_rules
+        from src.analysis.rule_engine import get_default_rules
         rules = get_default_rules()
         engine = RuleEngine(rules)
 

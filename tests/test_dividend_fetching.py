@@ -26,7 +26,7 @@ class TestDividendFetching:
     @pytest.fixture
     def fetcher(self, config):
         """创建StockDataFetcher实例"""
-        from src.data_fetcher import StockDataFetcher
+        from src.core.data_fetcher import StockDataFetcher
 
         return StockDataFetcher(config)
 

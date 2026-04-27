@@ -27,7 +27,7 @@ except ImportError as e:
     logger.debug(f"ContentFetcher import error details", exc_info=True)
 
 try:
-    from .llm_analyzer import LLMAnalyzer
+    from ..analysis.llm_analyzer import LLMAnalyzer
 
     LLM_ANALYZER_AVAILABLE = True
 except ImportError as e:

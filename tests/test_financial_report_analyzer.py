@@ -7,7 +7,7 @@
 import pytest
 import json
 from unittest.mock import Mock, patch
-from src.llm_analyzer import FinancialReportAnalyzer
+from src.analysis.llm_analyzer import FinancialReportAnalyzer
 
 
 class TestFinancialReportAnalyzer:
@@ -239,7 +239,7 @@ class TestFinancialReportAnalyzer:
     def test_financial_report_fetcher_integration(self):
         """测试财报获取器集成（简化）"""
         # 导入财报获取器
-        from src.financial_report_fetcher import FinancialReportFetcher
+        from src.analysis.financial_report_fetcher import FinancialReportFetcher
 
         config = {
             "llm": {"api_key": "test-key"},

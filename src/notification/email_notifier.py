@@ -49,7 +49,7 @@ class EmailNotifier:
         archive_dir_config = self.email_config.get("archive_dir", "data/email_archive")
         archive_dir_path = Path(archive_dir_config)
         if not archive_dir_path.is_absolute():
-            project_root = Path(__file__).resolve().parent.parent
+            project_root = Path(__file__).resolve().parent.parent.parent
             archive_dir_path = (project_root / archive_dir_config).resolve()
 
         self.email_archive_dir = archive_dir_path
@@ -95,7 +95,7 @@ class EmailNotifier:
             portfolio_chart_dict = None
             if portfolio_results:
                 try:
-                    from src.portfolio_strategy import generate_portfolio_chart
+                    from src.analysis.portfolio_strategy import generate_portfolio_chart
                     bw = self.config.get("portfolio_strategy", {}).get(
                         "bollinger_window", 90
                     )
@@ -159,7 +159,7 @@ class EmailNotifier:
             portfolio_chart_dict = None
             if portfolio_results:
                 try:
-                    from src.portfolio_strategy import generate_portfolio_chart
+                    from src.analysis.portfolio_strategy import generate_portfolio_chart
                     bw = self.config.get("portfolio_strategy", {}).get(
                         "bollinger_window", 90
                     )
@@ -561,7 +561,7 @@ class EmailNotifier:
         from pathlib import Path
 
         # 1. 加载模板
-        template_dir = Path(__file__).parent / "templates"
+        template_dir = Path(__file__).parent.parent / "templates"
         email_template = (template_dir / "email_template.html").read_text(
             encoding="utf-8"
         )
@@ -1707,7 +1707,7 @@ class EmailNotifier:
             )
 
         # ── 加载模板 ──
-        template_dir = Path(__file__).parent / "templates"
+        template_dir = Path(__file__).parent.parent / "templates"
         template = (template_dir / "brief_email.html").read_text(encoding="utf-8")
 
         body = template.format(

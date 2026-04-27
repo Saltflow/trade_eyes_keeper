@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.cache_manager import CacheManager
+from src.data.cache_manager import CacheManager
 
 
 def test_pdf_save_basic():

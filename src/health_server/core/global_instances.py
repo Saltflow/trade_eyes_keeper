@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ..auth.rate_limiter import RateLimiter
 from ..auth.otp_manager import OTPManager
-from ..auth.session_manager import SessionManager
+from ..auth.auth_session import AuthSessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ otp_rate_limiter = RateLimiter(
 otp_manager = OTPManager(expiry_minutes=10)
 
 # 会话管理器实例 (30分钟有效期)
-session_manager = SessionManager(expiry_minutes=30)
+session_manager = AuthSessionManager(expiry_minutes=30)
 
 
 def audit_log(action, ip_address, details=""):

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytest
 
-from src.alert_processor import AlertProcessor
+from src.alerting.alert_processor import AlertProcessor
 from tests.validation.test_utils import RandomTestParameterGenerator
 
 

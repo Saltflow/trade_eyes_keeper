@@ -13,7 +13,7 @@ import io
 import re
 import requests
 from typing import Optional, Dict, Any, List
-from ..cache_manager import CacheManager
+from ...data.cache_manager import CacheManager
 
 # 猴子补丁：确保JSON序列化使用UTF-8编码，不转义非ASCII字符
 _original_json_dumps = json.dumps

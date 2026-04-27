@@ -109,7 +109,7 @@ class FinancialReportManager:
 
         if self.cache_manager is None:
             try:
-                from .cache_manager import CacheManager
+                from ..data.cache_manager import CacheManager
 
                 self.cache_manager = CacheManager(config)
             except Exception:

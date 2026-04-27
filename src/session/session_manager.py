@@ -12,16 +12,16 @@ from typing import Optional
 from datetime import datetime, timedelta
 import pandas as pd
 
-from models.schemas import (
+from ..models.schemas import (
     SessionContext,
     StockPriceData,
     AlertStock,
 )
-from models.converters import (
+from ..models.converters import (
     dataframe_to_stock_price_data,
     alert_dict_to_alert_stock,
 )
-from utils import safe_session_write
+from ..utils import safe_session_write
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class DataSourceSelector:
     @property
     def data_source(self):
         if self._data_source is None:
-            from .data_source import DataSource
+            from ..data.data_source import DataSource
 
             self._data_source = DataSource(self.config)
         return self._data_source

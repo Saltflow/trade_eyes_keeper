@@ -159,7 +159,7 @@ class TestLLMConfigSwitch:
             mock_instance.analyze_stocks.return_value = {"test": "should not be called"}
             mock_fundamental.return_value = mock_instance
 
-            from src.llm_analyzer.analyzer import LLMAnalyzer
+            from src.analysis.llm_analyzer.analyzer import LLMAnalyzer
 
             analyzer = LLMAnalyzer(test_config)
 
@@ -199,7 +199,7 @@ class TestLLMConfigSwitch:
             mock_instance.analyze_stocks.return_value = expected_result
             mock_fundamental.return_value = mock_instance
 
-            from src.llm_analyzer.analyzer import LLMAnalyzer
+            from src.analysis.llm_analyzer.analyzer import LLMAnalyzer
 
             analyzer = LLMAnalyzer(test_config)
 
@@ -257,7 +257,7 @@ class TestLLMConfigSwitch:
         if project_root not in sys.path:
             sys.path.insert(0, project_root)
 
-        from src.llm_analyzer.analyzer import LLMAnalyzer
+        from src.analysis.llm_analyzer.analyzer import LLMAnalyzer
 
         analyzer = LLMAnalyzer(test_config)
 

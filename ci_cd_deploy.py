@@ -236,7 +236,7 @@ sys.path.insert(0, '.')
 import yaml
 with open('config/config.yaml', 'r', encoding='utf-8') as f:
     config = yaml.safe_load(f)
-from src.email_notifier import EmailNotifier
+from src.notification.email_notifier import EmailNotifier
 notifier = EmailNotifier(config)
 server_info = notifier._get_server_info()
 print('Server info test:')
@@ -309,7 +309,7 @@ sys.path.insert(0, '.')
 import yaml
 with open('config/config.yaml', 'r', encoding='utf-8') as f:
     config = yaml.safe_load(f)
-from src.email_notifier import EmailNotifier
+from src.notification.email_notifier import EmailNotifier
 notifier = EmailNotifier(config)
 try:
     notifier.send_deployment_notification('SUCCESS', version='{version}',

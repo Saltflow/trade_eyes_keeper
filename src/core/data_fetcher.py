@@ -12,9 +12,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, cast
 
-from .cache_manager import CacheManager
-from .technical_indicators import TechnicalIndicators
-from .models.converters import dataframe_to_stock_price_data
+from ..data.cache_manager import CacheManager
+from ..data.technical_indicators import TechnicalIndicators
+from ..models.converters import dataframe_to_stock_price_data
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ class StockDataFetcher:
     @property
     def data_source(self):
         if self._data_source is None:
-            from .data_source import DataSource
+            from ..data.data_source import DataSource
 
             self._data_source = DataSource(self.config)
         return self._data_source
@@ -62,7 +62,7 @@ class StockDataFetcher:
     @property
     def web_crawler(self):
         if self._web_crawler is None:
-            from .web_crawler import StockWebCrawler
+            from ..data.web_crawler import StockWebCrawler
 
             self._web_crawler = StockWebCrawler(self.config)
         return self._web_crawler
@@ -70,7 +70,7 @@ class StockDataFetcher:
     @property
     def cache_manager(self):
         if self._cache_manager is None:
-            from .cache_manager import CacheManager
+            from ..data.cache_manager import CacheManager
 
             self._cache_manager = CacheManager(self.config)
         return self._cache_manager
@@ -284,7 +284,7 @@ class StockDataFetcher:
             session_manager: SessionManager对象（可选，用于更新session）
         """
         if session_manager is None:
-            from .session_manager import SessionManager
+            from ..session.session_manager import SessionManager
 
             session_manager = SessionManager(self.config)
 

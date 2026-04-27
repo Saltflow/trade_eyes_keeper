@@ -54,7 +54,7 @@ class TestSinaHkFetcher:
 
     def test_fetch_returns_dataframe(self):
         """_fetch_from_sina_hk 应返回 DataFrame"""
-        from src.web_crawler import StockWebCrawler
+        from src.data.web_crawler import StockWebCrawler
 
         crawler = StockWebCrawler({})
 
@@ -79,7 +79,7 @@ class TestSinaHkFetcher:
 
     def test_parse_json_response(self):
         """_fetch_from_sina_hk 应正确解析新浪API返回的JSON"""
-        from src.web_crawler import StockWebCrawler
+        from src.data.web_crawler import StockWebCrawler
 
         crawler = StockWebCrawler({})
 
@@ -109,7 +109,7 @@ class TestSinaHkFetcher:
 
     def test_parse_single_item(self):
         """只返回1条数据时也应正确处理"""
-        from src.web_crawler import StockWebCrawler
+        from src.data.web_crawler import StockWebCrawler
 
         crawler = StockWebCrawler({})
         single_item_json = json.dumps(
@@ -143,7 +143,7 @@ class TestSinaHkFetcher:
 
     def test_empty_response(self):
         """API返回空列表时应返回空DataFrame"""
-        from src.web_crawler import StockWebCrawler
+        from src.data.web_crawler import StockWebCrawler
 
         crawler = StockWebCrawler({})
 
@@ -157,7 +157,7 @@ class TestSinaHkFetcher:
 
     def test_invalid_json(self):
         """API返回非JSON时应返回空DataFrame"""
-        from src.web_crawler import StockWebCrawler
+        from src.data.web_crawler import StockWebCrawler
 
         crawler = StockWebCrawler({})
 
@@ -171,7 +171,7 @@ class TestSinaHkFetcher:
 
     def test_http_error(self):
         """HTTP请求失败时应返回空DataFrame"""
-        from src.web_crawler import StockWebCrawler
+        from src.data.web_crawler import StockWebCrawler
 
         crawler = StockWebCrawler({})
 
@@ -189,7 +189,7 @@ class TestHkFallbackChain:
 
     def test_fallback_chain_contains_sina_hk(self):
         """港股 fallback 链中应包含 _fetch_from_sina_hk，且在 yahoo 之前"""
-        from src.web_crawler import StockWebCrawler
+        from src.data.web_crawler import StockWebCrawler
 
         crawler = StockWebCrawler({})
         # 通过 fetch_stock_data 间接验证 fallback 链
@@ -201,7 +201,7 @@ class TestHkFallbackChain:
 
     def test_eastmoney_fails_falls_back_to_sina_hk(self):
         """东方财富失败时，fallback 应走到 _fetch_from_sina_hk"""
-        from src.web_crawler import StockWebCrawler
+        from src.data.web_crawler import StockWebCrawler
 
         crawler = StockWebCrawler({})
 
@@ -264,7 +264,7 @@ class TestHkFallbackChain:
 
     def test_sina_hk_api_url_uses_hk_prefix(self):
         """_fetch_from_sina_hk 应使用 hk 前缀的 symbol"""
-        from src.web_crawler import StockWebCrawler
+        from src.data.web_crawler import StockWebCrawler
 
         crawler = StockWebCrawler({})
 

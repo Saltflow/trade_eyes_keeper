@@ -176,7 +176,7 @@ class SchedulerManager:
                 return
 
             # 导入健康服务器（避免循环导入）
-            from .health_server import HealthServer
+            from ..health_server import HealthServer
 
             host = health_config.get("host", "0.0.0.0")
             port = health_config.get("port", 1933)

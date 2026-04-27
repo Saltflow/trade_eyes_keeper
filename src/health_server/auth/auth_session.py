@@ -11,7 +11,7 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
-class SessionManager:
+class AuthSessionManager:
     """会话管理器 - 管理认证会话，30分钟有效期，内存存储"""
 
     def __init__(self, expiry_minutes=30):

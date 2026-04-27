@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from src.email_notifier import EmailNotifier
+from src.notification.email_notifier import EmailNotifier
 from tests.validation.test_utils import RandomTestParameterGenerator
 
 
