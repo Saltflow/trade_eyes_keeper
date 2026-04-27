@@ -1543,6 +1543,177 @@ class EmailNotifier:
                 "machine": "未知",
             }
 
+    # ────────────── 简报方法 ──────────────
+
+    @staticmethod
+    def _pick_best_anchor(
+        close: float,
+        anchors: dict[str, float | None],
+    ) -> tuple[str, float, float] | None:
+        """
+        选择最优锚点：实际回溯最短 + 偏离率落入警报阈值区间。
+
+        锚点优先级（回溯交易日短→长，越小越优先）:
+            ma60(60天) > wma20(~100天) > wma30(~150天) > wma50(~250天)
+
+        警报阈值区间 (来自 alerts.yaml thresholds):
+            ≤ -10%, (-10%, -5%], (-5%, 0), [5%, 10%), [10%, 15%), ≥ 15%
+
+        Args:
+            close: 现价
+            anchors: {"ma60": 5.91, "wma20": 5.78, ...}
+
+        Returns:
+            (anchor_name, anchor_value, deviation_pct) 或 None
+        """
+        # 窗口优先级（按实际交易日排序，数字越小越优先）
+        #   ma60: 日线60个交易日 → 最短
+        #   wma20: 周线≈100交易日 (20×5)
+        #   wma30: 周线≈150交易日 (30×5)
+        #   wma50: 周线≈250交易日 (50×5)
+        WINDOW_PRIORITY = {
+            "ma60": 60,
+            "wma20": 100,
+            "wma30": 150,
+            "wma50": 250,
+        }
+
+        def _in_alert_range(dev: float) -> bool:
+            if dev <= -10.0 or dev >= 15.0:
+                return True
+            if -10.0 < dev <= -5.0:
+                return True
+            if -5.0 < dev < 0.0:
+                return True
+            if 5.0 <= dev < 10.0:
+                return True
+            if 10.0 <= dev < 15.0:
+                return True
+            return False
+
+        candidates = []
+        for name, value in anchors.items():
+            if value is None or pd.isna(value) or value <= 0:
+                continue
+            dev = (close - value) / value * 100.0
+            if _in_alert_range(dev):
+                candidates.append(
+                    (name, round(float(value), 2), round(dev, 2),
+                     WINDOW_PRIORITY.get(name, 999))
+                )
+
+        if not candidates:
+            return None
+
+        # 按窗口升序 → 偏离绝对值升序
+        candidates.sort(key=lambda x: (x[3], abs(x[2])))
+        best = candidates[0]
+        return (best[0], best[1], best[2])
+
+    def send_brief_report(self, session, report_config: dict):
+        """
+        发送简报邮件（仅价格+锚点偏离率，无图表/基本面/公告）。
+
+        Args:
+            session: SessionContext
+            report_config: 简报配置 {"id": "morning_snapshot", "label": "早盘简报", ...}
+        """
+        from datetime import datetime
+        from pathlib import Path
+
+        label = report_config.get("label", "简报")
+        stock_data = session.get_all_dataframe()
+        today = datetime.now()
+        today_date = today.date()
+
+        # ── 构建每只股票的行 ──
+        rows = ""
+        active_count = 0
+        total_count = len(stock_data)
+
+        for _, row in stock_data.iterrows():
+            code = row.get("stock_code", "")
+            name = row.get("stock_name", code)
+            open_price = row.get("open")
+            close_price = row.get("close")
+
+            # 判断是否为最近交易数据（最近3天内有数据=活跃标的）
+            data_date = row.get("date")
+            in_trading = False
+            if data_date is not None and not pd.isna(data_date):
+                try:
+                    date_str = str(data_date)[:10]
+                    from datetime import datetime as dt_mod
+                    data_dt = dt_mod.strptime(date_str, "%Y-%m-%d").date()
+                    days_since = (today_date - data_dt).days
+                    in_trading = 0 <= days_since <= 3  # 最近3天内
+                except Exception:
+                    pass
+
+            if not in_trading:
+                # 非交易日：跳过不显示
+                continue
+
+            active_count += 1
+
+            # 格式化价格
+            open_str = f"{open_price:.2f}" if open_price is not None and not pd.isna(open_price) else "-"
+            close_str = f"{close_price:.2f}" if close_price is not None and not pd.isna(close_price) else "-"
+
+            # 收集所有锚点
+            anchors = {}
+            for anchor_name in ("ma60", "wma20", "wma30", "wma50"):
+                val = row.get(anchor_name)
+                if val is not None and not pd.isna(val):
+                    anchors[anchor_name] = float(val)
+
+            # 选最优锚点
+            best = None
+            if close_price is not None and not pd.isna(close_price) and anchors:
+                best = self._pick_best_anchor(float(close_price), anchors)
+
+            if best:
+                anchor_name, anchor_val, dev_pct = best
+                dev_class = "positive" if dev_pct >= 0 else "negative"
+                dev_str = f"{dev_pct:+.2f}%"
+                anchor_str = f"{anchor_val:.2f}"
+                name_str = anchor_name
+            else:
+                anchor_str = "-"
+                dev_str = "-"
+                dev_class = ""
+                name_str = "-"
+
+            rows += (
+                f'<tr>'
+                f'<td>{code}</td>'
+                f'<td>{name}</td>'
+                f'<td>{open_str}</td>'
+                f'<td>{close_str}</td>'
+                f'<td>{name_str}</td>'
+                f'<td>{anchor_str}</td>'
+                f'<td class="{dev_class}">{dev_str}</td>'
+                f'</tr>\n'
+            )
+
+        # ── 加载模板 ──
+        template_dir = Path(__file__).parent / "templates"
+        template = (template_dir / "brief_email.html").read_text(encoding="utf-8")
+
+        body = template.format(
+            label=label,
+            report_date=today.strftime("%Y-%m-%d"),
+            current_time=today.strftime("%H:%M"),
+            active_count=active_count,
+            total_count=active_count,  # 只算活跃的
+            brief_rows=rows,
+        )
+
+        subject = f"{label} - {today.strftime('%Y-%m-%d')}"
+        self._send_email(subject, body)
+
+    # ────────────────────────────────────
+
     def _send_email(self, subject, body, chart_png_bytes=None, portfolio_chart_dict=None):
         """
         发送邮件

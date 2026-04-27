@@ -284,6 +284,61 @@ def run_daily_task():
         logger.error(f"执行任务时发生错误: {e}", exc_info=True)
 
 
+def run_brief_report(report_id: str = "morning_snapshot"):
+    """
+    运行简报任务（轻量级：仅价格 + 锚点偏离率）。
+
+    由 scheduler 通过 functools.partial 调用，或通过 CLI --brief 手动触发。
+
+    Args:
+        report_id: 简报 ID，对应 config scheduler.brief_reports[].id
+    """
+    logger = logging.getLogger(__name__)
+    logger.info(f"开始执行简报任务: {report_id}")
+
+    config = load_config()
+    today = datetime.now().date()
+
+    # 周末跳过
+    if today.weekday() >= 5:
+        logger.info(f"今天是周末 ({today})，跳过简报")
+        return
+
+    try:
+        # 查找简报配置
+        brief_configs = config.get("scheduler", {}).get("brief_reports", [])
+        report_config = next(
+            (b for b in brief_configs if b.get("id") == report_id), {}
+        )
+        if not report_config:
+            logger.warning(f"未找到简报配置: {report_id}，使用默认标签")
+            report_config = {"id": report_id, "label": "简报"}
+
+        # 创建轻量 Session（仅获取价格数据）
+        session_manager = SessionManager(config)
+        session = session_manager.create_session(config)
+        logger.info(f"简报Session创建: {session.session_id}")
+
+        # 只获取股票数据，跳过 LLM/财报/回测/投资组合
+        fetcher = StockDataFetcher(config)
+        fetcher.fetch_to_session(session, session_manager)
+
+        if not session.stocks_data:
+            logger.warning("简报：Session 中无股票数据")
+            return
+
+        logger.info(f"简报：获取到 {len(session.stocks_data)} 只股票数据")
+
+        # 发送简报邮件
+        notifier = EmailNotifier(config)
+        notifier.send_brief_report(session, report_config)
+
+        logger.info(f"简报任务完成: {report_id}")
+
+    except Exception as e:
+        logger.error(f"简报任务失败 ({report_id}): {e}", exc_info=True)
+
+
 def main():
     """主函数"""
     # 加载配置
@@ -296,6 +351,11 @@ def main():
             # 单次运行模式
             logger.info("单次运行模式")
             run_daily_task()
+        elif sys.argv[1] == "--brief":
+            # 简报模式（默认 morning_snapshot）
+            report_id = sys.argv[2] if len(sys.argv) > 2 else "morning_snapshot"
+            logger.info(f"简报模式: {report_id}")
+            run_brief_report(report_id)
         elif sys.argv[1] == "--health-server":
             # 仅启动健康服务器模式
             logger.info("启动健康服务器模式")
@@ -307,6 +367,8 @@ def main():
             print("股票量化系统使用说明:")
             print("  python main.py              # 启动定时任务调度器（默认）")
             print("  python main.py --once       # 单次运行任务")
+            print("  python main.py --brief      # 运行早盘简报（默认9:50触发）")
+            print("  python main.py --brief <id> # 运行指定简报")
             print("  python main.py --health-server # 仅启动健康服务器")
             print("  python main.py --help       # 显示此帮助信息")
             print("\n健康服务器运行在端口1933，提供系统状态监控和测试邮件功能")

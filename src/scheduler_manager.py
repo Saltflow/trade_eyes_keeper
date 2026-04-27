@@ -4,6 +4,7 @@
 """
 
 import logging
+import functools
 from datetime import datetime
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -71,6 +72,41 @@ class SchedulerManager:
                 name="每日股票数据获取和分析任务",
                 replace_existing=True,
             )
+
+            # ── 注册简报任务（config scheduler.brief_reports）──
+            brief_reports = self.scheduler_config.get("brief_reports", [])
+            for br in brief_reports:
+                if not br.get("enabled", True):
+                    logger.info(f"简报已禁用: {br.get('label', br.get('id', '?'))}")
+                    continue
+
+                br_time = br.get("run_time", "09:50")
+                br_hour, br_minute = self._parse_run_time(br_time)
+                br_id = br.get("id", "brief_unknown")
+                br_label = br.get("label", br_id)
+
+                try:
+                    from main import run_brief_report
+
+                    br_trigger = CronTrigger(
+                        hour=br_hour, minute=br_minute, timezone=timezone
+                    )
+                    br_task = functools.partial(
+                        run_brief_report, report_id=br_id
+                    )
+                    self.scheduler.add_job(
+                        func=br_task,
+                        trigger=br_trigger,
+                        id=f"brief_{br_id}",
+                        name=br_label,
+                        replace_existing=True,
+                    )
+                    logger.info(
+                        f"简报已注册: {br_label} "
+                        f"({br_hour:02d}:{br_minute:02d})"
+                    )
+                except Exception as e:
+                    logger.error(f"注册简报失败 ({br_label}): {e}")
 
             # 添加启动时的立即执行任务（可选）
             if self.scheduler_config.get("run_on_startup", False):

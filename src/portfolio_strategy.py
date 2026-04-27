@@ -19,6 +19,8 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
+from .rule_engine import RuleEngine, get_default_rules, Rule
+
 logger = logging.getLogger(__name__)
 
 # ── 策略参数 ──
@@ -152,6 +154,7 @@ class TimingStrategyEngine:
         monthly_buy_limit: float = MONTHLY_BUY_LIMIT,
         monthly_sell_limit: float = MONTHLY_SELL_LIMIT,
         initial_cash: float = INITIAL_CASH_PER_STOCK,
+        rules: list[Rule] | None = None,
     ) -> StockMetrics:
         """
         运行择时策略模拟
@@ -160,10 +163,14 @@ class TimingStrategyEngine:
             monthly_buy_limit: 该股月度买入限额
             monthly_sell_limit: 该股月度卖出限额
             initial_cash: 初始资金
+            rules: 自定义规则列表，默认使用 MA60 锚点择时规则
 
         Returns:
             StockMetrics 包含完整交易记录和日净值序列
         """
+        if rules is None:
+            rules = get_default_rules()
+        engine = RuleEngine(rules)
 
         # ── 状态变量 ──
         cash = initial_cash
@@ -171,13 +178,6 @@ class TimingStrategyEngine:
         trade_log: list[TradeRecord] = []
         daily_values: list[float] = []
         prev_deviation = None
-
-        # 阈值触发标记
-        bought_minus5 = False
-        bought_minus10 = False
-        sold_plus5 = False
-        sold_plus10 = False
-        sold_plus15 = False
 
         # 月度交易统计
         monthly_buys: dict[str, float] = {}
@@ -189,9 +189,8 @@ class TimingStrategyEngine:
             ma60 = float(row["ma60"])
             deviation = float(row["deviation"])
 
-            # 前 N 天 MA60 可能不稳定，跳过偏差过大的早期数据
+            # 前 60 天 MA60 不稳定，仅记录净值
             if idx < 60:
-                # 记录每日总资产
                 total_value = cash + shares * close
                 daily_values.append(total_value)
                 prev_deviation = deviation
@@ -199,221 +198,167 @@ class TimingStrategyEngine:
 
             month_key = _get_month_key(date_str)
 
-            # ── 重置逻辑：价格回归 MA60 以上，重置所有触发标记 ──
-            if deviation > 0:
-                if prev_deviation is not None and prev_deviation <= 0:
-                    # 刚从负转正，重置买入标记
-                    bought_minus5 = False
-                    bought_minus10 = False
-                if prev_deviation is not None and prev_deviation < 0:
-                    sold_plus5 = False
-                    sold_plus10 = False
-                    sold_plus15 = False
-
-            if deviation < 0:
-                if prev_deviation is not None and prev_deviation >= 0:
-                    # 刚从正转负，重置卖出标记
-                    sold_plus5 = False
-                    sold_plus10 = False
-                    sold_plus15 = False
-
-            # 只有 deviation 有效时才判断
+            # 无效数据跳过
             if pd.isna(deviation) or pd.isna(ma60) or ma60 <= 0:
                 total_value = cash + shares * close
                 daily_values.append(total_value)
                 prev_deviation = deviation
                 continue
 
-            # ── 买入逻辑 ──
-            # 向下突破 -5%
-            if (
-                prev_deviation is not None
-                and prev_deviation > BUY_THRESHOLDS[0]
-                and deviation <= BUY_THRESHOLDS[0]
-                and not bought_minus5
+            # ── 构建上下文 ──
+            ctx = {
+                "close": close,
+                "ma60": ma60,
+                "deviation": deviation,
+                "prev_deviation": prev_deviation,
+                "cash": cash,
+                "shares": shares,
+                "position_value": shares * close,
+                "monthly_buy_used": monthly_buys.get(month_key, 0.0),
+                "monthly_sell_used": monthly_sells.get(month_key, 0.0),
+                "monthly_buy_limit": monthly_buy_limit,
+                "monthly_sell_limit": monthly_sell_limit,
+                "lot_size": self.lot_size,
+                "commission_rate": COMMISSION_RATE,
+            }
+
+            # ── 卖出执行（嵌套函数，通过 nonlocal 修改外层状态）──
+            def _exec_sell(
+                reason_label: str,
+                fraction: float = 0.25,
+                sell_min: float = 2500.0,
+                sell_max: float = 10000.0,
             ):
-                buy_amount = min(MAX_BUY_PER_TRADE, cash)
-                # 月度限额检查
-                current_month_buys = monthly_buys.get(month_key, 0.0)
-                remaining_buy = max(0, monthly_buy_limit - current_month_buys)
-                buy_amount = min(buy_amount, remaining_buy)
+                nonlocal shares, cash
 
-                if buy_amount >= close * self.lot_size:
-                    available = buy_amount * (1 - COMMISSION_RATE)
-                    shares_to_buy = (
-                        int(available / close / self.lot_size) * self.lot_size
+                # 本次卖出股数：fraction * 持仓
+                raw_sell = int(shares * fraction)
+                sell_shares = max(
+                    self.lot_size,
+                    int(raw_sell / self.lot_size) * self.lot_size,
+                )
+                sell_amount = sell_shares * close
+
+                # 约束1：不低于 sell_min
+                if sell_amount < sell_min:
+                    current_position_value = shares * close
+                    if current_position_value < sell_min:
+                        sell_shares = shares  # 清仓
+                    else:
+                        target_shares = (
+                            int(sell_min / close / self.lot_size)
+                            * self.lot_size
+                        )
+                        target_shares = max(
+                            self.lot_size, min(target_shares, shares)
+                        )
+                        sell_shares = target_shares
+                    sell_amount = sell_shares * close
+
+                # 约束2：不超过 sell_max
+                if sell_amount > sell_max:
+                    capped = (
+                        int(sell_max / close / self.lot_size)
+                        * self.lot_size
                     )
-                    if shares_to_buy > 0:
-                        cost = shares_to_buy * close
-                        fee = cost * COMMISSION_RATE
-                        if cost + fee <= buy_amount:
-                            shares += shares_to_buy
-                            cash -= cost + fee
-                            monthly_buys[month_key] = (
-                                monthly_buys.get(month_key, 0.0) + cost + fee
-                            )
-                            bought_minus5 = True
-                            trade_log.append(
-                                TradeRecord(
-                                    date=date_str,
-                                    stock_code=self.stock_code,
-                                    trade_type="buy",
-                                    price=close,
-                                    shares=shares_to_buy,
-                                    amount=cost + fee,
-                                    fee=fee,
-                                    reason=f"MA60跌破-5% (偏离={deviation * 100:.1f}%)",
-                                )
-                            )
-
-            # 向下突破 -10%
-            if (
-                prev_deviation is not None
-                and prev_deviation > BUY_THRESHOLDS[1]
-                and deviation <= BUY_THRESHOLDS[1]
-                and not bought_minus10
-            ):
-                buy_amount = min(MAX_BUY_PER_TRADE, cash)
-                current_month_buys = monthly_buys.get(month_key, 0.0)
-                remaining_buy = max(0, monthly_buy_limit - current_month_buys)
-                buy_amount = min(buy_amount, remaining_buy)
-
-                if buy_amount >= close * self.lot_size:
-                    available = buy_amount * (1 - COMMISSION_RATE)
-                    shares_to_buy = (
-                        int(available / close / self.lot_size) * self.lot_size
-                    )
-                    if shares_to_buy > 0:
-                        cost = shares_to_buy * close
-                        fee = cost * COMMISSION_RATE
-                        if cost + fee <= buy_amount:
-                            shares += shares_to_buy
-                            cash -= cost + fee
-                            monthly_buys[month_key] = (
-                                monthly_buys.get(month_key, 0.0) + cost + fee
-                            )
-                            bought_minus10 = True
-                            trade_log.append(
-                                TradeRecord(
-                                    date=date_str,
-                                    stock_code=self.stock_code,
-                                    trade_type="buy",
-                                    price=close,
-                                    shares=shares_to_buy,
-                                    amount=cost + fee,
-                                    fee=fee,
-                                    reason=f"MA60跌破-10% (偏离={deviation * 100:.1f}%)",
-                                )
-                            )
-
-            # ── 卖出逻辑 ──
-            if shares > 0:
-                current_position_value = shares * close
-
-                def _execute_sell(reason_label: str):
-                    nonlocal cash, shares
-                    # 计算应卖股数（1/4持仓，向下取整至整手）
-                    raw_sell = int(shares / 4)
                     sell_shares = max(
-                        self.lot_size, int(raw_sell / self.lot_size) * self.lot_size
+                        self.lot_size, min(capped, shares)
                     )
                     sell_amount = sell_shares * close
 
-                    # 约束1：最少卖 MIN_SELL_PER_TRADE 金额
-                    #   - 整仓价值 < MIN_SELL_PER_TRADE → 全部清仓
-                    #   - 1/4 sell < MIN_SELL_PER_TRADE 但整仓 >= MIN_SELL_PER_TRADE → 提额到 MIN_SELL_PER_TRADE
-                    if sell_amount < MIN_SELL_PER_TRADE:
-                        if current_position_value < MIN_SELL_PER_TRADE:
-                            # 整仓太小 → 清仓
-                            sell_shares = shares
-                        else:
-                            # 提额到至少 MIN_SELL_PER_TRADE 价值
-                            target_shares = (
-                                int(MIN_SELL_PER_TRADE / close / self.lot_size)
-                                * self.lot_size
-                            )
-                            target_shares = max(
-                                self.lot_size, min(target_shares, shares)
-                            )
-                            sell_shares = target_shares
-                        sell_amount = sell_shares * close
+                # 月度限额检查
+                current_month_sells = monthly_sells.get(month_key, 0.0)
+                remaining_sell = max(
+                    0, monthly_sell_limit - current_month_sells
+                )
+                if remaining_sell <= 0:
+                    return
 
-                    # 约束2：不超过 MAX_SELL_PER_TRADE
-                    if sell_amount > MAX_SELL_PER_TRADE:
-                        capped = (
-                            int(MAX_SELL_PER_TRADE / close / self.lot_size)
+                sell_value = min(sell_amount, remaining_sell)
+                if sell_value < sell_amount:
+                    ratio = sell_value / sell_amount
+                    sell_shares = (
+                        int(int(shares * ratio) / self.lot_size)
+                        * self.lot_size
+                    )
+                    sell_shares = max(self.lot_size, sell_shares)
+                    sell_value = sell_shares * close
+
+                if sell_shares <= 0 or sell_shares > shares:
+                    return
+
+                fee = sell_value * COMMISSION_RATE
+                cash += sell_value - fee
+                shares -= sell_shares
+                monthly_sells[month_key] = (
+                    monthly_sells.get(month_key, 0.0) + sell_value + fee
+                )
+                trade_log.append(
+                    TradeRecord(
+                        date=date_str,
+                        stock_code=self.stock_code,
+                        trade_type="sell",
+                        price=close,
+                        shares=sell_shares,
+                        amount=sell_value - fee,
+                        fee=fee,
+                        reason=(
+                            f"{reason_label} "
+                            f"(偏离={deviation * 100:.1f}%)"
+                        ),
+                    )
+                )
+
+            # ── 评估规则引擎 ──
+            for rule, action_amount in engine.evaluate_day(ctx):
+                if rule.type == "buy":
+                    buy_amount = min(float(action_amount), cash)
+                    # 月度限额检查
+                    current_month_buys = monthly_buys.get(month_key, 0.0)
+                    remaining_buy = max(
+                        0, monthly_buy_limit - current_month_buys
+                    )
+                    buy_amount = min(buy_amount, remaining_buy)
+
+                    if buy_amount >= close * self.lot_size:
+                        available = buy_amount * (1 - COMMISSION_RATE)
+                        shares_to_buy = (
+                            int(available / close / self.lot_size)
                             * self.lot_size
                         )
-                        sell_shares = max(self.lot_size, min(capped, shares))
-                        sell_amount = sell_shares * close
+                        if shares_to_buy > 0:
+                            cost = shares_to_buy * close
+                            fee = cost * COMMISSION_RATE
+                            if cost + fee <= buy_amount:
+                                shares += shares_to_buy
+                                cash -= cost + fee
+                                monthly_buys[month_key] = (
+                                    monthly_buys.get(month_key, 0.0)
+                                    + cost + fee
+                                )
+                                trade_log.append(
+                                    TradeRecord(
+                                        date=date_str,
+                                        stock_code=self.stock_code,
+                                        trade_type="buy",
+                                        price=close,
+                                        shares=shares_to_buy,
+                                        amount=cost + fee,
+                                        fee=fee,
+                                        reason=(
+                                            f"{rule.label} "
+                                            f"(偏离={deviation * 100:.1f}%)"
+                                        ),
+                                    )
+                                )
 
-                    # 月度限额检查
-                    current_month_sells = monthly_sells.get(month_key, 0.0)
-                    remaining_sell = max(0, monthly_sell_limit - current_month_sells)
-                    if remaining_sell <= 0:
-                        return
-
-                    sell_value = min(sell_amount, remaining_sell)
-                    if sell_value < sell_amount:
-                        # 按比例缩减卖出股数
-                        ratio = sell_value / sell_amount
-                        sell_shares = (
-                            int(int(shares * ratio) / self.lot_size) * self.lot_size
-                        )
-                        sell_shares = max(self.lot_size, sell_shares)
-                        sell_value = sell_shares * close
-
-                    if sell_shares <= 0 or sell_shares > shares:
-                        return
-
-                    fee = sell_value * COMMISSION_RATE
-                    cash += sell_value - fee
-                    shares -= sell_shares
-                    monthly_sells[month_key] = (
-                        monthly_sells.get(month_key, 0.0) + sell_value + fee
+                elif rule.type == "sell" and shares > 0:
+                    _exec_sell(
+                        reason_label=rule.label,
+                        fraction=rule.action_fraction or 0.25,
+                        sell_min=rule.action_min or 2500.0,
+                        sell_max=rule.action_max or 10000.0,
                     )
-                    trade_log.append(
-                        TradeRecord(
-                            date=date_str,
-                            stock_code=self.stock_code,
-                            trade_type="sell",
-                            price=close,
-                            shares=sell_shares,
-                            amount=sell_value - fee,
-                            fee=fee,
-                            reason=f"{reason_label} (偏离={deviation * 100:.1f}%)",
-                        )
-                    )
-
-                # +5% 卖出
-                if (
-                    prev_deviation is not None
-                    and prev_deviation < SELL_THRESHOLDS[0]
-                    and deviation >= SELL_THRESHOLDS[0]
-                    and not sold_plus5
-                ):
-                    _execute_sell("MA60突破+5%")
-                    sold_plus5 = True
-
-                # +10% 卖出
-                if (
-                    prev_deviation is not None
-                    and prev_deviation < SELL_THRESHOLDS[1]
-                    and deviation >= SELL_THRESHOLDS[1]
-                    and not sold_plus10
-                ):
-                    _execute_sell("MA60突破+10%")
-                    sold_plus10 = True
-
-                # +15% 卖出
-                if (
-                    prev_deviation is not None
-                    and prev_deviation < SELL_THRESHOLDS[2]
-                    and deviation >= SELL_THRESHOLDS[2]
-                    and not sold_plus15
-                ):
-                    _execute_sell("MA60突破+15%")
-                    sold_plus15 = True
 
             # ── 记录每日总资产 ──
             total_value = cash + shares * close
@@ -518,14 +463,17 @@ class PortfolioEvaluator:
     对一组股票同时运行择时策略，应用月度限额约束，计算组合级指标。
     """
 
-    def __init__(self, stocks_data: dict[str, pd.DataFrame], group: str):
+    def __init__(self, stocks_data: dict[str, pd.DataFrame], group: str,
+                 rules: list[Rule] | None = None):
         """
         Args:
             stocks_data: {stock_code: DataFrame with date, close}
             group: "a_share" 或 "non_a_share"
+            rules: 自定义规则，None 使用默认规则
         """
         self.stocks_data = stocks_data
         self.group = group
+        self.rules = rules
 
     def evaluate(self, stock_codes: list[str]) -> PortfolioResult:
         """
@@ -565,6 +513,7 @@ class PortfolioEvaluator:
                 monthly_buy_limit=monthly_buy_per_stock,
                 monthly_sell_limit=monthly_sell_per_stock,
                 initial_cash=INITIAL_CASH_PER_STOCK,
+                rules=self.rules,
             )
             all_metrics.append(metrics)
 
@@ -745,6 +694,17 @@ class PortfolioOptimizer:
             logger.warning("配置中无股票")
             return {}
 
+        # 从配置加载策略参数
+        ps_config = self.config.get("portfolio_strategy", {})
+        lookback_days = ps_config.get("lookback_days", 730)
+
+        # 加载自定义规则（可选）
+        config_rules = ps_config.get("rules", None)
+        custom_rules = None
+        if config_rules:
+            custom_rules = [Rule.from_dict(r) for r in config_rules]
+            logger.info(f"投资组合使用自定义规则: {len(custom_rules)} 条")
+
         # 获取数据并分组
         a_share_data: dict[str, pd.DataFrame] = {}
         non_a_share_data: dict[str, pd.DataFrame] = {}
@@ -753,7 +713,7 @@ class PortfolioOptimizer:
             code_str = str(code)
             group = _detect_stock_group(code_str)
 
-            data = self.fetch_stock_data(code_str, 730)
+            data = self.fetch_stock_data(code_str, lookback_days)
             if data.empty or "close" not in data.columns:
                 logger.warning(f"{code_str} 数据不足，跳过")
                 continue
@@ -782,7 +742,9 @@ class PortfolioOptimizer:
                 results[group_name] = {}
                 continue
 
-            evaluator = PortfolioEvaluator(group_data, group_name)
+            evaluator = PortfolioEvaluator(
+                group_data, group_name, rules=custom_rules
+            )
             codes = list(group_data.keys())
 
             results[group_name] = {
