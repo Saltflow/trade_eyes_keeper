@@ -1,0 +1,115 @@
+# 策略搜索器配置文件
+# 
+# 定义要搜索的策略模板、参数范围、优化约束。
+# 
+# 触发方式: python main.py --optimize [--iterations N] [--drawdown-limit -X]
+# 
+# 两阶段评估:
+#   - 训练: 优化器仅见 0-12 月数据，最大化部署期（6-12月）收益
+#   - 测试: 最终排名按 12-24 月外样本表现
+
+# ── 策略模板 ──
+# 规则使用 Python str.format() 渲染，{param_name} 替换为搜索到的参数值。
+# 可用变量（来自回测上下文）: deviation, prev_deviation, close, ma60, cash, shares,
+#   position_value, rsi, macd_hist, atr, boll_pct_b, vol_ratio, adx 等指标列
+strategy_template:
+  buy_rules:
+    - id: buy_1
+      type: buy
+      priority: 1
+      label: "买入规则1"
+      condition_template: >
+        deviation <= {buy1_dev}
+        and prev_deviation is not None
+        and prev_deviation > {buy1_dev}
+        and rsi < {buy1_rsi}
+      action_template: "min({buy1_amount}, cash)"
+      budget_pool: buy
+      reset_when: "deviation > 0 and prev_deviation is not None and prev_deviation <= 0"
+      search_params:
+        - {name: buy1_dev, type: real, range: [-0.15, -0.01]}
+        - {name: buy1_rsi, type: real, range: [15, 50]}
+        - {name: buy1_amount, type: real, range: [2000, 15000]}
+
+    - id: buy_2
+      type: buy
+      priority: 2
+      label: "买入规则2 (深跌)"
+      condition_template: >
+        deviation <= {buy2_dev}
+        and prev_deviation is not None
+        and prev_deviation > {buy2_dev}
+        and vol_ratio > {buy2_vol}
+      action_template: "min({buy2_amount}, cash)"
+      budget_pool: buy
+      reset_when: "deviation > 0 and prev_deviation is not None and prev_deviation <= 0"
+      search_params:
+        - {name: buy2_dev, type: real, range: [-0.25, -0.05]}
+        - {name: buy2_vol, type: real, range: [0.5, 3.0]}
+        - {name: buy2_amount, type: real, range: [2000, 20000]}
+
+  sell_rules:
+    - id: sell_1
+      type: sell
+      priority: 3
+      label: "卖出规则1"
+      condition_template: >
+        deviation >= {sell1_dev}
+        and prev_deviation is not None
+        and prev_deviation < {sell1_dev}
+        and shares > 0
+      action_template: "min({sell1_amt}, shares * close)"
+      action_fraction: 0.25
+      budget_pool: sell
+      reset_when: "deviation < 0 and prev_deviation is not None and prev_deviation >= 0"
+      search_params:
+        - {name: sell1_dev, type: real, range: [0.02, 0.08]}
+        - {name: sell1_amt, type: real, range: [2000, 12000]}
+
+    - id: sell_2
+      type: sell
+      priority: 4
+      label: "卖出规则2 (中涨)"
+      condition_template: >
+        deviation >= {sell2_dev}
+        and prev_deviation is not None
+        and prev_deviation < {sell2_dev}
+        and shares > 0
+        and rsi > {sell2_rsi}
+      action_template: "min({sell2_amt}, shares * close)"
+      action_fraction: 0.25
+      budget_pool: sell
+      reset_when: "deviation < 0 and prev_deviation is not None and prev_deviation >= 0"
+      search_params:
+        - {name: sell2_dev, type: real, range: [0.05, 0.15]}
+        - {name: sell2_rsi, type: real, range: [55, 85]}
+        - {name: sell2_amt, type: real, range: [2000, 15000]}
+
+    - id: sell_3
+      type: sell
+      priority: 5
+      label: "卖出规则3 (急涨)"
+      condition_template: >
+        deviation >= {sell3_dev}
+        and prev_deviation is not None
+        and prev_deviation < {sell3_dev}
+        and shares > 0
+      action_template: "min({sell3_amt}, shares * close)"
+      action_fraction: 0.25
+      budget_pool: sell
+      reset_when: "deviation < 0 and prev_deviation is not None and prev_deviation >= 0"
+      search_params:
+        - {name: sell3_dev, type: real, range: [0.10, 0.25]}
+        - {name: sell3_amt, type: real, range: [2000, 20000]}
+
+# ── 优化约束 ──
+constraints:
+  max_drawdown_pct: -25        # 最大允许回撤（训练期），超出则惩罚
+  drawdown_penalty_weight: 2.0  # 回撤惩罚系数
+  iterations: 150               # 贝叶斯优化迭代次数
+  random_starts: 20             # 初始随机采样点数
+
+# ── 输出 ──
+output:
+  top_n: 10
+  save_dir: "data/optimizer/"

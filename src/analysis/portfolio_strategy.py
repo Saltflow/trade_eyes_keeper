@@ -14,12 +14,12 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
-from pathlib import Path
 
 import pandas as pd
 import numpy as np
 
 from .rule_engine import RuleEngine, get_default_rules, Rule
+from .backtest_config import BacktestConfig, elapsed_months
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +73,17 @@ class StockMetrics:
 
 
 @dataclass
+class SubPeriodMetrics:
+    """子区间回测指标"""
+
+    start_month: float  # 起始月序号
+    end_month: float  # 结束月序号
+    total_return: float  # 区间总收益率(%)
+    max_drawdown: float  # 区间最大回撤(%, 负值)
+    sharpe_ratio: float  # 区间夏普比率
+
+
+@dataclass
 class PortfolioResult:
     """投资组合优化结果"""
     name: str                # "max_return", "min_drawdown", "max_sharpe"
@@ -86,6 +97,7 @@ class PortfolioResult:
     stock_details: list[dict] = field(default_factory=list)  # 各股详情
     nav_series: list[float] = field(default_factory=list)    # 组合净值序列
     nav_dates: list[str] = field(default_factory=list)       # 净值对应日期
+    sub_periods: dict[str, SubPeriodMetrics] = field(default_factory=dict)  # 子区间指标
 
 
 # ── 辅助函数 ──
@@ -476,12 +488,24 @@ class PortfolioEvaluator:
         self.group = group
         self.rules = rules
 
-    def evaluate(self, stock_codes: list[str]) -> PortfolioResult:
+    def evaluate(
+        self,
+        stock_codes: list[str],
+        backtest_config: BacktestConfig | None = None,
+        indicators_data: dict[str, "pd.DataFrame"] | None = None,
+    ) -> PortfolioResult:
         """
         评估指定股票组合（共享资金池模拟）。
 
-        所有标的共享 10 万元资金池 + 月度 1.5 万买卖限额，
-        标的间竞争资金——这才是贪心搜索的意义。
+        Args:
+            stock_codes: 待评估的股票代码列表
+            backtest_config: 回测约束（None=全时段自由交易，使用旧默认参数）
+            indicators_data: 预计算的指标数据 {code: DataFrame}，列会合并到上下文
+
+        当 backtest_config 提供时：
+          - 观察期（0~observe_end_month）：只更新偏离，不交易
+          - 交易期（observe~trade_end_month）：正常买卖，按月注入资金
+          - 持仓期（trade_end_month+）：不交易，仅跟踪净值
         """
         if not stock_codes:
             return PortfolioResult(
@@ -489,6 +513,13 @@ class PortfolioEvaluator:
                 total_return=0.0, max_drawdown=0.0, sharpe_ratio=0.0,
                 expected_position=0.0, composition=[], trade_count=0,
             )
+
+        # ── 参数确定 ──
+        cfg = backtest_config
+        effective_initial_capital = cfg.initial_capital if cfg else TOTAL_CAPITAL
+        effective_buy_limit = cfg.monthly_buy_limit if cfg else MONTHLY_BUY_LIMIT
+        effective_sell_limit = cfg.monthly_sell_limit if cfg else MONTHLY_SELL_LIMIT
+        effective_commission = cfg.commission_rate if cfg else COMMISSION_RATE
 
         # ── 过滤有数据的标的 ──
         active_codes = [c for c in stock_codes if c in self.stocks_data]
@@ -501,7 +532,7 @@ class PortfolioEvaluator:
         n = len(active_codes)
 
         # ── 共享状态 ──
-        cash = TOTAL_CAPITAL
+        cash = effective_initial_capital
         positions: dict[str, int] = {c: 0 for c in active_codes}
         last_prices: dict[str, float] = {c: 0.0 for c in active_codes}
         prev_deviations: dict[str, float | None] = {c: None for c in active_codes}
@@ -510,6 +541,11 @@ class PortfolioEvaluator:
         nav_dates: list[str] = []
         monthly_buys: dict[str, float] = {}
         monthly_sells: dict[str, float] = {}
+        # 资金注入追踪（仅 backtest_config 模式）
+        injected_months: set[int] = set()
+        # 按阶段分桶的净值序列（用于子区间指标）
+        phase_navs: dict[str, list[float]] = {"train": [], "test": []}
+        phase_dates: dict[str, list[str]] = {"train": [], "test": []}
 
         # Rule engines per stock
         if self.rules is None:
@@ -520,31 +556,77 @@ class PortfolioEvaluator:
         for c in active_codes:
             engines[c] = RuleEngine(rules)
 
-        # ── 构建统一日期轴（同时计算 MA60 和 deviation）──
+        # ── 构建统一日期轴（同时计算 MA60、deviation，合并指标列）──
         date_map: dict[str, dict[str, dict]] = {}
+        ref_date_str: str | None = None  # 参考起始日期（用于月序号计算）
         for code in active_codes:
             df = self.stocks_data[code].copy()
             df["date"] = pd.to_datetime(df["date"])
             df = df.sort_values("date").reset_index(drop=True)
             df["ma60"] = df["close"].rolling(window=60, min_periods=1).mean()
             df["deviation"] = (df["close"] - df["ma60"]) / df["ma60"]
+
+            # 合并预计算指标（如果有）
+            if indicators_data and code in indicators_data:
+                ind_df = indicators_data[code]
+                if "date" in ind_df.columns:
+                    ind_df = ind_df.copy()
+                    ind_df["date"] = pd.to_datetime(ind_df["date"])
+                    # 只合并指标列（排除 date/close/open 等已有列）
+                    indicator_cols = [
+                        c for c in ind_df.columns
+                        if c not in ("date", "open", "close", "high", "low",
+                                     "volume", "amount", "amplitude", "change_pct",
+                                     "change", "turnover", "stock_code", "stock_name")
+                    ]
+                    if indicator_cols:
+                        df = df.merge(
+                            ind_df[["date"] + indicator_cols],
+                            on="date", how="left",
+                        )
+
             dates = df["date"].dt.date.astype(str)
             for i in range(len(df)):
                 d = dates.iloc[i]
                 if d not in date_map:
                     date_map[d] = {}
+                    if ref_date_str is None:
+                        ref_date_str = d
                 row = df.iloc[i]
-                date_map[d][code] = {
+                info = {
                     "close": float(row["close"]),
                     "ma60": float(row.get("ma60", 0) or 0),
                     "deviation": float(row.get("deviation", 0) or 0),
                 }
+                # 携带指标列到上下文
+                for col in df.columns:
+                    if col not in ("date", "open", "close", "high", "low",
+                                   "volume", "ma60", "deviation"):
+                        val = row.get(col)
+                        if val is not None and not (isinstance(val, float) and pd.isna(val)):
+                            info[col] = float(val) if isinstance(val, (int, float, np.floating)) else val
+                date_map[d][code] = info
 
         # ── 逐日模拟 ──
         for date_str, day_data in sorted(date_map.items()):
             month_key = _get_month_key(date_str)
             month_buy_used = monthly_buys.get(month_key, 0.0)
             month_sell_used = monthly_sells.get(month_key, 0.0)
+
+            # ── 资金注入（backtest_config 模式）──
+            if cfg and ref_date_str:
+                em = elapsed_months(date_str, ref_date_str)
+                curr_month = int(em)
+                for m in range(curr_month + 1):
+                    if m not in injected_months:
+                        inj = cfg.get_injection(m)
+                        if inj > 0:
+                            cash += inj
+                            injected_months.add(m)
+
+                can_trade = cfg.can_trade(em)
+            else:
+                can_trade = True
 
             # 当天所有标的价格（用于算 NAV）
             day_prices: dict[str, float] = {}
@@ -557,12 +639,21 @@ class PortfolioEvaluator:
                 last_prices[code] = close  # 追踪最后已知价格
                 lot = _get_lot_size(code)
 
+                # 覆盖手数
+                if cfg:
+                    lot = cfg.get_lot_size(code, lot)
+
                 # 跳过无锚点的早期数据
                 if ma60 <= 0:
                     prev_deviations[code] = deviation
                     continue
 
-                # 上下文
+                if not can_trade:
+                    # 观察期/持仓期：仅更新偏离追踪，不评估规则
+                    prev_deviations[code] = deviation
+                    continue
+
+                # ── 上下文（含可选指标列）──
                 ctx = {
                     "close": close,
                     "ma60": ma60,
@@ -573,24 +664,28 @@ class PortfolioEvaluator:
                     "position_value": positions[code] * close,
                     "monthly_buy_used": month_buy_used,
                     "monthly_sell_used": month_sell_used,
-                    "monthly_buy_limit": MONTHLY_BUY_LIMIT,
-                    "monthly_sell_limit": MONTHLY_SELL_LIMIT,
+                    "monthly_buy_limit": effective_buy_limit,
+                    "monthly_sell_limit": effective_sell_limit,
                     "lot_size": lot,
-                    "commission_rate": COMMISSION_RATE,
+                    "commission_rate": effective_commission,
                 }
+                # 注入指标值到上下文（规则表达式可引用 rsi, macd_hist 等）
+                for key, val in info.items():
+                    if key not in ctx:
+                        ctx[key] = val
 
                 engine = engines[code]
                 for rule, amount in engine.evaluate_day(ctx):
                     if rule.type == "buy":
                         buy_amount = min(float(amount), cash)
-                        remaining = max(0, MONTHLY_BUY_LIMIT - month_buy_used)
+                        remaining = max(0, effective_buy_limit - month_buy_used)
                         buy_amount = min(buy_amount, remaining)
                         if buy_amount >= close * lot:
-                            available = buy_amount * (1 - COMMISSION_RATE)
+                            available = buy_amount * (1 - effective_commission)
                             qty = int(available / close / lot) * lot
                             if qty > 0:
                                 cost = qty * close
-                                fee = cost * COMMISSION_RATE
+                                fee = cost * effective_commission
                                 if cost + fee <= buy_amount:
                                     positions[code] += qty
                                     cash -= cost + fee
@@ -619,7 +714,7 @@ class PortfolioEvaluator:
                             sell_qty = max(lot, min(capped, positions[code]))
                             sell_amount = sell_qty * close
 
-                        remaining = max(0, MONTHLY_SELL_LIMIT - month_sell_used)
+                        remaining = max(0, effective_sell_limit - month_sell_used)
                         if remaining <= 0:
                             continue
                         sell_value = min(sell_amount, remaining)
@@ -632,7 +727,7 @@ class PortfolioEvaluator:
                         if sell_qty <= 0 or sell_qty > positions[code]:
                             continue
 
-                        fee = sell_value * COMMISSION_RATE
+                        fee = sell_value * effective_commission
                         cash += sell_value - fee
                         positions[code] -= sell_qty
                         month_sell_used += sell_value + fee
@@ -648,12 +743,53 @@ class PortfolioEvaluator:
                 )
                 for c in active_codes
             )
-            daily_navs.append(cash + position_value)
+            nav = cash + position_value
+            daily_navs.append(nav)
             nav_dates.append(date_str)
             monthly_buys[month_key] = month_buy_used
             monthly_sells[month_key] = month_sell_used
 
+            # ── 分阶段净值记录（用于子区间指标）──
+            if cfg and ref_date_str:
+                em = elapsed_months(date_str, ref_date_str)
+                if em <= 12:
+                    phase_navs["train"].append(nav)
+                    phase_dates["train"].append(date_str)
+                else:
+                    phase_navs["test"].append(nav)
+                    phase_dates["test"].append(date_str)
+
         # ── 指标计算 ──
+        def _calc_metrics(nav_list: list[float]) -> tuple[float, float, float]:
+            """从净值序列计算 (total_return%, max_drawdown%, sharpe)"""
+            if len(nav_list) < 2:
+                return 0.0, 0.0, 0.0
+            initial = nav_list[0]
+            final = nav_list[-1]
+            total_ret = (final - initial) / initial * 100 if initial > 0 else 0.0
+            peak_val = nav_list[0]
+            max_dd = 0.0
+            for v in nav_list:
+                if v > peak_val:
+                    peak_val = v
+                dd = (v - peak_val) / peak_val * 100
+                if dd < max_dd:
+                    max_dd = dd
+            risk_free = RISK_FREE_A if self.group == "a_share" else RISK_FREE_NON_A
+            daily_rets = []
+            for i in range(1, len(nav_list)):
+                if nav_list[i - 1] > 0:
+                    daily_rets.append(
+                        (nav_list[i] - nav_list[i - 1]) / nav_list[i - 1]
+                    )
+            sp = 0.0
+            if len(daily_rets) > 5:
+                excess = [r - risk_free / 252 for r in daily_rets]
+                mean_ex = np.mean(excess)
+                std_ex = np.std(excess, ddof=1)
+                sp = (mean_ex / std_ex * np.sqrt(252)) if std_ex > 1e-10 else 0.0
+            return round(total_ret, 2), round(max_dd, 2), round(sp, 4)
+
         if len(daily_navs) < 2:
             return PortfolioResult(
                 name="", group=self.group,
@@ -662,39 +798,28 @@ class PortfolioEvaluator:
                 nav_series=daily_navs, nav_dates=nav_dates,
             )
 
-        initial_nav = daily_navs[0]
-        final_nav = daily_navs[-1]
-        total_return = (
-            (final_nav - initial_nav) / initial_nav * 100
-            if initial_nav > 0 else 0.0
-        )
-        num_days = len(daily_navs)
-        years = num_days / 252.0
-        annual_return = (
-            (final_nav / initial_nav) ** (1.0 / years) - 1
-        ) * 100 if years > 0 and initial_nav > 0 else 0.0
-        peak = daily_navs[0]
-        max_drawdown = 0.0
-        for v in daily_navs:
-            if v > peak:
-                peak = v
-            dd = (v - peak) / peak * 100
-            if dd < max_drawdown:
-                max_drawdown = dd
+        total_return, max_drawdown, sharpe = _calc_metrics(daily_navs)
 
-        daily_returns = []
-        for i in range(1, len(daily_navs)):
-            if daily_navs[i - 1] > 0:
-                daily_returns.append(
-                    (daily_navs[i] - daily_navs[i - 1]) / daily_navs[i - 1]
-                )
-        risk_free = RISK_FREE_A if self.group == "a_share" else RISK_FREE_NON_A
-        sharpe = 0.0
-        if len(daily_returns) > 5:
-            excess = [r - risk_free / 252 for r in daily_returns]
-            mean_ex = np.mean(excess)
-            std_ex = np.std(excess, ddof=1)
-            sharpe = (mean_ex / std_ex * np.sqrt(252)) if std_ex > 1e-10 else 0.0
+        # ── 子区间指标（仅在 backtest_config 模式）──
+        sub_periods: dict[str, SubPeriodMetrics] = {}
+        if cfg and phase_navs["train"]:
+            tr, td, ts = _calc_metrics(phase_navs["train"])
+            sub_periods["train"] = SubPeriodMetrics(
+                start_month=cfg.observe_end_month,
+                end_month=12,
+                total_return=tr,
+                max_drawdown=td,
+                sharpe_ratio=ts,
+            )
+        if cfg and phase_navs["test"]:
+            tr, td, ts = _calc_metrics(phase_navs["test"])
+            sub_periods["test"] = SubPeriodMetrics(
+                start_month=12,
+                end_month=24,
+                total_return=tr,
+                max_drawdown=td,
+                sharpe_ratio=ts,
+            )
 
         position_value = sum(
             positions[c] * float(
@@ -704,15 +829,16 @@ class PortfolioEvaluator:
 
         return PortfolioResult(
             name="", group=self.group,
-            total_return=round(total_return, 2),
-            max_drawdown=round(max_drawdown, 2),
-            sharpe_ratio=round(sharpe, 4),
+            total_return=total_return,
+            max_drawdown=max_drawdown,
+            sharpe_ratio=sharpe,
             expected_position=round(position_value, 2),
             composition=list(active_codes),
             trade_count=trade_count,
             nav_series=[round(v, 2) for v in daily_navs],
             nav_dates=nav_dates,
             stock_details=[],
+            sub_periods=sub_periods,
         )
 
 

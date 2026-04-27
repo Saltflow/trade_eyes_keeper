@@ -314,6 +314,87 @@ def run_brief_report(report_id: str = "morning_snapshot"):
         logger.error(f"简报任务失败 ({report_id}): {e}", exc_info=True)
 
 
+def run_optimization(config):
+    """
+    运行策略搜索优化器。
+    
+    使用贝叶斯优化搜索最优策略参数，分 A 股和非 A 股两组分别优化。
+    """
+    import time
+    from src.data.data_source import DataSource
+    from src.analysis.strategy_optimizer import StrategyOptimizer
+    from src.analysis.portfolio_strategy import _detect_stock_group
+
+    logger.info("=" * 60)
+    logger.info("策略搜索优化器启动")
+    logger.info("=" * 60)
+
+    stocks = config.get("stocks", [])
+    if not stocks:
+        logger.error("配置中没有股票列表")
+        return
+
+    # 分组
+    a_codes = []
+    non_a_codes = []
+    for s in stocks:
+        code = s if isinstance(s, str) else s.get("code", "")
+        group = _detect_stock_group(code)
+        if group == "a_share":
+            a_codes.append(code)
+        else:
+            non_a_codes.append(code)
+
+    logger.info(f"A股: {len(a_codes)} 只 | 非A股: {len(non_a_codes)} 只")
+
+    # 数据源
+    data_source = DataSource()
+    lookback = config.get("portfolio_strategy", {}).get("lookback_days", 730)
+
+    for group_name, codes in [("a_share", a_codes), ("non_a_share", non_a_codes)]:
+        if not codes:
+            logger.info("跳过 %s: 无标的", group_name)
+            continue
+
+        logger.info("-" * 40)
+        logger.info("开始 %s 策略优化 (%d 只标的)", group_name, len(codes))
+
+        # 获取数据
+        stocks_data: dict[str, pd.DataFrame] = {}
+        for code in codes:
+            try:
+                df = data_source.fetch_stock_data(code, days=lookback)
+                if df is not None and not df.empty:
+                    stocks_data[code] = df
+            except Exception as e:
+                logger.warning("获取 %s 数据失败: %s", code, e)
+
+        if not stocks_data:
+            logger.warning("%s 无可用数据，跳过", group_name)
+            continue
+
+        # 运行优化
+        t0 = time.time()
+        optimizer = StrategyOptimizer(stocks_data, group_name)
+        report = optimizer.run(
+            stock_codes=list(stocks_data.keys()),
+        )
+
+        # 打印报告
+        print("\n" + optimizer.print_report(report))
+
+        # 保存结果
+        optimizer.save_results(report)
+
+        logger.info(
+            "%s 优化完成: 耗时 %.0fs",
+            group_name,
+            time.time() - t0,
+        )
+
+    logger.info("策略搜索完成")
+
+
 def main():
     """主函数"""
     # 加载配置
@@ -331,6 +412,9 @@ def main():
             report_id = sys.argv[2] if len(sys.argv) > 2 else "morning_snapshot"
             logger.info(f"简报模式: {report_id}")
             run_brief_report(report_id)
+        elif sys.argv[1] == "--optimize":
+            # 策略优化模式
+            run_optimization(config)
         elif sys.argv[1] == "--health-server":
             # 仅启动健康服务器模式
             logger.info("启动健康服务器模式")
@@ -344,6 +428,7 @@ def main():
             print("  python main.py --once       # 单次运行任务")
             print("  python main.py --brief      # 运行早盘简报（默认9:50触发）")
             print("  python main.py --brief <id> # 运行指定简报")
+            print("  python main.py --optimize              # 策略参数贝叶斯优化搜索")
             print("  python main.py --health-server # 仅启动健康服务器")
             print("  python main.py --help       # 显示此帮助信息")
             print("\n健康服务器运行在端口1933，提供系统状态监控和测试邮件功能")
