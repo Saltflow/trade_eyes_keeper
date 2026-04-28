@@ -83,6 +83,7 @@ class SubPeriodMetrics:
     max_drawdown: float  # 区间最大回撤(%, 负值)
     sharpe_ratio: float  # 区间夏普比率
     trade_count: int = 0  # 区间交易次数
+    excess_return: float = 0.0  # 超额收益 = 真实收益 − 现金基准收益
 
 
 @dataclass
@@ -545,6 +546,7 @@ class PortfolioEvaluator:
         monthly_sells: dict[str, float] = {}
         # 资金注入追踪（仅 backtest_config 模式）
         injected_months: set[int] = set()
+        cumulative_injected: float = 0.0  # 累计注入金额（用于计算现金基准）
         # 按 3 阶段分桶的净值序列 + 交易数（用于子区间指标和收敛图）
         phase_navs: dict[str, list[float]] = {
             "observe": [], "deploy": [], "test": [],
@@ -632,6 +634,7 @@ class PortfolioEvaluator:
                         inj = cfg.get_injection(m)
                         if inj > 0:
                             cash += inj
+                            cumulative_injected += inj
                             injected_months.add(m)
 
                 can_trade = cfg.can_trade(em)
@@ -815,6 +818,16 @@ class PortfolioEvaluator:
 
         # ── 子区间指标（3 阶段：观察/部署/验证）──
         sub_periods: dict[str, SubPeriodMetrics] = {}
+        # 各阶段累计注入金额（分析性计算，不受交易影响）
+        phase_injections = {
+            "observe": 0.0,
+            "deploy": sum(
+                cfg.get_injection(m) for m in range(
+                    int(cfg.observe_end_month) + 1, 13
+                )
+            ) if cfg else 0.0,
+            "test": 0.0,
+        }
         phase_meta = {
             "observe": (0, cfg.observe_end_month if cfg else 6),
             "deploy": (cfg.observe_end_month if cfg else 6, 12),
@@ -823,6 +836,17 @@ class PortfolioEvaluator:
         for phase_key, (start_m, end_m) in phase_meta.items():
             if cfg and phase_navs.get(phase_key):
                 tr, td, ts = _calc_metrics(phase_navs[phase_key])
+                # 现金基准收益 = 阶段内注入总额 / 阶段初基准
+                bench_start = effective_initial_capital
+                for p in ["observe", "deploy"]:
+                    if p == phase_key:
+                        break
+                    bench_start += phase_injections[p]
+                bench_ret = (
+                    phase_injections[phase_key] / bench_start * 100
+                    if bench_start > 0 else 0.0
+                )
+                excess = tr - bench_ret
                 sub_periods[phase_key] = SubPeriodMetrics(
                     label=phase_key,
                     start_month=start_m,
@@ -831,6 +855,7 @@ class PortfolioEvaluator:
                     max_drawdown=td,
                     sharpe_ratio=ts,
                     trade_count=phase_trade_count.get(phase_key, 0),
+                    excess_return=excess,
                 )
 
         position_value = sum(
