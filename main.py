@@ -348,7 +348,7 @@ def run_optimization(config):
     logger.info(f"A股: {len(a_codes)} 只 | 非A股: {len(non_a_codes)} 只")
 
     # 数据源
-    data_source = DataSource()
+    data_source = DataSource(config)
     lookback = config.get("portfolio_strategy", {}).get("lookback_days", 730)
 
     for group_name, codes in [("a_share", a_codes), ("non_a_share", non_a_codes)]:

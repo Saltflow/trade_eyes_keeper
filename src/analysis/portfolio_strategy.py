@@ -76,11 +76,13 @@ class StockMetrics:
 class SubPeriodMetrics:
     """子区间回测指标"""
 
+    label: str  # "observe", "deploy", "test"
     start_month: float  # 起始月序号
     end_month: float  # 结束月序号
     total_return: float  # 区间总收益率(%)
     max_drawdown: float  # 区间最大回撤(%, 负值)
     sharpe_ratio: float  # 区间夏普比率
+    trade_count: int = 0  # 区间交易次数
 
 
 @dataclass
@@ -543,9 +545,16 @@ class PortfolioEvaluator:
         monthly_sells: dict[str, float] = {}
         # 资金注入追踪（仅 backtest_config 模式）
         injected_months: set[int] = set()
-        # 按阶段分桶的净值序列（用于子区间指标）
-        phase_navs: dict[str, list[float]] = {"train": [], "test": []}
-        phase_dates: dict[str, list[str]] = {"train": [], "test": []}
+        # 按 3 阶段分桶的净值序列 + 交易数（用于子区间指标和收敛图）
+        phase_navs: dict[str, list[float]] = {
+            "observe": [], "deploy": [], "test": [],
+        }
+        phase_dates: dict[str, list[str]] = {
+            "observe": [], "deploy": [], "test": [],
+        }
+        phase_trade_count: dict[str, int] = {
+            "observe": 0, "deploy": 0, "test": 0,
+        }
 
         # Rule engines per stock
         if self.rules is None:
@@ -614,6 +623,7 @@ class PortfolioEvaluator:
             month_sell_used = monthly_sells.get(month_key, 0.0)
 
             # ── 资金注入（backtest_config 模式）──
+            day_phase = None
             if cfg and ref_date_str:
                 em = elapsed_months(date_str, ref_date_str)
                 curr_month = int(em)
@@ -625,6 +635,12 @@ class PortfolioEvaluator:
                             injected_months.add(m)
 
                 can_trade = cfg.can_trade(em)
+                if em <= cfg.observe_end_month:
+                    day_phase = "observe"
+                elif em <= 12:
+                    day_phase = "deploy"
+                else:
+                    day_phase = "test"
             else:
                 can_trade = True
 
@@ -691,6 +707,8 @@ class PortfolioEvaluator:
                                     cash -= cost + fee
                                     month_buy_used += cost + fee
                                     trade_count += 1
+                                    if day_phase:
+                                        phase_trade_count[day_phase] += 1
 
                     elif rule.type == "sell" and positions[code] > 0:
                         fraction = rule.action_fraction or 0.25
@@ -749,15 +767,10 @@ class PortfolioEvaluator:
             monthly_buys[month_key] = month_buy_used
             monthly_sells[month_key] = month_sell_used
 
-            # ── 分阶段净值记录（用于子区间指标）──
-            if cfg and ref_date_str:
-                em = elapsed_months(date_str, ref_date_str)
-                if em <= 12:
-                    phase_navs["train"].append(nav)
-                    phase_dates["train"].append(date_str)
-                else:
-                    phase_navs["test"].append(nav)
-                    phase_dates["test"].append(date_str)
+            # ── 分阶段净值记录（3 阶段：观察/部署/验证）──
+            if cfg and day_phase:
+                phase_navs[day_phase].append(nav)
+                phase_dates[day_phase].append(date_str)
 
         # ── 指标计算 ──
         def _calc_metrics(nav_list: list[float]) -> tuple[float, float, float]:
@@ -800,26 +813,25 @@ class PortfolioEvaluator:
 
         total_return, max_drawdown, sharpe = _calc_metrics(daily_navs)
 
-        # ── 子区间指标（仅在 backtest_config 模式）──
+        # ── 子区间指标（3 阶段：观察/部署/验证）──
         sub_periods: dict[str, SubPeriodMetrics] = {}
-        if cfg and phase_navs["train"]:
-            tr, td, ts = _calc_metrics(phase_navs["train"])
-            sub_periods["train"] = SubPeriodMetrics(
-                start_month=cfg.observe_end_month,
-                end_month=12,
-                total_return=tr,
-                max_drawdown=td,
-                sharpe_ratio=ts,
-            )
-        if cfg and phase_navs["test"]:
-            tr, td, ts = _calc_metrics(phase_navs["test"])
-            sub_periods["test"] = SubPeriodMetrics(
-                start_month=12,
-                end_month=24,
-                total_return=tr,
-                max_drawdown=td,
-                sharpe_ratio=ts,
-            )
+        phase_meta = {
+            "observe": (0, cfg.observe_end_month if cfg else 6),
+            "deploy": (cfg.observe_end_month if cfg else 6, 12),
+            "test": (12, 24),
+        }
+        for phase_key, (start_m, end_m) in phase_meta.items():
+            if cfg and phase_navs.get(phase_key):
+                tr, td, ts = _calc_metrics(phase_navs[phase_key])
+                sub_periods[phase_key] = SubPeriodMetrics(
+                    label=phase_key,
+                    start_month=start_m,
+                    end_month=end_m,
+                    total_return=tr,
+                    max_drawdown=td,
+                    sharpe_ratio=ts,
+                    trade_count=phase_trade_count.get(phase_key, 0),
+                )
 
         position_value = sum(
             positions[c] * float(

@@ -90,6 +90,9 @@ deploy_key*
 # Cache files
 cache/
 
+# Optimizer output
+data/optimizer/
+
 # Config - sensitive (passwords, API keys, email config)
 config/config.yaml
 config/.env

@@ -49,6 +49,7 @@ class StrategyTrial:
     test_drawdown: float  # 测试期最大回撤(%)
     sharpe: float  # 全期夏普比
     trade_count: int  # 总交易次数
+    sub_periods: dict | None = None  # PortfolioResult.sub_periods 原始数据
 
     @property
     def fitness(self) -> float:
@@ -64,10 +65,12 @@ class OptimizationReport:
     group: str
     timestamp: str
     iterations: int
-    top_strategies: list[StrategyTrial]  # 按 test_return 降序
-    convergence: list[float]  # 每次迭代的最佳适应度
-    elapsed_seconds: float
-    best_params: dict[str, float]  # 最优参数（按测试排名）
+    n_random_starts: int = 20  # 贝叶斯优化随机初始点数
+    top_strategies: list[StrategyTrial] = field(default_factory=list)
+    convergence: list[float] = field(default_factory=list)
+    all_train_returns: list[float] = field(default_factory=list)
+    elapsed_seconds: float = 0.0
+    best_params: dict[str, float] = field(default_factory=dict)
 
 
 class StrategyOptimizer:
@@ -138,9 +141,11 @@ class StrategyOptimizer:
         """将参数向量转换为 Rule 列表"""
         param_dict = {}
         for i, p in enumerate(self._collect_params()):
-            param_dict[p["name"]] = (
-                int(param_vec[i]) if p["type"] == "integer" else param_vec[i]
-            )
+            val = param_vec[i]
+            if p["type"] == "integer":
+                param_dict[p["name"]] = int(val)
+            else:
+                param_dict[p["name"]] = round(float(val), 4)  # 截断浮点精度
 
         rules = []
         for rule_tpl in self.template.get("buy_rules", []) + self.template.get(
@@ -315,6 +320,7 @@ class StrategyOptimizer:
                     test_drawdown=test_dd,
                     sharpe=result.sharpe_ratio,
                     trade_count=result.trade_count,
+                    sub_periods=result.sub_periods,
                 )
             )
 
@@ -326,19 +332,162 @@ class StrategyOptimizer:
         # 收敛曲线
         convergence = [-opt_result.func_vals[:i].min()
                        for i in range(1, len(opt_result.func_vals) + 1)]
+        all_train_returns = [t[2] for t in all_trials]
 
         report = OptimizationReport(
             report_id=report_id or datetime.now().strftime("%Y%m%d_%H%M%S"),
             group=self.group,
             timestamp=datetime.now().isoformat(),
             iterations=n_calls,
+            n_random_starts=n_random,
             top_strategies=top_trials,
             convergence=convergence,
+            all_train_returns=all_train_returns,
             elapsed_seconds=elapsed,
             best_params=top_trials[0].params if top_trials else {},
         )
 
+        # 生成收敛图
+        save_dir = Path(self.output_cfg.get("save_dir", "data/optimizer"))
+        save_dir.mkdir(parents=True, exist_ok=True)
+        plot_path = save_dir / f"{report.report_id}_{report.group}_convergence.png"
+        self._plot_convergence(report, plot_path)
+
         return report
+
+    def _plot_convergence(
+        self,
+        report: "OptimizationReport",
+        output_path: Path,
+    ) -> None:
+        """
+        生成 2×1 收敛诊断图，保存为 PNG。
+
+        图 1 (上): 贝叶斯收敛曲线
+          - 实线: 每轮最优适应度
+          - 散点: 所有评估点的训练收益（透明）
+          - 竖虚线: 随机采样 → 贝叶斯采样分界
+
+        图 2 (下): 最优策略 3 阶段柱状图
+          - 观察期 (0-6月): 收益率 / 回撤 / 交易次数
+          - 部署期 (6-12月): 收益率 / 回撤 / 交易次数
+          - 验证期 (12-24月): 收益率 / 回撤 / 交易次数
+        """
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.ticker as mticker
+
+        # ── CJK 字体设置 ──
+        from ..utils.font_setup import setup_cjk_font
+
+        setup_cjk_font()
+
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+        fig.suptitle(
+            f"策略搜索报告 — {report.group} — {report.report_id}",
+            fontsize=14, fontweight="bold",
+        )
+
+        # ══════ 图 1: 贝叶斯收敛 ══════
+        if report.all_train_returns:
+            n = len(report.all_train_returns)
+            x = list(range(1, n + 1))
+
+            # 散点: 所有评估点
+            ax1.scatter(
+                x, report.all_train_returns,
+                c="steelblue", alpha=0.3, s=18, edgecolors="none",
+                label="每次评估",
+            )
+
+            # 最优适应度线
+            if report.convergence and len(report.convergence) == n:
+                conv = report.convergence
+                ax1.plot(x, conv, color="darkred", linewidth=2,
+                         label="最优适应度")
+
+            # 随机/贝叶斯分界
+            rs = report.n_random_starts
+            if rs and 0 < rs < n:
+                ax1.axvline(x=rs + 0.5, color="gray", linestyle="--",
+                            alpha=0.7, linewidth=1)
+                ax1.text(rs + 1, ax1.get_ylim()[1] * 0.95,
+                         "← 随机采样", fontsize=8, color="gray")
+                ax1.text(rs + 1, ax1.get_ylim()[1] * 0.88,
+                         "贝叶斯优化 →", fontsize=8, color="gray")
+
+            ax1.set_ylabel("训练收益 (%)", fontsize=11)
+            ax1.set_xlabel("迭代轮次", fontsize=11)
+            ax1.legend(loc="lower right", fontsize=9)
+            ax1.grid(True, alpha=0.3)
+            ax1.set_title("图 1: 贝叶斯收敛曲线 (训练期 0-12 月)", fontsize=12)
+
+        # ══════ 图 2: 最优策略 3 阶段分拆 ══════
+        if report.top_strategies:
+            best = report.top_strategies[0]
+            sp = best.sub_periods or {}
+
+            phase_labels = {"observe": "观察期\n0-6月", "deploy": "部署期\n6-12月",
+                            "test": "验证期\n12-24月"}
+            phase_colors = {"observe": "#bbbbbb", "deploy": "#4c72b0",
+                            "test": "#55a868"}
+
+            phases = ["observe", "deploy", "test"]
+            returns = []
+            drawdowns = []
+            trades = []
+            for p in phases:
+                m = sp.get(p)
+                returns.append(m.total_return if m else 0)
+                drawdowns.append(m.max_drawdown if m else 0)
+                trades.append(m.trade_count if m else 0)
+
+            x_pos = range(len(phases))
+            bars = ax2.bar(x_pos, returns, color=[phase_colors[p] for p in phases],
+                           edgecolor="#333333", linewidth=0.8, width=0.55)
+
+            # 柱顶标注收益率 + 交易次数
+            for i, (ret, dd, t) in enumerate(zip(returns, drawdowns, trades)):
+                sign = "+" if ret >= 0 else ""
+                label_text = f"{sign}{ret:.1f}%"
+                if t > 0:
+                    label_text += f"  ({t}笔交易)"
+                va = "bottom" if ret >= 0 else "top"
+                y_pos = ret + (1 if ret >= 0 else -1)
+                ax2.text(i, y_pos, label_text, ha="center", va=va,
+                         fontsize=9, fontweight="bold")
+                # 标注最大回撤
+                if dd < 0:
+                    ax2.text(i, ret + (2 if ret >= 0 else -2),
+                             f"回撤 {dd:.1f}%",
+                             ha="center", va="top" if ret >= 0 else "bottom",
+                             fontsize=8, color="#c44e52")
+
+            ax2.set_xticks(list(x_pos))
+            ax2.set_xticklabels([phase_labels[p] for p in phases], fontsize=10)
+            ax2.set_ylabel("区间收益率 (%)", fontsize=11)
+            ax2.set_title("图 2: 最优策略 3 阶段分拆 (排名 #1)", fontsize=12)
+
+            # 零线
+            ax2.axhline(y=0, color="black", linewidth=0.8, alpha=0.5)
+            ax2.yaxis.set_major_formatter(mticker.FormatStrFormatter("%+.0f%%"))
+            ax2.grid(axis="y", alpha=0.3)
+
+            # 保证 y 轴范围至少 ±5%（防止全零时坐标轴坍塌）
+            y_vals = [r for r in returns] + [d for d in drawdowns]
+            y_min, y_max = min(y_vals), max(y_vals)
+            if y_max - y_min < 5:
+                mid = (y_max + y_min) / 2
+                y_min = min(y_min, mid - 2.5)
+                y_max = max(y_max, mid + 2.5)
+            ax2.set_ylim(y_min - 1, y_max + 1)
+
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        fig.savefig(str(output_path), dpi=150, bbox_inches="tight",
+                    facecolor="white")
+        plt.close(fig)
+        logger.info("[ConvergencePlot] 已保存到 %s", output_path)
 
     def print_report(self, report: OptimizationReport) -> str:
         """生成可打印的报告文本"""
@@ -385,12 +534,17 @@ class StrategyOptimizer:
         test_ret = [t.test_return for t in report.top_strategies]
         if train_ret and test_ret:
             lines.append("  ★ 过拟合检测:")
-            corr = np.corrcoef(train_ret, test_ret)[0, 1] if len(train_ret) > 2 else 0
-            lines.append(f"      训练-测试收益相关性: {corr:+.3f}")
-            if corr < 0.2:
-                lines.append("      ⚠ 训练与测试相关性极低，策略可能过拟合")
-            elif corr > 0.7:
-                lines.append("      ✓ 训练与测试高度相关，策略泛化性好")
+            if len(set(test_ret)) < 2:
+                lines.append("      测试期收益率一致（可能无交易），跳过相关性计算")
+            else:
+                corr = np.corrcoef(train_ret, test_ret)[0, 1] if len(train_ret) > 2 else 0
+                if np.isnan(corr) or np.isinf(corr):
+                    corr = 0.0
+                lines.append(f"      训练-测试收益相关性: {corr:+.3f}")
+                if corr < 0.2:
+                    lines.append("      ⚠ 训练与测试相关性极低，策略可能过拟合")
+                elif corr > 0.7:
+                    lines.append("      ✓ 训练与测试高度相关，策略泛化性好")
             lines.append("")
 
         lines.append("=" * 70)
