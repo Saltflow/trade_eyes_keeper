@@ -547,6 +547,11 @@ class PortfolioEvaluator:
         # 资金注入追踪（仅 backtest_config 模式）
         injected_months: set[int] = set()
         cumulative_injected: float = 0.0  # 累计注入金额（用于计算现金基准）
+        # 现金基准线（含无风险复利）: initial_capital 每天 ×(1+r_f/252)，注入时直接加
+        risk_free = RISK_FREE_A if self.group == "a_share" else RISK_FREE_NON_A
+        daily_rf = risk_free / 252.0
+        cash_benchmark = effective_initial_capital
+        daily_benchmark_navs: list[float] = []
         # 按 3 阶段分桶的净值序列 + 交易数（用于子区间指标和收敛图）
         phase_navs: dict[str, list[float]] = {
             "observe": [], "deploy": [], "test": [],
@@ -635,6 +640,7 @@ class PortfolioEvaluator:
                         if inj > 0:
                             cash += inj
                             cumulative_injected += inj
+                            cash_benchmark += inj
                             injected_months.add(m)
 
                 can_trade = cfg.can_trade(em)
@@ -770,6 +776,10 @@ class PortfolioEvaluator:
             monthly_buys[month_key] = month_buy_used
             monthly_sells[month_key] = month_sell_used
 
+            # ── 现金基准线（含无风险复利）──
+            cash_benchmark *= (1.0 + daily_rf)
+            daily_benchmark_navs.append(cash_benchmark)
+
             # ── 分阶段净值记录（3 阶段：观察/部署/验证）──
             if cfg and day_phase:
                 phase_navs[day_phase].append(nav)
@@ -818,34 +828,34 @@ class PortfolioEvaluator:
 
         # ── 子区间指标（3 阶段：观察/部署/验证）──
         sub_periods: dict[str, SubPeriodMetrics] = {}
-        # 各阶段累计注入金额（分析性计算，不受交易影响）
-        phase_injections = {
-            "observe": 0.0,
-            "deploy": sum(
-                cfg.get_injection(m) for m in range(
-                    int(cfg.observe_end_month) + 1, 13
-                )
-            ) if cfg else 0.0,
-            "test": 0.0,
-        }
         phase_meta = {
             "observe": (0, cfg.observe_end_month if cfg else 6),
             "deploy": (cfg.observe_end_month if cfg else 6, 12),
             "test": (12, 24),
         }
         for phase_key, (start_m, end_m) in phase_meta.items():
-            if cfg and phase_navs.get(phase_key):
+            if cfg and phase_navs.get(phase_key) and daily_benchmark_navs:
                 tr, td, ts = _calc_metrics(phase_navs[phase_key])
-                # 现金基准收益 = 阶段内注入总额 / 阶段初基准
-                bench_start = effective_initial_capital
-                for p in ["observe", "deploy"]:
-                    if p == phase_key:
-                        break
-                    bench_start += phase_injections[p]
-                bench_ret = (
-                    phase_injections[phase_key] / bench_start * 100
-                    if bench_start > 0 else 0.0
-                )
+                n_phase = len(phase_navs[phase_key])
+                # 取对应区间的 benchmark
+                observe_len = len(phase_navs.get("observe", []))
+                deploy_len = len(phase_navs.get("deploy", []))
+                if phase_key == "observe":
+                    offset = 0
+                elif phase_key == "deploy":
+                    offset = observe_len
+                else:  # test
+                    offset = observe_len + deploy_len
+                bench_slice = daily_benchmark_navs[offset:offset + n_phase]
+                if len(bench_slice) >= 2:
+                    bench_initial = bench_slice[0]
+                    bench_final = bench_slice[-1]
+                    bench_ret = (
+                        (bench_final - bench_initial) / bench_initial * 100
+                        if bench_initial > 0 else 0.0
+                    )
+                else:
+                    bench_ret = 0.0
                 excess = tr - bench_ret
                 sub_periods[phase_key] = SubPeriodMetrics(
                     label=phase_key,

@@ -33,6 +33,7 @@ from .backtest_config import (
 )
 from .portfolio_strategy import PortfolioEvaluator
 from .indicator_library import compute_all
+from .rule_engine import ExpressionEngine
 
 logger = logging.getLogger(__name__)
 
@@ -263,21 +264,136 @@ class StrategyOptimizer:
 
         # 预计算指标
         self.indicators: dict[str, pd.DataFrame] = {}
+        # 预筛选结果（run() 时填充）
+        self._filtered_buy_builders: list[str] | None = None
+        self._filtered_sell_builders: list[str] | None = None
+
+    # ── 观测期预筛选 ──
+
+    def _prefilter_builders(
+        self,
+        stock_codes: list[str],
+        observe_days: int = 120,
+        min_signals: int = 1,
+    ) -> tuple[list[str], list[str]]:
+        """
+        用 0-6 月观测期数据预筛选构建器：淘汰在这批标的上从未触发过信号的。
+
+        逻辑：遍历每只股票前 observe_days 天，对每个构建器生成条件并计数。
+        信号总数 < min_signals 的构建器 + 'none' → 淘汰出搜索空间。
+
+        Returns:
+            (filtered_buy_builders, filtered_sell_builders)
+        """
+        active_codes = [c for c in stock_codes if c in self.stocks_data]
+        if not active_codes or not self.indicators:
+            return list(BUY_BUILDERS), list(SELL_BUILDERS)
+
+        expr_engine = ExpressionEngine()
+
+        # 对每个构建器计数
+        def _count_signals(builder_name: str, direction: str) -> int:
+            total = 0
+            norm_test = 0.5  # 中等阈值测试
+            cond_str, _ = build_condition(builder_name, norm_test, direction)
+            if cond_str == "False":
+                return 0
+
+            for code in active_codes:
+                ind_df = self.indicators.get(code)
+                if ind_df is None or len(ind_df) < 2:
+                    continue
+                df = ind_df.iloc[:observe_days].reset_index(drop=True)
+
+                # 计算 deviation/ma60（如果指标库里没有）
+                if "deviation" not in df.columns and "close" in df.columns:
+                    df["ma60"] = df["close"].rolling(60, min_periods=1).mean()
+                    df["deviation"] = (df["close"] - df["ma60"]) / df["ma60"]
+
+                prev_dev = None
+                for i in range(1, len(df)):
+                    row = df.iloc[i]
+                    prev_row = df.iloc[i - 1]
+                    ctx = {
+                        "close": float(row.get("close", 0)),
+                        "deviation": float(row.get("deviation", 0) or 0),
+                        "prev_deviation": prev_dev,
+                        "rsi": float(row.get("rsi", 50) if pd.notna(row.get("rsi")) else 50),
+                        "vol_ratio": float(row.get("vol_ratio", 1.0) if pd.notna(row.get("vol_ratio")) else 1.0),
+                        "boll_pct_b": float(row.get("boll_pct_b", 0.5) if pd.notna(row.get("boll_pct_b")) else 0.5),
+                        "macd_hist": float(row.get("macd_hist", 0) if pd.notna(row.get("macd_hist")) else 0),
+                        "adx": float(row.get("adx", 20) if pd.notna(row.get("adx")) else 20),
+                        "shares": 0,
+                        "ma60": float(row.get("ma60", 0) or 0),
+                    }
+                    try:
+                        if expr_engine.evaluate(cond_str, ctx):
+                            total += 1
+                    except Exception:
+                        pass
+                    prev_dev = ctx["deviation"]
+
+            return total
+
+        # 筛选买入构建器
+        keep_buy = []
+        for b in BUY_BUILDERS:
+            if b == "none":
+                keep_buy.append(b)  # 'none' 永远保留
+                continue
+            n = _count_signals(b, "buy")
+            logger.debug("[PreFilter] 买 %s: %d 次信号", b, n)
+            if n >= min_signals:
+                keep_buy.append(b)
+            else:
+                logger.info("[PreFilter] 淘汰买入构建器 %s (0-6月无信号)", b)
+
+        # 筛选卖出构建器
+        keep_sell = []
+        for b in SELL_BUILDERS:
+            if b == "none":
+                keep_sell.append(b)
+                continue
+            n = _count_signals(b, "sell")
+            logger.debug("[PreFilter] 卖 %s: %d 次信号", b, n)
+            if n >= min_signals:
+                keep_sell.append(b)
+            else:
+                logger.info("[PreFilter] 淘汰卖出构建器 %s (0-6月无信号)", b)
+
+        self._filtered_buy_builders = keep_buy
+        self._filtered_sell_builders = keep_sell
+
+        logger.info(
+            "[PreFilter] 买入 %d→%d, 卖出 %d→%d",
+            len(BUY_BUILDERS), len(keep_buy),
+            len(SELL_BUILDERS), len(keep_sell),
+        )
+        return keep_buy, keep_sell
 
     # ── 构建器渲染 ──
 
     def _get_rule_specs(self) -> list[dict]:
-        """返回有序的规则规格列表 [{id, type, priority, builders, budget_pool}]"""
+        """返回有序的规则规格列表 [{id, type, priority, builders, budget_pool}]
+
+        若预筛选已完成，用过滤后的构建器列表替代 YAML 配置。
+        """
         rules_config = self.opt_config.get("strategy_template", {}).get("rules", {})
         specs = []
         for rule_id, cfg in sorted(rules_config.items(),
                                    key=lambda x: x[1].get("priority", 99)):
+            builders = cfg.get("builders", [])
+            # 预筛选覆盖
+            if self._filtered_buy_builders and cfg["type"] == "buy":
+                builders = self._filtered_buy_builders
+            elif self._filtered_sell_builders and cfg["type"] == "sell":
+                builders = self._filtered_sell_builders
             specs.append({
                 "id": rule_id,
                 "type": cfg["type"],
                 "priority": cfg.get("priority", 1),
                 "label": cfg.get("label", rule_id),
-                "builders": cfg.get("builders", []),
+                "builders": builders,
                 "budget_pool": cfg.get("budget_pool", cfg["type"]),
             })
         return specs
@@ -298,8 +414,9 @@ class StrategyOptimizer:
             n_builders = len(spec["builders"])
             if n_builders == 0:
                 continue
-            # 1) 构建器选择
-            dims.append(Integer(0, n_builders - 1,
+            # 1) 构建器选择（n=1 时退化为 [0,1] 避免 skopt 报错，实际只取 0）
+            effective_n = max(n_builders, 2)
+            dims.append(Integer(0, effective_n - 1,
                                 name=f"{spec['id']}_builder"))
             # 2) 归一化阈值
             dims.append(Real(t_range[0], t_range[1],
@@ -405,6 +522,9 @@ class StrategyOptimizer:
             self.indicators = compute_all(self.stocks_data)
             logger.info("[IndicatorLibrary] 完成，%d 只股票，耗时 %.1fs",
                         len(self.indicators), time.time() - t0)
+
+        # 1b. 观测期预筛选：淘汰无信号的构建器
+        self._prefilter_builders(stock_codes, observe_days=120)
 
         # 2. 构建搜索空间
         dimensions = self._build_dimensions(stock_codes)
