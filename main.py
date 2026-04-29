@@ -381,9 +381,24 @@ def run_optimization(config):
             logger.warning("%s 无可用数据，跳过", group_name)
             continue
 
+        # 获取基准 ETF 数据
+        bench_codes = [("510300", "510300"), ("510880", "510880")]
+        bench_data: dict[str, pd.DataFrame] = {}
+        for bcode, bname in bench_codes:
+            try:
+                bdf = data_source.fetch_stock_data(bcode, days=lookback)
+                if bdf is not None and not bdf.empty:
+                    bench_data[bname] = bdf
+            except Exception:
+                pass
+        if bench_data:
+            logger.info("%s 基准 ETF: %d 只就绪", group_name, len(bench_data))
+
         # 运行优化
         t0 = time.time()
         optimizer = StrategyOptimizer(stocks_data, group_name)
+        if bench_data:
+            optimizer.set_benchmark_data(bench_data)
         report = optimizer.run(
             stock_codes=list(stocks_data.keys()),
         )

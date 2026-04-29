@@ -229,6 +229,7 @@ class OptimizationReport:
     all_train_returns: list[float] = field(default_factory=list)
     elapsed_seconds: float = 0.0
     best_params: dict[str, float] = field(default_factory=dict)
+    benchmarks: dict[str, float] = field(default_factory=dict)  # 基准名称 → 测试超额收益
 
 
 class StrategyOptimizer:
@@ -264,9 +265,59 @@ class StrategyOptimizer:
 
         # 预计算指标
         self.indicators: dict[str, pd.DataFrame] = {}
+        # 基准 ETF 数据（可选）
+        self.benchmark_data: dict[str, pd.DataFrame] = {}
         # 预筛选结果（run() 时填充）
         self._filtered_buy_builders: list[str] | None = None
         self._filtered_sell_builders: list[str] | None = None
+
+    def set_benchmark_data(self, data: dict[str, "pd.DataFrame"]):
+        """设置基准 ETF 数据（510300 沪深300 / 510880 红利）"""
+        self.benchmark_data = data
+
+    def _make_benchmark_rules(self) -> list[Rule]:
+        """买就满仓、永不卖出"""
+        return [
+            Rule(
+                id="bn_buy", label="满仓买入", type="buy", priority=1,
+                condition="True", budget_pool="buy",
+                action_amount="cash * 0.95",
+                reset_when="False",
+            ),
+            Rule(
+                id="bn_sell", label="禁止卖出", type="sell", priority=2,
+                condition="False", budget_pool="sell",
+                action_fraction=0.0, reset_when="True",
+            ),
+        ]
+
+    def _compute_benchmarks(
+        self, stock_codes: list[str], test_config: "BacktestConfig",
+    ) -> dict[str, float]:
+        """对各基准 ETF 运行满仓持有策略，返回 {名称: 测试超额收益%}"""
+        if not self.benchmark_data:
+            return {}
+        bench_rules = self._make_benchmark_rules()
+        results: dict[str, float] = {}
+        for name, df in self.benchmark_data.items():
+            code = list(df.columns)[0] if "date" not in df.columns else name
+            single_data = {code: df}
+            evalr = PortfolioEvaluator(single_data, self.group)
+            evalr.rules = bench_rules
+            # 合并指标（和主策略共用同一套）
+            ind_for_bench = {code: self.indicators.get(code, df)} if self.indicators else None
+            try:
+                result = evalr.evaluate(
+                    [code],
+                    backtest_config=test_config,
+                    indicators_data=ind_for_bench,
+                )
+                test_sp = result.sub_periods.get("test")
+                results[name] = round(test_sp.excess_return if test_sp else 0.0, 2)
+            except Exception:
+                results[name] = 0.0
+        logger.info("[Benchmark] %s", results)
+        return results
 
     # ── 观测期预筛选 ──
 
@@ -657,6 +708,9 @@ class StrategyOptimizer:
             best_params=top_trials[0].params if top_trials else {},
         )
 
+        # 计算基准（沪深300、红利ETF 满仓持有）
+        report.benchmarks = self._compute_benchmarks(stock_codes, test_config)
+
         # 生成收敛图
         save_dir = Path(self.output_cfg.get("save_dir", "data/optimizer"))
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -796,6 +850,15 @@ class StrategyOptimizer:
                 y_max = max(y_max, mid + 2.5)
             ax2.set_ylim(y_min - 1, y_max + 1)
 
+            # 基准线（水平虚线，标注在验证期柱子右侧）
+            bench_colors = {"沪深300": "#e8a838", "红利ETF": "#c44e52"}
+            for i, (name, val) in enumerate(report.benchmarks.items()):
+                color = bench_colors.get(name, "#ffffff")
+                ax2.axhline(y=val, color=color, linestyle="--", linewidth=1,
+                            alpha=0.8)
+                ax2.text(2.35, val, f" {name} {val:+.1f}%",
+                         fontsize=8, color=color, va="center")
+
         fig.tight_layout(rect=[0, 0, 1, 0.95])
         fig.savefig(str(output_path), dpi=150, bbox_inches="tight",
                     facecolor="white")
@@ -869,6 +932,15 @@ class StrategyOptimizer:
                     lines.append("      ⚠ 训练与测试相关性极低，策略可能过拟合")
                 elif corr > 0.7:
                     lines.append("      ✓ 训练与测试高度相关，策略泛化性好")
+            lines.append("")
+
+        # 基准对比
+        if report.benchmarks:
+            lines.append("  ★ 基准对比 (买入持有不动):")
+            for name, val in report.benchmarks.items():
+                marker = "✓ 击败" if (report.top_strategies and 
+                    report.top_strategies[0].test_return > val) else "✗ 不及"
+                lines.append(f"      {name}: 测试超额 {val:+.2f}%  {marker}")
             lines.append("")
 
         lines.append("=" * 70)
@@ -1000,6 +1072,7 @@ class StrategyOptimizer:
             "random_line": (report.n_random_starts + 0.5) if report.n_random_starts else None,
             "best_phases": phase_json,
             "strategies": strats,
+            "benchmarks": report.benchmarks or {},
             "prefilter_buy": len(self._filtered_buy_builders or BUY_BUILDERS),
             "prefilter_sell": len(self._filtered_sell_builders or SELL_BUILDERS),
         }
@@ -1021,6 +1094,9 @@ class StrategyOptimizer:
         html = html.replace("{prefilter_buy}", str(data["prefilter_buy"]))
         html = html.replace("{prefilter_sell}", str(data["prefilter_sell"]))
         html = html.replace("{json_data}", json_data)
+
+        # 还原模板中 JavaScript 的双大括号 ({{  → {, }} → })
+        html = html.replace("{{", "{").replace("}}", "}")
 
         fname = save_dir / f"{report.report_id}_{report.group}_report.html"
         fname.write_text(html, encoding="utf-8")

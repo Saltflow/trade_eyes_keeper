@@ -77,6 +77,7 @@
     <div class="value">{trades}</div>
     <div class="sub">{stocks_count} 只入选</div>
   </div>
+  <div class="card" id="bench_cards"></div>
   <div class="card">
     <div class="label">Pre-filter</div>
     <div class="value">{prefilter_buy}/{prefilter_sell}</div>
@@ -177,7 +178,19 @@ const DATA = {json_data};
     yaxis: {{ title: '超额收益 (%)', gridcolor: '#0f3460', zeroline: true, zerolinecolor: '#e94560', zerolinewidth: 1.5 }},
     margin: {{ l: 50, r: 20, t: 10, b: 60 }},
     shapes: [{{ type: 'line', x0: -0.5, x1: 2.5, y0: 0, y1: 0, line: {{ color: '#e94560', width: 1, dash: 'dot' }} }}]
+      .concat(Object.entries(DATA.benchmarks || {{}}).map(([name, val]) => ({{
+        type: 'line', x0: 1.7, x1: 2.3, y0: val, y1: val,
+        line: {{ color: name === '沪深300' ? '#e8a838' : '#c44e52', width: 1.5, dash: 'dash' }},
+        name: name
+      }})))
   }};
+  // 基准标注
+  const benchAnns = Object.entries(DATA.benchmarks || {{}}).map(([name, val]) => ({{
+    x: 2.35, y: val, text: name + ' ' + (val >= 0 ? '+' : '') + val.toFixed(1) + '%',
+    showarrow: false, xanchor: 'left',
+    font: {{ color: name === '沪深300' ? '#e8a838' : '#c44e52', size: 9 }}
+  }}));
+  layout.annotations = (layout.annotations || []).concat(benchAnns);
   Plotly.newPlot('plot_phases', [trace], layout, {{ responsive: true }});
 }})();
 
@@ -243,6 +256,26 @@ function escapeHtml(s) {{ return (s || '').replace(/&/g,'&amp;').replace(/</g,'&
     document.getElementById('selected_stocks').innerHTML = stocks.map(s =>
       '<span class="tag tag-stock">' + s + '</span>'
     ).join(' ');
+  }}
+}})();
+
+// ═══════════════ BENCHMARK CARDS ═══════════════
+(function() {{
+  const bc = document.getElementById('bench_cards');
+  const bm = DATA.benchmarks || {{}};
+  if (Object.keys(bm).length === 0) {{
+    bc.innerHTML = '<div class="label">基准对比</div><div class="value" style="font-size:1.2em">—</div><div class="sub">无基准数据</div>';
+  }} else {{
+    const best = DATA.strategies && DATA.strategies[0];
+    const bestRet = best ? best.test_return : 0;
+    let html = '<div class="label">基准对比</div>';
+    Object.entries(bm).forEach(([name, val]) => {{
+      const beat = bestRet > val;
+      html += '<div style="margin-top:4px"><span style="color:' + (beat ? 'var(--green)' : 'var(--red)') + '">' +
+        (beat ? '✓' : '✗') + '</span> ' + name +
+        ' <span class="sub">' + (val >= 0 ? '+' : '') + val.toFixed(1) + '%</span></div>';
+    }});
+    bc.innerHTML = html;
   }}
 }})();
 </script>
