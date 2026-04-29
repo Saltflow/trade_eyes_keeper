@@ -609,8 +609,10 @@ class StrategyOptimizer:
                 if p_idx + 3 > len(param_vec):
                     break
                 b_idx = int(round(param_vec[p_idx]))
-                builders = spec.get("builders", spec.get("builder_options", []))
-                b_name = builders[b_idx] if builders and 0 <= b_idx < len(builders) else "?"
+                builders = spec.get("builders", [])
+                # 单 builder 时 skopt 维度 [0,1] 可能给 1，clamp 到 0
+                b_idx = min(b_idx, len(builders) - 1) if builders else 0
+                b_name = builders[b_idx] if builders else CONDITION_BUILDERS["none"]["label"]
                 params_short[f"{spec['id']}_signal"] = b_name
                 params_short[f"{spec['id']}_t"] = f"{param_vec[p_idx+1]:.3f}"
                 params_short[f"{spec['id']}_frac"] = f"{param_vec[p_idx+2]:.3f}"
@@ -660,6 +662,9 @@ class StrategyOptimizer:
         save_dir.mkdir(parents=True, exist_ok=True)
         plot_path = save_dir / f"{report.report_id}_{report.group}_convergence.png"
         self._plot_convergence(report, plot_path)
+
+        # 生成 HTML 报告
+        self.generate_html_report(report, save_dir)
 
         return report
 
@@ -875,6 +880,13 @@ class StrategyOptimizer:
         save_dir: str | Path = "data/optimizer",
     ) -> Path:
         """保存最优策略到 YAML 文件（可直接复制到 config.yaml）"""
+
+        def _native(v):
+            """转换 numpy 标量为 Python 原生类型"""
+            if hasattr(v, "item"):
+                return float(v.item()) if hasattr(v, "dtype") else v
+            return round(float(v), 4) if isinstance(v, float) else v
+
         save_dir = Path(save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
         fname = save_dir / f"{report.report_id}_{report.group}_strategies.yaml"
@@ -891,10 +903,10 @@ class StrategyOptimizer:
         for i, t in enumerate(report.top_strategies, 1):
             strat = {
                 "rank": i,
-                "train_return": t.train_return,
-                "test_return": t.test_return,
-                "test_drawdown": t.test_drawdown,
-                "sharpe": t.sharpe,
+                "train_return": _native(t.train_return),
+                "test_return": _native(t.test_return),
+                "test_drawdown": _native(t.test_drawdown),
+                "sharpe": _native(t.sharpe),
                 "trade_count": t.trade_count,
                 "params": t.params,
                 "rules": [
@@ -919,4 +931,98 @@ class StrategyOptimizer:
                        sort_keys=False)
 
         logger.info("[StrategyOptimizer] 结果已保存到 %s", fname)
+        return fname
+
+    def generate_html_report(
+        self,
+        report: OptimizationReport,
+        save_dir: str | Path = "data/optimizer",
+    ) -> Path:
+        """生成静态 HTML 可视化报告"""
+        import json
+
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        template_path = (
+            Path(__file__).parent.parent / "templates" / "optimizer_report.html"
+        )
+        template = template_path.read_text(encoding="utf-8")
+
+        best = report.top_strategies[0] if report.top_strategies else None
+        best_ret = best.test_return if best else 0
+        best_dd = best.test_drawdown if best else 0
+        best_sp = best.sharpe if best else 0
+        best_trades = best.trade_count if best else 0
+        best_sp_data = best.sub_periods if best else {}
+
+        # 各组名映射
+        group_names = {"a_share": "A 股", "non_a_share": "非 A 股 / 境外"}
+        group_label = group_names.get(report.group, report.group)
+
+        # phase 数据转 JSON-serializable
+        phase_json: dict[str, dict] = {}
+        for k, v in (best_sp_data or {}).items():
+            if hasattr(v, "__dataclass_fields__"):
+                d = {}
+                for f_name in ("label", "total_return", "max_drawdown",
+                               "sharpe_ratio", "trade_count", "excess_return"):
+                    val = getattr(v, f_name, None)
+                    if hasattr(val, "item"):
+                        val = float(val.item())
+                    elif isinstance(val, float):
+                        val = round(val, 4)
+                    d[f_name] = val
+                phase_json[k] = d
+
+        # 策略列表（可序列化）
+        strats = []
+        for s in (report.top_strategies or []):
+            strats.append({
+                "train_return": round(float(getattr(s, "train_return", 0)), 4),
+                "test_return": round(float(getattr(s, "test_return", 0)), 4),
+                "test_drawdown": round(float(getattr(s, "test_drawdown", 0)), 4),
+                "sharpe": round(float(getattr(s, "sharpe", 0)), 4),
+                "trade_count": getattr(s, "trade_count", 0),
+                "params": getattr(s, "params", {}),
+                "rules": [
+                    {
+                        "id": r.id, "type": r.type, "priority": r.priority,
+                        "condition": r.condition, "action_amount": r.action_amount,
+                        "action_fraction": r.action_fraction, "reset_when": r.reset_when,
+                    }
+                    for r in (getattr(s, "rules", None) or [])
+                ],
+            })
+
+        data = {
+            "all_returns": [round(float(x), 4) for x in (report.all_train_returns or [])],
+            "convergence": [round(float(x), 4) for x in (report.convergence or [])],
+            "random_line": (report.n_random_starts + 0.5) if report.n_random_starts else None,
+            "best_phases": phase_json,
+            "strategies": strats,
+            "prefilter_buy": len(self._filtered_buy_builders or BUY_BUILDERS),
+            "prefilter_sell": len(self._filtered_sell_builders or SELL_BUILDERS),
+        }
+        json_data = json.dumps(data, ensure_ascii=False, indent=2)
+
+        # 模板替换
+        html = template.replace("{group}", report.group)
+        html = html.replace("{group_name}", group_label)
+        html = html.replace("{report_id}", report.report_id)
+        html = html.replace("{iterations}", str(report.iterations))
+        html = html.replace("{elapsed}", f"{report.elapsed_seconds:.0f}s")
+        html = html.replace("{test_ret}", f"{best_ret:+.1f}")
+        html = html.replace("{test_color}", ' red' if best_ret < 0 else '')
+        html = html.replace("{dd}", f"{best_dd:.1f}")
+        html = html.replace("{sharpe}", f"{best_sp:.3f}")
+        html = html.replace("{trades}", str(best_trades))
+        stock_count = len(best.params.get("_stocks", "").split(",")) if best else 0
+        html = html.replace("{stocks_count}", str(stock_count) if stock_count else "—")
+        html = html.replace("{prefilter_buy}", str(data["prefilter_buy"]))
+        html = html.replace("{prefilter_sell}", str(data["prefilter_sell"]))
+        html = html.replace("{json_data}", json_data)
+
+        fname = save_dir / f"{report.report_id}_{report.group}_report.html"
+        fname.write_text(html, encoding="utf-8")
+        logger.info("[HTMLReport] 已保存到 %s", fname)
         return fname

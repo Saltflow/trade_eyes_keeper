@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>策略搜索报告 — {group} — {report_id}</title>
+<style>
+  :root {
+    --bg: #1a1a2e; --card: #16213e; --border: #0f3460;
+    --text: #e0e0e0; --text-dim: #8899aa; --accent: #e94560;
+    --green: #55a868; --red: #c44e52; --blue: #4c72b0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Microsoft YaHei", sans-serif;
+    line-height: 1.6; padding: 24px; max-width: 1200px; margin: 0 auto;
+  }
+  h1 { font-size: 1.6em; margin-bottom: 4px; }
+  h2 { font-size: 1.2em; color: var(--text-dim); font-weight: 400; margin-bottom: 24px; }
+  h3 { font-size: 1.05em; margin: 24px 0 12px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  .cards { display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
+  .card {
+    background: var(--card); border-radius: 8px; padding: 16px 20px;
+    min-width: 140px; flex: 1;
+  }
+  .card .label { font-size: 0.8em; color: var(--text-dim); }
+  .card .value { font-size: 1.8em; font-weight: 700; color: var(--green); }
+  .card .value.red { color: var(--red); }
+  .card .sub { font-size: 0.75em; color: var(--text-dim); }
+  .plot-container { background: var(--card); border-radius: 8px; padding: 8px; margin-bottom: 24px; }
+  table {
+    width: 100%; border-collapse: collapse; margin-bottom: 24px;
+    background: var(--card); border-radius: 8px; overflow: hidden;
+  }
+  th, td { padding: 10px 14px; text-align: left; font-size: 0.9em; }
+  th { background: var(--border); color: var(--text-dim); font-weight: 600; text-transform: uppercase; font-size: 0.75em; }
+  tr { border-bottom: 1px solid var(--border); cursor: pointer; }
+  tr:hover { background: rgba(233,69,96,0.08); }
+  tr.expanded { background: rgba(233,69,96,0.12); }
+  tr.detail { display: none; background: rgba(15,52,96,0.4); }
+  tr.detail.show { display: table-row; }
+  tr.detail td { padding: 16px 20px; font-size: 0.82em; }
+  .rule-block { margin-bottom: 10px; padding: 8px 12px; background: var(--bg); border-radius: 4px; border-left: 3px solid var(--blue); }
+  .rule-block .cond { font-family: "Consolas", monospace; color: var(--accent); }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 0.75em; margin: 2px; }
+  .tag-buy { background: rgba(85,168,104,0.2); color: var(--green); }
+  .tag-sell { background: rgba(196,78,82,0.2); color: var(--red); }
+  .tag-stock { background: rgba(76,114,176,0.2); color: var(--blue); }
+  .footer { text-align: center; color: var(--text-dim); font-size: 0.75em; margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--border); }
+</style>
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+</head>
+<body>
+
+<h1>📊 策略搜索报告</h1>
+<h2>{group_name} — {report_id} — {iterations} 轮迭代 · {elapsed}s</h2>
+
+<div class="cards">
+  <div class="card">
+    <div class="label">最优测试超额</div>
+    <div class="value{test_color}">{test_ret:+.1f}%</div>
+    <div class="sub">12-24月外样本</div>
+  </div>
+  <div class="card">
+    <div class="label">最大回撤</div>
+    <div class="value red">{dd:.1f}%</div>
+    <div class="sub">部署期</div>
+  </div>
+  <div class="card">
+    <div class="label">Sharpe</div>
+    <div class="value">{sharpe:.3f}</div>
+    <div class="sub">全期年化</div>
+  </div>
+  <div class="card">
+    <div class="label">交易次数</div>
+    <div class="value">{trades}</div>
+    <div class="sub">{stocks_count} 只入选</div>
+  </div>
+  <div class="card">
+    <div class="label">Pre-filter</div>
+    <div class="value">{prefilter_buy}/{prefilter_sell}</div>
+    <div class="sub">买入/卖出 builder 保留</div>
+  </div>
+</div>
+
+<h3>图 1 — 贝叶斯收敛曲线</h3>
+<div class="plot-container" id="plot_convergence"></div>
+
+<h3>图 2 — 最优策略 3 阶段超额收益</h3>
+<div class="plot-container" id="plot_phases"></div>
+
+<h3>Top-10 策略排名 (点击展开规则详情)</h3>
+<table id="strategy_table">
+  <thead>
+    <tr>
+      <th>#</th><th>信号</th><th>部署超额</th><th>测试超额</th><th>回撤</th><th>Sharpe</th><th>交易</th><th>入选</th>
+    </tr>
+  </thead>
+  <tbody id="table_body"></tbody>
+</table>
+
+<div id="detail_container" style="margin-top:0;"></div>
+
+<h3>最优策略规则详情</h3>
+<div id="best_rules"></div>
+
+<h3>入选标的</h3>
+<div id="selected_stocks"></div>
+
+<div class="footer">
+  股票量化系统 · 策略搜索优化器 · 基于 2 年历史数据 · 训练 0-12月 / 测试 12-24月
+</div>
+
+<script>
+// ═══════════════ DATA ═══════════════
+const DATA = {json_data};
+// ═══════════════ PLOT 1: Convergence ═══════════════
+(function() {{
+  const x = Array.from({{length: DATA.all_returns.length}}, (_, i) => i + 1);
+  const trace1 = {{
+    x: x, y: DATA.all_returns, mode: 'markers', type: 'scatter',
+    marker: {{ size: 6, color: '#4c72b0', opacity: 0.35 }},
+    name: '每次评估'
+  }};
+  const trace2 = {{
+    x: x, y: DATA.convergence, mode: 'lines', type: 'scatter',
+    line: {{ color: '#e94560', width: 2.5 }}, name: '最优适应度'
+  }};
+  const layout = {{
+    paper_bgcolor: '#16213e', plot_bgcolor: '#16213e',
+    font: {{ color: '#e0e0e0', size: 12 }},
+    xaxis: {{ title: '迭代轮次', gridcolor: '#0f3460', zeroline: false }},
+    yaxis: {{ title: '部署期超额收益 (%)', gridcolor: '#0f3460', zeroline: true, zerolinecolor: '#444' }},
+    legend: {{ x: 0.01, y: 0.99, bgcolor: 'rgba(0,0,0,0.3)' }},
+    margin: {{ l: 50, r: 20, t: 10, b: 40 }},
+    shapes: DATA.random_line ? [{{
+      type: 'line', x0: DATA.random_line, x1: DATA.random_line,
+      y0: 0, y1: 1, yref: 'paper', line: {{ color: '#8899aa', dash: 'dash', width: 1 }}
+    }}] : []
+  }};
+  if (DATA.random_line) {{
+    layout.annotations = [{{
+      x: DATA.random_line + 0.5, y: 0.95, yref: 'paper',
+      text: '← 随机 | 贝叶斯 →', showarrow: false,
+      font: {{ color: '#8899aa', size: 10 }}
+    }}];
+  }}
+  Plotly.newPlot('plot_convergence', [trace1, trace2], layout, {{ responsive: true }});
+}})();
+
+// ═══════════════ PLOT 2: Phase Bars ═══════════════
+(function() {{
+  const sp = DATA.best_phases || {{}};
+  const phases = ['observe', 'deploy', 'test'];
+  const labels = ['观察 0-6月', '部署 6-12月', '验证 12-24月'];
+  const colors = ['#8899aa', '#4c72b0', '#55a868'];
+  const returns = phases.map(p => sp[p] ? sp[p].excess_return || 0 : 0);
+  const dds = phases.map(p => sp[p] ? sp[p].max_drawdown || 0 : 0);
+  const trades = phases.map(p => sp[p] ? sp[p].trade_count || 0 : 0);
+  const texts = phases.map((p, i) => {{
+    let t = (returns[i] >= 0 ? '+' : '') + returns[i].toFixed(1) + '%';
+    if (trades[i] > 0) t += ' (' + trades[i] + '笔)';
+    return t;
+  }});
+
+  const trace = {{
+    x: labels, y: returns, type: 'bar', marker: {{ color: colors, line: {{ color: '#0f3460', width: 1 }} }},
+    text: texts, textposition: 'outside', textfont: {{ color: '#e0e0e0', size: 12 }},
+    hovertext: phases.map((p, i) => '超额: ' + returns[i].toFixed(2) + '%<br>回撤: ' + dds[i].toFixed(1) + '%<br>交易: ' + trades[i] + '笔'),
+    hoverinfo: 'text'
+  }};
+  const layout = {{
+    paper_bgcolor: '#16213e', plot_bgcolor: '#16213e',
+    font: {{ color: '#e0e0e0', size: 12 }},
+    xaxis: {{ gridcolor: '#0f3460' }},
+    yaxis: {{ title: '超额收益 (%)', gridcolor: '#0f3460', zeroline: true, zerolinecolor: '#e94560', zerolinewidth: 1.5 }},
+    margin: {{ l: 50, r: 20, t: 10, b: 60 }},
+    shapes: [{{ type: 'line', x0: -0.5, x1: 2.5, y0: 0, y1: 0, line: {{ color: '#e94560', width: 1, dash: 'dot' }} }}]
+  }};
+  Plotly.newPlot('plot_phases', [trace], layout, {{ responsive: true }});
+}})();
+
+// ═══════════════ TABLE ═══════════════
+(function() {{
+  const tbody = document.getElementById('table_body');
+  const detailDiv = document.getElementById('detail_container');
+  (DATA.strategies || []).forEach((s, i) => {{
+    const signals = (s.params || {{}});
+    const buySigs = ['buy_1','buy_2'].map(k => signals[k+'_signal'] || '-').filter(x => x !== 'none').join(',');
+    const sellSigs = ['sell_1','sell_2','sell_3'].map(k => signals[k+'_signal'] || '-').filter(x => x !== 'none').join(',');
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + (i+1) + '</td>' +
+      '<td><span class="tag tag-buy">' + (buySigs || '—') + '</span>' +
+      '<span class="tag tag-sell">' + (sellSigs || '—') + '</span></td>' +
+      '<td>' + (s.train_return >= 0 ? '+' : '') + s.train_return.toFixed(1) + '%</td>' +
+      '<td style="font-weight:700;color:' + (s.test_return >= 0 ? 'var(--green)' : 'var(--red)') + '">' +
+        (s.test_return >= 0 ? '+' : '') + s.test_return.toFixed(1) + '%</td>' +
+      '<td>' + s.test_drawdown.toFixed(1) + '%</td>' +
+      '<td>' + (s.sharpe || 0).toFixed(3) + '</td>' +
+      '<td>' + s.trade_count + '</td>' +
+      '<td>' + ((s.params || {{}})._stocks || '—') + '</td>';
+
+    tr.onclick = function() {{
+      document.querySelectorAll('tr.detail').forEach(d => d.classList.remove('show'));
+      const detailId = 'detail_' + i;
+      let detail = document.getElementById(detailId);
+      if (!detail) {{
+        detail = document.createElement('tr');
+        detail.className = 'detail';
+        detail.id = detailId;
+        detail.innerHTML = '<td colspan="8">' + renderRules(s.rules || []) + '</td>';
+        detailDiv.appendChild(detail);
+      }}
+      detail.classList.toggle('show');
+      tr.classList.toggle('expanded');
+    }};
+    tbody.appendChild(tr);
+  }});
+}})();
+
+function renderRules(rules) {{
+  return rules.map(r => '<div class="rule-block">' +
+    '<strong>' + r.id + '</strong> <span class="tag tag-' + r.type + '">' + r.type.toUpperCase() + '</span> ' +
+    '<span class="tag tag-stock">priority=' + r.priority + '</span><br>' +
+    '<span class="cond">' + escapeHtml(r.condition) + '</span><br>' +
+    '动作: ' + (r.action_amount || ('fraction=' + (r.action_fraction || '—'))) +
+    ' | 重置: ' + (r.reset_when || '—') +
+    '</div>').join('');
+}}
+
+function escapeHtml(s) {{ return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }}
+
+// ═══════════════ BEST RULES ═══════════════
+(function() {{
+  const best = DATA.strategies && DATA.strategies[0];
+  if (best && best.rules) {{
+    document.getElementById('best_rules').innerHTML = renderRules(best.rules);
+  }}
+  if (best && best.params) {{
+    const stocks = (best.params._stocks || '').split(',').map(s => s.trim()).filter(Boolean);
+    document.getElementById('selected_stocks').innerHTML = stocks.map(s =>
+      '<span class="tag tag-stock">' + s + '</span>'
+    ).join(' ');
+  }}
+}})();
+</script>
+</body>
+</html>

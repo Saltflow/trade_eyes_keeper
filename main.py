@@ -320,10 +320,13 @@ def run_optimization(config):
     
     使用贝叶斯优化搜索最优策略参数，分 A 股和非 A 股两组分别优化。
     """
+    import logging
     import time
     from src.data.data_source import DataSource
     from src.analysis.strategy_optimizer import StrategyOptimizer
     from src.analysis.portfolio_strategy import _detect_stock_group
+
+    logger = logging.getLogger(__name__)
 
     logger.info("=" * 60)
     logger.info("策略搜索优化器启动")
@@ -338,7 +341,12 @@ def run_optimization(config):
     a_codes = []
     non_a_codes = []
     for s in stocks:
-        code = s if isinstance(s, str) else s.get("code", "")
+        if isinstance(s, str):
+            code = s
+        elif isinstance(s, dict):
+            code = s.get("code", "")
+        else:
+            code = str(s)
         group = _detect_stock_group(code)
         if group == "a_share":
             a_codes.append(code)
