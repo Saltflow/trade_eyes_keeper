@@ -1066,6 +1066,8 @@ class StrategyOptimizer:
                 ],
             })
 
+        pf_buy = len(self._filtered_buy_builders or BUY_BUILDERS)
+        pf_sell = len(self._filtered_sell_builders or SELL_BUILDERS)
         data = {
             "all_returns": [round(float(x), 4) for x in (report.all_train_returns or [])],
             "convergence": [round(float(x), 4) for x in (report.convergence or [])],
@@ -1073,30 +1075,30 @@ class StrategyOptimizer:
             "best_phases": phase_json,
             "strategies": strats,
             "benchmarks": report.benchmarks or {},
-            "prefilter_buy": len(self._filtered_buy_builders or BUY_BUILDERS),
-            "prefilter_sell": len(self._filtered_sell_builders or SELL_BUILDERS),
         }
-        json_data = json.dumps(data, ensure_ascii=False, indent=2)
+        json_data = json.dumps(data, ensure_ascii=False)
 
-        # 模板替换
-        html = template.replace("{group}", report.group)
-        html = html.replace("{group_name}", group_label)
-        html = html.replace("{report_id}", report.report_id)
-        html = html.replace("{iterations}", str(report.iterations))
-        html = html.replace("{elapsed}", f"{report.elapsed_seconds:.0f}s")
-        html = html.replace("{test_ret}", f"{best_ret:+.1f}")
-        html = html.replace("{test_color}", ' red' if best_ret < 0 else '')
-        html = html.replace("{dd}", f"{best_dd:.1f}")
-        html = html.replace("{sharpe}", f"{best_sp:.3f}")
-        html = html.replace("{trades}", str(best_trades))
+        # __TOKEN__ 风格替换（避免与 CSS/JS 花括号冲突）
         stock_count = len(best.params.get("_stocks", "").split(",")) if best else 0
-        html = html.replace("{stocks_count}", str(stock_count) if stock_count else "—")
-        html = html.replace("{prefilter_buy}", str(data["prefilter_buy"]))
-        html = html.replace("{prefilter_sell}", str(data["prefilter_sell"]))
-        html = html.replace("{json_data}", json_data)
+        replacements = {
+            "__GROUP_NAME__": group_label,
+            "__REPORT_ID__": report.report_id,
+            "__ITERATIONS__": str(report.iterations),
+            "__ELAPSED__": f"{report.elapsed_seconds:.0f}s",
+            "__TEST_RET__": f"{best_ret:+.1f}",
+            "__TEST_COLOR__": ' red' if best_ret < 0 else '',
+            "__DD__": f"{best_dd:.1f}",
+            "__SHARPE__": f"{best_sp:.3f}",
+            "__TRADES__": str(best_trades),
+            "__STOCKS_COUNT__": str(stock_count) if stock_count else "—",
+            "__PF_BUY__": str(pf_buy),
+            "__PF_SELL__": str(pf_sell),
+            "__JSON_DATA__": json_data,
+        }
 
-        # 还原模板中 JavaScript 的双大括号 ({{  → {, }} → })
-        html = html.replace("{{", "{").replace("}}", "}")
+        html = template
+        for old, new in replacements.items():
+            html = html.replace(old, new)
 
         fname = save_dir / f"{report.report_id}_{report.group}_report.html"
         fname.write_text(html, encoding="utf-8")

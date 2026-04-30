@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>策略搜索报告 — {group} — {report_id}</title>
+<title>策略搜索报告</title>
 <style>
   :root {
     --bg: #1a1a2e; --card: #16213e; --border: #0f3460;
@@ -28,7 +28,9 @@
   .card .value { font-size: 1.8em; font-weight: 700; color: var(--green); }
   .card .value.red { color: var(--red); }
   .card .sub { font-size: 0.75em; color: var(--text-dim); }
-  .plot-container { background: var(--card); border-radius: 8px; padding: 8px; margin-bottom: 24px; }
+  .plot-container { background: var(--card); border-radius: 8px; padding: 8px; margin-bottom: 24px; min-height: 100px; }
+  .plot-fallback { padding: 20px; color: var(--text-dim); text-align: center; font-size: 0.9em; }
+  .plot-fallback code { background: var(--border); padding: 2px 6px; border-radius: 3px; }
   table {
     width: 100%; border-collapse: collapse; margin-bottom: 24px;
     background: var(--card); border-radius: 8px; overflow: hidden;
@@ -49,38 +51,55 @@
   .tag-stock { background: rgba(76,114,176,0.2); color: var(--blue); }
   .footer { text-align: center; color: var(--text-dim); font-size: 0.75em; margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--border); }
 </style>
-<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+<script>
+  // Plotly 加载探测
+  window._plotly_ok = false;
+  window.addEventListener('load', function() {
+    setTimeout(function() {
+      if (!window._plotly_ok) {
+        document.getElementById('plot_convergence').innerHTML =
+          '<div class="plot-fallback">图表需通过 HTTP 服务器加载<br>在 <code>data/optimizer/</code> 目录下运行:<br><code>python -m http.server 8000</code><br>然后浏览器打开 <code>http://localhost:8000/</code></div>';
+        document.getElementById('plot_phases').innerHTML =
+          '<div class="plot-fallback">同上</div>';
+      }
+    }, 3000);
+  });
+</script>
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"
+        onload="window._plotly_ok=true"
+        onerror="console.warn('Plotly CDN failed')">
+</script>
 </head>
 <body>
 
 <h1>📊 策略搜索报告</h1>
-<h2>{group_name} — {report_id} — {iterations} 轮迭代 · {elapsed}s</h2>
+<h2>__GROUP_NAME__ — __REPORT_ID__ — __ITERATIONS__ 轮迭代 · __ELAPSED__</h2>
 
 <div class="cards">
   <div class="card">
     <div class="label">最优测试超额</div>
-    <div class="value{test_color}">{test_ret:+.1f}%</div>
+    <div class="value__TEST_COLOR__">__TEST_RET__%</div>
     <div class="sub">12-24月外样本</div>
   </div>
   <div class="card">
     <div class="label">最大回撤</div>
-    <div class="value red">{dd:.1f}%</div>
+    <div class="value red">__DD__%</div>
     <div class="sub">部署期</div>
   </div>
   <div class="card">
     <div class="label">Sharpe</div>
-    <div class="value">{sharpe:.3f}</div>
+    <div class="value">__SHARPE__</div>
     <div class="sub">全期年化</div>
   </div>
   <div class="card">
     <div class="label">交易次数</div>
-    <div class="value">{trades}</div>
-    <div class="sub">{stocks_count} 只入选</div>
+    <div class="value">__TRADES__</div>
+    <div class="sub">__STOCKS_COUNT__ 只入选</div>
   </div>
   <div class="card" id="bench_cards"></div>
   <div class="card">
     <div class="label">Pre-filter</div>
-    <div class="value">{prefilter_buy}/{prefilter_sell}</div>
+    <div class="value">__PF_BUY__/__PF_SELL__</div>
     <div class="sub">买入/卖出 builder 保留</div>
   </div>
 </div>
@@ -115,95 +134,96 @@
 
 <script>
 // ═══════════════ DATA ═══════════════
-const DATA = {json_data};
+const DATA = __JSON_DATA__;
 // ═══════════════ PLOT 1: Convergence ═══════════════
-(function() {{
-  const x = Array.from({{length: DATA.all_returns.length}}, (_, i) => i + 1);
-  const trace1 = {{
+(function() {
+  if (!window._plotly_ok) return;
+  var x = Array.from({length: DATA.all_returns.length}, function(_, i) { return i + 1; });
+  var trace1 = {
     x: x, y: DATA.all_returns, mode: 'markers', type: 'scatter',
-    marker: {{ size: 6, color: '#4c72b0', opacity: 0.35 }},
+    marker: { size: 6, color: '#4c72b0', opacity: 0.35 },
     name: '每次评估'
-  }};
-  const trace2 = {{
+  };
+  var trace2 = {
     x: x, y: DATA.convergence, mode: 'lines', type: 'scatter',
-    line: {{ color: '#e94560', width: 2.5 }}, name: '最优适应度'
-  }};
-  const layout = {{
+    line: { color: '#e94560', width: 2.5 }, name: '最优适应度'
+  };
+  var layout = {
     paper_bgcolor: '#16213e', plot_bgcolor: '#16213e',
-    font: {{ color: '#e0e0e0', size: 12 }},
-    xaxis: {{ title: '迭代轮次', gridcolor: '#0f3460', zeroline: false }},
-    yaxis: {{ title: '部署期超额收益 (%)', gridcolor: '#0f3460', zeroline: true, zerolinecolor: '#444' }},
-    legend: {{ x: 0.01, y: 0.99, bgcolor: 'rgba(0,0,0,0.3)' }},
-    margin: {{ l: 50, r: 20, t: 10, b: 40 }},
-    shapes: DATA.random_line ? [{{
+    font: { color: '#e0e0e0', size: 12 },
+    xaxis: { title: '迭代轮次', gridcolor: '#0f3460', zeroline: false },
+    yaxis: { title: '部署期超额收益 (%)', gridcolor: '#0f3460', zeroline: true, zerolinecolor: '#444' },
+    legend: { x: 0.01, y: 0.99, bgcolor: 'rgba(0,0,0,0.3)' },
+    margin: { l: 50, r: 20, t: 10, b: 40 },
+    shapes: DATA.random_line ? [{
       type: 'line', x0: DATA.random_line, x1: DATA.random_line,
-      y0: 0, y1: 1, yref: 'paper', line: {{ color: '#8899aa', dash: 'dash', width: 1 }}
-    }}] : []
-  }};
-  if (DATA.random_line) {{
-    layout.annotations = [{{
+      y0: 0, y1: 1, yref: 'paper', line: { color: '#8899aa', dash: 'dash', width: 1 }
+    }] : []
+  };
+  if (DATA.random_line) {
+    layout.annotations = [{
       x: DATA.random_line + 0.5, y: 0.95, yref: 'paper',
       text: '← 随机 | 贝叶斯 →', showarrow: false,
-      font: {{ color: '#8899aa', size: 10 }}
-    }}];
-  }}
-  Plotly.newPlot('plot_convergence', [trace1, trace2], layout, {{ responsive: true }});
-}})();
+      font: { color: '#8899aa', size: 10 }
+    }];
+  }
+  Plotly.newPlot('plot_convergence', [trace1, trace2], layout, { responsive: true });
+  window._plotly_ok = true;
+})();
 
 // ═══════════════ PLOT 2: Phase Bars ═══════════════
-(function() {{
-  const sp = DATA.best_phases || {{}};
-  const phases = ['observe', 'deploy', 'test'];
-  const labels = ['观察 0-6月', '部署 6-12月', '验证 12-24月'];
-  const colors = ['#8899aa', '#4c72b0', '#55a868'];
-  const returns = phases.map(p => sp[p] ? sp[p].excess_return || 0 : 0);
-  const dds = phases.map(p => sp[p] ? sp[p].max_drawdown || 0 : 0);
-  const trades = phases.map(p => sp[p] ? sp[p].trade_count || 0 : 0);
-  const texts = phases.map((p, i) => {{
-    let t = (returns[i] >= 0 ? '+' : '') + returns[i].toFixed(1) + '%';
+(function() {
+  if (!window._plotly_ok) return;
+  var sp = DATA.best_phases || {};
+  var phases = ['observe', 'deploy', 'test'];
+  var labels = ['观察 0-6月', '部署 6-12月', '验证 12-24月'];
+  var colors = ['#8899aa', '#4c72b0', '#55a868'];
+  var returns = phases.map(function(p) { return sp[p] ? sp[p].excess_return || 0 : 0; });
+  var dds = phases.map(function(p) { return sp[p] ? sp[p].max_drawdown || 0 : 0; });
+  var trades = phases.map(function(p) { return sp[p] ? sp[p].trade_count || 0 : 0; });
+  var texts = phases.map(function(p, i) {
+    var t = (returns[i] >= 0 ? '+' : '') + returns[i].toFixed(1) + '%';
     if (trades[i] > 0) t += ' (' + trades[i] + '笔)';
     return t;
-  }});
+  });
 
-  const trace = {{
-    x: labels, y: returns, type: 'bar', marker: {{ color: colors, line: {{ color: '#0f3460', width: 1 }} }},
-    text: texts, textposition: 'outside', textfont: {{ color: '#e0e0e0', size: 12 }},
-    hovertext: phases.map((p, i) => '超额: ' + returns[i].toFixed(2) + '%<br>回撤: ' + dds[i].toFixed(1) + '%<br>交易: ' + trades[i] + '笔'),
+  var shapes = [{ type: 'line', x0: -0.5, x1: 2.5, y0: 0, y1: 0, line: { color: '#e94560', width: 1, dash: 'dot' } }];
+  var annotations = [];
+  Object.keys(DATA.benchmarks || {}).forEach(function(name) {
+    var val = DATA.benchmarks[name];
+    var color = name === '沪深300' ? '#e8a838' : '#c44e52';
+    shapes.push({ type: 'line', x0: 1.7, x1: 2.3, y0: val, y1: val, line: { color: color, width: 1.5, dash: 'dash' } });
+    annotations.push({ x: 2.35, y: val, text: name + ' ' + (val >= 0 ? '+' : '') + val.toFixed(1) + '%',
+      showarrow: false, xanchor: 'left', font: { color: color, size: 9 } });
+  });
+
+  var trace = {
+    x: labels, y: returns, type: 'bar', marker: { color: colors, line: { color: '#0f3460', width: 1 } },
+    text: texts, textposition: 'outside', textfont: { color: '#e0e0e0', size: 12 },
+    hovertext: phases.map(function(p, i) { return '超额: ' + returns[i].toFixed(2) + '%<br>回撤: ' + dds[i].toFixed(1) + '%<br>交易: ' + trades[i] + '笔'; }),
     hoverinfo: 'text'
-  }};
-  const layout = {{
+  };
+  var layout = {
     paper_bgcolor: '#16213e', plot_bgcolor: '#16213e',
-    font: {{ color: '#e0e0e0', size: 12 }},
-    xaxis: {{ gridcolor: '#0f3460' }},
-    yaxis: {{ title: '超额收益 (%)', gridcolor: '#0f3460', zeroline: true, zerolinecolor: '#e94560', zerolinewidth: 1.5 }},
-    margin: {{ l: 50, r: 20, t: 10, b: 60 }},
-    shapes: [{{ type: 'line', x0: -0.5, x1: 2.5, y0: 0, y1: 0, line: {{ color: '#e94560', width: 1, dash: 'dot' }} }}]
-      .concat(Object.entries(DATA.benchmarks || {{}}).map(([name, val]) => ({{
-        type: 'line', x0: 1.7, x1: 2.3, y0: val, y1: val,
-        line: {{ color: name === '沪深300' ? '#e8a838' : '#c44e52', width: 1.5, dash: 'dash' }},
-        name: name
-      }})))
-  }};
-  // 基准标注
-  const benchAnns = Object.entries(DATA.benchmarks || {{}}).map(([name, val]) => ({{
-    x: 2.35, y: val, text: name + ' ' + (val >= 0 ? '+' : '') + val.toFixed(1) + '%',
-    showarrow: false, xanchor: 'left',
-    font: {{ color: name === '沪深300' ? '#e8a838' : '#c44e52', size: 9 }}
-  }}));
-  layout.annotations = (layout.annotations || []).concat(benchAnns);
-  Plotly.newPlot('plot_phases', [trace], layout, {{ responsive: true }});
-}})();
+    font: { color: '#e0e0e0', size: 12 },
+    xaxis: { gridcolor: '#0f3460' },
+    yaxis: { title: '超额收益 (%)', gridcolor: '#0f3460', zeroline: true, zerolinecolor: '#e94560', zerolinewidth: 1.5 },
+    margin: { l: 50, r: 20, t: 10, b: 60 },
+    shapes: shapes, annotations: annotations
+  };
+  Plotly.newPlot('plot_phases', [trace], layout, { responsive: true });
+})();
 
 // ═══════════════ TABLE ═══════════════
-(function() {{
-  const tbody = document.getElementById('table_body');
-  const detailDiv = document.getElementById('detail_container');
-  (DATA.strategies || []).forEach((s, i) => {{
-    const signals = (s.params || {{}});
-    const buySigs = ['buy_1','buy_2'].map(k => signals[k+'_signal'] || '-').filter(x => x !== 'none').join(',');
-    const sellSigs = ['sell_1','sell_2','sell_3'].map(k => signals[k+'_signal'] || '-').filter(x => x !== 'none').join(',');
+(function() {
+  var tbody = document.getElementById('table_body');
+  var detailDiv = document.getElementById('detail_container');
+  (DATA.strategies || []).forEach(function(s, i) {
+    var signals = (s.params || {});
+    var buySigs = ['buy_1','buy_2'].map(function(k) { return signals[k+'_signal'] || '-'; }).filter(function(x) { return x !== 'none'; }).join(',');
+    var sellSigs = ['sell_1','sell_2','sell_3'].map(function(k) { return signals[k+'_signal'] || '-'; }).filter(function(x) { return x !== 'none'; }).join(',');
 
-    const tr = document.createElement('tr');
+    var tr = document.createElement('tr');
     tr.innerHTML = '<td>' + (i+1) + '</td>' +
       '<td><span class="tag tag-buy">' + (buySigs || '—') + '</span>' +
       '<span class="tag tag-sell">' + (sellSigs || '—') + '</span></td>' +
@@ -213,71 +233,76 @@ const DATA = {json_data};
       '<td>' + s.test_drawdown.toFixed(1) + '%</td>' +
       '<td>' + (s.sharpe || 0).toFixed(3) + '</td>' +
       '<td>' + s.trade_count + '</td>' +
-      '<td>' + ((s.params || {{}})._stocks || '—') + '</td>';
+      '<td>' + ((s.params || {})._stocks || '—') + '</td>';
 
-    tr.onclick = function() {{
-      document.querySelectorAll('tr.detail').forEach(d => d.classList.remove('show'));
-      const detailId = 'detail_' + i;
-      let detail = document.getElementById(detailId);
-      if (!detail) {{
-        detail = document.createElement('tr');
-        detail.className = 'detail';
-        detail.id = detailId;
-        detail.innerHTML = '<td colspan="8">' + renderRules(s.rules || []) + '</td>';
-        detailDiv.appendChild(detail);
-      }}
-      detail.classList.toggle('show');
-      tr.classList.toggle('expanded');
-    }};
+    tr.onclick = (function(idx) {
+      return function() {
+        document.querySelectorAll('tr.detail').forEach(function(d) { d.classList.remove('show'); });
+        var detailId = 'detail_' + idx;
+        var detail = document.getElementById(detailId);
+        if (!detail) {
+          detail = document.createElement('tr');
+          detail.className = 'detail';
+          detail.id = detailId;
+          detail.innerHTML = '<td colspan="8">' + renderRules(s.rules || []) + '</td>';
+          detailDiv.appendChild(detail);
+        }
+        detail.classList.toggle('show');
+        tr.classList.toggle('expanded');
+      };
+    })(i);
     tbody.appendChild(tr);
-  }});
-}})();
+  });
+})();
 
-function renderRules(rules) {{
-  return rules.map(r => '<div class="rule-block">' +
-    '<strong>' + r.id + '</strong> <span class="tag tag-' + r.type + '">' + r.type.toUpperCase() + '</span> ' +
-    '<span class="tag tag-stock">priority=' + r.priority + '</span><br>' +
-    '<span class="cond">' + escapeHtml(r.condition) + '</span><br>' +
-    '动作: ' + (r.action_amount || ('fraction=' + (r.action_fraction || '—'))) +
-    ' | 重置: ' + (r.reset_when || '—') +
-    '</div>').join('');
-}}
+function renderRules(rules) {
+  return rules.map(function(r) {
+    return '<div class="rule-block">' +
+      '<strong>' + r.id + '</strong> <span class="tag tag-' + r.type + '">' + r.type.toUpperCase() + '</span> ' +
+      '<span class="tag tag-stock">priority=' + r.priority + '</span><br>' +
+      '<span class="cond">' + escapeHtml(r.condition) + '</span><br>' +
+      '动作: ' + (r.action_amount || ('fraction=' + (r.action_fraction || '—'))) +
+      ' | 重置: ' + (r.reset_when || '—') +
+      '</div>';
+  }).join('');
+}
 
-function escapeHtml(s) {{ return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }}
+function escapeHtml(s) { return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 // ═══════════════ BEST RULES ═══════════════
-(function() {{
-  const best = DATA.strategies && DATA.strategies[0];
-  if (best && best.rules) {{
+(function() {
+  var best = DATA.strategies && DATA.strategies[0];
+  if (best && best.rules) {
     document.getElementById('best_rules').innerHTML = renderRules(best.rules);
-  }}
-  if (best && best.params) {{
-    const stocks = (best.params._stocks || '').split(',').map(s => s.trim()).filter(Boolean);
-    document.getElementById('selected_stocks').innerHTML = stocks.map(s =>
-      '<span class="tag tag-stock">' + s + '</span>'
-    ).join(' ');
-  }}
-}})();
+  }
+  if (best && best.params) {
+    var stocks = (best.params._stocks || '').split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+    document.getElementById('selected_stocks').innerHTML = stocks.map(function(s) {
+      return '<span class="tag tag-stock">' + s + '</span>';
+    }).join(' ');
+  }
+})();
 
 // ═══════════════ BENCHMARK CARDS ═══════════════
-(function() {{
-  const bc = document.getElementById('bench_cards');
-  const bm = DATA.benchmarks || {{}};
-  if (Object.keys(bm).length === 0) {{
+(function() {
+  var bc = document.getElementById('bench_cards');
+  var bm = DATA.benchmarks || {};
+  if (Object.keys(bm).length === 0) {
     bc.innerHTML = '<div class="label">基准对比</div><div class="value" style="font-size:1.2em">—</div><div class="sub">无基准数据</div>';
-  }} else {{
-    const best = DATA.strategies && DATA.strategies[0];
-    const bestRet = best ? best.test_return : 0;
-    let html = '<div class="label">基准对比</div>';
-    Object.entries(bm).forEach(([name, val]) => {{
-      const beat = bestRet > val;
+  } else {
+    var best = DATA.strategies && DATA.strategies[0];
+    var bestRet = best ? best.test_return : 0;
+    var html = '<div class="label">基准对比</div>';
+    Object.keys(bm).forEach(function(name) {
+      var val = bm[name];
+      var beat = bestRet > val;
       html += '<div style="margin-top:4px"><span style="color:' + (beat ? 'var(--green)' : 'var(--red)') + '">' +
         (beat ? '✓' : '✗') + '</span> ' + name +
         ' <span class="sub">' + (val >= 0 ? '+' : '') + val.toFixed(1) + '%</span></div>';
-    }});
+    });
     bc.innerHTML = html;
-  }}
-}})();
+  }
+})();
 </script>
 </body>
 </html>
