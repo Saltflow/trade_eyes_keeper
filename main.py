@@ -489,7 +489,9 @@ def main():
     else:
         # 定时运行模式
         logger.info("启动定时任务调度器")
-        scheduler = SchedulerManager(config, task_function=run_daily_task)
+        scheduler = SchedulerManager(
+            config, task_function=run_daily_task, brief_function=run_brief_report
+        )
         scheduler.start()
 
 

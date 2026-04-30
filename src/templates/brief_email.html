@@ -38,7 +38,13 @@
         活跃标的：{active_count}/{total_count}
     </p>
 
-    {brief_rows}
+    <table>
+        <tr>
+            <th>代码</th><th>名称</th><th>开盘</th><th>现价</th>
+            <th>锚点</th><th>锚值</th><th>偏离率</th>
+        </tr>
+        {brief_rows}
+    </table>
 
     <p style="color:#888;font-size:12px;">
         偏离率 = (现价 - 锚点值) / 锚点值 × 100% |

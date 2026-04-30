@@ -16,19 +16,21 @@ logger = logging.getLogger(__name__)
 class SchedulerManager:
     """定时任务调度管理器"""
 
-    def __init__(self, config, task_function=None):
+    def __init__(self, config, task_function=None, brief_function=None):
         """
         初始化调度管理器
 
         Args:
             config: 配置字典
-            task_function: 定时执行的任务函数，如果为None则从main导入run_daily_task
+            task_function: 每日任务函数（None 则从 main 导入）
+            brief_function: 简报任务函数（None 则从 main 导入）
         """
         self.config = config
         self.scheduler_config = config.get("scheduler", {})
         self.scheduler = None
         self.health_server = None
         self.task_function = task_function
+        self.brief_function = brief_function
 
     def start(self):
         """启动调度器"""
@@ -58,9 +60,7 @@ class SchedulerManager:
 
             # 确定要执行的任务函数
             if self.task_function is None:
-                # 导入主任务函数（避免循环导入）
-                from main import run_daily_task
-
+                from main import run_daily_task  # noqa: F811
                 task_func = run_daily_task
             else:
                 task_func = self.task_function
@@ -86,13 +86,18 @@ class SchedulerManager:
                 br_label = br.get("label", br_id)
 
                 try:
-                    from main import run_brief_report
+                    # 优先使用参数传入的函数，否则从 main 导入（兼容旧调用）
+                    if self.brief_function is not None:
+                        brief_func = self.brief_function
+                    else:
+                        from main import run_brief_report  # noqa: F811
+                        brief_func = run_brief_report
 
                     br_trigger = CronTrigger(
                         hour=br_hour, minute=br_minute, timezone=timezone
                     )
                     br_task = functools.partial(
-                        run_brief_report, report_id=br_id
+                        brief_func, report_id=br_id
                     )
                     self.scheduler.add_job(
                         func=br_task,
