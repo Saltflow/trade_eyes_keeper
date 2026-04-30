@@ -325,6 +325,7 @@ class SessionContext(BaseModel):
     announcements: dict[str, list] = Field(default_factory=dict)
     financial_analysis_results: dict[str, list] = Field(default_factory=dict)
     portfolio_results: Optional[dict] = None
+    signal_scan: Optional[object] = None  # ScanResult from signal_scanner
 
     def get_all_dataframe(self):
         """获取所有股票合并DataFrame（ALL列，无丢失）"""
@@ -341,4 +342,15 @@ class SessionContext(BaseModel):
         return pd.concat(dfs, ignore_index=True)
 
     def get_alerts_as_dicts(self):
-        return [a.to_dict() for a in self.alerts]
+        """返回告警列表（plain dict 直接通过，AlertStock 则转 dict）"""
+        result = []
+        for a in self.alerts:
+            if isinstance(a, dict):
+                result.append(a)
+            elif hasattr(a, "to_dict"):
+                result.append(a.to_dict())
+            elif hasattr(a, "dict"):
+                result.append(a.dict())
+            else:
+                result.append({"stock_code": str(a)})
+        return result

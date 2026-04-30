@@ -144,6 +144,31 @@ def run_daily_task():
         checker.check_from_session(session, session_manager)
         logger.info(f"条件检查完成: {len(session.alerts)}个警报")
 
+        # 3b. 策略信号扫描（基于最新优化结果）
+        try:
+            from src.analysis.signal_scanner import SignalScanner
+
+            logger.info("开始策略信号扫描")
+            scanner = SignalScanner()
+            scan_result = scanner.scan(session, "a_share", top_n=5)
+            # 合并策略告警到 session.alerts
+            for sa in scan_result.alerts:
+                session.alerts.append({
+                    "type": "strategy",
+                    "stock_code": sa.stock_code,
+                    "rule_id": sa.rule_id,
+                    "rule_label": sa.rule_label,
+                    "condition": sa.condition_str,
+                    "current_value": sa.current_value,
+                    "strategy_rank": sa.strategy_rank,
+                })
+            # 存入共识数据供邮件使用
+            session.signal_scan = scan_result
+            logger.info(f"策略信号扫描完成: {len(scan_result.alerts)}个策略告警")
+        except Exception as e:
+            logger.warning(f"策略信号扫描失败 (非致命): {e}")
+            session.signal_scan = None
+
         # 4. 创建邮件通知器
         notifier = EmailNotifier(config)
         # 5. LLM分析基本面（可选）

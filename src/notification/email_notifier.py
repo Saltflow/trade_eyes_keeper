@@ -106,6 +106,9 @@ class EmailNotifier:
                 except Exception as e:
                     logger.error(f"投资组合图表生成失败: {e}")
 
+            # 获取策略信号扫描结果
+            signal_scan = getattr(session, "signal_scan", None)
+
             # 构建邮件内容
             body = self._build_email_body(
                 alert_stocks,
@@ -117,6 +120,7 @@ class EmailNotifier:
                 chart_png_bytes=chart_png_bytes,
                 portfolio_results=portfolio_results,
                 portfolio_chart_dict=portfolio_chart_dict,
+                signal_scan=signal_scan,
             )
 
             # 发送邮件（_send_email内部会跳过SKIP_EMAIL模式并打印日志）
@@ -166,6 +170,9 @@ class EmailNotifier:
                 except Exception as e:
                     logger.error(f"投资组合图表生成失败: {e}")
 
+            # 获取策略信号扫描结果
+            signal_scan = getattr(session, "signal_scan", None)
+
             # 构建邮件内容（使用空警报列表）
             body = self._build_email_body(
                 [],
@@ -176,6 +183,7 @@ class EmailNotifier:
                 historical_data=historical_data,
                 portfolio_results=portfolio_results,
                 portfolio_chart_dict=portfolio_chart_dict,
+                signal_scan=signal_scan,
             )
 
             # 发送邮件
@@ -287,6 +295,101 @@ class EmailNotifier:
                 """
 
         html += "<p><em>注：财报分析基于最新财务报告，数据仅供参考。</em></p>"
+
+        return html
+
+    def _build_strategy_alert_section(
+        self, signal_scan, alert_stocks, stock_data
+    ) -> str:
+        """构建策略信号报警 + 共识指标快照"""
+        if not signal_scan:
+            return ""
+
+        consensus = getattr(signal_scan, "consensus", None)
+        alerts = getattr(signal_scan, "alerts", None) or []
+        snapshot = getattr(signal_scan, "indicator_snapshot", None) or {}
+        warnings = getattr(signal_scan, "divergence_warnings", None) or []
+
+        # 区分边界报警和策略报警
+        boundary_codes = set()
+        if alert_stocks:
+            for a in alert_stocks:
+                if isinstance(a, dict) and a.get("type") != "strategy":
+                    boundary_codes.add(a.get("stock_code", ""))
+                elif not isinstance(a, dict):
+                    boundary_codes.add(getattr(a, "stock_code", ""))
+
+        strategy_codes = set()
+        for a in alerts:
+            code = a.stock_code if hasattr(a, "stock_code") else a.get("stock_code", "")
+            strategy_codes.add(code)
+
+        html = "<h3>策略信号扫描</h3>\n"
+
+        # 报警部分
+        if alerts:
+            html += f"<p><strong>策略报警 ({len(alerts)} 条 / {len(strategy_codes)} 只标的)</strong></p>\n"
+            html += '<table style="border-collapse:collapse;width:100%;margin:10px 0;">\n'
+            html += "<tr><th>标的</th><th>规则</th><th>条件</th><th>当前值</th><th>来源</th></tr>\n"
+            for a in alerts[:12]:
+                code = a.stock_code if hasattr(a, "stock_code") else a.get("stock_code", "?")
+                label = a.rule_label if hasattr(a, "rule_label") else a.get("rule_label", "?")
+                cond = a.condition_str if hasattr(a, "condition_str") else a.get("condition", "?")
+                cv = a.current_value if hasattr(a, "current_value") else a.get("current_value", "-")
+                rank = a.strategy_rank if hasattr(a, "strategy_rank") else a.get("strategy_rank", "?")
+                html += (
+                    f"<tr>"
+                    f"<td>{code}</td>"
+                    f"<td>{label}</td>"
+                    f"<td style='font-size:11px'>{cond[:60]}</td>"
+                    f"<td>{cv}</td>"
+                    f"<td>Rank {rank}</td>"
+                    f"</tr>\n"
+                )
+            html += "</table>\n"
+        else:
+            html += "<p>策略信号: 无触发</p>\n"
+
+        # 共识指标快照
+        if consensus and consensus.consensus_indicators and snapshot:
+            ind_cols = consensus.consensus_indicators
+            html += f"<p><strong>共识指标快照 ({len(snapshot)} 只)</strong></p>\n"
+            html += '<table style="border-collapse:collapse;width:auto;margin:10px 0;">\n'
+            header = "<tr><th>标的</th>"
+            for ind in ind_cols:
+                label = {"rsi": "RSI", "vol_ratio": "量比", "boll_pct_b": "布林%B",
+                         "adx": "ADX", "macd_hist": "MACD柱", "deviation": "偏差%",
+                         "atr": "ATR"}.get(ind, ind)
+                header += f"<th>{label}</th>"
+            header += "</tr>\n"
+            html += header
+
+            # 按标的在报警池内优先排序
+            consensus_stocks = set(consensus.consensus_stocks or [])
+            sorted_codes = sorted(snapshot.keys(),
+                                  key=lambda c: (0 if c in strategy_codes else
+                                                 1 if c in consensus_stocks else 2))
+
+            for code in sorted_codes[:20]:
+                vals = snapshot.get(code, {})
+                html += f"<tr><td>{code}</td>"
+                for ind in ind_cols:
+                    v = vals.get(ind)
+                    if v is not None:
+                        if ind == "deviation":
+                            html += f"<td>{v*100:.1f}%</td>"
+                        else:
+                            html += f"<td>{v:.2f}</td>"
+                    else:
+                        html += "<td>-</td>"
+                html += "</tr>\n"
+            html += "</table>\n"
+
+        # 背离警告
+        if warnings:
+            html += "<p style='color:#c44e52;font-size:12px'><strong>⚠ 背离警告:</strong><br>"
+            html += "<br>".join(warnings)
+            html += "<br><em>建议以共识信号为准，不盲从单一名次</em></p>\n"
 
         return html
 
@@ -465,6 +568,7 @@ class EmailNotifier:
         chart_png_bytes=None,
         portfolio_results=None,
         portfolio_chart_dict=None,
+        signal_scan=None,
     ):
         """
          构建邮件正文（完整版：表格 + LLM分析 + 公告 + 财报分析 + 图表）
@@ -1095,6 +1199,11 @@ class EmailNotifier:
             </div>
             """
 
+        # 7b. 策略信号报警（基于优化器共识）
+        strategy_alert_section = self._build_strategy_alert_section(
+            signal_scan, alert_stocks, stock_data
+        ) if signal_scan else ""
+
         # 8. 获取服务器信息
         server_info = self._get_server_info()
 
@@ -1177,6 +1286,7 @@ class EmailNotifier:
             announcements_section=announcements_section,
             chart_section=chart_section,
             portfolio_chart_section=portfolio_chart_section,
+            strategy_alert_section=strategy_alert_section,
             portfolio_section=portfolio_section,
             server_hostname=server_info["hostname"],
             server_ip=server_info["ip_address"],
