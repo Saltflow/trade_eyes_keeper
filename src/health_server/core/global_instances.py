@@ -51,3 +51,50 @@ def audit_log(action, ip_address, details=""):
         logger.debug(f"审计日志: {action} - {ip_address} - {details}")
     except Exception as e:
         logger.error(f"写入审计日志失败: {e}")
+
+
+# ── 报告 Token 系统 ──
+# 用于在邮件中嵌入有时效的策略搜索报告链接
+import time as _time  # noqa: E402
+import uuid as _uuid  # noqa: E402
+
+_report_tokens: dict[str, tuple] = {}  # token → (Path, expiry_ts)
+_report_token_timeout = 30  # 默认 30 分钟
+
+
+def set_report_token_timeout(minutes: int):
+    global _report_token_timeout
+    if minutes > 0:
+        _report_token_timeout = minutes
+
+
+def register_report_token(html_path):
+    """注册报告 token，返回 token 字符串"""
+    token = _uuid.uuid4().hex[:12]
+    _report_tokens[token] = (Path(html_path), _time.time() + _report_token_timeout * 60)
+    logger.info("报告 token 已注册: %s", token)
+    return token
+
+
+def get_report_path(token):
+    """校验 token 返回文件路径, 路径遍历保护, 自动清理过期"""
+    now = _time.time()
+    expired = [t for t, (_, exp) in _report_tokens.items() if now > exp]
+    for t in expired:
+        del _report_tokens[t]
+    entry = _report_tokens.get(token)
+    if not entry:
+        return None
+    path, expiry = entry
+    if now > expiry:
+        del _report_tokens[token]
+        return None
+    # 路径遍历保护
+    try:
+        resolved = Path(path).resolve()
+        allowed = Path("data/optimizer").resolve()
+        resolved.relative_to(allowed)
+    except (ValueError, OSError):
+        logger.warning("报告 token 路径逃逸: %s", token)
+        return None
+    return Path(path)

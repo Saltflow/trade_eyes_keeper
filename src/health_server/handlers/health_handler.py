@@ -358,6 +358,8 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
                 self.handle_management_page()
             elif self.path == "/logout":
                 self.handle_logout()
+            elif self.path.startswith("/report/"):
+                self.handle_report()
             else:
                 self.send_error(404, "Not Found")
         except Exception as e:
@@ -491,6 +493,37 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
             "token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly",
         )
         self.end_headers()
+
+    def handle_report(self):
+        """处理策略报告请求: GET /report/<token>"""
+        from ..core.global_instances import get_report_path
+
+        # 从 URL 提取 token
+        token = self.path.split("/report/", 1)[-1].strip()
+        # 纯十六进制校验: 只允许 [0-9a-f]
+        if not token or not all(c in "0123456789abcdef" for c in token):
+            self.send_error(400, "Bad Request: invalid token format")
+            return
+
+        path = get_report_path(token)
+        if not path or not path.exists():
+            self.send_error(404, "Not Found or Expired")
+            return
+
+        try:
+            content = path.read_text(encoding="utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(content.encode("utf-8"))))
+            # 安全头
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(content.encode("utf-8"))
+            logger.info("报告已发送: token=%s", token[:6])
+        except Exception as e:
+            logger.error("发送报告失败: %s", e)
+            self.send_error(500, "Internal Server Error")
 
     def handle_watchlist_update(self):
         """处理监控列表更新"""

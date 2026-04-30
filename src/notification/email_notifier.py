@@ -59,6 +59,16 @@ class EmailNotifier:
         if not self.sender_email or not self.sender_password or not self.receiver_email:
             logger.warning("邮件配置不完整，邮件通知功能可能无法正常工作")
 
+        # 报告 token 超时配置
+        try:
+            timeout = config.get("health_server", {}).get(
+                "report_token_timeout_minutes", 30
+            )
+            from src.health_server.core.global_instances import set_report_token_timeout
+            set_report_token_timeout(timeout)
+        except Exception:
+            pass
+
     def send_from_session(self, session):
         """
         从Session读取数据并发送邮件（新数据流）
@@ -1275,6 +1285,35 @@ class EmailNotifier:
                 "系统检测到以下股票满足条件：<strong>当天最低价 &lt; MA60（前复权）</strong>",
             )
 
+        # 8.5. 报告链接（有时效的 token，30 分钟后过期）
+        report_link = ""
+        try:
+            optimizer_dir = Path("data/optimizer")
+            if optimizer_dir.exists():
+                reports = sorted(
+                    optimizer_dir.glob("*_report.html"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                if reports:
+                    from src.health_server.core.global_instances import (
+                        register_report_token,
+                    )
+                    token = register_report_token(str(reports[0]))
+                    # 取第一个 IP（多网卡时可能返回逗号分隔列表）
+                    full_ip = self._get_server_info().get("ip_address", "localhost")
+                    server_ip = full_ip.split(",")[0].strip().split(" ")[0]
+                    port = self.config.get("health_server", {}).get("port", 1933)
+                    report_link = (
+                        f'<p style="margin:8px 0;font-size:13px;color:#8899aa">'
+                        f'📊 交互策略报告: '
+                        f'<a href="http://{server_ip}:{port}/report/{token}">'
+                        f'http://{server_ip}:{port}/report/{token}</a>'
+                        f' (30分钟内有效)</p>'
+                    )
+        except Exception:
+            pass
+
         # 9. 替换主模板变量
         html_content = email_template.format(
             current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1287,6 +1326,7 @@ class EmailNotifier:
             chart_section=chart_section,
             portfolio_chart_section=portfolio_chart_section,
             strategy_alert_section=strategy_alert_section,
+            report_link=report_link,
             portfolio_section=portfolio_section,
             server_hostname=server_info["hostname"],
             server_ip=server_info["ip_address"],
