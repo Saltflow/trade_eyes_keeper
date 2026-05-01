@@ -98,7 +98,7 @@ class HealthServer:
             uptime_str = self._format_uptime(uptime_seconds)
 
             # 获取目录大小
-            project_root = Path(__file__).parent.parent
+            project_root = Path(__file__).parent.parent.parent
             cache_dir = project_root / "cache"
             data_dir = project_root / "data"
             log_dir = project_root / "logs"

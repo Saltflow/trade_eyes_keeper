@@ -123,7 +123,7 @@ class TestLLMConfigSwitch:
 
         # 读取analyzer.py文件内容
         analyzer_file_path = os.path.join(
-            project_root, "src", "llm_analyzer", "analyzer.py"
+            project_root, "src", "analysis", "llm_analyzer", "analyzer.py"
         )
         with open(analyzer_file_path, "r", encoding="utf-8") as f:
             content = f.read()
@@ -132,7 +132,7 @@ class TestLLMConfigSwitch:
         assert "enable_fundamental_analysis" in content
         assert "LLM基本面分析开关状态" in content
 
-    @patch("src.llm_analyzer.analyzer.LLMAnalyzer.__init__")
+    @patch("src.analysis.llm_analyzer.analyzer.LLMAnalyzer.__init__")
     def test_analyzer_init_with_config(self, mock_init):
         """测试LLMAnalyzer初始化时读取配置"""
         mock_init.return_value = None

@@ -23,9 +23,9 @@ class TestPriceRelationshipValidation:
     @pytest.fixture
     def checker_session(self):
         """创建ConditionChecker和Session实例"""
-        from condition_checker import ConditionChecker
-        from session_manager import SessionManager
-        from schemas import SessionContext
+        from src.core.condition_checker import ConditionChecker
+        from src.session.session_manager import SessionManager
+        from src.models.schemas import SessionContext
 
         config = {"stocks": []}
         checker = ConditionChecker(config)

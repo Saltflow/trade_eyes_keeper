@@ -154,7 +154,7 @@ class TestLLMConfigSwitch:
             sys.path.insert(0, project_root)
 
         # 使用mock替换fundamental_analyzer，避免实际API调用
-        with patch("src.llm_analyzer.analyzer.FundamentalAnalyzer") as mock_fundamental:
+        with patch("src.analysis.llm_analyzer.analyzer.FundamentalAnalyzer") as mock_fundamental:
             mock_instance = Mock()
             mock_instance.analyze_stocks.return_value = {"test": "should not be called"}
             mock_fundamental.return_value = mock_instance
@@ -193,7 +193,7 @@ class TestLLMConfigSwitch:
             sys.path.insert(0, project_root)
 
         # 使用mock替换fundamental_analyzer
-        with patch("src.llm_analyzer.analyzer.FundamentalAnalyzer") as mock_fundamental:
+        with patch("src.analysis.llm_analyzer.analyzer.FundamentalAnalyzer") as mock_fundamental:
             mock_instance = Mock()
             expected_result = {"000001": {"analysis": "test result"}}
             mock_instance.analyze_stocks.return_value = expected_result

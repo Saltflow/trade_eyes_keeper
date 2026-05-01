@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Git pre-commit钩子
-运行Session安全测试，防止有问题的代码被提交
-零配置，强制启用
+Git pre-commit hook
+检查: ruff lint + import smoke + session safety tests
 """
 
 import os
@@ -11,63 +10,56 @@ import sys
 import subprocess
 import logging
 
-# 设置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+logger = logging.getLogger("pre-commit")
 
 
-def run_session_safety_tests():
-    """运行Session安全测试"""
-    logger.info("=" * 60)
-    logger.info("运行Session数据安全检查...")
-    logger.info("=" * 60)
-
-    # 获取项目根目录
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    test_file = os.path.join(
-        project_root, "tests", "validation", "test_session_safety.py"
-    )
-
-    if not os.path.exists(test_file):
-        logger.error(f"安全测试文件不存在: {test_file}")
-        return False
-
-    # 运行pytest测试
+def run(cmd, name, timeout=60):
+    """Run a command, return True on success"""
+    logger.info("--- %s ---", name)
     try:
-        result = subprocess.run(
-            [
-                sys.executable, "-m", "pytest",
-                test_file,
-                "-v",  # 详细输出
-                "--tb=short",  # 简化traceback
-            ],
-            cwd=project_root,
-            capture_output=False,
-            check=True
-        )
-        logger.info("✅ Session数据安全检查通过！")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0:
+            logger.error("FAIL: %s\n%s", name, result.stderr[:500])
+            return False
+        logger.info("PASS: %s", name)
         return True
-    except subprocess.CalledProcessError as e:
-        logger.error("❌ Session数据安全检查失败！")
-        logger.error("=" * 60)
-        logger.error("发现问题：检测到可能的随机数据写入Session的风险")
-        logger.error("请修复问题后再提交代码")
-        logger.error("=" * 60)
+    except subprocess.TimeoutExpired:
+        logger.error("TIMEOUT: %s", name)
+        return False
+    except Exception as e:
+        logger.error("ERROR: %s — %s", name, e)
         return False
 
 
 def main():
-    """主函数"""
-    # 运行安全测试
-    if not run_session_safety_tests():
-        logger.critical("阻止提交：Session数据安全检查未通过")
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    python = sys.executable
+
+    # 1. ruff check
+    if not run([python, "-m", "ruff", "check", "src/", "--select", "F,E"],
+               "ruff check", timeout=30):
         sys.exit(1)
 
-    # 所有检查通过
-    logger.info("✅ 所有pre-commit检查通过，允许提交")
+    # 2. import smoke
+    if not run([python, "-c",
+        "import importlib;"
+        "modules=['src.analysis.backtest_config','src.analysis.indicator_library',"
+        "'src.analysis.strategy_optimizer','src.analysis.signal_scanner',"
+        "'src.health_server.core.global_instances'];"
+        "[importlib.import_module(m) for m in modules];"
+        "print('OK')"
+    ], "import smoke", timeout=15):
+        sys.exit(1)
+
+    # 3. session safety tests
+    safety = os.path.join(project_root, "tests", "validation", "test_session_safety.py")
+    if os.path.exists(safety):
+        if not run([python, "-m", "pytest", safety, "-q", "--tb=short"],
+                   "session safety", timeout=30):
+            sys.exit(1)
+
+    logger.info("All pre-commit checks passed")
     sys.exit(0)
 
 

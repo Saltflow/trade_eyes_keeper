@@ -297,7 +297,7 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
         try:
             import yaml
 
-            config_path = Path(__file__).parent.parent / "config" / "config.yaml"
+            config_path = Path(__file__).parent.parent.parent.parent / "config" / "config.yaml"
 
             # 创建备份
             backup_path = config_path.with_suffix(".yaml.backup")

@@ -19,10 +19,10 @@ from datetime import datetime
 from unittest.mock import patch, MagicMock
 
 # 导入要测试的模块
-from session_manager import SessionManager
-from schemas import SessionContext, StockPriceData, DataSource, AdjustmentType
-from models.converters import dataframe_to_stock_price_data
-from utils import (
+from src.session.session_manager import SessionManager
+from src.models.schemas import SessionContext, StockPriceData, DataSource, AdjustmentType
+from src.models.converters import dataframe_to_stock_price_data
+from src.utils import (
     SessionDataSafetyError,
     clear_random_calls,
     is_value_from_random,

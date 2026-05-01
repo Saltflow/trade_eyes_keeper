@@ -21,9 +21,17 @@ import argparse
 from datetime import datetime
 
 # ── 常量 ────────────────────────────────────────────────
+# 路径可通过环境变量覆盖，默认值保持向后兼容
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-REMOTE_SSH = "ssh://root@DEPLOY_HOST/root/trade_eyes_keeper"
-REMOTE_DIR = "/root/trade_eyes_keeper"
+REMOTE_SSH = os.environ.get(
+    "DEPLOY_SSH_REMOTE",
+    "ssh://root@DEPLOY_HOST/root/trade_eyes_keeper",
+)
+REMOTE_DIR = os.environ.get(
+    "DEPLOY_REMOTE_DIR",
+    "/root/trade_eyes_keeper",
+)
+REMOTE_HOST = os.environ.get("DEPLOY_HOST", "DEPLOY_HOST")
 
 
 def _get_ssh_key():
@@ -159,6 +167,81 @@ def _ensure_remote_repo():
 # ── 部署流程 ────────────────────────────────────────────
 
 
+def _run_local(*args, timeout=120):
+    """运行本地命令，返回 (success, stdout, stderr)"""
+    try:
+        result = subprocess.run(
+            list(args), capture_output=True, text=True,
+            timeout=timeout, cwd=PROJECT_DIR,
+        )
+        return result.returncode == 0, result.stdout, result.stderr
+    except subprocess.TimeoutExpired:
+        return False, "", "timeout"
+    except Exception as e:
+        return False, "", str(e)
+
+
+def _pre_deploy_checks(dry_run):
+    """部署前检查: ruff lint + 核心测试。任一步失败则中止。"""
+    if dry_run:
+        _info("DRY RUN: Skipping pre-deploy checks")
+        return True
+
+    _info("=== Pre-deploy checks ===")
+
+    # 1. ruff lint (跳过如果未安装)
+    _info("Running ruff check...")
+    ok, out, err = _run_local(
+        sys.executable, "-m", "ruff", "check", "src/",
+        "--select", "F,E",
+        timeout=30,
+    )
+    if not ok and "No module named ruff" not in err:
+        _info(f"FAIL: ruff check failed\n{err[:500]}")
+        return False
+    if "No module named ruff" in err:
+        _info("SKIP: ruff not installed")
+    else:
+        _info("PASS: ruff check")
+
+    # 2. import smoke test
+    _info("Running import smoke test...")
+    ok, out, err = _run_local(
+        sys.executable, "-c",
+        "import importlib,sys; "
+        "sys.path.insert(0,'src'); "
+        "[importlib.import_module(f'src.{n}') for n in "
+        "['analysis.backtest_config','analysis.indicator_library',"
+        "'analysis.strategy_optimizer','analysis.signal_scanner',"
+        "'analysis.portfolio_strategy','analysis.rule_engine',"
+        "'health_server.core.global_instances']]; "
+        "print('OK')",
+        timeout=15,
+    )
+    if not ok or "OK" not in out:
+        _info("FAIL: import smoke test")
+        return False
+    _info("PASS: import smoke test")
+
+    # 3. core tests (no network, no LLM)
+    _info("Running core tests...")
+    ok, out, err = _run_local(
+        sys.executable, "-m", "pytest",
+        "tests/test_portfolio_strategy.py",
+        "tests/test_rule_engine.py",
+        "tests/test_brief_report.py",
+        "tests/test_import_smoke.py",
+        "-p", "no:capture", "-q",
+        timeout=120,
+    )
+    if not ok:
+        _info(f"FAIL: core tests\n{out[-300:]}{err[-200:]}")
+        return False
+    _info("PASS: core tests")
+    _info("All pre-deploy checks passed")
+    return True
+
+
 def deploy():
     """主部署函数"""
     host = "DEPLOY_HOST"
@@ -172,7 +255,12 @@ def deploy():
     print("=" * 70)
 
     try:
-        # ── 0. 确保远程git仓库就绪 ──
+        # ── 0. 部署前检查 ──
+        if not _pre_deploy_checks(dry_run):
+            _info("ERROR: Pre-deploy checks failed, aborting deployment")
+            return False
+
+        # ── 0b. 确保远程git仓库就绪 ──
         if not _ensure_remote_repo():
             _info("WARNING: Remote repo setup may have issues")
 
@@ -271,12 +359,24 @@ print('[OK] Email footer feature is working')
                 "crontab -l | grep -v 'Stock quantitative system' | crontab -",
                 "Remove old cron",
             )
-            cron_line = "30 15 * * * cd /root/trade_eyes_keeper && python3 main.py --once >> /root/trade_eyes_keeper/logs/cron.log 2>&1  # Stock quantitative system"
+            cron_line = f"30 15 * * * cd {REMOTE_DIR} && python3 main.py --once >> {REMOTE_DIR}/logs/cron.log 2>&1  # Stock quantitative system"
             _ssh_cmd(
                 f"(crontab -l 2>/dev/null; echo '{cron_line}') | crontab -",
                 "Add new cron",
             )
             _ssh_cmd("crontab -l", "Verify updated cron")
+
+        # ── 9b. 注册简报 cron (09:50) ──
+        _info("Ensuring brief report cron job at 09:50...")
+        brief_check = "crontab -l | grep -q 'python3 main.py --brief' && echo 'Brief cron exists' || echo 'Brief cron missing'"
+        success, out, _ = _ssh_cmd(brief_check, "Check brief cron")
+        if "missing" in out:
+            brief_line = f"50 9 * * * cd {REMOTE_DIR} && python3 main.py --brief >> {REMOTE_DIR}/logs/cron_brief.log 2>&1"
+            _ssh_cmd(
+                f"(crontab -l 2>/dev/null; echo '{brief_line}') | crontab -",
+                "Add brief report cron",
+            )
+            _info("Brief report cron registered (09:50 daily)")
 
         # ── 10. 验证邮件存档 ──
         _info("Checking for server info in email archives...")

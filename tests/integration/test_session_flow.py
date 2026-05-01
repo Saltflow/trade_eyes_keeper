@@ -17,7 +17,7 @@ class TestSessionFlow:
 
     def test_session_manager_creation(self):
         """测试SessionManager创建"""
-        from session_manager import SessionManager
+        from src.session.session_manager import SessionManager
 
         config = {"stocks": []}
         session_manager = SessionManager(config)
@@ -26,8 +26,8 @@ class TestSessionFlow:
 
     def test_session_creation(self):
         """测试Session创建"""
-        from session_manager import SessionManager
-        from schemas import SessionContext
+        from src.session.session_manager import SessionManager
+        from src.models.schemas import SessionContext
 
         config = {"stocks": []}
         session_manager = SessionManager(config)
@@ -42,7 +42,7 @@ class TestSessionFlow:
 
     def test_fetch_to_session(self):
         """测试fetch_to_session方法"""
-        from session_manager import SessionManager
+        from src.session.session_manager import SessionManager
         from data_fetcher import StockDataFetcher
 
         config = {
@@ -63,8 +63,8 @@ class TestSessionFlow:
 
     def test_check_from_session(self):
         """测试check_from_session方法"""
-        from session_manager import SessionManager
-        from condition_checker import ConditionChecker
+        from src.session.session_manager import SessionManager
+        from src.core.condition_checker import ConditionChecker
 
         config = {"stocks": [], "alerts": {"enabled": False}}
 
@@ -72,7 +72,7 @@ class TestSessionFlow:
         session = session_manager.create_session(config)
 
         # 手动添加测试数据到session
-        from models.converters import dataframe_to_stock_price_data
+        from src.models.converters import dataframe_to_stock_price_data
 
         test_df = pd.DataFrame(
             [
@@ -101,7 +101,7 @@ class TestSessionFlow:
 
     def test_email_notifier_from_session(self):
         """测试email_notifier的send_from_session方法"""
-        from session_manager import SessionManager
+        from src.session.session_manager import SessionManager
         from email_notifier import EmailNotifier
         from models.schemas import AlertStock
 

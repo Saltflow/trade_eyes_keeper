@@ -38,7 +38,7 @@ def audit_log(action, ip_address, details=""):
     """
     try:
         audit_log_file = (
-            Path(__file__).parent.parent.parent / "logs" / "management_audit.log"
+            Path(__file__).parent.parent.parent.parent / "logs" / "management_audit.log"
         )
         audit_log_file.parent.mkdir(parents=True, exist_ok=True)
 
