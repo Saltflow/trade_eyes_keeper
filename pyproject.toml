@@ -1,3 +1,49 @@
+[project]
+name = "stock-quant-system"
+version = "1.15.0"
+description = "A股/美股/港股量化监控系统: 策略搜索优化器 + 日报/早盘简报 + 健康服务器"
+readme = "README.md"
+license = {text = "BSD-3-Clause"}
+requires-python = ">=3.8"
+dependencies = [
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "baostock>=0.9.1",
+    "yagmail>=0.15.0",
+    "APScheduler>=3.10.0",
+    "pytz>=2023.3",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.14.0",
+    "lxml>=4.9.0",
+    "pdfplumber>=0.10.0",
+    "tqdm>=4.65.0",
+    "openai>=1.0.0",
+    "matplotlib>=3.4.0",
+    "markdown>=3.5",
+    "pydantic>=1.10.0,<2.0.0",
+    "scikit-optimize>=0.9.0",
+    "scipy>=1.10.0",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-mock>=3.11.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.4.0",
+]
+
 [tool.ruff]
 line-length = 88
 target-version = "py38"

@@ -21,11 +21,11 @@ import argparse
 from datetime import datetime
 
 # ── 常量 ────────────────────────────────────────────────
-# 路径可通过环境变量覆盖，默认值保持向后兼容
+# 路径通过环境变量配置，默认值仅作本地测试用
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 REMOTE_SSH = os.environ.get(
     "DEPLOY_SSH_REMOTE",
-    "ssh://root@DEPLOY_HOST/root/trade_eyes_keeper",
+    "ssh://root@DEPLOY_HOST/DEPLOY_PATH",
 )
 REMOTE_DIR = os.environ.get(
     "DEPLOY_REMOTE_DIR",
@@ -75,7 +75,7 @@ def _ssh_cmd(cmd, description="", timeout=60):
         "StrictHostKeyChecking=no",
         "-o",
         "ConnectTimeout=10",
-        "root@DEPLOY_HOST",
+        f"root@{REMOTE_HOST}",
         cmd,
     ]
     try:
@@ -247,7 +247,7 @@ def _pre_deploy_checks(dry_run):
 
 def deploy():
     """主部署函数"""
-    host = "DEPLOY_HOST"
+    host = REMOTE_HOST
     dry_run = _get_dry_run()
 
     if dry_run:
@@ -591,7 +591,7 @@ def investigate_server():
     """调查远程服务器状态"""
     dry_run = _get_dry_run()
 
-    _info(f"Investigating server DEPLOY_HOST")
+    _info(f"Investigating server {REMOTE_HOST}")
     print("=" * 70)
 
     if dry_run:

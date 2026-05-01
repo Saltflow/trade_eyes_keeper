@@ -89,6 +89,7 @@ deploy_key*
 
 # Cache files
 cache/
+.ruff_cache/
 
 # Optimizer output
 data/optimizer/

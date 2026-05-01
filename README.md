@@ -1,65 +1,95 @@
-# 股票量化系统
+# 股票量化系统 (Stock Quant)
 
-A股/港股/美股量化监控系统，自动获取交易数据、计算技术指标、检测条件、发送邮件提醒。
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://python.org)
+[![Version](https://img.shields.io/badge/version-1.15.0-green)]()
+
+A股 / 美股 / 港股量化监控系统。策略搜索优化器自动发现最优交易信号，日报嵌入信号扫描 + 回测分析 + 交互报告链接。
 
 ## 核心功能
 
-- **数据获取**：多源实时日线数据（新浪、腾讯、东方财富）+ baostock 历史数据
-- **条件检测**：价格低于 MA60 / WMA20 等技术指标锚点，多层阈值警报
-- **邮件提醒**：满足条件时自动发送 HTML 格式邮件
-- **公告分析**：巨潮资讯网官方公告抓取 + LLM 结构化提取
-- **回测框架**：基于历史数据的策略回测
-- **健康监控**：HTTP 健康检查服务器 + 管理后台
+| 功能 | 说明 |
+|------|------|
+| **策略搜索优化器** | 贝叶斯优化自动搜索最优策略参数，条件构建器池 (RSI/MACD/Bollinger/ADX)，两阶段 (训练+测试) 防过拟合 |
+| **信号扫描器** | 每日自动加载最新优化结果，计算 Top-5 策略共识，对当日数据评估买入信号 |
+| **回测分析** | 用最新优化策略跑完整 24 月历史回测，3 阶段指标分拆，基准 ETF 对比 |
+| **条件检测** | 多锚点阈值报警 (MA60/WMA20/WMA30/WMA50) + 优化策略信号报警 |
+| **早盘简报** | 轻量价格+锚点快照，每日 09:50 自动发送 |
+| **邮件提醒** | 日报含信号扫描+回测+报告链接，30 分钟时效 token (health-server) |
+| **健康监控** | HTTP 健康检查服务器 (OTP 认证 + 管理后台 + 在线编辑监控列表) |
+| **投资组合策略** | 共享资金池模拟，贪心前向选择，月度限额约束 |
+| **规则引擎** | YAML 驱动，Python 表达式沙箱，23 个单元测试 |
 
 ## 快速开始
 
 ```bash
 pip install -r requirements.txt
-cp config/.env.example config/.env   # 填入邮箱和 API Key
-python main.py --once                # 单次运行验证
-python main.py                       # 定时运行
+cp config/.env.example config/.env   # 填入邮箱和 API Key (DeepSeek)
+python main.py --once                # 单次收盘日报
+python main.py --brief               # 单次早盘简报
+python main.py --optimize            # 策略搜索优化 (15-30 min)
+python main.py                       # 定时运行 (cron/APScheduler)
 ```
 
-详细步骤见 [快速开始指南](docs/guide/quickstart.md)。
+## 项目结构
+
+```
+src/
+├── analysis/          # 策略优化器、信号扫描、指标库、规则引擎
+│   ├── strategy_optimizer.py   贝叶斯优化搜索
+│   ├── signal_scanner.py       每日共识信号扫描
+│   ├── portfolio_strategy.py   共享资金池模拟
+│   ├── rule_engine.py          YAML驱动规则引擎
+│   ├── indicator_library.py    RSI/MACD/ATR/ADX
+│   └── backtest_config.py     时间线模型
+├── core/              # 数据拉取、条件检查、调度管理
+├── data/              # 多源爬虫 (新浪/腾讯/东方财富/Yahoo)
+├── alerting/          # 多层报警引擎 + 状态管理
+├── session/           # Session 管理器
+├── models/            # Pydantic 数据模型
+├── notification/      # 邮件通知 + 图表生成
+├── health_server/     # HTTP 健康检查 + 管理
+├── utils/             # CJK 字体, ETF 检测
+└── templates/         # HTML/CSS 模板
+```
+
+## CLI 命令
+
+| 命令 | 说明 |
+|------|------|
+| `python main.py` | 启动定时调度器 (cron) |
+| `python main.py --once` | 单次收盘日报 |
+| `python main.py --brief [id]` | 早盘简报 |
+| `python main.py --optimize` | 策略搜索优化 |
+| `python main.py --health-server` | 仅启动健康服务器 |
+
+## 配置
+
+- `config/config.yaml` — 监控标的、技术指标参数 (gitignored)
+- `config/.env` — 邮箱密码、API Key (gitignored)
+- `config/optimizer.yaml` — 搜索策略模板
+- `config/alerts.yaml` — 多锚点报警配置
 
 ## 文档
 
 | 文档 | 说明 |
 |------|------|
-| [快速开始](docs/guide/quickstart.md) | 5 分钟上手 |
+| [设计决策](docs/llm/proj4llm.md) | 关键架构设计 + 技术路线 |
 | [架构说明](docs/architecture.md) | 分层架构、数据流、模块职责 |
-| [配置说明](docs/configuration.md) | config.yaml / alerts.yaml / .env 全字段 |
-| [部署指南](docs/deployment.md) | 生产部署、CI/CD、运维 |
-| [开发规范](docs/development/conventions.md) | 代码风格、项目约定 |
-| [开发日志](docs/development/devlog.md) | 版本历史与功能演进 |
-| [LLM 设计决策](docs/llm/design_decisions.md) | 大模型集成架构与额度管理 |
-| [项目设计文档](docs/llm/proj4llm.md) | 完整的关键设计决策记录 |
+| [部署指南](docs/deployment.md) | 服务器部署 + CI/CD |
+| [配置参考](docs/configuration.md) | config.yaml 详细说明 |
+| [快速开始](docs/guide/quickstart.md) | 5 分钟上手 |
+| [开发日志](docs/development/devlog.md) | 版本演进 |
 
-## 项目结构
+## 测试
 
-```
-├── config/           配置文件（config.yaml, alerts.yaml, .env）
-├── src/              源代码
-│   ├── data_fetcher.py      数据获取协调
-│   ├── web_crawler.py       网页爬虫
-│   ├── technical_indicators.py  指标计算
-│   ├── session_manager.py   Session 管理
-│   ├── condition_checker.py 条件检查
-│   ├── alert_engine.py      多层警报引擎
-│   ├── email_notifier.py    邮件通知
-│   ├── llm_analyzer/        LLM 分析
-│   ├── health_server/       健康检查与管理
-│   └── ...
-├── docs/             项目文档
-├── tests/            测试（unit/ integration/ validation/）
-├── cache/            数据缓存
-├── data/             历史数据与邮件存档
-├── logs/             运行日志
-├── main.py           主程序入口
-├── AGENTS.md         AI Agent 工作流规范
-└── requirements.txt  Python 依赖
+```bash
+pytest tests/ -p no:capture -q          # 全量测试
+pytest tests/ --cov=src                 # 覆盖率报告
+pytest tests/test_import_smoke.py       # 模块导入完整性
+pytest tests/test_security.py           # 安全测试
 ```
 
-## 许可证
+## 许可
 
-本项目仅供学习和研究使用。
+BSD-3-Clause. 详见 [LICENSE](LICENSE).

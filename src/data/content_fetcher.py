@@ -381,7 +381,7 @@ class ContentFetcher:
 
             extracted_text = "\n\n".join(text_parts)
             # 可选：使用camelot解析表格并追加文本，提升数字保留率
-            table_text = self._extract_tables_with_camelot(content_bytes)  # type: ignore[attr-defined]
+            table_text = ""  # camelot removed (never installed)
             if table_text:
                 metadata["pdf_tables_extracted"] = True
                 extracted_text += "\n\n" + table_text
@@ -444,7 +444,7 @@ class ContentFetcher:
                         break
 
             extracted_text = "\n\n".join(text_parts)
-            table_text = self._extract_tables_with_camelot(content_bytes)  # type: ignore[attr-defined]
+            table_text = ""  # camelot removed (never installed)
             if table_text:
                 metadata["pdf_tables_extracted"] = True
                 extracted_text += "\n\n" + table_text
@@ -471,30 +471,6 @@ class ContentFetcher:
                 "text": "",
                 "metadata": {},
             }
-
-    def _extract_tables_with_camelot(self, pdf_bytes: bytes) -> str:
-        """可选的表格解析（camelot），提取为制表文本用于保留数字，失败则返回空字符串"""
-
-        try:
-            import camelot  # type: ignore
-            import tempfile
-
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                tmp.write(pdf_bytes)
-                tmp_path = tmp.name
-
-            tables = camelot.read_pdf(tmp_path, pages="all", flavor="lattice")
-            lines = []
-            for table in tables:
-                df = table.df
-                for _, row in df.iterrows():
-                    line = "\t".join(str(cell) for cell in row.tolist())
-                    lines.append(line)
-
-            return "\n".join(lines)
-        except Exception as e:
-            logger.debug(f"camelot解析表格失败，跳过表格补充: {e}")
-            return ""
 
     def _extract_text_from_html(self, content_bytes, url):
         """从HTML提取文本（使用BeautifulSoup）"""
