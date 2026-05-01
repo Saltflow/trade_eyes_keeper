@@ -84,6 +84,8 @@ deploy_key*
 *.crt
 *.cert
 
+temp_*.txt
+
 # Test files - Now tracked in repository
 # test_*.py  # Removed - test files should be tracked
 

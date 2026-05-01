@@ -1,5 +1,13 @@
 # Agent Guidelines for Stock Quantitative System
 
+Reasoning Effort: Absolute maximum with no shortcuts permitted.
+You MUST be very thorough in your thinking and comprehensively decompose the
+problem to resolve the root cause, rigorously stress-testing your logic against all potential
+paths, edge cases, and adversarial scenarios.
+Explicitly write out your entire deliberation process, documenting every intermediate
+step, considered alternative, and rejected hypothesis to ensure absolutely no assumption
+is left unchecked.
+
 This document provides guidelines for AI agents working on this repository. It covers build commands, testing, code style, and project-specific conventions.
 
 ## Build and Test Commands
@@ -26,6 +34,9 @@ python main.py --brief [report_id]
 
 # Scheduled run (default)
 python main.py
+
+# Strategy optimizer (Bayesian search)
+python main.py --optimize
 
 # Using scripts (cross-platform)
 ./scripts/run.sh [--once]      # Linux/Mac
@@ -190,5 +201,5 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 - **Flake8 configuration**: `.flake8` (max-line-length 88, ignore E203/W503)
 - **YAPF configuration**: `.style.yapf` (pep8 style, column_limit 88)
 
-**Last Updated**: 2026-04-27  
-**Project Version**: v1.13 (规则引擎 + 早盘简报 + 投资组合策略)
+**Last Updated**: 2026-05-01  
+**Project Version**: v1.15 (策略搜索优化器 + 信号扫描 + 回测分析 + HTML报告)
