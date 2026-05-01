@@ -118,6 +118,7 @@ class EmailNotifier:
 
             # 获取策略信号扫描结果
             signal_scan = getattr(session, "signal_scan", None)
+            backtest = getattr(session, "backtest", None)
 
             # 构建邮件内容
             body = self._build_email_body(
@@ -131,6 +132,7 @@ class EmailNotifier:
                 portfolio_results=portfolio_results,
                 portfolio_chart_dict=portfolio_chart_dict,
                 signal_scan=signal_scan,
+                backtest=backtest,
             )
 
             # 发送邮件（_send_email内部会跳过SKIP_EMAIL模式并打印日志）
@@ -182,6 +184,7 @@ class EmailNotifier:
 
             # 获取策略信号扫描结果
             signal_scan = getattr(session, "signal_scan", None)
+            backtest = getattr(session, "backtest", None)
 
             # 构建邮件内容（使用空警报列表）
             body = self._build_email_body(
@@ -194,6 +197,7 @@ class EmailNotifier:
                 portfolio_results=portfolio_results,
                 portfolio_chart_dict=portfolio_chart_dict,
                 signal_scan=signal_scan,
+                backtest=backtest,
             )
 
             # 发送邮件
@@ -403,6 +407,79 @@ class EmailNotifier:
 
         return html
 
+    def _build_backtest_section(self, backtest) -> str:
+        """构建回测结果 HTML"""
+        if not backtest:
+            return ""
+
+        html = "<h3>历史回测</h3>\n"
+        group_labels = {"a_share": "A股", "non_a_share": "境外"}
+
+        for group, bt in backtest.items():
+            if not bt:
+                continue
+            label = group_labels.get(group, group)
+            html += f"<p><strong>{label} — 基于最新优化策略 (Rank {bt.get('strategy_rank','?')})</strong></p>\n"
+            html += '<table style="border-collapse:collapse;width:100%;margin:8px 0;">\n'
+            html += "<tr><th>指标</th><th>全期</th><th>观察0-6m</th><th>部署6-12m</th><th>验证12-24m</th></tr>\n"
+
+            phases = bt.get("phase_metrics", {})
+            total = f"{bt.get('total_return', 0):+.1f}%"
+            dd = f"{bt.get('max_drawdown', 0):.1f}%"
+            sp = f"{bt.get('sharpe', 0):.3f}"
+            trades = str(bt.get("trade_count", 0))
+
+            def _pval(p_obj, key):
+                if p_obj is None:
+                    return "-"
+                v = getattr(p_obj, key, 0)
+                if key in ("total_return", "excess_return"):
+                    return f"{v:+.1f}%"
+                if key == "max_drawdown":
+                    return f"{v:.1f}%"
+                if key == "sharpe_ratio":
+                    return f"{v:.3f}"
+                return str(v)
+
+            html += (f"<tr><td>超额收益</td><td>{total}</td>"
+                     f"<td>{_pval(phases.get('observe'), 'excess_return')}</td>"
+                     f"<td>{_pval(phases.get('deploy'), 'excess_return')}</td>"
+                     f"<td>{_pval(phases.get('test'), 'excess_return')}</td></tr>\n")
+            html += (f"<tr><td>最大回撤</td><td>{dd}</td>"
+                     f"<td>{_pval(phases.get('observe'), 'max_drawdown')}</td>"
+                     f"<td>{_pval(phases.get('deploy'), 'max_drawdown')}</td>"
+                     f"<td>{_pval(phases.get('test'), 'max_drawdown')}</td></tr>\n")
+            html += (f"<tr><td>Sharpe</td><td>{sp}</td>"
+                     f"<td>{_pval(phases.get('observe'), 'sharpe_ratio')}</td>"
+                     f"<td>{_pval(phases.get('deploy'), 'sharpe_ratio')}</td>"
+                     f"<td>{_pval(phases.get('test'), 'sharpe_ratio')}</td></tr>\n")
+            html += (f"<tr><td>交易次数</td><td>{trades}</td>"
+                     f"<td>{getattr(phases.get('observe'), 'trade_count', '-')}</td>"
+                     f"<td>{getattr(phases.get('deploy'), 'trade_count', '-')}</td>"
+                     f"<td>{getattr(phases.get('test'), 'trade_count', '-')}</td></tr>\n")
+
+            # 基准对比
+            bm = bt.get("benchmarks", {})
+            if bm:
+                test_excess = getattr(phases.get("test"), "excess_return", 0)
+                html += "<tr><td>vs基准</td><td colspan='4'>"
+                parts = []
+                for name, val in bm.items():
+                    beat = "✓" if test_excess > val else "✗"
+                    parts.append(f"{name}: {val:+.1f}% {beat}")
+                html += " | ".join(parts)
+                html += "</td></tr>\n"
+
+            html += "</table>\n"
+
+            stocks = bt.get("stocks", [])
+            if stocks:
+                html += (f"<p style='font-size:12px;color:#888'>入选标的: "
+                         f"{', '.join(stocks[:8])}"
+                         f"{' +' + str(len(stocks)-8) if len(stocks)>8 else ''}</p>\n")
+
+        return html
+
     def _build_portfolio_section(self, portfolio_results, portfolio_chart_dict=None):
         """
         构建投资组合策略分析部分HTML
@@ -579,6 +656,7 @@ class EmailNotifier:
         portfolio_results=None,
         portfolio_chart_dict=None,
         signal_scan=None,
+        backtest=None,
     ):
         """
          构建邮件正文（完整版：表格 + LLM分析 + 公告 + 财报分析 + 图表）
@@ -1214,6 +1292,9 @@ class EmailNotifier:
             signal_scan, alert_stocks, stock_data
         ) if signal_scan else ""
 
+        # 7c. 回测分析
+        backtest_section = self._build_backtest_section(backtest) if backtest else ""
+
         # 8. 获取服务器信息
         server_info = self._get_server_info()
 
@@ -1326,6 +1407,7 @@ class EmailNotifier:
             chart_section=chart_section,
             portfolio_chart_section=portfolio_chart_section,
             strategy_alert_section=strategy_alert_section,
+            backtest_section=backtest_section,
             report_link=report_link,
             portfolio_section=portfolio_section,
             server_hostname=server_info["hostname"],

@@ -394,3 +394,145 @@ class SignalScanner:
                     f"Rank {rank}: 背离 {divergence:.0f}% (训练 {train:+.1f}% vs 测试 {test:+.1f}%)"
                 )
         return warnings
+
+    # ── 回测 ──
+
+    def run_backtest(self, session, group: str) -> dict | None:
+        """
+        用最新优化策略跑完整历史回测。
+
+        Returns:
+            {
+                "strategy_rank": int,
+                "report_id": str,
+                "total_return": float, "max_drawdown": float, "sharpe": float,
+                "trade_count": int, "stocks": list[str],
+                "phase_metrics": dict,  # {observe/deploy/test: SubPeriodMetrics}
+                "rules": list[dict],
+                "benchmarks": dict,  # {name: test_excess}
+            }
+            如果没有任何优化结果或数据，返回 None。
+        """
+        from .portfolio_strategy import PortfolioEvaluator, PortfolioResult
+        from .backtest_config import (
+            make_default_optimizer_config, BacktestConfig,
+        )
+        from .rule_engine import Rule
+        from .indicator_library import compute_all
+
+        # 加载 Top-1 策略
+        strategies = self._load_strategies(group, top_n=1)
+        if not strategies:
+            return None
+        top = strategies[0]
+
+        # 获取历史数据
+        historical: dict = getattr(session, "_historical", {}) or {}
+        stocks = list(historical.keys())
+        if not stocks:
+            return None
+
+        # 选取入选标的
+        stocks_str = top.get("params", {}).get("_stocks", "")
+        selected = []
+        for part in stocks_str.replace("+", ",").split(","):
+            code = part.strip()
+            if code and not (code.isdigit() and len(code) <= 3):
+                selected.append(code)
+        if not selected:
+            selected = stocks[:10]  # fallback
+
+        # 构建 Rule 对象
+        rules = []
+        for r_dict in top.get("rules", []):
+            try:
+                rule = Rule(
+                    id=r_dict.get("id", "?"),
+                    label=r_dict.get("label", r_dict.get("id", "?")),
+                    type=r_dict.get("type", "buy"),
+                    priority=r_dict.get("priority", 1),
+                    condition=r_dict.get("condition", "False"),
+                    budget_pool=r_dict.get("budget_pool", r_dict.get("type", "buy")),
+                    action_amount=r_dict.get("action_amount"),
+                    action_fraction=r_dict.get("action_fraction"),
+                    action_min=r_dict.get("action_min"),
+                    action_max=r_dict.get("action_max"),
+                    reset_when=r_dict.get("reset_when"),
+                )
+                rules.append(rule)
+            except Exception:
+                pass
+
+        if not rules:
+            return None
+
+        # 准备数据
+        stocks_data = {c: df for c, df in historical.items() if c in selected}
+        if not stocks_data:
+            return None
+
+        # 计算指标
+        try:
+            indicators = compute_all(stocks_data)
+        except Exception:
+            indicators = None
+
+        # 运行回测
+        evaluator = PortfolioEvaluator(stocks_data, group)
+        evaluator.rules = rules
+        config = make_default_optimizer_config()
+
+        result = evaluator.evaluate(
+            list(stocks_data.keys()),
+            backtest_config=config,
+            indicators_data=indicators,
+        )
+
+        # 基准计算
+        benchmarks = self._compute_benchmarks(selected, config)
+
+        return {
+            "strategy_rank": top.get("rank", 1),
+            "report_id": top.get("report_id", ""),
+            "total_return": result.total_return,
+            "max_drawdown": result.max_drawdown,
+            "sharpe": result.sharpe_ratio,
+            "trade_count": result.trade_count,
+            "stocks": list(stocks_data.keys()),
+            "phase_metrics": result.sub_periods,
+            "rules": top.get("rules", []),
+            "benchmarks": benchmarks,
+        }
+
+    def _compute_benchmarks(
+        self, stock_codes: list[str], config
+    ) -> dict[str, float]:
+        """计算基准 ETF 测试超额收益"""
+        from .portfolio_strategy import PortfolioEvaluator
+        from .rule_engine import Rule
+
+        results: dict[str, float] = {}
+        bench_data = getattr(self, "benchmark_data", {}) or {}
+        if not bench_data:
+            return results
+
+        bench_rules = [
+            Rule(id="bn_buy", label="满仓", type="buy", priority=1,
+                 condition="True", budget_pool="buy",
+                 action_amount="cash * 0.95", reset_when="False"),
+            Rule(id="bn_sell", label="禁卖", type="sell", priority=2,
+                 condition="False", budget_pool="sell",
+                 action_fraction=0.0, reset_when="True"),
+        ]
+
+        for name, df in bench_data.items():
+            code = name
+            evalr = PortfolioEvaluator({code: df}, "a_share")
+            evalr.rules = bench_rules
+            try:
+                r = evalr.evaluate([code], backtest_config=config)
+                sp = r.sub_periods.get("test")
+                results[name] = round(sp.excess_return if sp else 0.0, 2)
+            except Exception:
+                results[name] = 0.0
+        return results

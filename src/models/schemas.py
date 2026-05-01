@@ -326,6 +326,7 @@ class SessionContext(BaseModel):
     financial_analysis_results: dict[str, list] = Field(default_factory=dict)
     portfolio_results: Optional[dict] = None
     signal_scan: Optional[object] = None  # ScanResult from signal_scanner
+    backtest: Optional[dict] = None  # backtest results {group: dict}
 
     def get_all_dataframe(self):
         """获取所有股票合并DataFrame（ALL列，无丢失）"""

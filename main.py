@@ -169,6 +169,24 @@ def run_daily_task():
             logger.warning(f"策略信号扫描失败 (非致命): {e}")
             session.signal_scan = None
 
+        # 3c. 回测分析（基于最新优化策略）
+        try:
+            logger.info("开始回测分析")
+            bt_a = scanner.run_backtest(session, "a_share")
+            bt_nona = scanner.run_backtest(session, "non_a_share")
+            session.backtest = {}
+            if bt_a:
+                session.backtest["a_share"] = bt_a
+            if bt_nona:
+                session.backtest["non_a_share"] = bt_nona
+            logger.info(
+                f"回测分析完成: A股={'OK' if bt_a else 'N/A'}, "
+                f"非A={'OK' if bt_nona else 'N/A'}"
+            )
+        except Exception as e:
+            logger.warning(f"回测分析失败 (非致命): {e}")
+            session.backtest = None
+
         # 4. 创建邮件通知器
         notifier = EmailNotifier(config)
         # 5. LLM分析基本面（可选）
