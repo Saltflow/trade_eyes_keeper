@@ -2322,6 +2322,22 @@ class EmailNotifier:
             # 4. 表
             snapshot = (getattr(signal_scan, "indicator_snapshot", {})
                         if signal_scan else {})
+
+            # 从 stock_data 提取基本面数据映射
+            fundamentals: dict[str, dict[str, str]] = {}
+            if stock_data is not None and hasattr(stock_data, "iterrows"):
+                for _, row in stock_data.iterrows():
+                    code = str(row.get("stock_code", ""))
+                    if not code:
+                        continue
+                    pe = row.get("pe_ratio")
+                    pb = row.get("pb_ratio")
+                    dy = row.get("dividend_yield")
+                    fundamentals[code] = {
+                        "pe": f"{pe:.1f}" if pe is not None and not pd.isna(pe) else "—",
+                        "pb": f"{pb:.2f}" if pb is not None and not pd.isna(pb) else "—",
+                        "dy": f"{dy:.2f}" if dy is not None and not pd.isna(dy) else "—",
+                    }
             cons_inds = consensus.consensus_indicators if consensus else ["deviation","rsi"]
 
             table_rows = ""
@@ -2350,9 +2366,10 @@ class EmailNotifier:
                         cells.append(f'<td class="num {color}">{v*100:+.1f}%</td>')
                     else:
                         cells.append(f'<td class="num">{v:.2f}</td>')
-                cells.append(f'<td class="num">{vals.get("dividend_yield","—") or "—"}</td>')
-                cells.append(f'<td class="num">{vals.get("pe_ratio","—") or "—"}</td>')
-                cells.append(f'<td class="num">{vals.get("pb_ratio","—") or "—"}</td>')
+                fund = fundamentals.get(code, {})
+                cells.append(f'<td class="num">{fund.get("dy","—")}</td>')
+                cells.append(f'<td class="num">{fund.get("pe","—")}</td>')
+                cells.append(f'<td class="num">{fund.get("pb","—")}</td>')
                 cells.append(f"<td>{sig}</td>")
                 table_rows += f'<tr class="{row_class}">{"".join(cells)}</tr>'
 
@@ -2379,9 +2396,10 @@ class EmailNotifier:
                         cells.append(f'<td class="num {color}">{v*100:+.1f}%</td>')
                     else:
                         cells.append(f'<td class="num">{v:.2f}</td>')
-                cells.append(f'<td class="num">{vals.get("dividend_yield","—") or "—"}</td>')
-                cells.append(f'<td class="num">{vals.get("pe_ratio","—") or "—"}</td>')
-                cells.append(f'<td class="num">{vals.get("pb_ratio","—") or "—"}</td>')
+                fund = fundamentals.get(code, {})
+                cells.append(f'<td class="num">{fund.get("dy","—")}</td>')
+                cells.append(f'<td class="num">{fund.get("pe","—")}</td>')
+                cells.append(f'<td class="num">{fund.get("pb","—")}</td>')
                 cells.append(f"<td>{sig}</td>")
                 table_rows += f'<tr class="{row_class}">{"".join(cells)}</tr>'
 
@@ -2426,6 +2444,25 @@ class EmailNotifier:
                 datetime.now().strftime("%Y-%m-%d %A"))
             html = html.replace("{server_hostname}",
                 info.get("hostname", ""))
+
+            # 附录: 指标方法论 (Markdown → HTML)
+            md_path = (
+                Path(__file__).parent.parent / "templates" / "appendix_methodology.md"
+            )
+            if md_path.exists():
+                import markdown
+                md_text = md_path.read_text(encoding="utf-8")
+                appendix = markdown.markdown(
+                    md_text,
+                    extensions=["tables", "fenced_code", "codehilite"],
+                )
+                # WeasyPrint 分页 + 基础样式
+                html += (
+                    '<div style="page-break-before:always;font-size:9px;line-height:1.5;'
+                    'padding:12px 16px">'
+                    + appendix +
+                    '</div>'
+                )
 
             # WeasyPrint
             pdf_bytes = HTML(string=html).write_pdf()
