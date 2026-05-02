@@ -155,6 +155,7 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 - **Unit conversion**: Handle cents to yuan, per-10-shares to per-share
 - **Commit messages**: Use conventional prefixes (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`), include ticket/reference, English with Chinese context
 - **Testing**: New features include unit tests, mock external APIs, use `conftest.py` for shared fixtures
+- **全量验证**: 策略优化/信号扫描/回测分析的 HTML 报告和邮件内容必须基于 `config/config.yaml` 全量标的运行产出。禁止用 1-3 只股票的子集跑 `--optimize` 或生成用于验证的 HTML 报告。`python main.py --optimize` 全量运行耗时 ~30min，跑完后产出方为有效测试数据。
 
 ## Agent Instructions
 - Run tests before submitting changes (`pytest tests/validation/`)
