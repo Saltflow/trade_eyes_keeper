@@ -2510,7 +2510,16 @@ class EmailNotifier:
                         capture_output=True, text=True, timeout=60,
                     )
                     if result.returncode != 0:
-                        logger.warning("xelatex 编译警告: %s", result.stderr[-300:])
+                        log_file = Path(tmpdir) / "report.log"
+                        log_tail = ""
+                        if log_file.exists():
+                            lines = log_file.read_text(errors="replace").split("\n")
+                            # 找第一个 "!" 错误行
+                            for i, l in enumerate(lines):
+                                if l.startswith("!"):
+                                    log_tail = "\\n".join(lines[max(0,i-1):i+5])
+                                    break
+                        logger.warning("xelatex 编译问题: %s", log_tail or result.stderr[-200:])
 
                 pdf_file = Path(tmpdir) / "report.pdf"
                 if pdf_file.exists():
@@ -2518,6 +2527,9 @@ class EmailNotifier:
                     logger.info("日报 PDF 生成成功 (%d bytes)", len(pdf_bytes))
                     return pdf_bytes
                 else:
+                    log_file = Path(tmpdir) / "report.log"
+                    if log_file.exists():
+                        logger.error("xelatex 日志: %s", log_file.read_text(errors="replace")[-500:])
                     logger.error("xelatex 未产出 PDF")
                     return None
 
