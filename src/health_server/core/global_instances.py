@@ -69,19 +69,61 @@ def set_report_token_timeout(minutes: int):
 
 
 def register_report_token(html_path):
-    """注册报告 token，返回 token 字符串"""
+    """注册报告 token（写入文件，跨进程共享），返回 token 字符串"""
+    import json as _json
     token = _uuid.uuid4().hex[:12]
-    _report_tokens[token] = (Path(html_path), _time.time() + _report_token_timeout * 60)
+    expiry = _time.time() + _report_token_timeout * 60
+    _report_tokens[token] = (Path(html_path), expiry)
+    # 同步到文件
+    _sync_tokens_to_file()
     logger.info("报告 token 已注册: %s", token)
     return token
 
 
+def _token_file() -> Path:
+    return Path("data/optimizer/.report_tokens.json")
+
+
+def _sync_tokens_to_file():
+    """将内存 token 表写入 JSON 文件"""
+    import json as _json
+    data = {}
+    for token, (path, exp) in _report_tokens.items():
+        data[token] = [str(path), exp]
+    try:
+        _token_file().parent.mkdir(parents=True, exist_ok=True)
+        _token_file().write_text(_json.dumps(data), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _load_tokens_from_file():
+    """从 JSON 文件加载 token 表到内存"""
+    import json as _json
+    tf = _token_file()
+    if not tf.exists():
+        return
+    try:
+        data = _json.loads(tf.read_text(encoding="utf-8"))
+        now = _time.time()
+        for token, (path_s, exp) in data.items():
+            if now <= exp:  # 只加载未过期的
+                _report_tokens[token] = (Path(path_s), exp)
+    except Exception:
+        pass
+
+
 def get_report_path(token):
     """校验 token 返回文件路径, 路径遍历保护, 自动清理过期"""
+    # 从文件加载（如果是 health_server 进程，内存表是空的）
+    if not _report_tokens:
+        _load_tokens_from_file()
     now = _time.time()
     expired = [t for t, (_, exp) in _report_tokens.items() if now > exp]
     for t in expired:
         del _report_tokens[t]
+    if expired:
+        _sync_tokens_to_file()  # 清理后同步到文件
     entry = _report_tokens.get(token)
     if not entry:
         return None
