@@ -343,8 +343,8 @@ class EmailNotifier:
         # 报警部分
         if alerts:
             html += f"<p><strong>策略报警 ({len(alerts)} 条 / {len(strategy_codes)} 只标的)</strong></p>\n"
-            html += '<table style="border-collapse:collapse;width:100%;margin:10px 0;">\n'
-            html += "<tr><th>标的</th><th>规则</th><th>条件</th><th>当前值</th><th>来源</th></tr>\n"
+            html += '<table style="border-collapse:collapse;width:100%;margin:10px 0;font-size:12px" cellpadding="6" cellspacing="0" border="0">\n'
+            html += '<tr style="background:#34495e;color:#fff"><th>标的</th><th>规则</th><th>条件</th><th>当前值</th><th>来源</th></tr>\n'
             for a in alerts[:12]:
                 code = a.stock_code if hasattr(a, "stock_code") else a.get("stock_code", "?")
                 label = a.rule_label if hasattr(a, "rule_label") else a.get("rule_label", "?")
@@ -368,8 +368,8 @@ class EmailNotifier:
         if consensus and consensus.consensus_indicators and snapshot:
             ind_cols = consensus.consensus_indicators
             html += f"<p><strong>共识指标快照 ({len(snapshot)} 只)</strong></p>\n"
-            html += '<table style="border-collapse:collapse;width:auto;margin:10px 0;">\n'
-            header = "<tr><th>标的</th>"
+            html += '<table style="border-collapse:collapse;width:auto;margin:10px 0;font-size:12px" cellpadding="6" cellspacing="0" border="0">\n'
+            header = '<tr style="background:#34495e;color:#fff"><th>标的</th>'
             for ind in ind_cols:
                 label = {"rsi": "RSI", "vol_ratio": "量比", "boll_pct_b": "布林%B",
                          "adx": "ADX", "macd_hist": "MACD柱", "deviation": "偏差%",
@@ -420,8 +420,8 @@ class EmailNotifier:
                 continue
             label = group_labels.get(group, group)
             html += f"<p><strong>{label} — 基于最新优化策略 (Rank {bt.get('strategy_rank','?')})</strong></p>\n"
-            html += '<table style="border-collapse:collapse;width:100%;margin:8px 0;">\n'
-            html += "<tr><th>指标</th><th>全期</th><th>观察0-6m</th><th>部署6-12m</th><th>验证12-24m</th></tr>\n"
+            html += '<table style="border-collapse:collapse;width:100%;margin:8px 0;font-size:12px" cellpadding="6" cellspacing="0" border="0">\n'
+            html += '<tr style="background:#34495e;color:#fff"><th>指标</th><th>全期</th><th>观察0-6m</th><th>部署6-12m</th><th>验证12-24m</th></tr>\n'
 
             phases = bt.get("phase_metrics", {})
             total = f"{bt.get('total_return', 0):+.1f}%"
@@ -986,34 +986,44 @@ class EmailNotifier:
                 f"{close_ma60_pct:+.2f}%" if close_ma60_pct is not None else "-"
             )
 
-            # 价格技术指标行
-            all_rows_price += f"""
-                <tr>
-                    <td>{stock_code}</td>
-                    <td>{open_price_str}</td>
-                    <td>{close_price_str}</td>
-                    <td>{high_price_str}</td>
-                    <td>{low_price_str}</td>
-                    <td>{ma60_str}</td>
-                    <td class="{diff_class}">{close_ma60_diff_str}</td>
-                    <td class="{pct_class}">{close_ma60_pct_str}</td>
-                    <td>{status}</td>
-                </tr>
-            """
+            # 价格技术指标行 (inline styles for email clients)
+            pos = "color:#27ae60;text-align:right"
+            neg = "color:#c0392b;text-align:right"
+            neut = "text-align:right"
+            diff_style = pos if close_ma60_diff is not None and close_ma60_diff >= 0 else neg if close_ma60_diff is not None else neut
+            pct_style = pos if close_ma60_pct is not None and close_ma60_pct >= 0 else neg if close_ma60_pct is not None else neut
+            all_rows_price += (
+                f'<tr>'
+                f'<td>{stock_code}</td>'
+                f'<td style="{neut}">{open_price_str}</td>'
+                f'<td style="{neut}">{close_price_str}</td>'
+                f'<td style="{neut}">{high_price_str}</td>'
+                f'<td style="{neut}">{low_price_str}</td>'
+                f'<td style="{neut}">{ma60_str}</td>'
+                f'<td style="{diff_style}">{close_ma60_diff_str}</td>'
+                f'<td style="{pct_style}">{close_ma60_pct_str}</td>'
+                f'<td>{status}</td>'
+                f'</tr>'
+            )
 
             # 基本面指标行
-            all_rows_fundamental += f"""
-                <tr>
-                    <td>{stock_code}</td>
-                    <td>{dividend_per_share_str}</td>
-                    <td>{dividend_yield_str}</td>
-                    <td class="{earnings_growth_class}">{earnings_growth_str}</td>
-                    <td>{pe_ratio_str}</td>
-                    <td>{pb_ratio_str}</td>
-                    <td>{roe_str}</td>
-                    <td>{debt_ratio_str}</td>
-                </tr>
-            """
+            eg_style = (
+                "color:#27ae60;text-align:right" if earnings_growth is not None and earnings_growth > 0
+                else "color:#c0392b;text-align:right" if earnings_growth is not None and earnings_growth < 0
+                else "text-align:right"
+            )
+            all_rows_fundamental += (
+                f'<tr>'
+                f'<td>{stock_code}</td>'
+                f'<td style="{neut}">{dividend_per_share_str}</td>'
+                f'<td style="{neut}">{dividend_yield_str}</td>'
+                f'<td style="{eg_style}">{earnings_growth_str}</td>'
+                f'<td style="{neut}">{pe_ratio_str}</td>'
+                f'<td style="{neut}">{pb_ratio_str}</td>'
+                f'<td style="{neut}">{roe_str}</td>'
+                f'<td style="{neut}">{debt_ratio_str}</td>'
+                f'</tr>'
+            )
 
         # 4. 构建LLM分析部分
         llm_analysis_section = ""
@@ -1366,22 +1376,22 @@ class EmailNotifier:
                 "系统检测到以下股票满足条件：<strong>当天最低价 &lt; MA60（前复权）</strong>",
             )
 
-        # 8.5. 报告链接（有时效的 token，30 分钟后过期）
+        # 8.5. 报告链接（A股 + 境外各一份，30 分钟后过期）
         report_link = ""
         try:
             optimizer_dir = Path("data/optimizer")
             if optimizer_dir.exists():
-                reports = sorted(
-                    optimizer_dir.glob("*_report.html"),
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True,
+                a_r = sorted(
+                    optimizer_dir.glob("*_a_share_report.html"),
+                    key=lambda p: p.stat().st_mtime, reverse=True,
                 )
-                if reports:
-                    from src.health_server.core.global_instances import (
-                        register_report_token,
-                    )
-                    token = register_report_token(str(reports[0]))
-                    # 取公网 IP：优先用 ifconfig.me 结果，fallback 到 _get_server_info
+                nona_r = sorted(
+                    optimizer_dir.glob("*_non_a_share_report.html"),
+                    key=lambda p: p.stat().st_mtime, reverse=True,
+                )
+                if a_r or nona_r:
+                    from src.health_server.core.global_instances import register_report_token
+
                     server_ip = "localhost"
                     try:
                         import urllib.request
@@ -1390,22 +1400,31 @@ class EmailNotifier:
                             .read().decode("utf-8").strip()
                         )
                     except Exception:
-                        full_ip = self._get_server_info().get("ip_address", "localhost")
-                        for part in full_ip.replace("(优先)", "").replace("(", "").replace(")", "").split(","):
-                            seg = part.strip().split()[0] if part.strip() else ""
-                            if seg and not seg.startswith(("172.", "10.", "192.168.", "127.")):
-                                server_ip = seg
-                                break
+                        fi = self._get_server_info().get("ip_address", "localhost")
+                        for p in fi.replace("(优先)","").replace("(","").replace(")","").split(","):
+                            s = p.strip().split()[0] if p.strip() else ""
+                            if s and not s.startswith(("172.","10.","192.168.","127.")):
+                                server_ip = s; break
                         if server_ip == "localhost":
-                            server_ip = full_ip.split(",")[0].strip().split()[0]
+                            server_ip = fi.split(",")[0].strip().split()[0]
+
                     port = self.config.get("health_server", {}).get("port", 1933)
-                    report_link = (
-                        f'<p style="margin:8px 0;font-size:13px;color:#8899aa">'
-                        f'📊 交互策略报告: '
-                        f'<a href="http://{server_ip}:{port}/report/{token}">'
-                        f'http://{server_ip}:{port}/report/{token}</a>'
-                        f' (30分钟内有效)</p>'
-                    )
+                    links_html = ""
+                    for label, report_list in [("A股", a_r), ("境外", nona_r)]:
+                        if not report_list:
+                            continue
+                        token = register_report_token(str(report_list[0]))
+                        links_html += (
+                            f'<a href="http://{server_ip}:{port}/report/{token}" '
+                            f'style="color:#2980b9;text-decoration:none">'
+                            f'{label}</a> &nbsp;'
+                        )
+                    if links_html:
+                        report_link = (
+                            f'<tr><td style="padding:8px 16px;color:#7f8c8d;font-size:13px">'
+                            f'交互报告: {links_html}'
+                            f'<span style="font-size:11px">(30分钟)</span></td></tr>'
+                        )
         except Exception:
             pass
 

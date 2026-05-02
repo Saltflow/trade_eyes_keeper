@@ -1,102 +1,109 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
-    <meta charset="utf-8">
-    <title>股票提醒通知</title>
-    <style>
-        table {{
-            border-collapse: collapse;
-            width: 100%;
-            margin: 20px 0;
-        }}
-        th, td {{
-            border: 1px solid #ddd;
-            padding: 8px;
-            text-align: left;
-        }}
-        th {{
-            background-color: #f2f2f2;
-            font-weight: bold;
-        }}
-        .alert-row {{
-            background-color: #fff8e1;
-        }}
-        .positive {{
-            color: #4caf50;
-        }}
-        .negative {{
-            color: #f44336;
-        }}
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  .positive {{ color: #27ae60 }}
+  .negative {{ color: #c0392b }}
+  .alert-row {{ background: #fef9e7 }}
+</style>
+<title>股票提醒通知</title>
 </head>
-<body>
-    <h2>股票提醒通知</h2>
-    <p>系统检测到以下股票满足条件：<strong>当天最低价 &lt; MA60（前复权）</strong></p>
-    <p>检测时间：{current_time}</p>
-    
-    {chart_section}
-    
-    {portfolio_chart_section}
-    
-    {alert_section}
-    
-    {strategy_alert_section}
-    
-    {report_link}
-    
-    {backtest_section}
-    
-    <h3>所有监控股票</h3>
-    
-    <h4>价格技术指标</h4>
-    <table>
-        <tr>
-            <th>股票代码</th>
-            <th>开盘价</th>
-            <th>收盘价</th>
-            <th>最高价</th>
-            <th>最低价</th>
-            <th>MA60</th>
-            <th>收盘-MA60差值</th>
-            <th>差值(%)</th>
-            <th>状态</th>
-        </tr>
-        {all_rows_price}
-    </table>
-    
-    <h4>基本面指标</h4>
-    <table>
-        <tr>
-            <th>股票代码</th>
-            <th>每股分红(元)</th>
-            <th>股息率(%)</th>
-            <th>业绩增长(%)</th>
-            <th>PE</th>
-            <th>PB</th>
-            <th>ROE(%)</th>
-            <th>负债率(%)</th>
-        </tr>
-        {all_rows_fundamental}
-    </table>
-    
-    {llm_analysis_section}
-    
-    {financial_analysis_section}
-    
-    {announcements_section}
-    
-    {portfolio_section}
-    
-    <p><em>注：此邮件由股票量化系统自动发送，请勿直接回复。</em></p>
-    
-    <div style="margin-top: 30px; padding-top: 15px; border-top: 1px solid #eee; font-size: 0.8em; color: #666;">
-        <p><strong>服务器信息:</strong></p>
-        <ul>
-            <li>主机名: {server_hostname}</li>
-            <li>IP地址: {server_ip}</li>
-            <li>内核版本: {server_kernel}</li>
-            <li>系统: {server_system} ({server_machine})</li>
-        </ul>
-    </div>
+<body style="margin:0;padding:0;background:#f5f6fa;font-family:-apple-system,'Microsoft YaHei','PingFang SC',sans-serif;line-height:1.6;color:#2c3e50">
+
+<!-- Outer wrapper -->
+<table role="presentation" style="width:100%;background:#f5f6fa;padding:0" cellpadding="0" cellspacing="0" border="0">
+<tr><td align="center" style="padding:20px 0">
+
+<!-- Inner container: 620px max -->
+<table role="presentation" style="max-width:620px;width:100%;background:#fff;border-radius:6px;margin:0 auto" cellpadding="0" cellspacing="0" border="0">
+
+<!-- Header -->
+<tr>
+<td style="padding:24px 24px 12px;background:linear-gradient(135deg,#2c3e50,#34495e);border-radius:6px 6px 0 0;text-align:center">
+  <div style="font-size:20px;font-weight:700;color:#fff;letter-spacing:1px">股票量化日报</div>
+  <div style="font-size:12px;color:#bdc3c7;margin-top:4px">{current_time}</div>
+  <div style="font-size:11px;color:#95a5a6;margin-top:2px">{server_hostname} · {server_ip}</div>
+</td>
+</tr>
+
+<!-- Report Links -->
+{report_link}
+
+<!-- Chart section -->
+{chart_section}
+{portfolio_chart_section}
+
+<!-- Alerts -->
+{alert_section}
+{strategy_alert_section}
+
+<!-- Backtest -->
+{backtest_section}
+
+<!-- Monitoring -->
+<tr><td style="padding:16px 24px 4px;border-bottom:2px solid #ecf0f1">
+  <div style="font-size:15px;font-weight:600;color:#2c3e50">监控标的</div>
+</td></tr>
+<tr><td style="padding:8px 24px 16px">
+  <table role="presentation" style="width:100%;border-collapse:collapse;font-size:12px" cellpadding="6" cellspacing="0" border="0">
+    <thead>
+      <tr style="background:#34495e;color:#fff">
+        <th style="text-align:left;padding:8px">代码</th>
+        <th style="text-align:right;padding:8px">开盘</th>
+        <th style="text-align:right;padding:8px">收盘</th>
+        <th style="text-align:right;padding:8px">最高</th>
+        <th style="text-align:right;padding:8px">最低</th>
+        <th style="text-align:right;padding:8px">MA60</th>
+        <th style="text-align:right;padding:8px">偏离</th>
+        <th style="text-align:right;padding:8px">偏离%</th>
+        <th style="text-align:left;padding:8px">状态</th>
+      </tr>
+    </thead>
+    <tbody>
+{all_rows_price}
+    </tbody>
+  </table>
+</td></tr>
+<tr><td style="padding:8px 24px 16px">
+  <table role="presentation" style="width:100%;border-collapse:collapse;font-size:12px" cellpadding="6" cellspacing="0" border="0">
+    <thead>
+      <tr style="background:#34495e;color:#fff">
+        <th style="text-align:left;padding:8px">代码</th>
+        <th style="text-align:right;padding:8px">分红</th>
+        <th style="text-align:right;padding:8px">股息率</th>
+        <th style="text-align:right;padding:8px">增长</th>
+        <th style="text-align:right;padding:8px">PE</th>
+        <th style="text-align:right;padding:8px">PB</th>
+        <th style="text-align:right;padding:8px">ROE</th>
+        <th style="text-align:right;padding:8px">负债率</th>
+      </tr>
+    </thead>
+    <tbody>
+{all_rows_fundamental}
+    </tbody>
+  </table>
+</td></tr>
+
+<!-- LLM / Financial / Announcements -->
+{llm_analysis_section}
+{financial_analysis_section}
+{announcements_section}
+
+<!-- Portfolio -->
+{portfolio_section}
+
+<!-- Footer -->
+<tr>
+<td style="padding:16px 24px;border-top:1px solid #ecf0f1;text-align:center;font-size:11px;color:#bdc3c7">
+  股票量化系统自动发送 · 请勿回复
+</td>
+</tr>
+
+</table>
+</td></tr>
+</table>
+
 </body>
 </html>
