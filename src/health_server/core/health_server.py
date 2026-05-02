@@ -60,6 +60,20 @@ class HealthServer:
                 (self.host, self.port), handler_factory
             )
 
+            # SSL/TLS: 如果存在证书文件则启用 HTTPS
+            cert_file = Path("cert.pem")
+            key_file = Path("key.pem")
+            if cert_file.exists() and key_file.exists():
+                import ssl
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                ctx.load_cert_chain(str(cert_file), str(key_file))
+                self.server.socket = ctx.wrap_socket(
+                    self.server.socket, server_side=True,
+                )
+                logger.info("SSL 已启用 (自签名证书)")
+            else:
+                logger.info("HTTP 模式 (无 cert.pem/key.pem)")
+
             # 启动服务器线程
             self.thread = threading.Thread(target=self.server.serve_forever)
             self.thread.daemon = daemon

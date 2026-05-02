@@ -77,7 +77,6 @@ Thumbs.db
 
 # SSH keys and certificates
 deploy_key*
-*.key
 *.pem
 *.priv
 *.pub

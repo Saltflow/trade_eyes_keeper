@@ -1392,30 +1392,35 @@ class EmailNotifier:
                 if a_r or nona_r:
                     from src.health_server.core.global_instances import register_report_token
 
-                    server_ip = "localhost"
-                    try:
-                        import urllib.request
-                        server_ip = (
-                            urllib.request.urlopen("https://ifconfig.me", timeout=8)
-                            .read().decode("utf-8").strip()
-                        )
-                    except Exception:
-                        fi = self._get_server_info().get("ip_address", "localhost")
-                        for p in fi.replace("(优先)","").replace("(","").replace(")","").split(","):
-                            s = p.strip().split()[0] if p.strip() else ""
-                            if s and not s.startswith(("172.","10.","192.168.","127.")):
-                                server_ip = s; break
-                        if server_ip == "localhost":
-                            server_ip = fi.split(",")[0].strip().split()[0]
+                    hc = self.config.get("health_server", {})
+                    server_ip = hc.get("public_ip", "")
+                    port = hc.get("port", 1933)
+                    use_ssl = hc.get("ssl", False)
 
-                    port = self.config.get("health_server", {}).get("port", 1933)
+                    if not server_ip:
+                        try:
+                            import urllib.request
+                            server_ip = (
+                                urllib.request.urlopen("https://ifconfig.me", timeout=5)
+                                .read().decode("utf-8").strip()
+                            )
+                        except Exception:
+                            fi = self._get_server_info().get("ip_address", "localhost")
+                            for p in fi.replace("(优先)","").replace("(","").replace(")","").split(","):
+                                s = p.strip().split()[0] if p.strip() else ""
+                                if s and not s.startswith(("172.","10.","192.168.","127.")):
+                                    server_ip = s; break
+                            if server_ip == "localhost":
+                                server_ip = fi.split(",")[0].strip().split()[0]
+
+                    proto = "https" if use_ssl else "http"
                     links_html = ""
                     for label, report_list in [("A股", a_r), ("境外", nona_r)]:
                         if not report_list:
                             continue
                         token = register_report_token(str(report_list[0]))
                         links_html += (
-                            f'<a href="http://{server_ip}:{port}/report/{token}" '
+                            f'<a href="{proto}://{server_ip}:{port}/report/{token}" '
                             f'style="color:#2980b9;text-decoration:none">'
                             f'{label}</a> &nbsp;'
                         )
