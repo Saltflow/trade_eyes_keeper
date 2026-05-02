@@ -311,7 +311,15 @@ def deploy():
         if not success:
             _info("WARNING: Project directory check failed")
 
-        # ── 5. 安装/更新依赖 ──
+        # ── 5. 安装系统依赖 ──
+        _info("Installing system dependencies (texlive for PDF)...")
+        _ssh_cmd(
+            f"apt install -y -qq texlive-xetex texlive-latex-recommended texlive-latex-extra 2>/dev/null || echo 'texlive install skipped'",
+            "Install texlive",
+            timeout=300,
+        )
+
+        # ── 6. 安装/更新 Python 依赖 ──
         _info("Installing/updating Python dependencies...")
         _ssh_cmd(
             f"cd {REMOTE_DIR} && pip install --quiet -r requirements.txt",

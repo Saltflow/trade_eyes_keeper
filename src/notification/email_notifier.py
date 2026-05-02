@@ -2269,10 +2269,11 @@ class EmailNotifier:
             # 1. 图表 PNG
             chart_buf = self._chart_deviation_timeline(signal_scan, backtest, base64=False)
             chart_path = None
-            if chart_buf:
+            if chart_buf and not isinstance(chart_buf, str):
                 fd, chart_path = tempfile.mkstemp(suffix=".png", prefix="chart_")
                 with open(fd, "wb") as f:
-                    f.write(chart_buf if isinstance(chart_buf, bytes) else chart_buf.getvalue())
+                    data = chart_buf if isinstance(chart_buf, bytes) else chart_buf.getvalue() if hasattr(chart_buf, 'getvalue') else chart_buf
+                    f.write(data)
                 chart_section = f"\\includegraphics[width=\\textwidth]{{{chart_path}}}"
             else:
                 chart_section = "{\\color{gray}\\small 今日无图表数据}"
