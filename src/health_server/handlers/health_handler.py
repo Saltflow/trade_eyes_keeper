@@ -417,7 +417,7 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
 
         if email_sent:
             otp_manager.mark_email_sent(client_ip)
-            audit_log("OTP_REQUEST_SUCCESS", client_ip, f"验证码已发送: {otp_code}")
+            audit_log("OTP_REQUEST_SUCCESS", client_ip, "验证码已发送")
             # 重定向到验证页面
             self.send_response(302)
             self.send_header("Location", "/verify-otp")

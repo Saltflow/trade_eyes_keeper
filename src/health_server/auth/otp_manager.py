@@ -4,7 +4,7 @@ OTP管理器模块 - 生成和验证5位数字验证码，10分钟有效期
 
 import threading
 import time
-import random
+import secrets
 import logging
 from datetime import datetime
 
@@ -48,7 +48,7 @@ class OTPManager:
                     return None  # 已有有效OTP
 
             # 生成5位数字OTP
-            otp_code = str(random.randint(10000, 99999))
+            otp_code = str(secrets.randbelow(90000) + 10000)
             expiry_time = time.time() + (self.expiry_minutes * 60)
 
             self.otp_store[ip_address] = {

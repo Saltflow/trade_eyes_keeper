@@ -17,9 +17,9 @@ class TestOTPSecurity:
         from src.health_server.auth.otp_manager import OTPManager
         # 检查生成方法源码
         src = inspect.getsource(OTPManager.generate)
-        # 当前使用 random.randint()，已知待升级为 secrets
-        assert "random" in src.lower(), (
-            "OTP生成应使用随机模块 (当前random.randint, 待升级secrets)"
+        # 应使用 secrets 而非 random
+        assert "secrets" in src.lower(), (
+            "OTP生成应使用secrets模块 (而非random.randint)"
         )
 
     def test_otp_format_5_digits(self):
