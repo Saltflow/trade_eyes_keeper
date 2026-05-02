@@ -2479,7 +2479,7 @@ class EmailNotifier:
 
             # 7. 渲染模板
             tex_path = Path(__file__).parent.parent / "templates" / "report_daily.tex"
-            template = tex_path.read_text(encoding="utf-8")
+            template = tex_path.read_text(encoding="utf-8").replace("\r\n", "\n")
 
             info = self._get_server_info()
             html = template.replace("\\VAR{report_date}", datetime.now().strftime("%Y-%m-%d %A"))
