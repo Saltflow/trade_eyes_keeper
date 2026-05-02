@@ -120,7 +120,18 @@ class EmailNotifier:
             signal_scan = getattr(session, "signal_scan", None)
             backtest = getattr(session, "backtest", None)
 
-            # 构建邮件内容
+            # 生成日报 PDF 附件
+            pdf_bytes = None
+            try:
+                pdf_bytes = self._generate_daily_pdf(
+                    session, alert_stocks, signal_scan, backtest, stock_data,
+                )
+                if pdf_bytes:
+                    logger.info("日报 PDF 生成成功 (%d bytes)", len(pdf_bytes))
+            except Exception as e:
+                logger.warning("日报 PDF 生成失败: %s", e)
+
+            # 构建邮件内容（精简正文）
             body = self._build_email_body(
                 alert_stocks,
                 stock_data,
@@ -135,8 +146,8 @@ class EmailNotifier:
                 backtest=backtest,
             )
 
-            # 发送邮件（_send_email内部会跳过SKIP_EMAIL模式并打印日志）
-            self._send_email(subject, body, chart_png_bytes=chart_png_bytes, portfolio_chart_dict=portfolio_chart_dict)
+            # 发送邮件（PDF 作为附件）
+            self._send_email(subject, body, chart_png_bytes=chart_png_bytes, portfolio_chart_dict=portfolio_chart_dict, pdf_bytes=pdf_bytes)
 
             logger.info(
                 f"邮件任务完成 ({self.receiver_email}) "
@@ -186,6 +197,15 @@ class EmailNotifier:
             signal_scan = getattr(session, "signal_scan", None)
             backtest = getattr(session, "backtest", None)
 
+            # 生成日报 PDF 附件
+            pdf_bytes = None
+            try:
+                pdf_bytes = self._generate_daily_pdf(
+                    session, [], signal_scan, backtest, stock_data,
+                )
+            except Exception as e:
+                logger.warning("日报 PDF 生成失败: %s", e)
+
             # 构建邮件内容（使用空警报列表）
             body = self._build_email_body(
                 [],
@@ -201,7 +221,7 @@ class EmailNotifier:
             )
 
             # 发送邮件
-            self._send_email(subject, body, portfolio_chart_dict=portfolio_chart_dict)
+            self._send_email(subject, body, portfolio_chart_dict=portfolio_chart_dict, pdf_bytes=pdf_bytes)
 
             logger.info(f"每日报告邮件任务完成 ({self.receiver_email}) (来自Session)")
 
@@ -1912,7 +1932,7 @@ class EmailNotifier:
 
     # ────────────────────────────────────
 
-    def _send_email(self, subject, body, chart_png_bytes=None, portfolio_chart_dict=None):
+    def _send_email(self, subject, body, chart_png_bytes=None, portfolio_chart_dict=None, pdf_bytes=None):
         """
         发送邮件
 
@@ -1921,7 +1941,7 @@ class EmailNotifier:
             body: 邮件正文（HTML格式）
             chart_png_bytes: 告警走势图 PNG 字节（可选），CID=chart001
             portfolio_chart_dict: 投资组合走势图 {"a_share": bytes, "non_a_share": bytes}
-                                   CID: chart002=A股, chart003=非A股
+            pdf_bytes: 日报 PDF 附件 bytes（可选）
         """
         import os
 
@@ -1946,20 +1966,20 @@ class EmailNotifier:
 
             if has_any_chart:
                 # 有任意图表：MIMEMultipart("related") 容器，HTML + 内嵌图片
-                msg = MIMEMultipart("related")
-                msg.policy = policy.default
+                inner = MIMEMultipart("related")
+                inner.policy = policy.default
 
                 # 内嵌 alternative（HTML）
                 alt = MIMEMultipart("alternative")
                 alt.attach(html_part)
-                msg.attach(alt)
+                inner.attach(alt)
 
                 # 添加告警走势图（CID: chart001）
                 if chart_png_bytes:
                     image = MIMEImage(chart_png_bytes, "png")
                     image.add_header("Content-ID", "<chart001>")
                     image.add_header("Content-Disposition", "inline", filename="chart.png")
-                    msg.attach(image)
+                    inner.attach(image)
                     logger.info("告警走势图以 CID chart001 嵌入邮件")
 
                 # 添加投资组合走势图（CID: chart002=A股, chart003=非A股）
@@ -1972,13 +1992,27 @@ class EmailNotifier:
                             img.add_header("Content-ID", f"<{cid}>")
                             img.add_header("Content-Disposition", "inline",
                                            filename=f"portfolio_{group_key}.png")
-                            msg.attach(img)
+                            inner.attach(img)
                             logger.info(f"投资组合走势图以 CID {cid} 嵌入邮件")
             else:
                 # 无图表：保持原逻辑
-                msg = MIMEMultipart("alternative")
+                inner = MIMEMultipart("alternative")
+                inner.policy = policy.default
+                inner.attach(html_part)
+
+            # 如有 PDF 附件，外层包 MIMEMultipart("mixed")
+            if pdf_bytes:
+                from email.mime.application import MIMEApplication
+                msg = MIMEMultipart("mixed")
                 msg.policy = policy.default
-                msg.attach(html_part)
+                msg.attach(inner)
+                pdf_part = MIMEApplication(pdf_bytes, "pdf")
+                pdf_part.add_header("Content-Disposition", "attachment",
+                                    filename="日报.pdf")
+                msg.attach(pdf_part)
+                logger.info("日报 PDF 已附加到邮件")
+            else:
+                msg = inner
 
             # 邮件主题（使用UTF-8编码策略自动处理）
             msg["Subject"] = subject
@@ -2138,4 +2172,265 @@ class EmailNotifier:
             logger.error(
                 "保存邮件副本失败: %s, 目标目录: %s", e, self.email_archive_dir
             )
+            return None
+
+    # ── 日报 PDF 生成 ──
+
+    def _chart_deviation_timeline(
+        self, signal_scan, backtest, base64=True,
+    ) -> str:
+        """
+        偏离度 30 日折线图: 取偏离绝对值最大的 5 只标的 + 触发信号的标的，
+        叠加折线。虚线标注买入阈值。
+
+        Returns:
+            base64 PNG 字符串 或 HTML <img> 标签
+        """
+        import io, base64
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from ..utils.font_setup import setup_cjk_font
+
+        setup_cjk_font()
+
+        snapshot = (getattr(signal_scan, "indicator_snapshot", {})
+                    if signal_scan else {})
+        if not snapshot:
+            return ""
+
+        # 取偏离度最大的 5 只
+        dev_codes = []
+        for code, vals in snapshot.items():
+            d = vals.get("deviation", 0)
+            dev_codes.append((code, abs(d), d))
+        dev_codes.sort(key=lambda x: x[1], reverse=True)
+        top5 = [c for c, _, _ in dev_codes[:5]]
+
+        # 加触发信号的标的
+        strategy_alerts = getattr(signal_scan, "alerts", []) if signal_scan else []
+        for a in strategy_alerts:
+            code = getattr(a, "stock_code", "")
+            if code and code not in top5:
+                top5.append(code)
+        top5 = top5[:8]  # 最多 8 条线
+
+        # 获取历史数据（需要 session._historical）
+        # 这里只能从最近 60 天的历史中提取 deviation
+        # 简化: 用 snapshot 做单点标注
+        fig, ax = plt.subplots(figsize=(6.5, 2.2), dpi=120)
+        colors = ["#2d8a56", "#c9a84c", "#2980b9", "#c0392b",
+                  "#8e44ad", "#e67e22", "#1abc9c", "#34495e"]
+
+        for i, code in enumerate(top5):
+            vals = snapshot.get(code, {})
+            d = vals.get("deviation", 0) * 100  # → %
+            color = colors[i % len(colors)]
+            ax.barh(i, d, color=color, height=0.5, alpha=0.85)
+            label = f"{code[-4:]} {d:+.1f}%"
+            x_pos = d + (0.5 if d >= 0 else -0.5)
+            ha = "left" if d >= 0 else "right"
+            ax.text(x_pos, i, label, va="center", ha=ha, fontsize=7,
+                    color=color, fontweight="bold")
+
+        # 买入阈值虚线
+        ax.axvline(x=-0.5, color="#888", linestyle="--", linewidth=0.6, alpha=0.5)
+        ax.text(-0.5, len(top5)-0.3, " 买入阈值 -0.5%", fontsize=6,
+                color="#888", va="bottom")
+
+        ax.set_yticks(range(len(top5)))
+        ax.set_yticklabels([c[-4:] for c in top5], fontsize=7)
+        ax.invert_yaxis()
+        ax.set_xlabel("偏离度 %", fontsize=7)
+        ax.axvline(x=0, color="#ccc", linewidth=0.5)
+        ax.grid(axis="x", alpha=0.2)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        plt.tight_layout(pad=0.5)
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=120, bbox_inches="tight",
+                    facecolor="white")
+        plt.close(fig)
+        buf.seek(0)
+
+        if base64:
+            b64 = base64.b64encode(buf.read()).decode()
+            return f'<img src="data:image/png;base64,{b64}" style="max-width:100%"/>'
+        return buf.read()
+
+    def _generate_daily_pdf(
+        self, session, alert_stocks, signal_scan, backtest, stock_data,
+    ) -> bytes | None:
+        """生成日报 PDF，返回 bytes（WeasyPrint 不可用时返回 None）"""
+        try:
+            from weasyprint import HTML  # noqa: F811
+        except ImportError:
+            logger.info("WeasyPrint 未安装, 跳过 PDF 生成")
+            return None
+        try:
+            import io
+            from weasyprint import HTML
+
+            # 1. 图表
+            chart_img = self._chart_deviation_timeline(signal_scan, backtest, base64=True)
+
+            # 2. KPI
+            sa = getattr(signal_scan, "alerts", None) or [] if signal_scan else []
+            buy_count = len(sa)
+            bt_a = backtest.get("a_share", {}) if backtest else {}
+            bt_n = backtest.get("non_a_share", {}) if backtest else {}
+
+            def _kpi(vals, labels, colors):
+                parts = []
+                for v, l, c in zip(vals, labels, colors):
+                    cs = "green" if c == "g" else "red" if c == "r" else ""
+                    parts.append(
+                        f'<div class="kpi"><div class="num {cs}">{v}</div>'
+                        f'<div class="label">{l}</div></div>'
+                    )
+                return "\n".join(parts)
+
+            kpi_vals = [
+                str(buy_count),
+                f"{bt_a.get('total_return',0):+.1f}%",
+                f"{bt_n.get('total_return',0):+.1f}%",
+                "✓" if bt_a.get("total_return", 0) > 0 else "✗",
+            ]
+            kpi_labels = ["A股买入", "A股策略活", "境外策略", "策略状态"]
+            kpi_colors = ["", "g" if bt_a.get("total_return",0) > 0 else "r",
+                          "g" if bt_n.get("total_return",0) > 0 else "r",
+                          "g" if buy_count > 0 else ""]
+
+            # 3. 触发信号行
+            trigger_rows = ""
+            consensus = getattr(signal_scan, "consensus", None) if signal_scan else None
+            consensus_stocks = set(consensus.consensus_stocks) if consensus else set()
+            for a in sa:
+                code = getattr(a, "stock_code", "?")
+                label = getattr(a, "rule_label", "?")
+                cv = getattr(a, "current_value", "—")
+                bg = "buy"
+                trigger_rows += (
+                    f'<div class="row {bg}">'
+                    f'<span class="code">{code}</span> {label} · {cv}'
+                    f'</div>'
+                )
+            if not trigger_rows:
+                trigger_rows = '<div class="row" style="color:#888">今日无触发信号</div>'
+
+            # 4. 表
+            snapshot = (getattr(signal_scan, "indicator_snapshot", {})
+                        if signal_scan else {})
+            cons_inds = consensus.consensus_indicators if consensus else ["deviation","rsi"]
+
+            table_rows = ""
+            header_cols = ["标的"] + cons_inds + ["息%", "PE", "PB", "信号"]
+            num_cols = set(cons_inds + ["息%", "PE", "PB"])
+            table_rows += "<tr>" + "".join(
+                '<th class="num">' + c + "</th>" if c in num_cols
+                else "<th>" + c + "</th>"
+                for c in header_cols
+            ) + "</tr>"
+
+            # A 股分组
+            a_codes = sorted(
+                [c for c in snapshot if c.isdigit() or c.replace(".","").isdigit()],
+                key=lambda c: (snapshot[c].get("deviation", 0) or 0),
+            )
+            for code in a_codes:
+                vals = snapshot.get(code, {})
+                sig = "█" if code in set(getattr(a, "stock_code","") for a in sa) else "—"
+                row_class = "signal-buy" if sig == "█" else ""
+                cells = [f"<td>{code}</td>"]
+                for ind in cons_inds:
+                    v = vals.get(ind, 0) or 0
+                    if ind == "deviation":
+                        color = "green" if v >= 0 else "red"
+                        cells.append(f'<td class="num {color}">{v*100:+.1f}%</td>')
+                    else:
+                        cells.append(f'<td class="num">{v:.2f}</td>')
+                cells.append(f'<td class="num">{vals.get("dividend_yield","—") or "—"}</td>')
+                cells.append(f'<td class="num">{vals.get("pe_ratio","—") or "—"}</td>')
+                cells.append(f'<td class="num">{vals.get("pb_ratio","—") or "—"}</td>')
+                cells.append(f"<td>{sig}</td>")
+                table_rows += f'<tr class="{row_class}">{"".join(cells)}</tr>'
+
+            # 境外分组
+            nona_codes = sorted(
+                [c for c in snapshot if c not in a_codes],
+                key=lambda c: (snapshot[c].get("deviation", 0) or 0),
+            )
+            if nona_codes:
+                table_rows += (
+                    f'<tr class="group-divider">'
+                    f'<td colspan="{len(header_cols)}">境外 · {len(nona_codes)} 只</td>'
+                    f'</tr>'
+                )
+            for code in nona_codes:
+                vals = snapshot.get(code, {})
+                sig = "█" if code in set(getattr(a,"stock_code","") for a in sa) else "—"
+                row_class = "signal-buy" if sig == "█" else ""
+                cells = [f"<td>{code}</td>"]
+                for ind in cons_inds:
+                    v = vals.get(ind, 0) or 0
+                    if ind == "deviation":
+                        color = "green" if v >= 0 else "red"
+                        cells.append(f'<td class="num {color}">{v*100:+.1f}%</td>')
+                    else:
+                        cells.append(f'<td class="num">{v:.2f}</td>')
+                cells.append(f'<td class="num">{vals.get("dividend_yield","—") or "—"}</td>')
+                cells.append(f'<td class="num">{vals.get("pe_ratio","—") or "—"}</td>')
+                cells.append(f'<td class="num">{vals.get("pb_ratio","—") or "—"}</td>')
+                cells.append(f"<td>{sig}</td>")
+                table_rows += f'<tr class="{row_class}">{"".join(cells)}</tr>'
+
+            # 5. 脚注
+            buy_sigs = consensus.buy_signal_counts if consensus else {}
+            strat_note = " · ".join(list(buy_sigs.keys())[:4]) if buy_sigs else "—"
+            bt_text = (
+                f"A股: 策略 {bt_a.get('total_return',0):+.1f}%"
+                if bt_a else ""
+            )
+            if bt_a.get("benchmarks"):
+                for bn, bv in bt_a["benchmarks"].items():
+                    beat = "✓" if bt_a.get("total_return",0) > bv else "✗"
+                    bt_text += f" vs {bn} {bv:+.1f}% {beat}"
+
+            # 6. 渲染
+            template = (
+                Path(__file__).parent.parent / "templates" / "report_daily.html"
+            ).read_text(encoding="utf-8")
+
+            html = template.replace("__KPI0__", kpi_vals[0])
+            html = html.replace("__KPI0_LABEL__", kpi_labels[0])
+            html = html.replace("__KPI0_COLOR__", " green" if kpi_colors[0]=="g" else " red" if kpi_colors[0]=="r" else "")
+            html = html.replace("__KPI1__", kpi_vals[1])
+            html = html.replace("__KPI1_LABEL__", kpi_labels[1])
+            html = html.replace("__KPI1_COLOR__", " green" if kpi_colors[1]=="g" else " red" if kpi_colors[1]=="r" else "")
+            html = html.replace("__KPI2__", kpi_vals[2])
+            html = html.replace("__KPI2_LABEL__", kpi_labels[2])
+            html = html.replace("__KPI2_COLOR__", " green" if kpi_colors[2]=="g" else " red" if kpi_colors[2]=="r" else "")
+            html = html.replace("__KPI3__", kpi_vals[3])
+            html = html.replace("__KPI3_LABEL__", kpi_labels[3])
+            html = html.replace("__KPI3_COLOR__", " green" if kpi_colors[3]=="g" else " red" if kpi_colors[3]=="r" else "")
+
+            html = html.replace("{chart_img}", chart_img)
+            html = html.replace("{trigger_rows}", trigger_rows)
+            html = html.replace("{table_rows}", table_rows)
+            html = html.replace("{strategy_footnote}", f"策略信号: {strat_note}")
+            html = html.replace("{backtest_footnote}", bt_text)
+
+            info = self._get_server_info()
+            html = html.replace("{report_date}",
+                datetime.now().strftime("%Y-%m-%d %A"))
+            html = html.replace("{server_hostname}",
+                info.get("hostname", ""))
+
+            # WeasyPrint
+            pdf_bytes = HTML(string=html).write_pdf()
+            return pdf_bytes
+
+        except Exception as e:
+            logger.error("生成日报 PDF 失败: %s", e)
             return None

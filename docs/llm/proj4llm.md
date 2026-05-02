@@ -1,7 +1,7 @@
 # 股票量化系统 - 关键设计决策文档
 
-**文档版本**: v3.5 (策略搜索优化器)
-**最后更新**: 2026-04-29
+**文档版本**: v3.6 (日报重设计 + PDF 附件)
+**最后更新**: 2026-05-02
 **压缩目标**: <1500行，保留关键设计决策
 
 ---
@@ -594,6 +594,62 @@ python main.py --optimize --iterations 200 --drawdown-limit -30
 ```
 
 产出: `data/optimizer/{id}_{group}_strategies.yaml` + `_convergence.png` + `_report.html`
+
+---
+
+## 📧 日报重设计 (v3.6)
+
+### 设计哲学
+
+日报不是数据库 dump。每一条数据必须回答一个明确的投资决策问题。
+
+| 呈现层级 | 时间 | 回答 |
+|----------|------|------|
+| P1 KPI 卡片 (2秒) | 今天有信号吗 / 策略还跑赢大盘吗 |
+| P2 偏离趋势 (5秒) | 这是长期趋势还是短期波动 |
+| P3 触发信号 (5秒) | 具体哪只、什么信号、当前值是多少 |
+| P4 完整表 (10秒) | 所有标的今日指标全貌 + 基本面辅助判断 |
+| P5 策略健康 (2秒) | 这套策略还靠得住吗 / 有没有背离 |
+
+### 关键设计
+
+**1. 一张表原则**: 全部 27 只标的在一张表里，A 股在上、境外在下。技术列动态（只显示策略实际引用的指标），基本面 3 列固定（股息率/PE/PB）。
+
+**2. 偏离度 30 日折线图**: 取绝对值最大的 5 只，叠线在同一张图上。X=日期、Y=偏离度%。灰色虚线标注买入阈值。平滑下行=趋势走弱，锯齿震荡=短期波动。
+
+**3. PDF 附件 + 邮件正文分离**: WeasyPrint 将 HTML 渲染为 PDF，yagmail 作为附件发送。邮件正文仅含摘要文字。消除时效 token 链接问题。
+
+**4. 基本面对冲**: 技术面信号优异但 PE 极高/股息率骤降的标的全表可见——不直接决策，但提供手动筛选依据。
+
+### 技术实现
+
+```
+--once 流程:
+  │
+  ├─ signal_scanner.scan()        → 信号 + 指标快照
+  ├─ signal_scanner.run_backtest() → 回测数据
+  │
+  ├─ _chart_deviation_timeline()  → matplotlib PNG (base64)
+  ├─ report_daily.html 模板        → str.format() 渲染
+  ├─ WeasyPrint(html)             → PDF bytes
+  └─ yagmail.send(attachments=[pdf]) → 邮件附件
+```
+
+### 待清理文件 (确认日报格式后再删)
+
+| 文件 | 操作 | 原因 |
+|------|------|------|
+| `global_instances.py:56-140` | 删除 token 系统 | 时效链接替换为 PDF 附件 |
+| `health_handler.py:503-530` | 删除 `handle_report()` + `/report/` 路由 | 同上 |
+| `email_notifier.py` report_link 生成 | 删除 (~30行) | 同上 |
+| `email_notifier.py` all_rows_price/fundamental 构建 | 删除 (~50行) | 替换为统一 `_build_daily_table()` |
+| `email_template.html` | 大幅缩减 | 邮件正文简化 |
+| `alert_section.html` | 可删 | 不再独立模板渲染 |
+
+### 依赖
+
+- `weasyprint>=60.0` — HTML → PDF 渲染
+- 服务端系统依赖: `libcairo2 libpango-1.0-0 libgdk-pixbuf2.0-0 libffi-dev`
 
 ---
 
