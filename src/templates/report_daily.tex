@@ -1,0 +1,95 @@
+% !TEX program = xelatex
+\documentclass[11pt,a4paper]{ctexart}
+
+% ── 页面 ──
+\usepackage[top=1.5cm,bottom=1.2cm,left=1.2cm,right=1.2cm]{geometry}
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\footnotesize\color{gray} Stock Quant · Auto Generated}
+\renewcommand{\headrulewidth}{0pt}
+
+% ── 颜色 ──
+\usepackage[table]{xcolor}
+\definecolor{navy}{HTML}{1A2A3A}
+\definecolor{gold}{HTML}{C9A84C}
+\definecolor{green}{HTML}{2D8A56}
+\definecolor{red}{HTML}{B85450}
+\definecolor{stripe}{HTML}{F8F9FA}
+\definecolor{bg}{HTML}{E8F5E9}
+\definecolor{darkbg}{HTML}{1A2A3A}
+
+% ── 表格 ──
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+
+% ── 数学 ──
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+% ── 插图 ──
+\usepackage{graphicx}
+
+% ── 超链接 ──
+\usepackage{hyperref}
+\hypersetup{colorlinks,linkcolor=blue,urlcolor=blue}
+
+% ── 行距 ──
+\setlength{\parskip}{0pt}
+\setlength{\parindent}{0pt}
+
+\begin{document}
+
+% ═══════ 头部横幅 ═══════
+\begin{center}
+\colorbox{navy}{%
+\begin{minipage}{\dimexpr\textwidth-2\fboxsep\relax}
+\centering
+\vspace{6pt}
+{\huge\color{white}\textbf{Stock Quant Report}}\\[2pt]
+{\small\color{gray!50}\VAR{report_date} · \VAR{server_hostname}}
+\vspace{6pt}
+\end{minipage}}
+\end{center}
+
+% ═══════ KPI 行 ═══════
+\begin{center}
+\fboxsep=6pt
+\colorbox{navy!5}{%
+\begin{tabular}{c@{\hspace{10pt}}c@{\hspace{10pt}}c@{\hspace{10pt}}c}
+\multicolumn{1}{c}{\small 今日买入} &
+\multicolumn{1}{c}{\small A股策略} &
+\multicolumn{1}{c}{\small 境外策略} &
+\multicolumn{1}{c}{\small 策略状态} \\[4pt]
+{\Large\color{gold}\textbf{\VAR{kpi_buy}}} &
+{\Large\color{\VAR{kpi_color_a}}\textbf{\VAR{kpi_a}}} &
+{\Large\color{\VAR{kpi_color_n}}\textbf{\VAR{kpi_n}}} &
+{\Large\color{\VAR{kpi_color_s}}\textbf{\VAR{kpi_s}}}
+\end{tabular}}
+\end{center}
+
+% ═══════ Section: 偏离度走势 ═══════
+\section*{\color{navy}\rule[-4pt]{4pt}{14pt}\quad 偏离度 30 日走势}
+\VAR{chart_section}
+
+% ═══════ Section: 触发信号 ═══════
+\section*{\color{navy}\rule[-4pt]{4pt}{14pt}\quad 触发信号}
+\VAR{trigger_section}
+
+% ═══════ Section: 完整监控表 ═══════
+\section*{\color{navy}\rule[-4pt]{4pt}{14pt}\quad 完整监控}
+\VAR{table_section}
+
+% ═══════ Section: 策略脚注 ═══════
+\vspace{4pt}
+{\footnotesize\color{gray}
+策略: \VAR{strategy_note}\\[2pt]
+\VAR{backtest_note}
+}
+
+% ═══════ 附录: 方法论 ═══════
+\newpage
+\VAR{appendix_section}
+
+\end{document}

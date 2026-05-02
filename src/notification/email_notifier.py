@@ -2262,12 +2262,270 @@ class EmailNotifier:
     def _generate_daily_pdf(
         self, session, alert_stocks, signal_scan, backtest, stock_data,
     ) -> bytes | None:
-        """生成日报 PDF，返回 bytes（WeasyPrint 不可用时返回 None）"""
+        """生成日报 PDF（xelatex 编译 LaTeX 模板），返回 bytes"""
+        import tempfile, subprocess, os, io, re
+
         try:
-            from weasyprint import HTML  # noqa: F811
-        except ImportError:
-            logger.info("WeasyPrint 未安装, 跳过 PDF 生成")
+            # 1. 图表 PNG
+            chart_buf = self._chart_deviation_timeline(signal_scan, backtest, base64=False)
+            chart_path = None
+            if chart_buf:
+                fd, chart_path = tempfile.mkstemp(suffix=".png", prefix="chart_")
+                with open(fd, "wb") as f:
+                    f.write(chart_buf if isinstance(chart_buf, bytes) else chart_buf.getvalue())
+                chart_section = f"\\includegraphics[width=\\textwidth]{{{chart_path}}}"
+            else:
+                chart_section = "{\\color{gray}\\small 今日无图表数据}"
+
+            # 2. KPI
+            sa = getattr(signal_scan, "alerts", None) or [] if signal_scan else []
+            buy_count = len(sa)
+            bt_a = backtest.get("a_share", {}) if backtest else {}
+            bt_n = backtest.get("non_a_share", {}) if backtest else {}
+
+            ta = bt_a.get("total_return", 0) or 0
+            tn = bt_n.get("total_return", 0) or 0
+            kpi_buy = str(buy_count)
+            kpi_a = f"{ta:+.1f}\\%"
+            kpi_n = f"{tn:+.1f}\\%"
+            kpi_s = "✓ 策略有效" if ta > 0 or tn > 0 else "✗ 策略无效"
+            kpi_color_a = "green" if ta > 0 else "red"
+            kpi_color_n = "green" if tn > 0 else "red"
+            kpi_color_s = "green" if buy_count > 0 else "red"
+
+            # 3. 触发信号
+            trigger_lines = []
+            for a in sa:
+                code = getattr(a, "stock_code", "?")
+                label = getattr(a, "rule_label", "?")
+                cv = getattr(a, "current_value", "—")
+                trigger_lines.append(
+                    f"\\textbf{{{code}}} & {label} & {cv} \\\\"
+                )
+            trigger_section = (
+                "\\begin{tabular}{lll}\n" +
+                "\\textbf{标的} & \\textbf{信号规则} & \\textbf{当前值}\\\\\n" +
+                "\n".join(trigger_lines) +
+                "\n\\end{tabular}"
+                if trigger_lines else
+                "{\\color{gray}\\small 今日无触发信号}"
+            )
+
+            # 4. 表: 合并 indicator_snapshot + fundamentals
+            snapshot = (getattr(signal_scan, "indicator_snapshot", {})
+                        if signal_scan else {})
+            consensus = (getattr(signal_scan, "consensus", None)
+                         if signal_scan else None)
+            cons_inds = consensus.consensus_indicators if consensus else ["deviation", "rsi"]
+            fundamentals = {}
+            if stock_data is not None and hasattr(stock_data, "iterrows"):
+                for _, row in stock_data.iterrows():
+                    code = str(row.get("stock_code", ""))
+                    if not code:
+                        continue
+                    pe = row.get("pe_ratio")
+                    pb = row.get("pb_ratio")
+                    dy = row.get("dividend_yield")
+                    fundamentals[code] = {
+                        "pe": f"{pe:.1f}" if pe is not None and not pd.isna(pe) else "—",
+                        "pb": f"{pb:.2f}" if pb is not None and not pd.isna(pb) else "—",
+                        "dy": f"{dy:.2f}" if dy is not None and not pd.isna(dy) else "—",
+                    }
+
+            def _esc(s):
+                """LaTeX 转义"""
+                return str(s).replace("&", "\\&").replace("%", "\\%").replace("#", "\\#").replace("$", "\\$").replace("_", "\\_")
+
+            header_cols = ["标的"] + cons_inds + ["息\\%", "PE", "PB", "信号"]
+            # 列格式: l for 标的, c for signal, r for numbers
+            col_fmt = "l" + "r" * len(cons_inds) + "r" * 3 + "c"
+            table_rows = ""
+            alert_codes = set(getattr(a, "stock_code", "") for a in sa)
+
+            a_codes = sorted(
+                [c for c in snapshot if c.isdigit() or c.replace(".", "").isdigit()],
+                key=lambda c: (abs(snapshot[c].get("deviation", 0) or 0)),
+                reverse=True,
+            )
+            for code in a_codes:
+                vals = snapshot.get(code, {})
+                sig = "●" if code in alert_codes else ""
+                cells = [_esc(code)]
+                for ind in cons_inds:
+                    v = vals.get(ind, 0) or 0
+                    if ind == "deviation":
+                        cells.append(f"{v*100:+.1f}\\%")
+                    else:
+                        cells.append(f"{v:.2f}")
+                fund = fundamentals.get(code, {})
+                cells.append(fund.get("dy", "—"))
+                cells.append(fund.get("pe", "—"))
+                cells.append(fund.get("pb", "—"))
+                cells.append(sig)
+                row_color = "\\rowcolor{bg!30}" if sig else ""
+                # LaTeX 分割 A 股和境外
+                is_a = code.isdigit() or code.replace(".", "").isdigit()
+                table_rows += f"{row_color}{' & '.join(cells)} \\\\\n"
+
+            nona_codes = sorted(
+                [c for c in snapshot if c not in a_codes],
+                key=lambda c: (abs(snapshot[c].get("deviation", 0) or 0)),
+                reverse=True,
+            )
+            if nona_codes:
+                table_rows += (
+                    f"\\multicolumn{{{len(header_cols)}}}{{l}}{{\\color{{navy}}\\textbf{{境外 · {len(nona_codes)} 只}}}}\\\\\n"
+                )
+            for code in nona_codes:
+                vals = snapshot.get(code, {})
+                sig = "●" if code in alert_codes else ""
+                cells = [_esc(code)]
+                for ind in cons_inds:
+                    v = vals.get(ind, 0) or 0
+                    if ind == "deviation":
+                        cells.append(f"{v*100:+.1f}\\%")
+                    else:
+                        cells.append(f"{v:.2f}")
+                fund = fundamentals.get(code, {})
+                cells.append(fund.get("dy", "—"))
+                cells.append(fund.get("pe", "—"))
+                cells.append(fund.get("pb", "—"))
+                cells.append(sig)
+                row_color = "\\rowcolor{bg!30}" if sig else ""
+                table_rows += f"{row_color}{' & '.join(cells)} \\\\\n"
+
+            table_section = (
+                "\\small\n"
+                "\\rowcolors{2}{white}{stripe}\n"
+                f"\\begin{{tabular}}{{{col_fmt}}}\n"
+                "\\toprule\n"
+                + " & ".join(header_cols) + " \\\\\n"
+                "\\midrule\n"
+                + table_rows +
+                "\\bottomrule\n"
+                "\\end{tabular}"
+            )
+
+            # 5. 脚注
+            buy_sigs = consensus.buy_signal_counts if consensus else {}
+            strat_note = " · ".join(list(buy_sigs.keys())[:4]) if buy_sigs else "—"
+            bt_text = f"A股策略超额 {ta:+.1f}\\%"
+            if bt_a.get("benchmarks"):
+                for bn, bv in bt_a["benchmarks"].items():
+                    beat = "✓" if ta > bv else "✗"
+                    bt_text += f"\\quad vs {bn} {bv:+.1f}\\% {beat}"
+
+            # 6. 附录
+            md_path = (
+                Path(__file__).parent.parent / "templates" / "appendix_methodology.md"
+            )
+            appendix_section = ""
+            if md_path.exists():
+                md_text = md_path.read_text(encoding="utf-8")
+                # 简单的 MD → LaTeX 转换
+                latex_lines = []
+                in_list = False
+                in_table = False
+                for line in md_text.split("\n"):
+                    stripped = line.strip()
+                    if stripped.startswith("# "):
+                        if in_list:
+                            latex_lines.append("\\end{itemize}")
+                            in_list = False
+                        if in_table:
+                            latex_lines.append("\\end{tabular}")
+                            in_table = False
+                        latex_lines.append(f"\\section*{{{stripped[2:]}}}")
+                    elif stripped.startswith("## "):
+                        if in_list:
+                            latex_lines.append("\\end{itemize}")
+                            in_list = False
+                        latex_lines.append(f"\\subsection*{{{stripped[3:]}}}")
+                    elif stripped.startswith("- "):
+                        if not in_list:
+                            latex_lines.append("\\begin{itemize}")
+                            in_list = True
+                        item = stripped[2:]
+                        item = re.sub(r'\*\*(.+?)\*\*', r'\\textbf{\1}', item)
+                        latex_lines.append(f"  \\item {item}")
+                    elif stripped.startswith("---"):
+                        latex_lines.append("\\vspace{4pt}\\hrule\\vspace{4pt}")
+                    elif stripped.startswith("$$"):
+                        formula = stripped.strip("$").strip()
+                        latex_lines.append(f"\\[{formula}\\]")
+                    elif stripped.startswith("|"):
+                        if not in_table:
+                            cols = stripped.count("|") - 1
+                            latex_lines.append(f"\\begin{{tabular}}{{{'l'*cols}}}")
+                            latex_lines.append("\\toprule")
+                            in_table = True
+                        else:
+                            cells = [c.strip() for c in stripped.split("|")[1:-1]]
+                            latex_lines.append(" & ".join(cells) + " \\\\")
+                    elif in_table and not stripped.startswith("|"):
+                        latex_lines.append("\\bottomrule")
+                        latex_lines.append("\\end{tabular}")
+                        in_table = False
+                    elif stripped:
+                        item = re.sub(r'\*\*(.+?)\*\*', r'\\textbf{\1}', stripped)
+                        item = re.sub(r'\$(.+?)\$', r'$\1$', item)
+                        latex_lines.append(f"{item}\n")
+                if in_list:
+                    latex_lines.append("\\end{itemize}")
+                if in_table:
+                    latex_lines.append("\\end{tabular}")
+                appendix_section = "\n".join(latex_lines)
+
+            # 7. 渲染模板
+            tex_path = Path(__file__).parent.parent / "templates" / "report_daily.tex"
+            template = tex_path.read_text(encoding="utf-8")
+
+            info = self._get_server_info()
+            html = template.replace("\\VAR{report_date}", datetime.now().strftime("%Y-%m-%d %A"))
+            html = html.replace("\\VAR{server_hostname}", info.get("hostname", ""))
+            html = html.replace("\\VAR{kpi_buy}", kpi_buy)
+            html = html.replace("\\VAR{kpi_a}", kpi_a)
+            html = html.replace("\\VAR{kpi_n}", kpi_n)
+            html = html.replace("\\VAR{kpi_s}", kpi_s)
+            html = html.replace("\\VAR{kpi_color_a}", kpi_color_a)
+            html = html.replace("\\VAR{kpi_color_n}", kpi_color_n)
+            html = html.replace("\\VAR{kpi_color_s}", kpi_color_s)
+            html = html.replace("\\VAR{chart_section}", chart_section)
+            html = html.replace("\\VAR{trigger_section}", trigger_section)
+            html = html.replace("\\VAR{table_section}", table_section)
+            html = html.replace("\\VAR{strategy_note}", strat_note)
+            html = html.replace("\\VAR{backtest_note}", bt_text)
+            html = html.replace("\\VAR{appendix_section}", appendix_section)
+
+            # 8. xelatex 编译
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tex_file = Path(tmpdir) / "report.tex"
+                tex_file.write_text(html, encoding="utf-8")
+
+                for _ in range(2):  # 两次编译（交叉引用）
+                    result = subprocess.run(
+                        ["xelatex", "-interaction=nonstopmode", "-output-directory",
+                         tmpdir, str(tex_file)],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    if result.returncode != 0:
+                        logger.warning("xelatex 编译警告: %s", result.stderr[-300:])
+
+                pdf_file = Path(tmpdir) / "report.pdf"
+                if pdf_file.exists():
+                    pdf_bytes = pdf_file.read_bytes()
+                    logger.info("日报 PDF 生成成功 (%d bytes)", len(pdf_bytes))
+                    return pdf_bytes
+                else:
+                    logger.error("xelatex 未产出 PDF")
+                    return None
+
+        except Exception as e:
+            logger.error("生成日报 PDF 失败: %s", e)
             return None
+        finally:
+            if chart_path and os.path.exists(chart_path):
+                os.unlink(chart_path)
         try:
             import io
             from weasyprint import HTML

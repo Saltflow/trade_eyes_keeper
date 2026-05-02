@@ -36,4 +36,4 @@ scipy>=1.10.0
 # 日志
 pytest>=7.4.0
 pytest-mock>=3.11.0
-ruff>=0.4.0  # 代码格式化和检查weasyprint>=60.0
+ruff>=0.4.0  # 代码格式化和检查
