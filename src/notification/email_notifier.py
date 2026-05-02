@@ -2445,18 +2445,53 @@ class EmailNotifier:
             html = html.replace("{server_hostname}",
                 info.get("hostname", ""))
 
-            # 附录: 指标方法论 (Markdown → HTML)
+            # 附录: 指标方法论 (Markdown → HTML, LaTeX → PNG 内嵌)
             md_path = (
                 Path(__file__).parent.parent / "templates" / "appendix_methodology.md"
             )
             if md_path.exists():
-                import markdown
+                import markdown, re, io, base64
+                import matplotlib.pyplot as plt
+
                 md_text = md_path.read_text(encoding="utf-8")
+
+                def _tex_to_img(match):
+                    """matplotlib mathtext 渲染 LaTeX → base64 PNG"""
+                    formula = match.group(1)
+                    display = match.group(0).startswith("$$")
+                    w, h = (5.5, 0.45) if display else (3.5, 0.35)
+                    fs = 10 if display else 9
+                    try:
+                        fig, ax = plt.subplots(figsize=(w, h), dpi=100)
+                        ax.text(0.5, 0.5, f"${formula}$", fontsize=fs,
+                                ha="center", va="center", transform=ax.transAxes)
+                        ax.axis("off")
+                        buf = io.BytesIO()
+                        fig.savefig(buf, format="png", dpi=100,
+                                    bbox_inches="tight", facecolor="white")
+                        plt.close(fig)
+                        buf.seek(0)
+                        b64 = base64.b64encode(buf.read()).decode()
+                        tag = (
+                            f'<div style="text-align:center;margin:8px 0">'
+                            f'<img src="data:image/png;base64,{b64}" '
+                            f'style="max-width:100%"/></div>'
+                        ) if display else (
+                            f'<img src="data:image/png;base64,{b64}" '
+                            f'style="vertical-align:middle;height:1.1em"/>'
+                        )
+                        return tag
+                    except Exception as e:
+                        logger.debug("LaTeX render failed: %s", e)
+                        return f"<code>{formula}</code>"
+
+                md_text = re.sub(r"\$\$(.+?)\$\$", _tex_to_img, md_text, flags=re.DOTALL)
+                md_text = re.sub(r"\$(.+?)\$", _tex_to_img, md_text)
+
                 appendix = markdown.markdown(
                     md_text,
                     extensions=["tables", "fenced_code", "codehilite"],
                 )
-                # WeasyPrint 分页 + 基础样式
                 html += (
                     '<div style="page-break-before:always;font-size:9px;line-height:1.5;'
                     'padding:12px 16px">'
