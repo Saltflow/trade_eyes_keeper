@@ -1381,21 +1381,23 @@ class EmailNotifier:
                         register_report_token,
                     )
                     token = register_report_token(str(reports[0]))
-                    # 取公网 IP（排除 Docker/内网地址）
-                    full_ip = self._get_server_info().get("ip_address", "localhost")
-                    parts = []
-                    for raw in full_ip.replace("(优先)", "").replace("(", "").replace(")", "").split(","):
-                        for seg in raw.strip().split():
-                            if seg and ":" not in seg:  # skip IPv6
-                                parts.append(seg)
-                    # 优先公网 IP
+                    # 取公网 IP：优先用 ifconfig.me 结果，fallback 到 _get_server_info
                     server_ip = "localhost"
-                    for p in parts:
-                        if not p.startswith(("172.", "10.", "192.168.", "127.")):
-                            server_ip = p
-                            break
-                    if server_ip == "localhost" and parts:
-                        server_ip = parts[0]
+                    try:
+                        import urllib.request
+                        server_ip = (
+                            urllib.request.urlopen("https://ifconfig.me", timeout=8)
+                            .read().decode("utf-8").strip()
+                        )
+                    except Exception:
+                        full_ip = self._get_server_info().get("ip_address", "localhost")
+                        for part in full_ip.replace("(优先)", "").replace("(", "").replace(")", "").split(","):
+                            seg = part.strip().split()[0] if part.strip() else ""
+                            if seg and not seg.startswith(("172.", "10.", "192.168.", "127.")):
+                                server_ip = seg
+                                break
+                        if server_ip == "localhost":
+                            server_ip = full_ip.split(",")[0].strip().split()[0]
                     port = self.config.get("health_server", {}).get("port", 1933)
                     report_link = (
                         f'<p style="margin:8px 0;font-size:13px;color:#8899aa">'
