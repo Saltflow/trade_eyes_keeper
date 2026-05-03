@@ -2071,10 +2071,8 @@ class EmailNotifier:
         """
         发送部署通知邮件
 
-        Args:
-            deployment_info: 部署信息字典，包含部署详情
-            version: 部署版本号 (git commit hash)
-            summary: 部署摘要
+        Returns:
+            (ok, message): ok 为 True 表示邮件已发出，False 表示失败
         """
         try:
             # 获取服务器信息
@@ -2118,9 +2116,12 @@ class EmailNotifier:
             # 发送邮件
             self._send_email(subject, body)
             logger.info(f"部署通知邮件发送成功: {subject} (version={version})")
+            return True, "sent"
 
         except Exception as e:
-            logger.error(f"发送部署通知邮件失败: {e}")
+            msg = str(e)
+            logger.error(f"发送部署通知邮件失败: {msg}")
+            return False, msg
 
     def _save_email_copy(self, subject, body):
         """

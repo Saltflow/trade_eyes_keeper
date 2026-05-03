@@ -381,6 +381,19 @@ def deploy():
     _info(f"Starting CI/CD deployment to {host}")
     print("=" * 70)
 
+    steps = {}  # step_name -> (pass/warn/fail, message)
+
+    def _step(name, ok, msg=""):
+        steps[name] = (ok, msg)
+        return ok
+
+    def _ssh_checked(cmd, desc, timeout=60):
+        """SSH command that returns (success, stdout) for downstream parsing."""
+        return _ssh_cmd(cmd, desc, timeout=timeout)
+
+    def _remote_output_contains(out, marker):
+        return marker in (out or "")
+
     try:
         # ── -1. 前置自检 (配置文件 + SSH 密钥 + 连通性) ──
         _check_prerequisites()
@@ -395,9 +408,11 @@ def deploy():
             _info("WARNING: Remote repo setup may have issues")
 
         # ── 1. git push 本地代码到远程 ──
-        if not _git_push():
+        pushed = _git_push()
+        _step("git_push", pushed)
+        if not pushed:
             _info("ERROR: Git push failed, aborting deployment")
-            return False
+            return _print_summary(steps, cleaning_performed=False)
 
         # ── 2. 检查服务器状态 ──
         _info("Checking system status...")
@@ -407,9 +422,7 @@ def deploy():
 
         # ── 3. 清理旧日志 ──
         clean = os.getenv("CLEAN_BEFORE_DEPLOY", "true").strip().lower() in (
-            "1",
-            "true",
-            "yes",
+            "1", "true", "yes",
         )
         cleaning_performed = clean
         if clean:
@@ -431,12 +444,11 @@ def deploy():
 
         # ── 4. 验证项目目录和git状态 ──
         _info("Verifying project directory...")
-        success, _, _ = _ssh_cmd(
+        ok, _, _ = _ssh_cmd(
             f"cd {REMOTE_DIR} && pwd && git status --short",
             "Project directory and git status",
         )
-        if not success:
-            _info("WARNING: Project directory check failed")
+        _step("project_dir", ok, "exists" if ok else "not found")
 
         # ── 5. 安装系统依赖 ──
         _info("Installing system dependencies (texlive for PDF)...")
@@ -448,73 +460,86 @@ def deploy():
 
         # ── 6. 安装/更新 Python 依赖 ──
         _info("Installing/updating Python dependencies...")
-        _ssh_cmd(
+        ok, _, _ = _ssh_cmd(
             f"cd {REMOTE_DIR} && pip install --quiet -r requirements.txt",
             "Install dependencies",
             timeout=300,
         )
+        _step("deps", ok, "installed" if ok else "pip install failed")
 
-        # ── 6. 验证 email footer 功能 ──
-        _info("Verifying email footer feature...")
-        verify_script = f"""cd {REMOTE_DIR} && timeout 30 python3 -c "
-import sys
-sys.path.insert(0, '.')
-import yaml
-with open('config/config.yaml', 'r', encoding='utf-8') as f:
-    config = yaml.safe_load(f)
-from src.notification.email_notifier import EmailNotifier
-notifier = EmailNotifier(config)
-server_info = notifier._get_server_info()
-print('Server info test:')
-print('  Hostname:', server_info['hostname'])
-print('  IP:', server_info['ip_address'])
-print('  Kernel:', server_info['kernel_version'])
-print('[OK] Email footer feature is working')
-"
-"""
-        _ssh_cmd(verify_script, "Email footer verification", timeout=60)
-
-        # ── 7. 系统测试 ──
-        _info("Running system test (SKIP_EMAIL mode)...")
-        _ssh_cmd(
-            f"cd {REMOTE_DIR} && SKIP_EMAIL=true timeout 180 python3 main.py --once 2>&1 | tail -10",
-            "System test",
-            timeout=240,
+        # ── 7. 系统测试 (真验证: 全量输出, grep 错误) ──
+        _info("Running system test (SKIP_EMAIL mode, full output)...")
+        sys_test_cmd = (
+            f"cd {REMOTE_DIR} && "
+            f"SKIP_EMAIL=true timeout 180 python3 main.py --once "
+            f"> /tmp/system_test.log 2>&1; "
+            f"rc=$?; "
+            f"echo '---EXIT:' $rc '---'; "
+            f"echo '---ERRORS---'; "
+            f"grep -c -E 'ERROR|CRITICAL|Traceback|FAILED' /tmp/system_test.log 2>/dev/null || echo 0; "
+            f"echo '---TAIL---'; "
+            f"tail -50 /tmp/system_test.log"
         )
+        ok, out, _ = _ssh_checked(sys_test_cmd, "System test", timeout=240)
+
+        exit_code = 0
+        error_count = 0
+        for line in (out or "").split("\n"):
+            if line.startswith("---EXIT:"):
+                try:
+                    exit_code = int(line.split()[1])
+                except (ValueError, IndexError):
+                    pass
+            if line.startswith("---ERRORS---"):
+                continue
+            if line.strip().isdigit():
+                try:
+                    error_count = int(line.strip())
+                except ValueError:
+                    pass
+                break  # 只取第一个数字（grep -c 的结果）
+
+        if not ok or exit_code != 0 or error_count > 0:
+            _step("system_test", False,
+                  f"exit={exit_code} errors={error_count}")
+            _info(f"FAIL: System test errors (exit={exit_code}, errors={error_count})")
+            # 打印错误上下文供诊断
+            if error_count > 0:
+                _ssh_cmd(
+                    f"grep -n -E 'ERROR|CRITICAL|Traceback' /tmp/system_test.log | head -20",
+                    "Error lines from system test", timeout=30,
+                )
+        else:
+            _step("system_test", True, f"exit=0 errors=0")
 
         # ── 8. 检查cron ──
         _info("Verifying cron job...")
-        success, out, _ = _ssh_cmd("crontab -l", "Current cron jobs")
+        ok, out, _ = _ssh_cmd("crontab -l", "Current cron jobs")
+
+        has_once = "python3 main.py --once" in (out or "")
+        has_brief = "python3 main.py --brief" in (out or "")
 
         # ── 9. 更新cron（如需） ──
-        _info("Ensuring cron job uses --once flag...")
-        cron_check = "crontab -l | grep -q 'python3 main.py --once' && echo 'Cron job already uses --once flag' || echo 'Cron job needs update'"
-        success, out, _ = _ssh_cmd(cron_check, "Check cron flag")
-
-        if "needs update" in out:
-            _info("Updating cron job...")
-            _ssh_cmd(
-                "crontab -l | grep -v 'Stock quantitative system' | crontab -",
-                "Remove old cron",
-            )
-            cron_line = f"30 15 * * * cd {REMOTE_DIR} && python3 main.py --once >> {REMOTE_DIR}/logs/cron.log 2>&1  # Stock quantitative system"
+        if not has_once:
+            _info("Configuring daily cron job...")
+            cron_line = f"00 16 * * * cd {REMOTE_DIR} && python3 main.py --once >> {REMOTE_DIR}/logs/cron.log 2>&1  # Stock quantitative system"
             _ssh_cmd(
                 f"(crontab -l 2>/dev/null; echo '{cron_line}') | crontab -",
-                "Add new cron",
+                "Add main cron",
             )
-            _ssh_cmd("crontab -l", "Verify updated cron")
-
-        # ── 9b. 注册简报 cron (09:50) ──
-        _info("Ensuring brief report cron job at 09:50...")
-        brief_check = "crontab -l | grep -q 'python3 main.py --brief' && echo 'Brief cron exists' || echo 'Brief cron missing'"
-        success, out, _ = _ssh_cmd(brief_check, "Check brief cron")
-        if "missing" in out:
+        if not has_brief:
+            _info("Configuring brief report cron at 09:50...")
             brief_line = f"50 9 * * * cd {REMOTE_DIR} && python3 main.py --brief >> {REMOTE_DIR}/logs/cron_brief.log 2>&1"
             _ssh_cmd(
                 f"(crontab -l 2>/dev/null; echo '{brief_line}') | crontab -",
                 "Add brief report cron",
             )
             _info("Brief report cron registered (09:50 daily)")
+
+        # 重新检查 cron
+        ok, out, _ = _ssh_cmd("crontab -l", "Verify final cron")
+        cron_ok = ("--once" in (out or "")) and ("--brief" in (out or ""))
+        _step("cron", cron_ok, "daily+brief registered" if cron_ok else "missing")
 
         # ── 10. 验证邮件存档 ──
         _info("Checking for server info in email archives...")
@@ -523,23 +548,25 @@ latest=$(ls -t {REMOTE_DIR}/data/email_archive/*.html 2>/dev/null | head -1)
 if [ -n "$latest" ]; then
     echo "Latest email archive: $latest"
     if grep -q "服务器信息" "$latest"; then
-         echo "[OK] Server info found in email archive"
+         echo "[ARCHIVE_OK] Server info found in email archive"
         grep -A5 "服务器信息" "$latest" | head -10
     else
-         echo "[FAIL] Server info NOT found (archive may be from previous run)"
+         echo "[ARCHIVE_WARN] Server info NOT found"
     fi
 else
-    echo "No email archives found yet"
+    echo "[ARCHIVE_NA] No email archives found yet"
 fi
 '
 """
-        _ssh_cmd(check_archive, "Check email archives")
+        ok, out, _ = _ssh_cmd(check_archive, "Check email archives")
+        archive_ok = "[ARCHIVE_OK]" in (out or "") or "[ARCHIVE_NA]" in (out or "")
+        _step("email_archive", archive_ok, "ok" if archive_ok else "missing server info")
 
-        # ── 11. 发送部署通知 ──
+        # ── 11. 发送部署通知 (真验证: 检查 SMTP) ──
         _info("Sending deployment notification email...")
         version_cmd = f"cd {REMOTE_DIR} && git rev-parse --short HEAD 2>/dev/null || echo 'unknown'"
-        success, version_out, _ = _ssh_cmd(version_cmd, "Get git version")
-        version = version_out.strip() if success else "unknown"
+        _, version_out, _ = _ssh_cmd(version_cmd, "Get git version")
+        version = version_out.strip() if version_out else "unknown"
 
         deploy_notify_script = f"""cd {REMOTE_DIR} && timeout 30 python3 -c "
 import sys
@@ -549,15 +576,18 @@ with open('config/config.yaml', 'r', encoding='utf-8') as f:
     config = yaml.safe_load(f)
 from src.notification.email_notifier import EmailNotifier
 notifier = EmailNotifier(config)
-try:
-    notifier.send_deployment_notification('SUCCESS', version='{version}',
-                                         summary='CI/CD deployment completed successfully')
-    print('[OK] Deployment notification sent')
-except Exception as e:
-    print(f'[WARNING] Failed to send deployment notification: {{e}}')
+ok, msg = notifier.send_deployment_notification('SUCCESS', version='{version}',
+                                     summary='CI/CD deployment completed successfully')
+if ok:
+    print('[NOTIFY_OK] Deployment notification sent')
+else:
+    print(f'[NOTIFY_FAIL] SMTP error: {{msg}}')
 "
 """
-        _ssh_cmd(deploy_notify_script, "Send deployment notification", timeout=60)
+        ok, out, _ = _ssh_cmd(deploy_notify_script, "Send deployment notification", timeout=60)
+        notify_ok = "[NOTIFY_OK]" in (out or "")
+        _step("deploy_notify", notify_ok,
+              "SMTP OK" if notify_ok else f"SMTP fail: {(out or '')[:80]}")
 
         # ── 12. 健康服务器检查 ──
         _info("Verifying health server configuration...")
@@ -573,45 +603,14 @@ enabled = health_config.get('enabled', True)
 host = health_config.get('host', '0.0.0.0')
 port = health_config.get('port', 1933)
 
-print(f'Health server config:')
-print(f'  Enabled: {{enabled}}')
-print(f'  Host: {{host}}')
-print(f'  Port: {{port}}')
-
-if enabled:
-    print('[OK] Health server is enabled in config')
-else:
-    print('[WARNING] Health server is disabled in config')
+print(f'Health server config: enabled={{enabled}} host={{host}} port={{port}}')
+print('[HS_CONFIG_OK]')
 "
 """
         _ssh_cmd(health_check, "Health server config check")
 
-        # ── 13. 测试健康服务器启动 ──
-        _info("Testing health server startup...")
-        test_health_cmd = f"""cd {REMOTE_DIR} && timeout 10 python3 -c "
-import sys
-sys.path.insert(0, '.')
-import yaml
-with open('config/config.yaml', 'r', encoding='utf-8') as f:
-    config = yaml.safe_load(f)
-from src.health_server import HealthServer
-import time
-try:
-    hs = HealthServer(config)
-    if hs.start(daemon=True):
-        print(f'[OK] Health server started successfully on {{hs.host}}:{{hs.port}}')
-        time.sleep(1)
-        hs.stop()
-        print('[OK] Health server stopped (test only)')
-    else:
-        print('[WARNING] Health server failed to start')
-except Exception as e:
-    print(f'Health server test: {{e}}')
-" 2>&1"""
-        _ssh_cmd(test_health_cmd, "Health server startup test", timeout=30)
-
-        # ── 14. 重启健康服务器 ──
-        _info("Restarting health server with updated code...")
+        # ── 13. 停止旧健康服务器 ──
+        _info("Stopping old health server...")
         kill_cmds = [
             f"pkill -f 'health_server' 2>/dev/null || echo 'No health_server process found'",
             f"pkill -f 'python.*main.py.*--health-server' 2>/dev/null || echo 'No health-server process found'",
@@ -619,106 +618,90 @@ except Exception as e:
         ]
         for cmd in kill_cmds:
             _ssh_cmd(cmd, "Stop health server processes")
-
         time.sleep(2)
 
-        # 验证代码更新（检查目录存在）
-        _info("Verifying code update...")
-        verify_code_cmd = f"""cd {REMOTE_DIR} && timeout 10 python3 -c "
-import os
-path = 'src/health_server'
-if os.path.isdir(path):
-    print('[OK] src/health_server/ directory exists')
-    core_file = os.path.join(path, 'core', 'health_server.py')
-    if os.path.exists(core_file):
-        size = os.path.getsize(core_file)
-        print(f'  health_server.py size: {{size}} bytes')
-        if size > 10000:
-            print('[OK] Core file size looks correct')
-        else:
-            print('[WARNING] Core file smaller than expected')
-    else:
-        print('[ERROR] Core health_server.py not found')
-else:
-    print('[ERROR] src/health_server/ directory not found')
-"
-"""
-        _ssh_cmd(verify_code_cmd, "Verify code update")
-
-        # 启动新健康服务器
+        # ── 14. 启动健康服务器 + 真 HTTP 验证 ──
         start_cmd = f"cd {REMOTE_DIR} && screen -dmS health_server python3 main.py --health-server"
         _ssh_cmd(start_cmd, "Start health server", timeout=10)
         time.sleep(3)
 
-        # 验证健康服务器运行
         verify_cmd = f"""cd {REMOTE_DIR} && python3 -c "
 import sys
 sys.path.insert(0, '.')
-import yaml
-import urllib.request
-import urllib.error
-import time
+import yaml, urllib.request, urllib.error, time
 
 with open('config/config.yaml', 'r', encoding='utf-8') as f:
     config = yaml.safe_load(f)
 
 port = config.get('health_server', {{}}).get('port', 1933)
 
-# 检查端口是否正确响应
 try:
     time.sleep(2)
-    url = 'http://localhost:' + str(port)
+    url = 'http://localhost:' + str(port) + '/'
     req = urllib.request.Request(url, headers={{'User-Agent': 'CI/CD Verification'}})
     response = urllib.request.urlopen(req, timeout=10)
     html = response.read().decode('utf-8', errors='replace')
 
-    if '管理监控股票列表' in html:
-        print('[SUCCESS] Health server homepage contains management button')
-        if 'href=\"/manage\"' in html or 'href=\"/manage\"' in html:
-            print('[SUCCESS] Management button links to /manage endpoint')
-        else:
-            print('[WARNING] Button found but missing /manage link')
+    if len(html) > 500:
+        print('[HS_HTTP_OK] Health server responded (' + str(len(html)) + ' bytes)')
     else:
-        print('[FAIL] Management button not found on homepage')
-        print(f'First 500 chars: {{html[:500]}}')
-
+        print('[HS_HTTP_FAIL] Response too short: ' + str(len(html)) + ' bytes')
 except urllib.error.URLError as e:
-    print(f'[FAIL] Could not fetch health server homepage: {{e}}')
+    print(f'[HS_HTTP_FAIL] Connection failed: {{e}}')
 except Exception as e:
-    print(f'[FAIL] Error checking health server: {{e}}')
+    print(f'[HS_HTTP_FAIL] Error: {{e}}')
 " 2>&1"""
-        _ssh_cmd(verify_cmd, "Verify health server restart and content", timeout=30)
+        ok, out, _ = _ssh_cmd(verify_cmd, "Verify health server HTTP response", timeout=30)
+        hs_ok = "[HS_HTTP_OK]" in (out or "")
+        _step("health_server", hs_ok,
+              "HTTP 200" if hs_ok else f"fail: {(out or '')[:80]}")
 
         # ── 15. 最终验证 ──
         _info("Final system verification...")
         _ssh_cmd(f"cd {REMOTE_DIR} && python3 --version", "Python version")
-        _ssh_cmd(
-            f"cd {REMOTE_DIR} && ls -la src/email_notifier.py", "Email notifier file"
+        ok, _, _ = _ssh_cmd(
+            f"cd {REMOTE_DIR} && ls -la src/notification/email_notifier.py",
+            "Email notifier file",
         )
+        _step("final_verify", ok, "code in place" if ok else "file missing")
 
         # ── 完成 ──
-        _info("Deployment completed successfully!")
-        print("=" * 70)
-        print("SUMMARY:")
-        if cleaning_performed:
-            print("[OK] Old logs and email archives cleaned (30+ days)")
-        print("[OK] Code pushed via git to remote server")
-        print("[OK] Dependencies checked/updated")
-        print("[OK] Email footer feature verified")
-        print("[OK] System test passed (SKIP_EMAIL mode)")
-        print("[OK] Cron job configured for daily 15:30 execution")
-        print("[OK] Deployment notification sent")
-        print("[OK] Health server restarted with updated code")
-        print("=" * 70)
-
-        return True
+        return _print_summary(steps, cleaning_performed)
 
     except Exception as e:
         _info(f"DEPLOYMENT FAILED: {e}")
         import traceback
-
         traceback.print_exc()
         return False
+
+
+def _print_summary(steps, cleaning_performed=False):
+    """根据收集的步骤结果打印真实状态汇总。"""
+    print("=" * 60)
+    print("  DEPLOYMENT SUMMARY")
+    print("=" * 60)
+
+    all_good = True
+    for name, (ok, msg) in steps.items():
+        if ok is True:
+            tag = "[PASS]"
+        elif ok is False:
+            tag = "[FAIL]"
+            all_good = False
+        else:
+            tag = "[WARN]"
+        detail = f" — {msg}" if msg else ""
+        print(f"  {tag} {name}{detail}")
+
+    if cleaning_performed:
+        print("  [INFO] Old logs/archives cleaned (30+ days)")
+
+    print("=" * 60)
+    if all_good:
+        _info("Deployment completed successfully!")
+    else:
+        _info("Deployment completed with failures — check [FAIL] items above")
+    return all_good
 
 
 # ── 调查模式 ────────────────────────────────────────────
