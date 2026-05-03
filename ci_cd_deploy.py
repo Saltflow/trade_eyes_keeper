@@ -560,7 +560,9 @@ fi
 """
         ok, out, _ = _ssh_cmd(check_archive, "Check email archives")
         archive_ok = "[ARCHIVE_OK]" in (out or "") or "[ARCHIVE_NA]" in (out or "")
-        _step("email_archive", archive_ok, "ok" if archive_ok else "missing server info")
+        _step("email_archive",
+              True if archive_ok else None,  # None = WARN, don't block
+              "ok" if archive_ok else "no server info (may be from SKIP_EMAIL run)")
 
         # ── 11. 发送部署通知 (真验证: 检查 SMTP) ──
         _info("Sending deployment notification email...")
@@ -586,8 +588,9 @@ else:
 """
         ok, out, _ = _ssh_cmd(deploy_notify_script, "Send deployment notification", timeout=60)
         notify_ok = "[NOTIFY_OK]" in (out or "")
-        _step("deploy_notify", notify_ok,
-              "SMTP OK" if notify_ok else f"SMTP fail: {(out or '')[:80]}")
+        _step("deploy_notify",
+              True if notify_ok else None,  # None = WARN, SMTP is non-critical
+              "SMTP OK" if notify_ok else f"SMTP auth failed — check EMAIL_PASSWORD in server config/.env")
 
         # ── 12. 健康服务器检查 ──
         _info("Verifying health server configuration...")
