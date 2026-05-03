@@ -628,28 +628,38 @@ print('[HS_CONFIG_OK]')
         verify_cmd = f"""cd {REMOTE_DIR} && python3 -c "
 import sys
 sys.path.insert(0, '.')
-import yaml, urllib.request, urllib.error, time
+import yaml, urllib.request, urllib.error, time, ssl
 
 with open('config/config.yaml', 'r', encoding='utf-8') as f:
     config = yaml.safe_load(f)
 
-port = config.get('health_server', {{}}).get('port', 1933)
+hc = config.get('health_server', {{}})
+port = hc.get('port', 1933)
+use_ssl = hc.get('ssl', False)
 
-try:
-    time.sleep(2)
-    url = 'http://localhost:' + str(port) + '/'
-    req = urllib.request.Request(url, headers={{'User-Agent': 'CI/CD Verification'}})
-    response = urllib.request.urlopen(req, timeout=10)
-    html = response.read().decode('utf-8', errors='replace')
+# 有 SSL 用 https, 否则用 http
+scheme = 'https' if use_ssl else 'http'
+ctx = ssl._create_unverified_context() if use_ssl else None
 
-    if len(html) > 500:
-        print('[HS_HTTP_OK] Health server responded (' + str(len(html)) + ' bytes)')
-    else:
-        print('[HS_HTTP_FAIL] Response too short: ' + str(len(html)) + ' bytes')
-except urllib.error.URLError as e:
-    print(f'[HS_HTTP_FAIL] Connection failed: {{e}}')
-except Exception as e:
-    print(f'[HS_HTTP_FAIL] Error: {{e}}')
+for attempt in range(6):
+    time.sleep(1)
+    try:
+        url = scheme + '://localhost:' + str(port) + '/'
+        req = urllib.request.Request(url, headers={{'User-Agent': 'CI/CD Verification'}})
+        response = urllib.request.urlopen(req, timeout=5, context=ctx) if ctx else urllib.request.urlopen(req, timeout=5)
+        html = response.read().decode('utf-8', errors='replace')
+        if len(html) > 500:
+            print('[HS_HTTP_OK] Health server responded (' + scheme + ' ' + str(len(html)) + ' bytes)')
+        else:
+            print('[HS_HTTP_FAIL] Response too short: ' + str(len(html)) + ' bytes')
+        break
+    except urllib.error.URLError as e:
+        if attempt >= 5:
+            print(f'[HS_HTTP_FAIL] Connection failed after 6 retries: {{e}}')
+        continue
+    except Exception as e:
+        print(f'[HS_HTTP_FAIL] Error: {{e}}')
+        break
 " 2>&1"""
         ok, out, _ = _ssh_cmd(verify_cmd, "Verify health server HTTP response", timeout=30)
         hs_ok = "[HS_HTTP_OK]" in (out or "")
