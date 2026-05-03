@@ -2524,6 +2524,8 @@ class EmailNotifier:
                 pdf_file = Path(tmpdir) / "report.pdf"
                 if pdf_file.exists():
                     pdf_bytes = pdf_file.read_bytes()
+                    # DEBUG: save PDF for screenshot generation
+                    (Path("/tmp") / "daily_report.pdf").write_bytes(pdf_bytes)
                     logger.info("日报 PDF 生成成功 (%d bytes)", len(pdf_bytes))
                     return pdf_bytes
                 else:
