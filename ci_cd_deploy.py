@@ -667,7 +667,7 @@ port = config.get('health_server', {{}}).get('port', 1933)
 # 检查端口是否正确响应
 try:
     time.sleep(2)
-    url = f'http://localhost:{port}/'
+    url = 'http://localhost:' + str(port)
     req = urllib.request.Request(url, headers={{'User-Agent': 'CI/CD Verification'}})
     response = urllib.request.urlopen(req, timeout=10)
     html = response.read().decode('utf-8', errors='replace')
