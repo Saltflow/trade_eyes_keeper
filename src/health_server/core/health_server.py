@@ -24,28 +24,24 @@ logger = logging.getLogger(__name__)
 class HealthServer:
     """健康检查服务器"""
 
-    def __init__(self, config, host="0.0.0.0", port=1933):
+    def __init__(self, config, host=None, port=None):
         """
         初始化健康服务器
 
         Args:
             config: 系统配置
-            host: 监听主机
-            port: 监听端口
+            host: 监听主机 (None 则从 config 读取)
+            port: 监听端口 (None 则从 config 读取)
         """
         self.config = config
-        self.host = host
-        self.port = port
-        self.server = None
-        self.thread = None
         self.start_time = time.time()
 
         # 从配置中获取设置
         self.health_config = config.get("health_server", {})
-        if "host" in self.health_config:
-            self.host = self.health_config["host"]
-        if "port" in self.health_config:
-            self.port = self.health_config["port"]
+        self.host = host or self.health_config.get("host", "0.0.0.0")
+        self.port = port or self.health_config.get("port", 1933)
+        self.server = None
+        self.thread = None
 
     def start(self, daemon=True):
         """启动健康服务器"""
@@ -60,9 +56,11 @@ class HealthServer:
                 (self.host, self.port), handler_factory
             )
 
-            # SSL/TLS: 如果存在证书文件则启用 HTTPS
-            cert_file = Path("cert.pem")
-            key_file = Path("key.pem")
+            # SSL/TLS: 如果存在证书文件则启用 HTTPS (路径从 config.yaml 读取)
+            cert_path = self.health_config.get("cert_file", "cert.pem")
+            key_path = self.health_config.get("key_file", "key.pem")
+            cert_file = Path(cert_path)
+            key_file = Path(key_path)
             if cert_file.exists() and key_file.exists():
                 import ssl
                 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -221,9 +219,12 @@ class HealthServer:
                 pass
 
             # 方法3: 获取公网IP（可选）- 使用HTTPS防止中间人攻击
+            ip_detect_url = self.health_config.get(
+                "ip_detect_url", "https://ifconfig.me"
+            )
             try:
                 public_ip = (
-                    urllib.request.urlopen("https://ifconfig.me", timeout=10)
+                    urllib.request.urlopen(ip_detect_url, timeout=10)
                     .read()
                     .decode("utf-8")
                     .strip()
@@ -238,7 +239,7 @@ class HealthServer:
                     ip_list.append(f"{public_ip} (公网)")
                 elif public_ip:
                     logger.warning(
-                        f"从ifconfig.me获取到非标准IP响应: {public_ip[:50]}..."
+                        f"IP检测服务返回非标准响应: {public_ip[:50]}..."
                     )
             except Exception as e:
                 logger.debug(f"获取公网IP失败: {e}")

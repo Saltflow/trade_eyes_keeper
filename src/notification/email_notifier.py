@@ -36,14 +36,14 @@ class EmailNotifier:
         self.config = config
         self.email_config = config.get("email", {})
 
-        # SMTP服务器配置
-        self.smtp_server = self.email_config.get("smtp_server", "smtp.yeah.net")
-        self.smtp_port = self.email_config.get("smtp_port", 465)  # 默认465
+        # SMTP服务器配置 (从 config.yaml 读取)
+        self.smtp_server = self.email_config.get("smtp_server", "")
+        self.smtp_port = self.email_config.get("smtp_port", 465)
         self.sender_email = self.email_config.get("sender_email", "")
         self.sender_password = self.email_config.get("sender_password", "")
         self.receiver_email = self.email_config.get("receiver_email", "")
         self.enable_tls = self.email_config.get("enable_tls", False)
-        self.enable_ssl = self.email_config.get("enable_ssl", True)  # yeah.net使用SSL
+        self.enable_ssl = self.email_config.get("enable_ssl", True)
 
         # 邮件副本配置：使用项目根目录的绝对路径避免工作目录漂移
         archive_dir_config = self.email_config.get("archive_dir", "data/email_archive")
@@ -1420,8 +1420,11 @@ class EmailNotifier:
                     if not server_ip:
                         try:
                             import urllib.request
+                            ip_url = hc.get(
+                                "ip_detect_url", "https://ifconfig.me"
+                            )
                             server_ip = (
-                                urllib.request.urlopen("https://ifconfig.me", timeout=5)
+                                urllib.request.urlopen(ip_url, timeout=5)
                                 .read().decode("utf-8").strip()
                             )
                         except Exception:
@@ -1708,8 +1711,11 @@ class EmailNotifier:
             try:
                 import urllib.request
 
+                ip_url = self.config.get("health_server", {}).get(
+                    "ip_detect_url", "https://ifconfig.me"
+                )
                 public_ip = (
-                    urllib.request.urlopen("https://ifconfig.me", timeout=10)
+                    urllib.request.urlopen(ip_url, timeout=10)
                     .read()
                     .decode("utf-8")
                     .strip()

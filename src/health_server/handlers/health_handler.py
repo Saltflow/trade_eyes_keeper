@@ -201,7 +201,7 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
                 "current_time": current_time,
                 "client_ip": client_ip,
                 "receiver_email": receiver_email,
-                "host": self.headers.get("Host", "localhost:1933"),
+                "host": self.headers.get("Host", "localhost"),
             }
 
             body = self._load_template("otp_email.html").format(**context)

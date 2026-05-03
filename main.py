@@ -497,7 +497,7 @@ def main():
             print("  python main.py --optimize              # 策略参数贝叶斯优化搜索")
             print("  python main.py --health-server # 仅启动健康服务器")
             print("  python main.py --help       # 显示此帮助信息")
-            print("\n健康服务器运行在端口1933，提供系统状态监控和测试邮件功能")
+            print("\n健康服务器端口等配置见 config/config.yaml → health_server")
             return
         else:
             logger.error(f"未知参数: {sys.argv[1]}")

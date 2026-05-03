@@ -1,102 +1,97 @@
-# 股票量化系统配置示例
-# 复制此文件为 config.yaml 并修改配置
+# 股票量化系统配置文件示例
+# 复制为 config/config.yaml 并修改
 
-# 股票配置
-stocks:
-  - 601728  # 中国电信
-  - 600938  # 中国海油
-  # 添加更多股票代码（上海6开头，深圳0或3开头）
-  # - 000001  # 平安银行
-  # - 300750  # 宁德时代
+# ── 公告 ──
+announcements:
+  days: 7
+  dividend_days: 420
+  enable: true
+  include_in_email: true
+  enable_content_fetching: true
+  enable_llm_extraction: true
+  max_llm_calls_per_run: 30
+  max_pdf_size_mb: 10
 
-# 数据源配置
+# ── 财报 ──
+financial_reports:
+  enable: false
+  auto_enable: true
+  conditional_enable: true
+  force_analyze: false
+  max_stocks_per_run: 2
+  max_force_stocks: 2
+  max_llm_calls_per_run: 80
+  reports_per_stock: 3
+  conditional_days: 30
+
+# ── 数据源 ──
 data_source:
-  type: web_crawler  # 使用网页爬虫获取真实数据，系统不再依赖akshare
-  # 如果需要tushare，请设置token
-  # tushare_token: "your_tushare_token_here"
-  # 系统只使用真实数据，拒绝模拟数据，确保投资决策准确性
-  # 当akshare失败时，系统会自动尝试使用网页爬虫获取真实数据
+  type: web_crawler
+  primary: web_crawler
+  secondary: baostock
+  etf_force_web_crawler: true
+  fallback_to_web_crawler: true
 
-# 邮件通知配置
+# ── 邮件 (填入你的 SMTP 信息) ──
 email:
-  smtp_server: smtp.yeah.net  # yeah.net邮箱SMTP服务器，其他邮箱：smtp.163.com, smtp.qq.com
-  smtp_port: 587  # 使用TLS的端口，QQ邮箱用465或587
-  sender_email: ""  # 发送邮箱，通过环境变量EMAIL_SENDER设置
-  sender_password: ""  # 邮箱密码或授权码，通过环境变量EMAIL_PASSWORD设置
-  receiver_email: ""  # 接收邮箱，通过环境变量EMAIL_RECEIVER设置
-  enable_tls: true  # 启用TLS加密
+  enable_ssl: true
+  enable_tls: false
+  smtp_port: 465
+  smtp_server: smtp.your-email-provider.com   # 例如 smtp.gmail.com / smtp.yeah.net
 
-# LLM API配置（可选）
+# ── LLM (DeepSeek) ──
 llm:
-  api_type: deepseek  # 使用DeepSeek API，可选：openai, deepseek
-  api_key: ""  # 请在此处填写API密钥，建议使用环境变量
-  base_url: "https://api.deepseek.com/v1"  # DeepSeek API地址
-  model: "deepseek-chat"  # 使用的模型
+  api_type: deepseek
+  base_url: https://api.deepseek.com/v1
+  model: deepseek-chat
+  enable_fundamental_analysis: false
 
-# 系统运行配置
+# ── 日志 ──
+logging:
+  file: ./logs/quant_system.log
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  level: INFO
+
+# ── 调度 ──
 scheduler:
-  run_time: "16:00"  # 主任务运行时间
-  cache_bypass_cutoff: "15:55"
-  timezone: "Asia/Shanghai"
-  run_on_startup: false
-  # 简报任务：每个交易日特定时间触发轻量报告
+  run_time: '16:00'
+  cache_bypass_cutoff: '15:55'
+  timezone: Asia/Shanghai
   brief_reports:
     - id: morning_snapshot
-      run_time: "09:50"
-      label: "早盘简报"
-      enabled: true
-      skip_weekends: true
+      run_time: '09:50'
+      label: 早盘简报
+      stocks: []   # 填入你的股票代码列表
 
-# 投资组合策略（可选，不配置使用默认MA60锚点择时）
-# portfolio_strategy:
-#   lookback_days: 730
-#   bollinger_window: 90   # 布林带窗口（交易日数）
-#   rules:
-#     - id: buy_minus5
-#       type: buy
-#       condition: "deviation <= -0.05 and prev_deviation is not None and prev_deviation > -0.05"
-#       action_amount: "min(5000, cash)"
-#       budget_pool: buy
-#       reset_when: "deviation > 0 and prev_deviation is not None and prev_deviation <= 0"
-#     - id: buy_minus10
-#       type: buy
-#       condition: "deviation <= -0.10 and prev_deviation is not None and prev_deviation > -0.10"
-#       action_amount: "min(5000, cash)"
-#       budget_pool: buy
-#       reset_when: "deviation > 0 and prev_deviation is not None and prev_deviation <= 0"
-#     # 注释掉 sell 规则可实现"只买不卖"回测
-#     - id: sell_plus5
-#       type: sell
-#       condition: "deviation >= 0.05 and prev_deviation is not None and prev_deviation < 0.05 and shares > 0"
-#       action_fraction: 0.25
-#       action_min: 2500
-#       action_max: 10000
-#       budget_pool: sell
-#       reset_when: "(deviation < 0 and prev_deviation is not None and prev_deviation >= 0) or (deviation > 0 and prev_deviation is not None and prev_deviation < 0)"
-#     - id: sell_plus10
-#       type: sell
-#       condition: "deviation >= 0.10 and prev_deviation is not None and prev_deviation < 0.10 and shares > 0"
-#       action_fraction: 0.25
-#       action_min: 2500
-#       action_max: 10000
-#       budget_pool: sell
-#       reset_when: "(deviation < 0 and prev_deviation is not None and prev_deviation >= 0) or (deviation > 0 and prev_deviation is not None and prev_deviation < 0)"
-#     - id: sell_plus15
-#       type: sell
-#       condition: "deviation >= 0.15 and prev_deviation is not None and prev_deviation < 0.15 and shares > 0"
-#       action_fraction: 0.25
-#       action_min: 2500
-#       action_max: 10000
-#       budget_pool: sell
-#       reset_when: "(deviation < 0 and prev_deviation is not None and prev_deviation >= 0) or (deviation > 0 and prev_deviation is not None and prev_deviation < 0)"
+# ── 监控标的 ──
+stocks: []           # 填入你的股票代码，例如 [601728, 000001, VOO]
 
-# 数据存储配置
-storage:
-  data_dir: "./data"  # 数据存储目录
-  csv_format: true  # 使用CSV格式存储
+# ── 策略搜索优化器 ──
+optimizer:
+  enable: true
+  drawdown_limit: -30
+  output_dir: ./data/optimizer
 
-# 日志配置
-logging:
-  level: INFO  # 日志级别：DEBUG, INFO, WARNING, ERROR
-  file: "./logs/quant_system.log"  # 日志文件路径
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"  # 日志格式
+# ── 历史数据缓存 ──
+historical_cache:
+  enable: true
+  historical_cache_days: 30
+  force_update_interval_days: 30
+  check_dividend_interval_days: 7
+  historical_lookback_days: 730
+  enable_historical_cache: true
+
+# ── 健康检查服务器 ──
+health_server:
+  enabled: true
+  host: 0.0.0.0
+  port: 1933
+  ssl: false                            # 是否启用 HTTPS (需自签名证书)
+  cert_file: cert.pem                   # SSL 证书路径 (ssl=true 时需提供)
+  key_file: key.pem                     # SSL 私钥路径 (ssl=true 时需提供)
+  ip_detect_url: https://ifconfig.me    # 公网 IP 检测服务 (报告链接用)
+
+# ── 多层警报系统 ──
+alerts:
+  config_path: "./config/alerts.yaml"
+  enabled: true

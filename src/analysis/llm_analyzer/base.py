@@ -69,8 +69,8 @@ class BaseLLMClient:
 
         # 初始化DeepSeek API配置（使用requests直接调用，避免httpx/OpenAI库问题）
         api_key = self.llm_config.get("api_key", "")
-        base_url = self.llm_config.get("base_url", "https://api.deepseek.com/v1")
-        model = self.llm_config.get("model", "deepseek-chat")
+        base_url = self.llm_config.get("base_url", "")
+        model = self.llm_config.get("model", "")
 
         if not api_key:
             logger.warning("LLM API密钥未配置，LLM分析功能不可用")

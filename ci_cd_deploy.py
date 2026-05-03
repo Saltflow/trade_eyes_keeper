@@ -19,19 +19,23 @@ import os
 import time
 import argparse
 from datetime import datetime
+from dotenv import load_dotenv
+
+# 加载 .env 配置
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", ".env"))
 
 # ── 常量 ────────────────────────────────────────────────
-# 路径通过环境变量配置，默认值仅作本地测试用
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-REMOTE_SSH = os.environ.get(
-    "DEPLOY_SSH_REMOTE",
-    "ssh://root@DEPLOY_HOST/DEPLOY_PATH",
-)
-REMOTE_DIR = os.environ.get(
-    "DEPLOY_REMOTE_DIR",
-    "/root/trade_eyes_keeper",
-)
-REMOTE_HOST = os.environ.get("DEPLOY_HOST", "DEPLOY_HOST")
+REMOTE_HOST = os.environ.get("DEPLOY_HOST")
+REMOTE_SSH_USER = os.environ.get("DEPLOY_SSH_USER", "root")
+REMOTE_SSH = os.environ.get("DEPLOY_SSH_REMOTE")
+REMOTE_DIR = os.environ.get("DEPLOY_REMOTE_DIR", "/root/trade_eyes_keeper")
+
+# 启动校验：缺失关键配置直接报错
+if not REMOTE_HOST:
+    sys.exit("错误: 请在 config/.env 中设置 DEPLOY_HOST")
+if not REMOTE_SSH:
+    sys.exit("错误: 请在 config/.env 中设置 DEPLOY_SSH_REMOTE")
 
 
 def _get_ssh_key():
@@ -75,7 +79,7 @@ def _ssh_cmd(cmd, description="", timeout=60):
         "StrictHostKeyChecking=no",
         "-o",
         "ConnectTimeout=10",
-        f"root@{REMOTE_HOST}",
+        f"{REMOTE_SSH_USER}@{REMOTE_HOST}",
         cmd,
     ]
     try:
@@ -487,7 +491,7 @@ except Exception as e:
         _info("Restarting health server with updated code...")
         kill_cmds = [
             f"pkill -f 'health_server' 2>/dev/null || echo 'No health_server process found'",
-            f"pkill -f 'python.*1933' 2>/dev/null || echo 'No process on port 1933 found'",
+            f"pkill -f 'python.*main.py.*--health-server' 2>/dev/null || echo 'No health-server process found'",
             f"screen -XS health_server quit 2>/dev/null || echo 'No screen session found'",
         ]
         for cmd in kill_cmds:
@@ -535,10 +539,12 @@ import time
 with open('config/config.yaml', 'r', encoding='utf-8') as f:
     config = yaml.safe_load(f)
 
+port = config.get('health_server', {{}}).get('port', 1933)
+
 # 检查端口是否正确响应
 try:
     time.sleep(2)
-    url = 'http://localhost:1933/'
+    url = f'http://localhost:{port}/'
     req = urllib.request.Request(url, headers={{'User-Agent': 'CI/CD Verification'}})
     response = urllib.request.urlopen(req, timeout=10)
     html = response.read().decode('utf-8', errors='replace')
@@ -579,7 +585,7 @@ except Exception as e:
         print("[OK] System test passed (SKIP_EMAIL mode)")
         print("[OK] Cron job configured for daily 15:30 execution")
         print("[OK] Deployment notification sent")
-        print("[OK] Health server restarted with updated code (port 1933)")
+        print("[OK] Health server restarted with updated code")
         print("=" * 70)
 
         return True
@@ -704,11 +710,11 @@ fi""",
         print("HEALTH SERVER")
         print("=" * 70)
         _ssh_cmd(
-            "netstat -tlnp 2>/dev/null | grep :1933 || echo 'Port 1933 not listening (or netstat not available)'",
+            "ss -tlnp 2>/dev/null | grep python || echo 'No python process listening (or ss not available)'",
             "Health server port check",
         )
         _ssh_cmd(
-            "ps aux | grep -i 'health_server\\|python.*1933' | grep -v grep || echo 'No health server process found'",
+            "ps aux | grep -i 'main.py.*--health-server' | grep -v grep || echo 'No health server process found'",
             "Health server process",
         )
 
