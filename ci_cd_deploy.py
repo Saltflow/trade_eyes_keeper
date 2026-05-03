@@ -50,40 +50,40 @@ def _check_prerequisites():
 
     # ── DEPLOY_HOST ──
     if not REMOTE_HOST:
-        issues.append(("❌", "DEPLOY_HOST 未设置"))
+        issues.append(("[FAIL]", "DEPLOY_HOST 未设置"))
     elif REMOTE_HOST in ("0.0.0.0", "127.0.0.1", "DEPLOY_HOST"):
-        issues.append(("❌",
+        issues.append(("[FAIL]",
             f"DEPLOY_HOST = \"{REMOTE_HOST}\" — 请改成你的服务器公网 IP\n"
             "     获取方式: 登录服务器, 执行 curl ifconfig.me"))
     else:
-        warns.append(("✅", f"DEPLOY_HOST = {REMOTE_HOST}"))
+        warns.append(("[PASS]", f"DEPLOY_HOST = {REMOTE_HOST}"))
 
     # ── DEPLOY_SSH_REMOTE ──
     if not REMOTE_SSH:
-        issues.append(("❌", "DEPLOY_SSH_REMOTE 未设置"))
+        issues.append(("[FAIL]", "DEPLOY_SSH_REMOTE 未设置"))
     elif "0.0.0.0" in REMOTE_SSH:
-        issues.append(("❌",
+        issues.append(("[FAIL]",
             f"DEPLOY_SSH_REMOTE 中 IP 仍为占位符:\n"
             f"     {REMOTE_SSH}\n"
             f"     请把 0.0.0.0 替换为你的服务器 IP"))
     else:
-        warns.append(("✅", f"REMOTE_SSH = {REMOTE_SSH}"))
+        warns.append(("[PASS]", f"REMOTE_SSH = {REMOTE_SSH}"))
 
     # ── SSH 密钥 ──
     key_file = ssh_key if os.path.isabs(ssh_key) else os.path.join(PROJECT_DIR, ssh_key)
     if not os.path.exists(key_file):
-        issues.append(("❌",
+        issues.append(("[FAIL]",
             f"SSH 密钥不存在: {key_file}\n"
             f"     生成密钥: ssh-keygen -t ed25519 -f deploy_key -N \"\"\n"
             f"     上传公钥: ssh-copy-id -i deploy_key.pub {REMOTE_SSH_USER}@{REMOTE_HOST}"))
     else:
-        warns.append(("✅", f"SSH 密钥: {key_file}"))
+        warns.append(("[PASS]", f"SSH 密钥: {key_file}"))
 
     # ── 密钥权限 (Linux/macOS 下 600) ──
     if os.path.exists(key_file) and sys.platform != "win32":
         mode = os.stat(key_file).st_mode & 0o777
         if mode != 0o600:
-            warns.append(("⚠️",
+            warns.append(("[WARN]",
                 f"SSH 密钥权限为 {oct(mode)}, 应改为 600:\n"
                 f"     chmod 600 {key_file}"))
 
@@ -91,12 +91,12 @@ def _check_prerequisites():
     if REMOTE_HOST and REMOTE_HOST not in ("0.0.0.0", "127.0.0.1") and os.path.exists(key_file):
         connectivity_ok, err = _test_ssh_connectivity()
         if not connectivity_ok:
-            issues.append(("❌",
+            issues.append(("[FAIL]",
                 f"无法 SSH 连接到 {REMOTE_SSH_USER}@{REMOTE_HOST}\n"
                 f"     {err}\n"
                 f"     检查: IP 是否正确? 密钥是否上传? 防火墙是否允许 22 端口?"))
         else:
-            warns.append(("✅", f"SSH {REMOTE_SSH_USER}@{REMOTE_HOST} 连接正常"))
+            warns.append(("[PASS]", f"SSH {REMOTE_SSH_USER}@{REMOTE_HOST} 连接正常"))
 
     # ── 输出 ──
     if issues:
@@ -126,6 +126,9 @@ def _test_ssh_connectivity():
         return False, "连接超时 (8s)"
     except Exception as e:
         return False, str(e)
+
+
+def _get_ssh_key():
     """获取SSH密钥路径（返回前向斜杠，兼容Windows+Git Bash）。"""
     env_key = os.environ.get("DEPLOY_SSH_KEY")
     if env_key and os.path.exists(env_key):
@@ -136,11 +139,11 @@ def _test_ssh_connectivity():
     return default.replace("\\", "/")  # 不存在也返回，让SSH报错
 
 
+# ── SSH 工具 ────────────────────────────────────────────
+
+
 def _info(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-
-
-# ── SSH 工具 ────────────────────────────────────────────
 
 
 def _get_dry_run():
@@ -204,38 +207,52 @@ def _git_push():
         print(f"  [MOCK] git push {REMOTE_SSH} master")
         return True
 
-    # 构建 git 命令，使用 deploy_key + GIT_SSH_COMMAND 进行SSH认证
-    cmd = ["git", "push", REMOTE_SSH, "master"]
     env = os.environ.copy()
     env["GIT_SSH_COMMAND"] = f"ssh -i {_get_ssh_key()} -o StrictHostKeyChecking=no"
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=120,
-            cwd=PROJECT_DIR,
-            env=env,
-        )
-        if result.returncode == 0:
-            _info("Git push successful!")
-            if result.stdout:
-                for line in result.stdout.strip().split("\n"):
-                    print(f"  {line}")
-            return True
-        else:
+
+    # 先尝试普通 push
+    for force in (False, True):
+        cmd = ["git", "push"]
+        if force:
+            cmd.append("--force")
+        cmd.extend([REMOTE_SSH, "master"])
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+                cwd=PROJECT_DIR,
+                env=env,
+            )
+            if result.returncode == 0:
+                tag = " (force)" if force else ""
+                _info(f"Git push successful!{tag}")
+                if result.stdout:
+                    for line in result.stdout.strip().split("\n"):
+                        print(f"  {line}")
+                return True
+
+            # 非 fast-forward → 自动 force push
+            if "non-fast-forward" in result.stderr:
+                _info("Non-fast-forward detected, retrying with --force...")
+                continue
+
             _info(f"Git push FAILED: {result.stderr}")
-            print(f"  {result.stdout}")
             print(f"  ERROR: {result.stderr}")
             return False
-    except subprocess.TimeoutExpired:
-        _info("Git push timed out after 120s")
-        return False
-    except Exception as e:
-        _info(f"Git push error: {e}")
-        return False
+
+        except subprocess.TimeoutExpired:
+            _info("Git push timed out after 120s")
+            return False
+        except Exception as e:
+            _info(f"Git push error: {e}")
+            return False
+
+    return False
 
 
 def _ensure_remote_repo():
