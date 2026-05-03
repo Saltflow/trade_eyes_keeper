@@ -31,14 +31,101 @@ REMOTE_SSH_USER = os.environ.get("DEPLOY_SSH_USER", "root")
 REMOTE_SSH = os.environ.get("DEPLOY_SSH_REMOTE")
 REMOTE_DIR = os.environ.get("DEPLOY_REMOTE_DIR", "/root/trade_eyes_keeper")
 
-# 启动校验：缺失关键配置直接报错
-if not REMOTE_HOST:
-    sys.exit("错误: 请在 config/.env 中设置 DEPLOY_HOST")
-if not REMOTE_SSH:
-    sys.exit("错误: 请在 config/.env 中设置 DEPLOY_SSH_REMOTE")
+
+def _check_prerequisites():
+    """部署前自检，逐项诊断并给出修复指引。"""
+
+    def _fail(title, items):
+        print("=" * 60)
+        print(f"  {title}")
+        print("=" * 60)
+        for i, (mark, msg) in enumerate(items, 1):
+            print(f"\n  [{i}] {mark} {msg}")
+        print(f"\n  修复后重新运行: python ci_cd_deploy.py\n")
+        sys.exit(1)
+
+    issues = []
+    warns = []
+    ssh_key = _get_ssh_key()
+
+    # ── DEPLOY_HOST ──
+    if not REMOTE_HOST:
+        issues.append(("❌", "DEPLOY_HOST 未设置"))
+    elif REMOTE_HOST in ("0.0.0.0", "127.0.0.1", "DEPLOY_HOST"):
+        issues.append(("❌",
+            f"DEPLOY_HOST = \"{REMOTE_HOST}\" — 请改成你的服务器公网 IP\n"
+            "     获取方式: 登录服务器, 执行 curl ifconfig.me"))
+    else:
+        warns.append(("✅", f"DEPLOY_HOST = {REMOTE_HOST}"))
+
+    # ── DEPLOY_SSH_REMOTE ──
+    if not REMOTE_SSH:
+        issues.append(("❌", "DEPLOY_SSH_REMOTE 未设置"))
+    elif "0.0.0.0" in REMOTE_SSH:
+        issues.append(("❌",
+            f"DEPLOY_SSH_REMOTE 中 IP 仍为占位符:\n"
+            f"     {REMOTE_SSH}\n"
+            f"     请把 0.0.0.0 替换为你的服务器 IP"))
+    else:
+        warns.append(("✅", f"REMOTE_SSH = {REMOTE_SSH}"))
+
+    # ── SSH 密钥 ──
+    key_file = ssh_key if os.path.isabs(ssh_key) else os.path.join(PROJECT_DIR, ssh_key)
+    if not os.path.exists(key_file):
+        issues.append(("❌",
+            f"SSH 密钥不存在: {key_file}\n"
+            f"     生成密钥: ssh-keygen -t ed25519 -f deploy_key -N \"\"\n"
+            f"     上传公钥: ssh-copy-id -i deploy_key.pub {REMOTE_SSH_USER}@{REMOTE_HOST}"))
+    else:
+        warns.append(("✅", f"SSH 密钥: {key_file}"))
+
+    # ── 密钥权限 (Linux/macOS 下 600) ──
+    if os.path.exists(key_file) and sys.platform != "win32":
+        mode = os.stat(key_file).st_mode & 0o777
+        if mode != 0o600:
+            warns.append(("⚠️",
+                f"SSH 密钥权限为 {oct(mode)}, 应改为 600:\n"
+                f"     chmod 600 {key_file}"))
+
+    # ── SSH 连通性 ──
+    if REMOTE_HOST and REMOTE_HOST not in ("0.0.0.0", "127.0.0.1") and os.path.exists(key_file):
+        connectivity_ok, err = _test_ssh_connectivity()
+        if not connectivity_ok:
+            issues.append(("❌",
+                f"无法 SSH 连接到 {REMOTE_SSH_USER}@{REMOTE_HOST}\n"
+                f"     {err}\n"
+                f"     检查: IP 是否正确? 密钥是否上传? 防火墙是否允许 22 端口?"))
+        else:
+            warns.append(("✅", f"SSH {REMOTE_SSH_USER}@{REMOTE_HOST} 连接正常"))
+
+    # ── 输出 ──
+    if issues:
+        _fail("部署前置检查失败", issues)
+
+    # 无错误, 输出确认信息
+    _info("部署前置检查通过:")
+    for mark, msg in warns:
+        print(f"  {mark} {msg}")
+    print()
 
 
-def _get_ssh_key():
+def _test_ssh_connectivity():
+    """测试 SSH 连接是否可达。返回 (ok, error_msg)。"""
+    cmd = [
+        "ssh", "-i", _get_ssh_key(),
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "ConnectTimeout=8", "-o", "BatchMode=yes",
+        f"{REMOTE_SSH_USER}@{REMOTE_HOST}", "echo pong",
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if r.returncode == 0 and "pong" in r.stdout:
+            return True, ""
+        return False, r.stderr.strip() or "no response"
+    except subprocess.TimeoutExpired:
+        return False, "连接超时 (8s)"
+    except Exception as e:
+        return False, str(e)
     """获取SSH密钥路径（返回前向斜杠，兼容Windows+Git Bash）。"""
     env_key = os.environ.get("DEPLOY_SSH_KEY")
     if env_key and os.path.exists(env_key):
@@ -159,13 +246,29 @@ def _ensure_remote_repo():
         f"  git init && git config receive.denyCurrentBranch updateInstead && "
         f"  git config user.email 'deploy@trade-eyes-keeper' && "
         f"  git config user.name 'Deploy Bot' && "
-        f"  echo '[OK] Git repo initialized'; "
+        f"  echo '[OK] Git repo initialized (empty)'; "
         f"else "
         f"  echo '[OK] Git repo exists'; "
         f"fi"
     )
     success, out, _ = _ssh_cmd(cmd, "Check/init git repo on remote")
-    return success
+    if not success:
+        return False
+
+    # 如果仓库已有内容但无法更新工作树 (unborn HEAD / dirty working tree),
+    # 重置到可接受状态
+    fix_cmd = (
+        f"cd {REMOTE_DIR} && "
+        f"if git status --porcelain 2>/dev/null | grep -q '^'; then "
+        f"  echo 'Working tree has changes, resetting...'; "
+        f"  git checkout -f master 2>/dev/null || git symbolic-ref HEAD refs/heads/master; "
+        f"  echo '[OK] Working tree ready'; "
+        f"else "
+        f"  echo '[OK] Working tree clean'; "
+        f"fi"
+    )
+    _ssh_cmd(fix_cmd, "Ensure working tree is ready for push")
+    return True
 
 
 # ── 部署流程 ────────────────────────────────────────────
@@ -262,6 +365,9 @@ def deploy():
     print("=" * 70)
 
     try:
+        # ── -1. 前置自检 (配置文件 + SSH 密钥 + 连通性) ──
+        _check_prerequisites()
+
         # ── 0. 部署前检查 ──
         if not _pre_deploy_checks(dry_run):
             _info("ERROR: Pre-deploy checks failed, aborting deployment")

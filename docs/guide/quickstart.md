@@ -12,10 +12,9 @@ python --version   # 需要 3.8+
 
 # 安装依赖
 pip install -r requirements.txt
-
-# Linux: 安装系统依赖 (PDF 日报)
-sudo apt install -y texlive-xetex poppler-utils
 ```
+
+> **首次部署到服务器？** → [部署五步走](setup.md)
 
 ## 2. 配置系统
 
