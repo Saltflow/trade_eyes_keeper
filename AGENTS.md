@@ -155,6 +155,8 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 - **Unit conversion**: Handle cents to yuan, per-10-shares to per-share
 - **Commit messages**: Use conventional prefixes (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`), include ticket/reference, English with Chinese context
 - **Testing**: New features include unit tests, mock external APIs, use `conftest.py` for shared fixtures
+- **LaTeX 模板**: 修改 `report_daily.tex` 后，确保文件不含 `\r\n` (xelatex 将 `\r` 视为 `^^M`, 导致 Emergency stop)。代码在编译前自动执行 `.replace("\r\n","\n")`。`_` 必须转义为 `\_`, `%` 为 `\%`, `&` 为 `\&`, `$` 为 `\$`。使用 `_esc()` 辅助函数。
+- **xelatex 测试**: `python main.py --once` 自动编译 PDF, 编译警告记录在日志中。服务器需安装 `texlive-xetex`。
 - **全量验证**: 策略优化/信号扫描/回测分析的 HTML 报告和邮件内容必须基于 `config/config.yaml` 全量标的运行产出。禁止用 1-3 只股票的子集跑 `--optimize` 或生成用于验证的 HTML 报告。`python main.py --optimize` 全量运行耗时 ~30min，跑完后产出方为有效测试数据。
 
 ## Agent Instructions
@@ -202,5 +204,5 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 - **Flake8 configuration**: `.flake8` (max-line-length 88, ignore E203/W503)
 - **YAPF configuration**: `.style.yapf` (pep8 style, column_limit 88)
 
-**Last Updated**: 2026-05-01  
-**Project Version**: v1.15 (策略搜索优化器 + 信号扫描 + 回测分析 + HTML报告)
+**Last Updated**: 2026-05-03  
+**Project Version**: v1.16 (xelatex PDF 日报 + 安全加固 + 公式附录)

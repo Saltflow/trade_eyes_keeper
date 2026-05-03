@@ -12,6 +12,9 @@ python --version   # 需要 3.8+
 
 # 安装依赖
 pip install -r requirements.txt
+
+# Linux: 安装系统依赖 (PDF 日报)
+sudo apt install -y texlive-xetex poppler-utils
 ```
 
 ## 2. 配置系统
@@ -50,11 +53,17 @@ EMAIL_RECEIVER=your_email@yeah.net
 ## 3. 运行测试
 
 ```bash
+# 单次收盘日报 (含 PDF 附件)
+python main.py --once
+
+# 单次早盘简报
+python main.py --brief
+
+# 策略搜索优化 (全量搜索, 15-30 min)
+python main.py --optimize
+
 # 运行验证测试
 pytest tests/validation/ -v
-
-# 单次运行（不进入定时循环）
-python main.py --once
 ```
 
 ## 4. 启动定时任务

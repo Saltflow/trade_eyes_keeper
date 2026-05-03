@@ -6,6 +6,8 @@
 python -m venv venv
 source venv/bin/activate  # or venv\Scripts\activate on Windows
 pip install -r requirements.txt
+# Linux: install system dependencies for PDF generation
+sudo apt install -y texlive-xetex poppler-utils
 ```
 
 ## Running Tests
@@ -21,6 +23,7 @@ Individual test files:
 pytest tests/test_rule_engine.py -v
 pytest tests/test_portfolio_strategy.py -v
 pytest tests/test_import_smoke.py -v
+pytest tests/test_security.py -v  # security tests (sandbox, OTP, rate-limit)
 ```
 
 ## Code Style

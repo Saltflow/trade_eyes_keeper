@@ -29,6 +29,16 @@
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
+│  分析策略层 (src/analysis/)                                      │
+│  - strategy_optimizer.py     贝叶斯优化搜索最优策略参数         │
+│  - signal_scanner.py         每日共识信号扫描 + 报警            │
+│  - portfolio_strategy.py     共享资金池模拟 + 贪心前向选择      │
+│  - rule_engine.py             YAML 驱动规则引擎 + 表达式沙箱    │
+│  - indicator_library.py      RSI/MACD/ATR/布林/ADX/量比计算     │
+│  - backtest_config.py         回测时间线约束 (观察/部署/持仓)    │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
 │  业务层 (src/)                                                  │
 │  - session_manager.py    Session 统一管理（Pydantic 数据模型）  │
 │  - condition_checker.py  条件检查（价格 < MA60 等）             │
@@ -55,20 +65,25 @@
 ### 每日任务主链路（Session-based）
 
 ```
-main.py
-  └── scheduler_manager 触发每日任务
-        └── session_manager.create_session()
-              ├── data_fetcher.fetch_to_session()      → session.stocks_data
-              │      ├── web_crawler 获取原始价格数据
-              │      ├── technical_indicators 计算 MA60 / WMA20
-              │      └── 公告/财报/股息数据填充
-              ├── condition_checker.check_from_session() → session.alerts
-              │      └── alert_engine / alert_processor
-              ├── backtest_framework.get_backtest_results()
-              │      └── historical_data_manager (baostock + 缓存)
-              └── email_notifier.send_from_session()
-                     ├── HTML 报表（价格指标 + 基本面 + 回测 + 公告）
-                     └── 保存副本至 data/email_archive/
+main.py --once
+  └── session_manager.create_session()
+        ├── data_fetcher.fetch_to_session()       → session.stocks_data
+        │      ├── web_crawler 获取原始价格数据
+        │      ├── technical_indicators 计算 MA60 / WMA20
+        │      └── 公告/财报/股息数据填充
+        ├── condition_checker.check_from_session() → session.alerts
+        │      └── alert_engine / alert_processor
+        ├── signal_scanner.scan()                  → 共识信号 + 回测数据
+        │      ├── 加载最新优化结果 (Top-5 策略)
+        │      ├── 计算当日信号 + 共识汇总
+        │      └── run_backtest() 完整 24 月回测
+        └── email_notifier.send_from_session()
+               ├── _generate_daily_pdf()
+               │      ├── report_daily.tex 模板注入数据
+               │      ├── xelatex 编译两次 (LaTeX 交叉引用)
+               │      └── appendix_methodology.md → LaTeX 公式
+               ├── yagmail.send(html + pdf 附件)
+               └── 保存副本至 data/email_archive/
 ```
 
 > **关键原则**：v3.0 起不再直接传递 DataFrame 和 dict，全部通过 `SessionContext` 流转，防止字段名称不一致导致的数据错误（如邮件显示所有股票价格为 0.00）。
@@ -84,7 +99,9 @@ main.py
 | `technical_indicators.py` | 根据 `alerts.yaml` 配置计算所有技术指标 | **不读取**网络数据 |
 | `session_manager.py` | 维护 Session 生命周期、类型安全数据模型 | **不包含**业务规则 |
 | `condition_checker.py` | 基于 Session 数据判断警报条件 | **不修改** Session 中的原始数据 |
-| `email_notifier.py` | 构建并发送邮件、保存存档 | **不抓取**外部数据 |
+| `email_notifier.py` | 构建并发送邮件、xelatex PDF 生成、图表生成 | **不抓取**外部数据 |
+| `signal_scanner.py` | 加载优化结果、计算共识信号、回测分析 | **不修改**原始数据 |
+| `strategy_optimizer.py` | 贝叶斯搜索、收敛诊断图、HTML 报告 | **不直接**调用邮件 |
 | `cache_manager.py` | 读写本地缓存、过期清理、完整性校验 | **不发起**网络请求 |
 
 ---
@@ -129,6 +146,9 @@ main.py
 - **新增技术指标**：在 `alerts.yaml` 的 `anchors` 中添加配置，`technical_indicators.py` 自动识别
 - **新增数据源**：实现与 `web_crawler.py` 同接口的模块，在 `data_fetcher.py` 中注册降级链
 - **自定义警报规则**：修改 `alerts.yaml` 的 `thresholds` 与 `boundary_rules`
+- **新增策略构建器**：在 `indicator_library.py` 添加信号函数，`optimizer.yaml` 注册 builder
+- **自定义日报模板**：修改 `report_daily.tex` (LaTeX) 和 `email_template.html` (邮件正文)
+- **新增公式**：编辑 `appendix_methodology.md`，Markdown → LaTeX 编译链自动处理
 
 ---
 

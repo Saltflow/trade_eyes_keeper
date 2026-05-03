@@ -133,6 +133,66 @@
 - 所有技术指标通过 `alerts.yaml` 配置驱动
 - `utils/etf_detector.py` 统一 ETF 检测逻辑
 
+## v3.2 - DataSource 统一数据源
+
+**日期**: 2026-04-26
+
+- CSV 缓存替代 JSON: 每只股票独立 `.csv` + `.csv.meta`
+- 复权交叉验证: 双源 3 日 close 比对
+- 价格关系校验: close >= low <= high
+- 缓存裁剪: 5 处返回路径按 requested_days 过滤
+
+## v3.3 - 投资组合策略 + 规则引擎
+
+**日期**: 2026-04-26
+
+- `portfolio_strategy.py` (952行): MA60 锚点择时 + 贪心前向搜索
+- `rule_engine.py` (372行): YAML 驱动规则, 表达式沙箱, 规则锁
+- 净值归一化起点 100, 布林带可视化, 日期对齐
+
+## v3.4 - 早盘简报
+
+**日期**: 2026-04-27
+
+- 每日 09:50 自动发送, 周末自动跳过
+- 锚点择优: MA60(60d) > WMA20(~100d) > WMA30 > WMA50
+- 轻量任务: 仅价格 + 锚点, 跳过 LLM/财报/回测
+
+## v1.14 - 策略搜索优化器
+
+**日期**: 2026-04-29
+
+- 贝叶斯优化 (skopt) 自动搜索最优策略
+- 6买5卖条件构建器池: RSI/MACD/ATR/布林/ADX/量比
+- 两阶段 (训练 0-12m / 测试 12-24m), 超额收益 + 现金基准
+- 观测期预筛选, 股票汰换, 仓位比例制
+- 收敛诊断图 + Plotly HTML 交互报告
+
+## v1.15 - 信号扫描器 + 日报集成
+
+**日期**: 2026-05-01
+
+- SignalScanner: Top-5 策略共识, 每日信号评估
+- 回测嵌入日报: `run_backtest()` 完整 24 月历史
+- HTML 报告: health_server `/report/<token>` 时效链接
+- 三层防御闸门: pre-commit + CI/CD + import smoke
+- 安全测试: 18 个 (沙箱/路径遍历/token/OTP)
+- CI/CD 路径环境变量化, 简报 cron 自动注册
+
+## v1.16 - xelatex PDF 日报 + 安全加固 + 开源
+
+**日期**: 2026-05-03
+
+- WeasyPrint (644KB) → xelatex LaTeX (145KB): 真数学公式排版
+- 公式方法论附录: 13节 amsmath 环境
+- ctexart → article + xeCJK (服务器未安装 ctex)
+- CRLF 修复: `\r\n` 导致 xelatex `^^M` Emergency stop
+- OTP 安全: `secrets.randbelow()` + 审计日志脱敏
+- Health server SSL/TLS 自签名证书
+- BSD-3-Clause LICENSE + 投资免责声明
+- 65 核心 + 18 安全 + 24 导入测试
+- 邮件链接 IP/HTTPS 修复
+
 ---
 
 **相关文档**：

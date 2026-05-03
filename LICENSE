@@ -27,3 +27,24 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+---
+INVESTMENT DISCLAIMER
+
+This software is provided for educational and research purposes only.
+
+- NOT FINANCIAL ADVICE. Nothing in this software constitutes investment,
+  legal, or tax advice. All trading involves risk. You are solely
+  responsible for your own investment decisions.
+
+- NO PERFORMANCE GUARANTEE. Past performance and backtest results do not
+  guarantee future results. Simulated trading results are inherently
+  limited and may overstate real-world performance due to factors
+  including (but not limited to) lack of liquidity, market impact, and
+  execution delays.
+
+- NO LIABILITY. The authors and contributors shall not be held liable
+  for any financial losses, damages, or other consequences resulting
+  from the use of this software.
+
+Use at your own risk.

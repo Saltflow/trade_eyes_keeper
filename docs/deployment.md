@@ -10,9 +10,10 @@
 |------|---------|------|
 | Python | 3.8+ | 3.11+ |
 | 内存 | 512 MB | 1 GB |
-| 磁盘 | 100 MB | 500 MB（含缓存与历史数据） |
+| 磁盘 | 100 MB | 1 GB（含缓存、历史数据与 texlive） |
 | 网络 | 公网访问 | 稳定公网（用于抓取与邮件） |
 | 操作系统 | Windows / Linux / macOS | Linux (Ubuntu 22.04 LTS) |
+| 系统依赖 | — | `texlive-xetex` `poppler-utils` (PDF 日报) |
 
 ---
 
@@ -134,6 +135,10 @@ python ci_cd_deploy.py --investigate
 | `GET /health` | 健康探针（200 OK） |
 | `GET /metrics` | Prometheus 格式指标 |
 | `GET /test-email?force=true` | 触发真实邮件测试 |
+| `GET /report/<token>` | 策略优化 HTML 报告 (30 分钟时效) |
+
+**SSL/TLS**: 系统自动生成自签名证书 (365 天有效期), 端口 1933 HTTPS 监听。
+设置 `config.health_server.ssl: true` 和 `public_ip` 启用。
 
 单独启动：
 ```bash

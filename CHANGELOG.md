@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.16 (2026-05-03)
+
+### Added
+- **xelatex PDF 日报**: WeasyPrint→xelatex 真 LaTeX 编译, 港式财报风格, PDF 145KB
+- **公式方法论附录**: `appendix_methodology.md` 13节数学公式, xelatex 排版
+- **投资免责声明**: LICENSE 追加金融免责章节 (非投资建议/不保证收益/自负风险)
+- **OTP 安全加固**: `secrets.randbelow()` 替代 `random.randint` (密码学安全)
+- **审计日志脱敏**: 不再记录明文 OTP, 仅显示 `"ID:****"`
+- **Health Server SSL/TLS**: 自签名证书 + `ssl.wrap_socket()` + `public_ip` 配置
+- **三层防御闸门**: pre-commit hook + CI/CD pre-deploy + import smoke test
+- **安全测试**: `test_security.py` 18个测试 (沙箱/路径遍历/token/OTP/速率限制)
+- **核心模块测试**: 65个 (backtest_config 15 + indicator_library 18 + signal_scanner 14 + optimizer 18)
+- **CI/CD 简报 cron**: 自动注册 09:50 daily crontab
+- **BSD-3-Clause LICENSE** + `pyproject.toml` + `CONTRIBUTING.md`
+
+### Fixed
+- **xelatex CRLF**: Windows git 自动 `\r\n` 导致 xelatex `^^M` Emergency stop → `.replace("\r\n","\n")`
+- **ctexart 未安装**: 服务器缺少 ctex 宏包 → `article` + `xeCJK` 类替代
+- **邮件链接 IP**: `hostname -I` 返回 Docker 网桥 IP → `public_ip` 配置 + `ifconfig.me` fallback
+- **邮件链接 HTTPS**: `ssl.wrap_socket()` 支持自签名证书
+- **Health server 路径**: 5处 `.parent.parent.parent` 路径回归修复
+- **33 stale test import**: import 路径/方法名修复
+
+### Changed
+- **日报 PDF**: WeasyPrint (644KB) → xelatex (145KB), 真 LaTeX 数学排版
+- **CI/CD**: 路径环境变量化, texlive 自动安装, pre-deploy 检查
+- **版本号**: v1.15 → v1.16
+
+### Removed
+- `report_daily.html` (WeasyPrint 模板, 已被 `report_daily.tex` 替代)
+- `alert_section.html` (不再独立渲染)
+
+---
+
 ## v1.15 (2026-05-01)
 
 ### Added
