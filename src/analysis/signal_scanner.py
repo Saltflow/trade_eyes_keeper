@@ -440,7 +440,14 @@ class SignalScanner:
             if code and not (code.isdigit() and len(code) <= 3):
                 selected.append(code)
         if not selected:
-            selected = stocks[:10]  # fallback
+            # fallback: 取同组前 10 只，不分组的 session 取全部前 10
+            if group == "a_share":
+                group_stocks = [s for s in stocks
+                                if s.isdigit() or s.replace(".", "").isdigit()]
+            else:
+                group_stocks = [s for s in stocks
+                                if not (s.isdigit() or s.replace(".", "").isdigit())]
+            selected = group_stocks[:10] if group_stocks else stocks[:10]
 
         # 构建 Rule 对象
         rules = []

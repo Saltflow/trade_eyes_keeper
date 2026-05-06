@@ -787,9 +787,11 @@ class PortfolioEvaluator:
 
         # ── 指标计算 ──
         def _calc_metrics(nav_list: list[float]) -> tuple[float, float, float]:
-            """从净值序列计算 (total_return%, max_drawdown%, sharpe)"""
+            """从净值序列计算 (total_return%, max_drawdown%, sharpe)。
+            不足 2 个数据点返回 (None, None, None) — 调用方负责显示 "—"。
+            """
             if len(nav_list) < 2:
-                return 0.0, 0.0, 0.0
+                return None, None, None
             initial = nav_list[0]
             final = nav_list[-1]
             total_ret = (final - initial) / initial * 100 if initial > 0 else 0.0

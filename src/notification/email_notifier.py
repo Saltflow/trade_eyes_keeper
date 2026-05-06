@@ -23,6 +23,23 @@ from .chart_generator import generate_combined_chart
 logger = logging.getLogger(__name__)
 
 
+def _fmt(v, unit="", fmt_spec=".2f"):
+    """安全格式化数值：None/pd.NA/NaN → "—"，数值 → 格式化。
+
+    原则：绝不凭空造零。缺失数据和真实零值必须可区分。
+    """
+    if v is None:
+        return "—"
+    try:
+        if pd.isna(v):
+            return "—"
+    except (TypeError, ValueError):
+        pass
+    if unit:
+        return f"{v:{fmt_spec}}{unit}"
+    return f"{v:{fmt_spec}}"
+
+
 class EmailNotifier:
     """邮件通知器"""
 
@@ -2291,24 +2308,24 @@ class EmailNotifier:
             bt_a = backtest.get("a_share", {}) if backtest else {}
             bt_n = backtest.get("non_a_share", {}) if backtest else {}
 
-            ta = bt_a.get("total_return", 0) or 0
-            tn = bt_n.get("total_return", 0) or 0
+            ta = bt_a.get("total_return")  # None = no backtest data
+            tn = bt_n.get("total_return")
             kpi_buy = str(buy_count)
-            kpi_a = f"{ta:+.1f}\\%"
-            kpi_n = f"{tn:+.1f}\\%"
-            kpi_s = "✓ 策略有效" if ta > 0 or tn > 0 else "✗ 策略无效"
-            kpi_color_a = "green" if ta > 0 else "red"
-            kpi_color_n = "green" if tn > 0 else "red"
+            kpi_a = f"{ta:+.1f}\\%" if ta is not None else "—"
+            kpi_n = f"{tn:+.1f}\\%" if tn is not None else "—"
+            kpi_s = "✓ 策略有效" if (ta or 0) > 0 or (tn or 0) > 0 else "✗ 策略无效"
+            kpi_color_a = "green" if (ta or 0) > 0 else "red"
+            kpi_color_n = "green" if (tn or 0) > 0 else "red"
             kpi_color_s = "green" if buy_count > 0 else "red"
 
             # 3. 触发信号
             trigger_lines = []
             for a in sa:
                 code = getattr(a, "stock_code", "?")
-                label = getattr(a, "rule_label", "?")
-                cv = getattr(a, "current_value", "—")
+                label = _esc(getattr(a, "rule_label", "?"))
+                cv = _esc(str(getattr(a, "current_value", "—")))
                 trigger_lines.append(
-                    f"\\textbf{{{code}}} & {label} & {cv} \\\\"
+                    f"\\textbf{{{_esc(code)}}} & {label} & {cv} \\\\"
                 )
             trigger_section = (
                 "\\begin{tabular}{lll}\n" +
@@ -2360,8 +2377,10 @@ class EmailNotifier:
                 sig = "●" if code in alert_codes else ""
                 cells = [_esc(code)]
                 for ind in cons_inds:
-                    v = vals.get(ind, 0) or 0
-                    if ind == "deviation":
+                    v = vals.get(ind)  # None = 缺失, 0 = 真实零
+                    if v is None:
+                        cells.append("—")
+                    elif ind == "deviation":
                         cells.append(f"{v*100:+.1f}\\%")
                     else:
                         cells.append(f"{v:.2f}")
@@ -2389,8 +2408,10 @@ class EmailNotifier:
                 sig = "●" if code in alert_codes else ""
                 cells = [_esc(code)]
                 for ind in cons_inds:
-                    v = vals.get(ind, 0) or 0
-                    if ind == "deviation":
+                    v = vals.get(ind)  # None = 缺失, 0 = 真实零
+                    if v is None:
+                        cells.append("—")
+                    elif ind == "deviation":
                         cells.append(f"{v*100:+.1f}\\%")
                     else:
                         cells.append(f"{v:.2f}")
@@ -2638,8 +2659,10 @@ class EmailNotifier:
                 row_class = "signal-buy" if sig == "█" else ""
                 cells = [f"<td>{code}</td>"]
                 for ind in cons_inds:
-                    v = vals.get(ind, 0) or 0
-                    if ind == "deviation":
+                    v = vals.get(ind)  # None = 缺失, 0 = 真实零
+                    if v is None:
+                        cells.append('<td class="num">—</td>')
+                    elif ind == "deviation":
                         color = "green" if v >= 0 else "red"
                         cells.append(f'<td class="num {color}">{v*100:+.1f}%</td>')
                     else:
@@ -2668,8 +2691,10 @@ class EmailNotifier:
                 row_class = "signal-buy" if sig == "█" else ""
                 cells = [f"<td>{code}</td>"]
                 for ind in cons_inds:
-                    v = vals.get(ind, 0) or 0
-                    if ind == "deviation":
+                    v = vals.get(ind)  # None = 缺失, 0 = 真实零
+                    if v is None:
+                        cells.append('<td class="num">—</td>')
+                    elif ind == "deviation":
                         color = "green" if v >= 0 else "red"
                         cells.append(f'<td class="num {color}">{v*100:+.1f}%</td>')
                     else:
