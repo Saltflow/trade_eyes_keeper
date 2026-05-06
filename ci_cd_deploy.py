@@ -369,6 +369,52 @@ def _pre_deploy_checks(dry_run):
     return True
 
 
+def _sync_config():
+    """将本地配置文件同步到服务器 (config.yaml, alerts.yaml, 可选 .env)。"""
+    _info("Syncing config files to server...")
+
+    ssh_key = _get_ssh_key()
+    sync_env = os.environ.get("SYNC_ENV", "").strip().lower() in ("1", "true", "yes")
+
+    configs = [
+        ("config/config.yaml", "config.yaml"),
+        ("config/alerts.yaml", "alerts.yaml"),
+    ]
+
+    if sync_env:
+        configs.append(("config/.env", ".env"))
+
+    for local_rel, remote_name in configs:
+        local_path = os.path.join(PROJECT_DIR, local_rel)
+        if not os.path.exists(local_path):
+            _info(f"SKIP: {local_rel} not found locally")
+            continue
+
+        remote_path = f"{REMOTE_DIR}/config/{remote_name}"
+        scp_cmd = [
+            "scp",
+            "-i", ssh_key,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "ConnectTimeout=10",
+            local_path,
+            f"{REMOTE_SSH_USER}@{REMOTE_HOST}:{remote_path}",
+        ]
+        try:
+            result = subprocess.run(
+                scp_cmd,
+                capture_output=True, text=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                _info(f"Synced: {local_rel} -> {remote_path}")
+            else:
+                _info(f"FAIL to sync {local_rel}: {result.stderr[:100]}")
+        except subprocess.TimeoutExpired:
+            _info(f"TIMEOUT syncing {local_rel}")
+        except Exception as e:
+            _info(f"ERROR syncing {local_rel}: {e}")
+
+
 def deploy():
     """主部署函数"""
     host = REMOTE_HOST
@@ -419,6 +465,9 @@ def deploy():
         _ssh_cmd("date", "Server time")
         _ssh_cmd("hostname -I", "Server IP")
         _ssh_cmd("uname -a", "System info")
+
+        # ── 2b. 同步配置文件到服务器 ──
+        _sync_config()
 
         # ── 3. 清理旧日志 ──
         clean = os.getenv("CLEAN_BEFORE_DEPLOY", "true").strip().lower() in (
@@ -571,11 +620,20 @@ fi
         version = version_out.strip() if version_out else "unknown"
 
         deploy_notify_script = f"""cd {REMOTE_DIR} && timeout 30 python3 -c "
-import sys
+import sys, os
 sys.path.insert(0, '.')
+from dotenv import load_dotenv
+load_dotenv('config/.env')
 import yaml
 with open('config/config.yaml', 'r', encoding='utf-8') as f:
     config = yaml.safe_load(f)
+# 注入 .env 的邮件凭证 (复刻 main.py load_config)
+if os.getenv('EMAIL_SENDER'):
+    config.setdefault('email', {{}})['sender_email'] = os.getenv('EMAIL_SENDER')
+if os.getenv('EMAIL_PASSWORD'):
+    config.setdefault('email', {{}})['sender_password'] = os.getenv('EMAIL_PASSWORD')
+if os.getenv('EMAIL_RECEIVER'):
+    config.setdefault('email', {{}})['receiver_email'] = os.getenv('EMAIL_RECEIVER')
 from src.notification.email_notifier import EmailNotifier
 notifier = EmailNotifier(config)
 ok, msg = notifier.send_deployment_notification('SUCCESS', version='{version}',
@@ -912,6 +970,11 @@ if __name__ == "__main__":
         default=_get_ssh_key(),
         help=f"SSH private key path (default: {_get_ssh_key()})",
     )
+    parser.add_argument(
+        "--sync-env",
+        action="store_true",
+        help="Also sync config/.env to server (contains sensitive credentials, off by default)",
+    )
 
     args = parser.parse_args()
 
@@ -921,6 +984,9 @@ if __name__ == "__main__":
 
     if args.dry_run:
         os.environ["DRY_RUN"] = "1"
+
+    if args.sync_env:
+        os.environ["SYNC_ENV"] = "true"
 
     if args.mode == "investigate":
         success = investigate_server()
