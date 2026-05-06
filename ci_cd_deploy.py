@@ -370,17 +370,25 @@ def _pre_deploy_checks(dry_run):
 
 
 def _sync_config():
-    """将本地配置文件同步到服务器 (config.yaml, alerts.yaml, 可选 .env)。"""
+    """将本地配置文件同步到服务器。默认只同步 alerts.yaml (无敏感信息)。
+    使用 --sync-config 才同步 config.yaml，--sync-env 同步 .env。
+    """
     _info("Syncing config files to server...")
 
     ssh_key = _get_ssh_key()
     sync_env = os.environ.get("SYNC_ENV", "").strip().lower() in ("1", "true", "yes")
+    sync_config = os.environ.get("SYNC_CONFIG", "").strip().lower() in ("1", "true", "yes")
 
+    # 始终同步 alerts.yaml (技术指标，无敏感信息)
     configs = [
-        ("config/config.yaml", "config.yaml"),
         ("config/alerts.yaml", "alerts.yaml"),
     ]
 
+    # config.yaml: 含服务器特定配置 (ssl, public_ip 等)，需明确开启
+    if sync_config:
+        configs.append(("config/config.yaml", "config.yaml"))
+
+    # .env: 含密码，需独立开启
     if sync_env:
         configs.append(("config/.env", ".env"))
 
@@ -975,6 +983,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Also sync config/.env to server (contains sensitive credentials, off by default)",
     )
+    parser.add_argument(
+        "--sync-config",
+        action="store_true",
+        help="Also sync config/config.yaml to server (overwrites server-specific settings like ssl/ip)",
+    )
 
     args = parser.parse_args()
 
@@ -987,6 +1000,9 @@ if __name__ == "__main__":
 
     if args.sync_env:
         os.environ["SYNC_ENV"] = "true"
+
+    if args.sync_config:
+        os.environ["SYNC_CONFIG"] = "true"
 
     if args.mode == "investigate":
         success = investigate_server()
