@@ -2304,6 +2304,12 @@ class EmailNotifier:
 
             # 2. KPI
             sa = getattr(signal_scan, "alerts", None) or [] if signal_scan else []
+
+            # ── LaTeX 转义函数 (必须在使用前定义) ──
+            def _esc(s):
+                """LaTeX 转义"""
+                return str(s).replace("&", "\\&").replace("%", "\\%").replace("#", "\\#").replace("$", "\\$").replace("_", "\\_")
+
             buy_count = len(sa)
             bt_a = backtest.get("a_share", {}) if backtest else {}
             bt_n = backtest.get("non_a_share", {}) if backtest else {}
@@ -2356,10 +2362,6 @@ class EmailNotifier:
                         "pb": f"{pb:.2f}" if pb is not None and not pd.isna(pb) else "—",
                         "dy": f"{dy:.2f}" if dy is not None and not pd.isna(dy) else "—",
                     }
-
-            def _esc(s):
-                """LaTeX 转义"""
-                return str(s).replace("&", "\\&").replace("%", "\\%").replace("#", "\\#").replace("$", "\\$").replace("_", "\\_")
 
             header_cols = ["标的"] + cons_inds + ["息\\%", "PE", "PB", "信号"]
             # 列格式: l for 标的, c for signal, r for numbers
