@@ -447,7 +447,11 @@ class EmailNotifier:
     def _build_backtest_section(self, backtest) -> str:
         """构建回测结果 HTML"""
         if not backtest:
-            return ""
+            return (
+                "<h3>历史回测</h3>\n"
+                '<p style="color:#888;font-size:13px">优化策略未生成（每日 02:00 自动运行 <code>main.py --optimize</code>）。'
+                "首次部署后可手动触发: <code>python main.py --optimize</code></p>\n"
+            )
 
         html = "<h3>历史回测</h3>\n"
         group_labels = {"a_share": "A股", "non_a_share": "境外"}
@@ -2316,12 +2320,18 @@ class EmailNotifier:
 
             ta = bt_a.get("total_return")  # None = no backtest data
             tn = bt_n.get("total_return")
+            has_backtest = ta is not None or tn is not None
             kpi_buy = str(buy_count)
             kpi_a = f"{ta:+.1f}\\%" if ta is not None else "—"
             kpi_n = f"{tn:+.1f}\\%" if tn is not None else "—"
-            kpi_s = "✓ 策略有效" if (ta or 0) > 0 or (tn or 0) > 0 else "✗ 策略无效"
-            kpi_color_a = "green" if (ta or 0) > 0 else "red"
-            kpi_color_n = "green" if (tn or 0) > 0 else "red"
+            if not has_backtest:
+                kpi_s = "⚙ 优化未运行"
+            elif (ta if ta is not None else 0) > 0 or (tn if tn is not None else 0) > 0:
+                kpi_s = "✓ 策略有效"
+            else:
+                kpi_s = "✗ 策略无效"
+            kpi_color_a = "green" if ta is not None and ta > 0 else "red"
+            kpi_color_n = "green" if tn is not None and tn > 0 else "red"
             kpi_color_s = "green" if buy_count > 0 else "red"
 
             # 3. 触发信号

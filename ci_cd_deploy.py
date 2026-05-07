@@ -575,6 +575,7 @@ def deploy():
 
         has_once = "python3 main.py --once" in (out or "")
         has_brief = "python3 main.py --brief" in (out or "")
+        has_optimize = "python3 main.py --optimize" in (out or "")
 
         # ── 9. 更新cron（如需） ──
         if not has_once:
@@ -592,14 +593,40 @@ def deploy():
                 "Add brief report cron",
             )
             _info("Brief report cron registered (09:50 daily)")
+        if not has_optimize:
+            _info("Configuring strategy optimizer cron at 02:00...")
+            opt_line = f"0 2 * * * cd {REMOTE_DIR} && python3 main.py --optimize >> {REMOTE_DIR}/logs/cron_optimize.log 2>&1"
+            _ssh_cmd(
+                f"(crontab -l 2>/dev/null; echo '{opt_line}') | crontab -",
+                "Add optimizer cron",
+            )
+            _info("Optimizer cron registered (02:00 daily)")
 
         # 重新检查 cron
         ok, out, _ = _ssh_cmd("crontab -l", "Verify final cron")
-        cron_ok = ("--once" in (out or "")) and ("--brief" in (out or ""))
-        _step("cron", cron_ok, "daily+brief registered" if cron_ok else "missing")
+        cron_ok = ("--once" in (out or "")) and ("--brief" in (out or "")) and ("--optimize" in (out or ""))
+        _step("cron", cron_ok, "daily+brief+optimize registered" if cron_ok else "missing")
 
-        # ── 10. 验证邮件存档 ──
-        _info("Checking for server info in email archives...")
+        # ── 9c. 检查优化器数据, 首次部署触发初始运行 ──
+        _info("Checking optimizer data...")
+        opt_check = (
+            f"ls {REMOTE_DIR}/data/optimizer/*_strategies.yaml 2>/dev/null | wc -l"
+        )
+        _, opt_count_out, _ = _ssh_cmd(opt_check, "Count optimizer YAML files")
+        opt_count = int(opt_count_out.strip() or "0")
+        if opt_count == 0:
+            _info("No optimizer data found — starting initial optimization (background, ~30min)...")
+            _ssh_cmd(
+                f"cd {REMOTE_DIR} && nohup python3 main.py --optimize "
+                f"> {REMOTE_DIR}/logs/optimize_init.log 2>&1 &",
+                "Start initial optimizer in background",
+                timeout=10,
+            )
+            _info("Initial optimization running in background (check logs/optimize_init.log)")
+            _step("optimizer_data", None, "initial run started (30min)")
+        else:
+            _info(f"Optimizer data exists ({opt_count} files)")
+            _step("optimizer_data", True, f"{opt_count} strategy files")
         check_archive = f"""timeout 10 bash -c '
 latest=$(ls -t {REMOTE_DIR}/data/email_archive/*.html 2>/dev/null | head -1)
 if [ -n "$latest" ]; then
