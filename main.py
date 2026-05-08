@@ -148,6 +148,18 @@ def run_daily_task():
         try:
             from src.analysis.signal_scanner import SignalScanner
 
+            def _merge_consensus(a, b):
+                """合并两个 ConsensusReport，求并集"""
+                from src.analysis.signal_scanner import ConsensusReport
+                return ConsensusReport(
+                    buy_signal_counts={**a.buy_signal_counts, **b.buy_signal_counts},
+                    sell_signal_counts={**a.sell_signal_counts, **b.sell_signal_counts},
+                    stock_inclusion_counts={**a.stock_inclusion_counts, **b.stock_inclusion_counts},
+                    consensus_buy_signals=list(set(a.consensus_buy_signals + b.consensus_buy_signals)),
+                    consensus_stocks=list(set(a.consensus_stocks + b.consensus_stocks)),
+                    consensus_indicators=list(set(a.consensus_indicators + b.consensus_indicators)),
+                )
+
             logger.info("开始策略信号扫描")
             scanner = SignalScanner()
             scan_result = scanner.scan(session, "a_share", top_n=5)
@@ -162,9 +174,34 @@ def run_daily_task():
                     "current_value": sa.current_value,
                     "strategy_rank": sa.strategy_rank,
                 })
+
+            # 境外标的也扫描
+            logger.info("开始境外策略信号扫描")
+            nona_result = scanner.scan(session, "non_a_share", top_n=5)
+            for sa in nona_result.alerts:
+                session.alerts.append({
+                    "type": "strategy",
+                    "stock_code": sa.stock_code,
+                    "rule_id": sa.rule_id,
+                    "rule_label": sa.rule_label,
+                    "condition": sa.condition_str,
+                    "current_value": sa.current_value,
+                    "strategy_rank": sa.strategy_rank,
+                })
+            # 合并 indicator_snapshot: A 股 + 境外
+            merged_snapshot = dict(scan_result.indicator_snapshot or {})
+            merged_snapshot.update(nona_result.indicator_snapshot or {})
+            scan_result.indicator_snapshot = merged_snapshot
+            # 合并共识报告
+            merged_consensus = _merge_consensus(scan_result.consensus, nona_result.consensus)
+            scan_result.consensus = merged_consensus
+
             # 存入共识数据供邮件使用
             session.signal_scan = scan_result
-            logger.info(f"策略信号扫描完成: {len(scan_result.alerts)}个策略告警")
+            logger.info(
+                f"策略信号扫描完成: A股={len(scan_result.alerts)} + "
+                f"境外={len(nona_result.alerts)} 个策略告警"
+            )
         except Exception as e:
             logger.warning(f"策略信号扫描失败 (非致命): {e}")
             session.signal_scan = None
@@ -172,6 +209,16 @@ def run_daily_task():
         # 3c. 回测分析（基于最新优化策略）
         try:
             logger.info("开始回测分析")
+            # 注入基准 ETF 数据（510300 沪深300, 510880 红利ETF）
+            historical = getattr(session, "_historical", {}) or {}
+            bench_codes = ["510300", "510880"]
+            bench_data = {}
+            for bc in bench_codes:
+                if bc in historical:
+                    bench_data[bc] = historical[bc]
+            if bench_data:
+                scanner.benchmark_data = bench_data
+
             bt_a = scanner.run_backtest(session, "a_share")
             bt_nona = scanner.run_backtest(session, "non_a_share")
             session.backtest = {}
