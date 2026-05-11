@@ -2450,10 +2450,10 @@ class EmailNotifier:
             # 5. 脚注
             buy_sigs = consensus.buy_signal_counts if consensus else {}
             strat_note = " · ".join(list(buy_sigs.keys())[:4]) if buy_sigs else "—"
-            bt_text = f"A股策略超额 {ta:+.1f}\\%"
+            bt_text = f"A股策略超额 {ta:+.1f}\\%" if ta is not None else "A股策略未运行"
             if bt_a.get("benchmarks"):
                 for bn, bv in bt_a["benchmarks"].items():
-                    beat = "✓" if ta > bv else "✗"
+                    beat = "✓" if (ta is not None and ta > bv) else "✗"
                     bt_text += f"\\quad vs {bn} {bv:+.1f}\\% {beat}"
 
             # 6. 附录
