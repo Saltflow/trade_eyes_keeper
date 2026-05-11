@@ -220,9 +220,7 @@ def run_daily_task():
             for bc in bench_codes:
                 if bc not in bench_data:
                     try:
-                        from src.core.data_fetcher import StockDataFetcher
-                        fetcher = StockDataFetcher(config)
-                        df = fetcher.data_source.fetch_stock_data(bc, days=120)
+                        df = StockDataFetcher(config).data_source.fetch_stock_data(bc, days=120)
                         if df is not None and not df.empty:
                             bench_data[bc] = df
                             logger.info(f"已单独获取基准 ETF {bc} 数据 ({len(df)} 行)")
