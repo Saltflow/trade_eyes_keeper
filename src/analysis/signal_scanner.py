@@ -525,7 +525,7 @@ class SignalScanner:
 
         from .backtest_config import BacktestConfig
         bcfg = config if isinstance(config, BacktestConfig) else BacktestConfig()
-        rf_rate = bcfg.rf_rate  # A股 2%, 非A 4.5%
+        rf_rate = getattr(bcfg, "rf_rate", 2.0)  # 默认 A 股 2%
 
         for name, df in bench_data.items():
             if df is None or df.empty or len(df) < 2:
