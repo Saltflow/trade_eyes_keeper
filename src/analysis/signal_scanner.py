@@ -514,32 +514,36 @@ class SignalScanner:
     def _compute_benchmarks(
         self, stock_codes: list[str], config
     ) -> dict[str, float]:
-        """计算基准 ETF 测试超额收益"""
-        from .portfolio_strategy import PortfolioEvaluator
-        from .rule_engine import Rule
+        """计算基准 ETF 买持超额收益: (末价 - 初价)/初价 - 无风险收益。
 
+        不做时间线约束 — 买持就是从第一天拿到最后一天。
+        """
         results: dict[str, float] = {}
         bench_data = getattr(self, "benchmark_data", {}) or {}
         if not bench_data:
             return results
 
-        bench_rules = [
-            Rule(id="bn_buy", label="满仓", type="buy", priority=1,
-                 condition="True", budget_pool="buy",
-                 action_amount="cash * 0.95", reset_when="False"),
-            Rule(id="bn_sell", label="禁卖", type="sell", priority=2,
-                 condition="False", budget_pool="sell",
-                 action_fraction=0.0, reset_when="True"),
-        ]
+        from .backtest_config import BacktestConfig
+        bcfg = config if isinstance(config, BacktestConfig) else BacktestConfig()
+        rf_rate = bcfg.rf_rate  # A股 2%, 非A 4.5%
 
         for name, df in bench_data.items():
-            code = name
-            evalr = PortfolioEvaluator({code: df}, "a_share")
-            evalr.rules = bench_rules
+            if df is None or df.empty or len(df) < 2:
+                results[name] = 0.0
+                continue
             try:
-                r = evalr.evaluate([code], backtest_config=config)
-                sp = r.sub_periods.get("test")
-                results[name] = round(sp.excess_return if sp else 0.0, 2)
+                close = df["close"] if "close" in df.columns else df.iloc[:, 0]
+                start_p = float(close.iloc[0])
+                end_p = float(close.iloc[-1])
+                if start_p <= 0:
+                    results[name] = 0.0
+                    continue
+                total_ret = (end_p - start_p) / start_p * 100.0
+                # 扣除无风险收益: rf_rate * years
+                days = len(df)
+                rf_cost = rf_rate * days / 365.0
+                excess = round(total_ret - rf_cost, 2)
+                results[name] = excess
             except Exception:
                 results[name] = 0.0
         return results

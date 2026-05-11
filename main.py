@@ -216,6 +216,18 @@ def run_daily_task():
             for bc in bench_codes:
                 if bc in historical:
                     bench_data[bc] = historical[bc]
+            # 如果 510300 不在股票列表, 单独抓取
+            for bc in bench_codes:
+                if bc not in bench_data:
+                    try:
+                        from src.core.data_fetcher import StockDataFetcher
+                        fetcher = StockDataFetcher(config)
+                        df = fetcher.data_source.fetch_stock_data(bc, days=120)
+                        if df is not None and not df.empty:
+                            bench_data[bc] = df
+                            logger.info(f"已单独获取基准 ETF {bc} 数据 ({len(df)} 行)")
+                    except Exception:
+                        logger.warning(f"无法获取基准 ETF {bc} 数据")
             if bench_data:
                 scanner.benchmark_data = bench_data
 

@@ -969,6 +969,7 @@ class StrategyOptimizer:
             "timestamp": report.timestamp,
             "iterations": report.iterations,
             "elapsed_seconds": report.elapsed_seconds,
+            "benchmarks": dict(report.benchmarks),
         }
 
         strategies = []
