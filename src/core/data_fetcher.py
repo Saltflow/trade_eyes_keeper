@@ -302,7 +302,7 @@ class StockDataFetcher:
 
             try:
                 # 从 DataSource 获取历史数据（含缓存管理 + 复权交叉验证）
-                stock_data = self.data_source.fetch_stock_data(stock_code, days=120)
+                stock_data = self.data_source.fetch_stock_data(stock_code, days=730)
 
                 if stock_data is not None and not stock_data.empty:
                     stock_data["stock_code"] = stock_code
