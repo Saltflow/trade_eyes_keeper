@@ -465,7 +465,9 @@ class EmailNotifier:
             html += '<tr style="background:#34495e;color:#fff"><th>指标</th><th>全期</th><th>观察0-6m</th><th>部署6-12m</th><th>验证12-24m</th></tr>\n'
 
             phases = bt.get("phase_metrics", {})
-            total = f"{bt.get('total_return', 0):+.1f}%"
+            # 全期总收益含资金注入，无直接可比超额 → 各阶段超额见分列
+            _excess_all = "—"
+            total_excess_col = _excess_all
             dd = f"{bt.get('max_drawdown', 0):.1f}%"
             sp = f"{bt.get('sharpe', 0):.3f}"
             trades = str(bt.get("trade_count", 0))
@@ -482,7 +484,7 @@ class EmailNotifier:
                     return f"{v:.3f}"
                 return str(v)
 
-            html += (f"<tr><td>超额收益</td><td>{total}</td>"
+            html += (f"<tr><td>超额收益</td><td>{total_excess_col}</td>"
                      f"<td>{_pval(phases.get('observe'), 'excess_return')}</td>"
                      f"<td>{_pval(phases.get('deploy'), 'excess_return')}</td>"
                      f"<td>{_pval(phases.get('test'), 'excess_return')}</td></tr>\n")
