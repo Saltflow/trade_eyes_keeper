@@ -581,23 +581,8 @@ class PortfolioEvaluator:
             df = df.sort_values("date").reset_index(drop=True)
             df["ma60"] = df["close"].rolling(window=60, min_periods=1).mean()
             df["deviation"] = (df["close"] - df["ma60"]) / df["ma60"]
-            # 核心指标兜底计算（确保规则表达式中的变量始终可用）
-            if "rsi" not in df.columns:
-                delta = df["close"].diff()
-                gain = delta.clip(lower=0)
-                loss = (-delta).clip(lower=0)
-                avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
-                avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
-                rs = avg_gain / avg_loss.replace(0, float("nan"))
-                df["rsi"] = 100.0 - 100.0 / (1.0 + rs)
-            if "boll_pb" not in df.columns:
-                roll = df["close"].rolling(20, min_periods=1)
-                upper = roll.mean() + 2 * roll.std()
-                lower = roll.mean() - 2 * roll.std()
-                boll_range = upper - lower
-                df["boll_pb"] = ((df["close"] - lower) / boll_range.replace(0, float("nan"))).clip(0, 1)
 
-            # 合并预计算指标（如果有）
+            # 先合并预计算指标（来自 compute_all / optimizer），再兜底
             if indicators_data and code in indicators_data:
                 ind_df = indicators_data[code]
                 if "date" in ind_df.columns:
@@ -615,6 +600,22 @@ class PortfolioEvaluator:
                             ind_df[["date"] + indicator_cols],
                             on="date", how="left",
                         )
+
+            # 兜底：merge 后关键指标仍缺失则内联计算
+            if "rsi" not in df.columns:
+                delta = df["close"].diff()
+                gain = delta.clip(lower=0)
+                loss = (-delta).clip(lower=0)
+                avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+                avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+                rs = avg_gain / avg_loss.replace(0, float("nan"))
+                df["rsi"] = 100.0 - 100.0 / (1.0 + rs)
+            if "boll_pb" not in df.columns:
+                roll = df["close"].rolling(20, min_periods=1)
+                upper = roll.mean() + 2 * roll.std()
+                lower = roll.mean() - 2 * roll.std()
+                boll_range = upper - lower
+                df["boll_pb"] = ((df["close"] - lower) / boll_range.replace(0, float("nan"))).clip(0, 1)
 
             dates = df["date"].dt.date.astype(str)
             for i in range(len(df)):

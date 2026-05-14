@@ -123,7 +123,8 @@ class SignalScanner:
 
         try:
             data = yaml.safe_load(raw)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"YAML 解析失败: {e}")
             return []
 
         strategies = data.get("strategies", [])[:top_n]
@@ -261,8 +262,8 @@ class SignalScanner:
                                     strategy_rank=s_idx + 1,
                                 )
                             )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"策略 {sid} 评估失败 (非致命): {e}")
 
         return result
 
@@ -299,7 +300,8 @@ class SignalScanner:
 
         try:
             computed = compute_all(subset)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"指标计算失败: {e}")
             return result
 
         for code, df in computed.items():
@@ -467,8 +469,8 @@ class SignalScanner:
                     reset_when=r_dict.get("reset_when"),
                 )
                 rules.append(rule)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"规则 {r_dict.get('id','?')} 解析失败: {e}")
 
         if not rules:
             return None
@@ -481,7 +483,8 @@ class SignalScanner:
         # 计算指标
         try:
             indicators = compute_all(stocks_data)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"回测指标计算失败: {e}")
             indicators = None
 
         # 运行回测
@@ -525,7 +528,7 @@ class SignalScanner:
 
         from .backtest_config import BacktestConfig
         bcfg = config if isinstance(config, BacktestConfig) else BacktestConfig()
-        rf_rate = getattr(bcfg, "rf_rate", 2.0)  # 默认 A 股 2%
+        rf_rate = bcfg.rf_rate
 
         for name, df in bench_data.items():
             if df is None or df.empty or len(df) < 2:
@@ -544,6 +547,7 @@ class SignalScanner:
                 rf_cost = rf_rate * days / 365.0
                 excess = round(total_ret - rf_cost, 2)
                 results[name] = excess
-            except Exception:
+            except Exception as e:
+                logger.warning(f"基准 {name} 计算失败: {e}")
                 results[name] = 0.0
         return results

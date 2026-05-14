@@ -32,6 +32,7 @@ class BacktestConfig:
 
     observe_end_month: int = 6
     trade_end_month: int = 18
+    rf_rate: float = 2.0  # 无风险利率 (%) — A股默认2%, 境外设4.5%
     capital_injections: dict[int, float] = field(default_factory=dict)
     initial_capital: float = 100000.0
     monthly_buy_limit: float = float("inf")
