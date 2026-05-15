@@ -325,7 +325,7 @@ class SessionContext(BaseModel):
     announcements: dict[str, list] = Field(default_factory=dict)
     financial_analysis_results: dict[str, list] = Field(default_factory=dict)
     portfolio_results: Optional[dict] = None
-    signal_scan: Optional[object] = None  # ScanResult from signal_scanner
+    signal_scan: Optional[object] = None  # ScanResult — typed via TYPE_CHECKING
     backtest: Optional[dict] = None  # backtest results {group: dict}
 
     def get_all_dataframe(self):

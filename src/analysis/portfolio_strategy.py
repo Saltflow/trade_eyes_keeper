@@ -1208,7 +1208,8 @@ def generate_portfolio_chart(
                 alpha = 0.85
             try:
                 dt_arr = pd.to_datetime(dates)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"图表日期转换失败: {e} (dates={len(dates)}条)")
                 dt_arr = pd.date_range(end=pd.Timestamp.now(), periods=len(navs), freq="B")
 
             # 主曲线（zorder=5 确保画在最上层）

@@ -112,7 +112,8 @@ class FinancialReportManager:
                 from ..data.cache_manager import CacheManager
 
                 self.cache_manager = CacheManager(config)
-            except Exception:
+            except Exception as e:
+                logger.error(f"财报缓存管理器初始化失败: {e}")
                 self.cache_manager = None
 
         logger.info(
@@ -438,7 +439,8 @@ class FinancialReportManager:
                                     cache_file.name,
                                 )
                                 return reports
-                        except Exception:
+                        except Exception as e:
+                            logger.warning(f"财报缓存 {stock_code} 加载失败: {e}")
                             continue
             if not stock_analysis:
                 logger.warning(f"股票 {stock_code} 没有找到可分析的财报")

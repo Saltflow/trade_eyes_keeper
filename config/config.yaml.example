@@ -44,7 +44,7 @@ llm:
   api_type: deepseek
   base_url: https://api.deepseek.com/v1
   model: deepseek-chat
-  enable_fundamental_analysis: false
+  enable_fundamental_analysis: true  # LLM 基本面分析，默认开启
 
 # ── 日志 ──
 logging:

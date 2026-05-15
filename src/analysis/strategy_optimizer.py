@@ -314,7 +314,8 @@ class StrategyOptimizer:
                 )
                 test_sp = result.sub_periods.get("test")
                 results[name] = round(test_sp.excess_return if test_sp else 0.0, 2)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"基准 {name} 计算失败: {e}")
                 results[name] = 0.0
         logger.info("[Benchmark] %s", results)
         return results
@@ -380,8 +381,8 @@ class StrategyOptimizer:
                     try:
                         if expr_engine.evaluate(cond_str, ctx):
                             total += 1
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"条件求值异常 (非致命): {cond_str[:50]} | {e}")
                     prev_dev = ctx["deviation"]
 
             return total

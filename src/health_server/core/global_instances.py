@@ -93,8 +93,8 @@ def _sync_tokens_to_file():
     try:
         _token_file().parent.mkdir(parents=True, exist_ok=True)
         _token_file().write_text(_json.dumps(data), encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Token 文件写入失败: {e}")
 
 
 def _load_tokens_from_file():
@@ -109,8 +109,8 @@ def _load_tokens_from_file():
         for token, (path_s, exp) in data.items():
             if now <= exp:  # 只加载未过期的
                 _report_tokens[token] = (Path(path_s), exp)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Token 文件读取失败: {e}")
 
 
 def get_report_path(token):

@@ -83,8 +83,8 @@ class EmailNotifier:
             )
             from src.health_server.core.global_instances import set_report_token_timeout
             set_report_token_timeout(timeout)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"设置 token 超时失败: {e}")
 
     def send_from_session(self, session):
         """
@@ -1450,7 +1450,8 @@ class EmailNotifier:
                                 urllib.request.urlopen(ip_url, timeout=5)
                                 .read().decode("utf-8").strip()
                             )
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"IP检测服务失败: {e}")
                             fi = self._get_server_info().get("ip_address", "localhost")
                             for p in fi.replace("(优先)","").replace("(","").replace(")","").split(","):
                                 s = p.strip().split()[0] if p.strip() else ""
@@ -1476,8 +1477,8 @@ class EmailNotifier:
                             f'交互报告: {links_html}'
                             f'<span style="font-size:11px">(30分钟)</span></td></tr>'
                         )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"交互报告链接生成失败: {e}")
 
         # 9. 替换主模板变量
         html_content = email_template.format(
@@ -1716,8 +1717,8 @@ class EmailNotifier:
             try:
                 _, _, ip_addresses = socket.gethostbyname_ex(hostname)
                 ip_list.extend(ip_addresses)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gethostbyname_ex 失败: {e}")
 
             # 方法2: 通过hostname -I命令获取所有IP（Linux）
             try:
@@ -1727,8 +1728,8 @@ class EmailNotifier:
                 if result.returncode == 0:
                     ips = result.stdout.strip().split()
                     ip_list.extend(ips)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"hostname -I 失败: {e}")
 
             # 方法3: 获取公网IP（可选）
             try:
@@ -1745,8 +1746,8 @@ class EmailNotifier:
                 )
                 if public_ip and public_ip not in ip_list:
                     ip_list.append(f"{public_ip} (公网)")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"公网IP检测失败: {e}")
 
             # 去重并过滤回环地址
             ip_list = list(set(ip_list))
@@ -1769,8 +1770,8 @@ class EmailNotifier:
                     )
                     if result.returncode == 0:
                         kernel_version = result.stdout.strip()
-            except Exception:
-                # 最后回退到platform.uname
+            except Exception as e:
+                logger.debug(f"内核版本获取失败: {e}")
                 kernel_version = platform.uname().release
 
             return {
@@ -1894,8 +1895,8 @@ class EmailNotifier:
                     data_dt = dt_mod.strptime(date_str, "%Y-%m-%d").date()
                     days_since = (today_date - data_dt).days
                     in_trading = 0 <= days_since <= 3  # 最近3天内
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"日期解析失败(简报): date={data_date[:10]} | {e}")
 
             if not in_trading:
                 # 非交易日：跳过不显示

@@ -22,7 +22,8 @@ class AlertEngine:
             return None
         try:
             return (price / anchor - 1) * 100
-        except Exception:
+        except Exception as e:
+            logger.debug(f"百分比差计算异常: price={price} anchor={anchor} | {e}")
             return None
 
     def _get_interval(self, pct):

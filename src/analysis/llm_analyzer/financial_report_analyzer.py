@@ -170,7 +170,8 @@ class FinancialReportAnalyzer(BaseLLMClient):
                     field_names,
                 )
                 result["numeric_field_names"] = field_names
-            except Exception:
+            except Exception as e:
+                logger.warning(f"报表字段名提取失败({report_type}): {e}")
                 result["numeric_field_names"] = []
 
             min_required = 15 if report_type in ("annual", "semiannual") else 8
@@ -194,7 +195,8 @@ class FinancialReportAnalyzer(BaseLLMClient):
                             numeric_fields,
                             field_names,
                         )
-                    except Exception:
+                    except Exception as e:
+                        logger.warning(f"报表文本挖掘字段名提取失败: {e}")
                         result["numeric_field_names"] = []
 
                 if numeric_fields < min_required:
@@ -371,7 +373,8 @@ class FinancialReportAnalyzer(BaseLLMClient):
 
         try:
             num = float(number_str)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"财报数字解析失败: '{number_str}' | {e}")
             return None
 
         context_lower = context.lower()
@@ -384,7 +387,8 @@ class FinancialReportAnalyzer(BaseLLMClient):
     def _parse_percent(self, percent_str: str) -> Optional[float]:
         try:
             return float(percent_str) / 100.0
-        except Exception:
+        except Exception as e:
+            logger.debug(f"财报百分比解析失败: '{percent_str}' | {e}")
             return None
 
     def _truncate_for_log(self, text: Any, limit: int = 1200) -> str:

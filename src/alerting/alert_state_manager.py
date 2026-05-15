@@ -35,7 +35,8 @@ class AlertStateManager:
         try:
             with open(self.state_file, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"警报状态文件读取失败 ({self.state_file}): {e}")
             return {"last_updated": None, "alerts": {}}
 
     def _save(self):

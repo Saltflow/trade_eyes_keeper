@@ -320,7 +320,7 @@ def _pre_deploy_checks(dry_run):
     _info("Running ruff check...")
     ok, out, err = _run_local(
         sys.executable, "-m", "ruff", "check", "src/",
-        "--select", "F,E",
+        "--select", "F,E,S110",
         timeout=30,
     )
     if not ok:
@@ -330,7 +330,7 @@ def _pre_deploy_checks(dry_run):
             _info(f"FAIL: ruff check failed\n{err[:500]}")
             return False
     else:
-        _info("PASS: ruff check")
+        _info("PASS: ruff check (incl. S110 try-except-pass)")
 
     # 2. import smoke test
     _info("Running import smoke test...")
@@ -350,6 +350,29 @@ def _pre_deploy_checks(dry_run):
         _info("FAIL: import smoke test")
         return False
     _info("PASS: import smoke test")
+
+    # 2b. 检查无日志的 except Exception: pass 模式
+    _info("Checking for silent exception swallowing...")
+    ok, out, err = _run_local(
+        sys.executable, "-c",
+        "import subprocess, sys; "
+        "r = subprocess.run("
+        "['grep', '-rn', 'except Exception:\\\\s*$', 'src/'], "
+        "capture_output=True, text=True); "
+        "lines = r.stdout.strip().split(chr(10)) if r.stdout else []; "
+        "bad = [l for l in lines if l and 'logger.' not in l]; "
+        "print(f'{len(bad)} silent except:pass remaining') if bad else print('OK'); "
+        "sys.exit(1) if bad else sys.exit(0)",
+        timeout=15,
+    )
+    if not ok:
+        if "OK" in (out or ""):
+            _info("PASS: no silent except:pass found")
+        else:
+            _info(f"WARN: {out.strip()}")
+            # 不阻断部署，仅警告
+    else:
+        _info("PASS: no silent except:pass found")
 
     # 3. core tests (no network, no LLM)
     _info("Running core tests...")

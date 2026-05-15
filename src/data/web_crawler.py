@@ -578,8 +578,8 @@ class StockWebCrawler:
                     name_items = name_match.group(1).split(",")
                     if name_items and name_items[0].strip():
                         df["stock_name"] = name_items[0].strip()
-            except Exception:
-                pass  # 名称获取失败不影响数据本身
+            except Exception as e:
+                logger.debug(f"名称获取失败 (不影响数据): {e}")
 
             logger.info(
                 f"从新浪财经历史API获取股票 {stock_code} 的 {len(df)} 条真实历史数据"
@@ -839,8 +839,8 @@ class StockWebCrawler:
                     )
                     if stock_name:
                         df["stock_name"] = stock_name
-            except Exception:
-                pass  # 名称获取失败不影响数据本身
+            except Exception as e:
+                logger.debug(f"名称获取失败 (不影响数据): {e}")
 
             logger.info(f"从雅虎财经获取股票 {stock_code} 的 {len(df)} 条数据")
             return df
@@ -950,8 +950,8 @@ class StockWebCrawler:
                             stock_name = parts[0].strip()
                             if stock_name:
                                 df["stock_name"] = stock_name
-            except Exception:
-                pass  # 名称获取失败不影响数据本身
+            except Exception as e:
+                logger.debug(f"名称获取失败 (不影响数据): {e}")
 
             logger.info(f"从新浪美股K线API获取股票 {stock_code} 的 {len(df)} 条数据")
             return df
@@ -1071,8 +1071,8 @@ class StockWebCrawler:
                     name_items = name_match.group(1).split(",")
                     if name_items and name_items[0].strip():
                         df["stock_name"] = name_items[0].strip()
-            except Exception:
-                pass  # 名称获取失败不影响数据本身
+            except Exception as e:
+                logger.debug(f"名称获取失败 (不影响数据): {e}")
 
             logger.info(f"从新浪港股历史API获取股票 {stock_code} 的 {len(df)} 条数据")
             return df
@@ -1205,8 +1205,8 @@ class StockWebCrawler:
                                 name_items = name_resp.text.split("~")
                                 if len(name_items) > 1 and name_items[1].strip():
                                     df["stock_name"] = name_items[1].strip()
-                            except Exception:
-                                pass  # 名称获取失败不影响数据本身
+                            except Exception as e:
+                                logger.debug(f"名称获取失败 (不影响数据): {e}")
 
                             logger.info(
                                 f"从腾讯财经历史API获取股票 {stock_code} 的 {len(df)} 条真实历史数据"

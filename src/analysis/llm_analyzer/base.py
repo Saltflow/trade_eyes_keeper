@@ -228,7 +228,8 @@ class BaseLLMClient:
                 except ValueError:
                     continue
             return None
-        except Exception:
+        except Exception as e:
+            logger.debug(f"LLM 日期解析失败: value={value[:30]} | {e}")
             return None
 
     @staticmethod

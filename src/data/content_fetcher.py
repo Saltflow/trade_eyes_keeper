@@ -376,8 +376,8 @@ class ContentFetcher:
                 try:
                     if page.get_images(full=True):
                         metadata["pdf_has_images"] = True
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"PDF 图片检测跳过: {e}")
 
             extracted_text = "\n\n".join(text_parts)
             # 可选：使用camelot解析表格并追加文本，提升数字保留率
@@ -569,7 +569,8 @@ class ContentFetcher:
             # 尝试解码
             try:
                 html_content = content_bytes.decode("utf-8", errors="ignore")
-            except Exception:
+            except Exception as e:
+                logger.debug(f"UTF-8 解码失败，回退 GBK: {e}")
                 html_content = content_bytes.decode("gbk", errors="ignore")
 
             # 简单移除HTML标签
@@ -620,10 +621,12 @@ class ContentFetcher:
         """在HTML中查找PDF链接并下载，若成功返回PDF字节"""
         try:
             html_text = html_bytes.decode("utf-8", errors="ignore")
-        except Exception:
+        except Exception as e:
             try:
+                logger.debug(f"UTF-8 解码失败，回退 GBK: {e}")
                 html_text = html_bytes.decode("gbk", errors="ignore")
-            except Exception:
+            except Exception as e2:
+                logger.debug(f"GBK 解码也失败: {e2}")
                 return None
 
         # 优先匹配直接的pdf链接
@@ -683,7 +686,8 @@ class ContentFetcher:
             # 尝试解码为文本
             try:
                 text = content_bytes.decode("utf-8", errors="ignore")
-            except Exception:
+            except Exception as e:
+                logger.debug(f"UTF-8 解码失败，回退 GBK: {e}")
                 text = content_bytes.decode("gbk", errors="ignore")
 
             # 如果是二进制数据但非文本，返回空

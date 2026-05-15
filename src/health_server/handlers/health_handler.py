@@ -848,8 +848,8 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
                 receiver_email = self.health_server.config.get("email", {}).get(
                     "receiver_email", "未知"
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"读取收件邮箱配置失败: {e}")
 
         # 计算下次可请求时间
         next_request_time = "现在可以请求"
@@ -942,8 +942,8 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
         try:
             if self.health_server and self.health_server.config:
                 current_stocks = self.health_server.config.get("stocks", [])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"读取股票列表配置失败: {e}")
 
         # 准备模板上下文
         context = {

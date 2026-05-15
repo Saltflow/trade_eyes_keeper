@@ -204,8 +204,8 @@ class HealthServer:
             try:
                 _, _, ip_addresses = socket.gethostbyname_ex(hostname)
                 ip_list.extend(ip_addresses)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"gethostbyname_ex 取IP失败: {e}")
 
             # 方法2: 通过hostname -I命令获取所有IP（Linux）
             try:
@@ -215,8 +215,8 @@ class HealthServer:
                 if result.returncode == 0:
                     ips = result.stdout.strip().split()
                     ip_list.extend(ips)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"hostname -I 取IP失败: {e}")
 
             # 方法3: 获取公网IP（可选）- 使用HTTPS防止中间人攻击
             ip_detect_url = self.health_config.get(
@@ -266,8 +266,8 @@ class HealthServer:
                     )
                     if result.returncode == 0:
                         kernel_version = result.stdout.strip()
-            except Exception:
-                # 最后回退到platform.uname
+            except Exception as e:
+                logger.debug(f"uname -r 取内核版本失败: {e}")
                 kernel_version = platform.uname().release
 
             return {
