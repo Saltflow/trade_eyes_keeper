@@ -17,6 +17,7 @@ from typing import Optional
 
 import pandas as pd
 import numpy as np
+from pydantic import BaseModel
 
 from .rule_engine import RuleEngine, get_default_rules, Rule
 from .backtest_config import BacktestConfig, elapsed_months
@@ -73,7 +74,7 @@ class StockMetrics:
 
 
 @dataclass
-class SubPeriodMetrics:
+class SubPeriodMetrics(BaseModel):
     """子区间回测指标"""
 
     label: str  # "observe", "deploy", "test"

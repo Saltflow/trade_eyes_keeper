@@ -15,12 +15,13 @@
 import logging
 import re
 from collections import Counter
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 import pandas as pd
+from pydantic import BaseModel, Field
+
+import numpy as np
 import yaml
 
 from .indicator_library import compute_all
@@ -47,21 +48,18 @@ _INDICATOR_LABELS = {
 }
 
 
-@dataclass
-class ConsensusReport:
+class ConsensusReport(BaseModel):
     """Top-5 策略共识统计"""
 
-    buy_signal_counts: dict[str, int] = field(default_factory=dict)
-    sell_signal_counts: dict[str, int] = field(default_factory=dict)
-    stock_inclusion_counts: dict[str, int] = field(default_factory=dict)
-    # 衍生
-    consensus_buy_signals: list[str] = field(default_factory=list)  # ≥2/5
-    consensus_stocks: list[str] = field(default_factory=list)  # ≥3/5
-    consensus_indicators: list[str] = field(default_factory=list)  # 共识买入信号引用的指标
+    buy_signal_counts: dict[str, int] = Field(default_factory=dict)
+    sell_signal_counts: dict[str, int] = Field(default_factory=dict)
+    stock_inclusion_counts: dict[str, int] = Field(default_factory=dict)
+    consensus_buy_signals: list[str] = Field(default_factory=list)  # ≥2/5
+    consensus_stocks: list[str] = Field(default_factory=list)  # ≥3/5
+    consensus_indicators: list[str] = Field(default_factory=list)
 
 
-@dataclass
-class StrategyAlert:
+class StrategyAlert(BaseModel):
     """单条策略报警"""
 
     stock_code: str
@@ -73,17 +71,14 @@ class StrategyAlert:
     type: str = "strategy_buy"
 
 
-@dataclass
-class ScanResult:
+class ScanResult(BaseModel):
     """单次扫描结果"""
 
     group: str
     consensus: ConsensusReport
-    alerts: list[StrategyAlert] = field(default_factory=list)
-    indicator_snapshot: dict[str, dict[str, float]] = field(
-        default_factory=dict
-    )  # {stock_code: {indicator: value}}
-    divergence_warnings: list[str] = field(default_factory=list)  # 背离警告
+    alerts: list[StrategyAlert] = Field(default_factory=list)
+    indicator_snapshot: dict[str, dict[str, float]] = Field(default_factory=dict)
+    divergence_warnings: list[str] = Field(default_factory=list)
 
 
 class SignalScanner:
