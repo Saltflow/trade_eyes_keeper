@@ -167,7 +167,6 @@ class StockDataFetcher:
         fundamental_data: Dict[str, Optional[float]] = {
             "dividend_per_share": None,  # 过去1年每股分红（元）
             "dividend_yield": None,  # 当前价年化股息率（%）
-            "earnings_growth": None,  # 最近一次报告业绩增长参考值（%）
             "pe_ratio": None,  # 市盈率 (PE)
             "pb_ratio": None,  # 市净率 (PB)
             "roe": None,  # 净资产收益率 (ROE)
@@ -333,7 +332,6 @@ class StockDataFetcher:
                     latest_data["dividend_per_share"] = fundamental_data[
                         "dividend_per_share"
                     ]
-                    latest_data["earnings_growth"] = fundamental_data["earnings_growth"]
                     latest_data["pe_ratio"] = fundamental_data["pe_ratio"]
                     latest_data["pb_ratio"] = fundamental_data["pb_ratio"]
                     latest_data["roe"] = fundamental_data["roe"]

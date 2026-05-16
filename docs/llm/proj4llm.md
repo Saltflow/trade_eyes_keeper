@@ -349,5 +349,34 @@ pytest tests/test_import_smoke.py         # 导入完整性
 
 ---
 
+---
+
+## 2026-05-17 邮件质量修复 + Pydantic 全量迁移
+
+### 邮件渲染修复
+1. **业绩增长列删除** — `email_notifier.py` 3 个 table section + 表头彻底移除死列
+2. **告警行高亮 inline 化** — `<tr style="background:#fef9e7">` 替代 CSS class，兼容 Outlook/Gmail
+3. **缺失值符号统一** — 43 处 `"-"` → `"—"` (em dash)
+4. **邮件存档去嵌套** — `_save_email_copy` 不再包 `<html><body>`，仅 prepend HTML comment
+5. **策略告警去重** — `signal_scanner.scan()` 按 `(code, rule_label)` dedup
+6. **策略告警过滤** — 传统告警 table 中 `type=="strategy"` → `continue`
+7. **港股分类修复** — 5 位代码不再误判为 A 股 (`len(code)==6`)
+8. **行标区分** — 传统告警 `[MA60] 最低价 < MA60`，策略告警 `[策略]`
+9. **Eastmoney 静默** — 删除假实现 WARNING 日志
+10. **简报颜色 inline** — `style="color:..."` 替代 CSS class
+
+### Pydantic 全量迁移
+- `Rule` (rule_engine.py)
+- `TradeRecord`, `StockMetrics`, `SubPeriodMetrics`, `PortfolioResult` (portfolio_strategy.py)
+- `StrategyTrial`, `OptimizationReport` (strategy_optimizer.py)
+- `SubPeriodMetrics` 去掉双重装饰器 (`@dataclass` + `BaseModel`)
+- `__dataclass_fields__` → `hasattr(v, "label")` (strategy_optimizer.py:1037)
+- `tests/test_rule_engine.py` 位置参数 → 关键字参数
+
+### 数据清理
+- `data_fetcher.py` 删除死字段 `earnings_growth`
+- `email_notifier.py` 删除未使用 `earnings_growth` 局部变量
+- `email_template.html` 删除僵尸 CSS (`.positive`/`.negative`/`.alert-row`)
+
 **文档维护**: 本文档应在每次重大架构变更后更新  
 **下次审查**: 2026-06-01
