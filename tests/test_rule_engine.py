@@ -162,8 +162,7 @@ class TestRuleEngine:
     def test_single_rule_condition_met(self):
         """条件满足时触发"""
         rules = [
-            Rule("buy_1", "buy跌破-5%", "buy", 1,
-                 "deviation <= -0.05 and prev_deviation is not None "
+            Rule(id="buy_1", label="buy跌破-5%", type="buy", priority=1, condition="deviation <= -0.05 and prev_deviation is not None "
                  "and prev_deviation > -0.05",
                  action_amount="min(5000, cash)",
                  budget_pool="buy")
@@ -177,8 +176,7 @@ class TestRuleEngine:
     def test_single_rule_condition_not_met(self):
         """条件不满足时不触发"""
         rules = [
-            Rule("buy_1", "", "buy", 1,
-                 "deviation <= -0.05",
+            Rule(id="buy_1", label="", type="buy", priority=1, condition="deviation <= -0.05",
                  action_amount="min(5000, cash)",
                  budget_pool="buy")
         ]
@@ -192,8 +190,7 @@ class TestRuleEngine:
     def test_rule_locks_after_trigger(self):
         """规则触发后，后续同条件不再触发"""
         rules = [
-            Rule("buy_1", "", "buy", 1,
-                 "deviation <= -0.05",
+            Rule(id="buy_1", label="", type="buy", priority=1, condition="deviation <= -0.05",
                  action_amount="min(5000, cash)",
                  budget_pool="buy")
         ]
@@ -213,8 +210,7 @@ class TestRuleEngine:
     def test_rule_reset_re_enables(self):
         """满足重置条件后，规则重新可用"""
         rules = [
-            Rule("buy_1", "", "buy", 1,
-                 "deviation <= -0.05",
+            Rule(id="buy_1", label="", type="buy", priority=1, condition="deviation <= -0.05",
                  action_amount="min(5000, cash)",
                  budget_pool="buy",
                  reset_when="deviation > 0")
@@ -241,12 +237,10 @@ class TestRuleEngine:
     def test_priority_ordering(self):
         """高优先级规则先执行"""
         rules = [
-            Rule("low", "", "buy", 10,
-                 "deviation <= -0.05",
+            Rule(id="low", label="", type="buy", priority=10, condition="deviation <= -0.05",
                  action_amount="100",
                  budget_pool="buy"),
-            Rule("high", "", "buy", 1,
-                 "deviation <= -0.05",
+            Rule(id="high", label="", type="buy", priority=1, condition="deviation <= -0.05",
                  action_amount="500",
                  budget_pool="buy"),
         ]
@@ -262,8 +256,7 @@ class TestRuleEngine:
     def test_buy_only_no_sell(self):
         """只有买入规则时绝不卖出"""
         rules = [
-            Rule("buy_1", "", "buy", 1,
-                 "deviation <= -0.05 and prev_deviation is not None "
+            Rule(id="buy_1", label="", type="buy", priority=1, condition="deviation <= -0.05 and prev_deviation is not None "
                  "and prev_deviation > -0.05",
                  action_amount="min(5000, cash)",
                  budget_pool="buy")
@@ -287,12 +280,10 @@ class TestRuleEngine:
     def test_multiple_rules_same_day(self):
         """同一天多条规则命中，全部返回"""
         rules = [
-            Rule("buy_m5", "", "buy", 1,
-                 "deviation <= -0.05",
+            Rule(id="buy_m5", label="", type="buy", priority=1, condition="deviation <= -0.05",
                  action_amount="min(5000, cash)",
                  budget_pool="buy"),
-            Rule("buy_m10", "", "buy", 2,
-                 "deviation <= -0.10",
+            Rule(id="buy_m10", label="", type="buy", priority=2, condition="deviation <= -0.10",
                  action_amount="min(5000, cash)",
                  budget_pool="buy"),
         ]

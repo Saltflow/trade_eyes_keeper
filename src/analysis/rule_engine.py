@@ -21,8 +21,9 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from typing import Optional
+
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +87,7 @@ class ExpressionEngine:
 # ════════════════════════════════════════════════════════
 
 
-@dataclass
-class Rule:
+class Rule(BaseModel):
     """
     单条交易规则
 

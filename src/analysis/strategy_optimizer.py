@@ -16,7 +16,6 @@
 
 import logging
 import time
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -24,6 +23,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import yaml
+from pydantic import BaseModel, Field
 
 from .rule_engine import Rule
 from .backtest_config import (
@@ -195,8 +195,7 @@ def build_condition(
     return cond, reset
 
 
-@dataclass
-class StrategyTrial:
+class StrategyTrial(BaseModel):
     """单次策略试验记录"""
 
     params: dict[str, str | float]  # 参数摘要（构建器名、阈值等）
@@ -215,8 +214,7 @@ class StrategyTrial:
         return self.train_return
 
 
-@dataclass
-class OptimizationReport:
+class OptimizationReport(BaseModel):
     """优化报告"""
 
     report_id: str
@@ -224,12 +222,12 @@ class OptimizationReport:
     timestamp: str
     iterations: int
     n_random_starts: int = 20  # 贝叶斯优化随机初始点数
-    top_strategies: list[StrategyTrial] = field(default_factory=list)
-    convergence: list[float] = field(default_factory=list)
-    all_train_returns: list[float] = field(default_factory=list)
+    top_strategies: list[StrategyTrial] = Field(default_factory=list)
+    convergence: list[float] = Field(default_factory=list)
+    all_train_returns: list[float] = Field(default_factory=list)
     elapsed_seconds: float = 0.0
-    best_params: dict[str, float] = field(default_factory=dict)
-    benchmarks: dict[str, float] = field(default_factory=dict)  # 基准名称 → 测试超额收益
+    best_params: dict[str, float] = Field(default_factory=dict)
+    benchmarks: dict[str, float] = Field(default_factory=dict)  # 基准名称 → 测试超额收益
 
 
 class StrategyOptimizer:
@@ -1036,7 +1034,7 @@ class StrategyOptimizer:
         # phase 数据转 JSON-serializable
         phase_json: dict[str, dict] = {}
         for k, v in (best_sp_data or {}).items():
-            if hasattr(v, "__dataclass_fields__"):
+            if hasattr(v, "label"):
                 d = {}
                 for f_name in ("label", "total_return", "max_drawdown",
                                "sharpe_ratio", "trade_count", "excess_return"):
