@@ -733,6 +733,8 @@ class EmailNotifier:
         alert_rows_fundamental = ""
         seen_fundamental = set()  # 基本面去重：每个股票只加一次
         for alert in alert_stocks:
+            if alert.get("type") == "strategy":
+                continue  # 策略告警在独立 section 渲染
             if self._is_multi_alert_format(alert):
                 # 多层级警报格式
                 technical_row, fundamental_row = self._build_alert_rows_multi(
@@ -786,7 +788,6 @@ class EmailNotifier:
                 if not stock_row.empty:
                     dividend_per_share = stock_row.iloc[0].get("dividend_per_share")
                     dividend_yield = stock_row.iloc[0].get("dividend_yield")
-                    earnings_growth = stock_row.iloc[0].get("earnings_growth")
                     pe_ratio = stock_row.iloc[0].get("pe_ratio")
                     pb_ratio = stock_row.iloc[0].get("pb_ratio")
                     roe = stock_row.iloc[0].get("roe")
@@ -802,11 +803,6 @@ class EmailNotifier:
                 dividend_yield_str = (
                     f"{dividend_yield:.2f}%"
                     if dividend_yield is not None and not pd.isna(dividend_yield)
-                    else "-"
-                )
-                earnings_growth_str = (
-                    f"{earnings_growth:+.2f}%"
-                    if earnings_growth is not None and not pd.isna(earnings_growth)
                     else "-"
                 )
                 pe_ratio_str = (
@@ -841,15 +837,6 @@ class EmailNotifier:
                     if close_ma60_pct is not None
                     else ""
                 )
-                earnings_growth_class = (
-                    "positive"
-                    if earnings_growth is not None and earnings_growth > 0
-                    else "negative"
-                    if earnings_growth is not None and earnings_growth < 0
-                    else ""
-                )
-
-                # 格式化技术指标数据（安全处理None值）
                 low_price_str = (
                     f"{low_price:.2f}"
                     if low_price is not None and not pd.isna(low_price)
@@ -878,7 +865,7 @@ class EmailNotifier:
 
                 # 技术指标行
                 alert_rows_technical += f"""
-                    <tr class="alert-row">
+                    <tr style="background:#fef9e7">>
                         <td>{stock_code}</td>
                         <td>{stock_name}</td>
                         <td>{low_price_str}</td>
@@ -895,12 +882,11 @@ class EmailNotifier:
                 # 基本面指标行（去重：同一股票只加一次）
                 if stock_code and stock_code not in seen_fundamental:
                     alert_rows_fundamental += f"""
-                    <tr class="alert-row">
+                    <tr style="background:#fef9e7">>
                         <td>{stock_code}</td>
                         <td>{stock_name}</td>
                         <td>{dividend_per_share_str}</td>
                         <td>{dividend_yield_str}</td>
-                        <td class="{earnings_growth_class}">{earnings_growth_str}</td>
                         <td>{pe_ratio_str}</td>
                         <td>{pb_ratio_str}</td>
                         <td>{roe_str}</td>
@@ -941,7 +927,6 @@ class EmailNotifier:
             # 获取基本面数据
             dividend_per_share = row.get("dividend_per_share")
             dividend_yield = row.get("dividend_yield")
-            earnings_growth = row.get("earnings_growth")
             pe_ratio = row.get("pe_ratio")
             pb_ratio = row.get("pb_ratio")
             roe = row.get("roe")
@@ -956,11 +941,6 @@ class EmailNotifier:
             dividend_yield_str = (
                 f"{dividend_yield:.2f}%"
                 if dividend_yield is not None and not pd.isna(dividend_yield)
-                else "-"
-            )
-            earnings_growth_str = (
-                f"{earnings_growth:+.2f}%"
-                if earnings_growth is not None and not pd.isna(earnings_growth)
                 else "-"
             )
             pe_ratio_str = (
@@ -978,15 +958,6 @@ class EmailNotifier:
                 f"{debt_ratio:.2f}%"
                 if debt_ratio is not None and not pd.isna(debt_ratio)
                 else "-"
-            )
-
-            # 确定颜色类
-            earnings_growth_class = (
-                "positive"
-                if earnings_growth is not None and earnings_growth > 0
-                else "negative"
-                if earnings_growth is not None and earnings_growth < 0
-                else ""
             )
 
             # 检查是否满足条件（最低价 < MA60）- 安全处理None值
@@ -1050,17 +1021,11 @@ class EmailNotifier:
             )
 
             # 基本面指标行
-            eg_style = (
-                "color:#27ae60;text-align:right" if earnings_growth is not None and earnings_growth > 0
-                else "color:#c0392b;text-align:right" if earnings_growth is not None and earnings_growth < 0
-                else "text-align:right"
-            )
             all_rows_fundamental += (
                 f'<tr>'
                 f'<td>{stock_code}</td>'
                 f'<td style="{neut}">{dividend_per_share_str}</td>'
                 f'<td style="{neut}">{dividend_yield_str}</td>'
-                f'<td style="{eg_style}">{earnings_growth_str}</td>'
                 f'<td style="{neut}">{pe_ratio_str}</td>'
                 f'<td style="{neut}">{pb_ratio_str}</td>'
                 f'<td style="{neut}">{roe_str}</td>'
@@ -1388,7 +1353,6 @@ class EmailNotifier:
                         <th>股票名称</th>
                         <th>每股分红(元)</th>
                         <th>股息率(%)</th>
-                        <th>业绩增长(%)</th>
                         <th>PE</th>
                         <th>PB</th>
                         <th>ROE(%)</th>
@@ -1497,9 +1461,6 @@ class EmailNotifier:
             portfolio_section=portfolio_section,
             server_hostname=server_info["hostname"],
             server_ip=server_info["ip_address"],
-            server_kernel=server_info["kernel_version"],
-            server_system=server_info["system"],
-            server_machine=server_info["machine"],
         )
 
         return html_content
@@ -1548,7 +1509,6 @@ class EmailNotifier:
         # 获取基本面数据
         dividend_per_share = None
         dividend_yield = None
-        earnings_growth = None
         pe_ratio = None
         pb_ratio = None
         roe = None
@@ -1557,7 +1517,6 @@ class EmailNotifier:
         if not stock_row.empty:
             dividend_per_share = stock_row.iloc[0].get("dividend_per_share")
             dividend_yield = stock_row.iloc[0].get("dividend_yield")
-            earnings_growth = stock_row.iloc[0].get("earnings_growth")
             pe_ratio = stock_row.iloc[0].get("pe_ratio")
             pb_ratio = stock_row.iloc[0].get("pb_ratio")
             roe = stock_row.iloc[0].get("roe")
@@ -1574,11 +1533,6 @@ class EmailNotifier:
             if dividend_yield is not None and not pd.isna(dividend_yield)
             else "-"
         )
-        earnings_growth_str = (
-            f"{earnings_growth:+.2f}%"
-            if earnings_growth is not None and not pd.isna(earnings_growth)
-            else "-"
-        )
         pe_ratio_str = (
             f"{pe_ratio:.2f}" if pe_ratio is not None and not pd.isna(pe_ratio) else "-"
         )
@@ -1590,15 +1544,6 @@ class EmailNotifier:
             f"{debt_ratio:.2f}%"
             if debt_ratio is not None and not pd.isna(debt_ratio)
             else "-"
-        )
-
-        # 确定颜色类
-        earnings_growth_class = (
-            "positive"
-            if earnings_growth is not None and earnings_growth > 0
-            else "negative"
-            if earnings_growth is not None and earnings_growth < 0
-            else ""
         )
 
         # 构建技术指标行
@@ -1621,7 +1566,7 @@ class EmailNotifier:
         )
 
         technical_row = f"""
-            <tr class="alert-row">
+            <tr style="background:#fef9e7">
                 <td>{stock_code}</td>
                 <td>{stock_name}</td>
                 <td>{price_str}</td>
@@ -1637,12 +1582,11 @@ class EmailNotifier:
 
         # 构建基本面指标行
         fundamental_row = f"""
-            <tr class="alert-row">
+            <tr style="background:#fef9e7">
                 <td>{stock_code}</td>
                 <td>{stock_name}</td>
                 <td>{dividend_per_share_str}</td>
                 <td>{dividend_yield_str}</td>
-                <td class="{earnings_growth_class}">{earnings_growth_str}</td>
                 <td>{pe_ratio_str}</td>
                 <td>{pb_ratio_str}</td>
                 <td>{roe_str}</td>
@@ -1922,7 +1866,7 @@ class EmailNotifier:
 
             if best:
                 anchor_name, anchor_val, dev_pct = best
-                dev_class = "positive" if dev_pct >= 0 else "negative"
+                dev_color = "#27ae60" if dev_pct >= 0 else "#c0392b"
                 dev_str = f"{dev_pct:+.2f}%"
                 anchor_str = f"{anchor_val:.2f}"
                 name_str = anchor_name
@@ -1940,7 +1884,7 @@ class EmailNotifier:
                 f'<td>{close_str}</td>'
                 f'<td>{name_str}</td>'
                 f'<td>{anchor_str}</td>'
-                f'<td class="{dev_class}">{dev_str}</td>'
+                f'<td style="color:{dev_color}">{dev_str}</td>'
                 f'</tr>\n'
             )
 
@@ -2169,32 +2113,21 @@ class EmailNotifier:
             filename = f"{date_str}_{time_str}_{clean_subject}.html"
             filepath = self.email_archive_dir / filename
 
-            # 创建完整的HTML文件，包含主题和正文
-            full_html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>{subject}</title>
-    <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; }}
-        h1 {{ color: #333; border-bottom: 1px solid #ddd; padding-bottom: 10px; }}
-        .meta {{ color: #666; margin-bottom: 20px; font-size: 0.9em; }}
-    </style>
-</head>
-<body>
-    <h1>{subject}</h1>
-    <div class="meta">
-        <p><strong>发送时间:</strong> {current_time.strftime("%Y-%m-%d %H:%M:%S")}</p>
-        <p><strong>收件人:</strong> {self.receiver_email}</p>
-        <p><strong>文件:</strong> {filename}</p>
-    </div>
-    <hr>
-    {body}
-</body>
-</html>"""
-
+            # 直接保存正文（已经是完整 HTML 文档，由 email_template.html 渲染）
+            # 前面加一个 header 方便离线查看
+            header = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{subject}</title>
+<style>body{{font-family:Arial,sans-serif;margin:20px}}
+.meta{{color:#666;font-size:0.9em;margin-bottom:20px}}</style></head>
+<body><h1>{subject}</h1><div class="meta">
+<p><strong>发送时间:</strong> {current_time.strftime("%Y-%m-%d %H:%M:%S")}</p>
+<p><strong>收件人:</strong> {self.receiver_email}</p></div><hr>
+"""
+            footer = "\n</body></html>"
             with open(filepath, "w", encoding="utf-8") as f:
-                f.write(full_html)
+                f.write(header)
+                f.write(body)
+                f.write(footer)
 
             logger.info(f"邮件副本已保存: {filepath}")
             return filepath
@@ -2383,7 +2316,7 @@ class EmailNotifier:
             alert_codes = set(getattr(a, "stock_code", "") for a in sa)
 
             a_codes = sorted(
-                [c for c in snapshot if c.isdigit() or c.replace(".", "").isdigit()],
+                [c for c in snapshot if (c.isdigit() and len(c) == 6) or c.replace(".", "").isdigit()],
                 key=lambda c: (abs(snapshot[c].get("deviation", 0) or 0)),
                 reverse=True,
             )
@@ -2405,8 +2338,6 @@ class EmailNotifier:
                 cells.append(fund.get("pb", "—"))
                 cells.append(sig)
                 row_color = "\\rowcolor{bg!30}" if sig else ""
-                # LaTeX 分割 A 股和境外
-                is_a = code.isdigit() or code.replace(".", "").isdigit()
                 table_rows += f"{row_color}{' & '.join(cells)} \\\\\n"
 
             nona_codes = sorted(

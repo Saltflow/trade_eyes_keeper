@@ -1415,9 +1415,7 @@ class StockWebCrawler:
             return None
 
         def fetch_from_eastmoney(stock_code):
-            """从东方财富获取估值指标（ROE和负债率）"""
-            # 占位符实现，暂时返回None
-            logger.warning(f"东方财富估值数据获取未实现，股票 {stock_code} 返回None值")
+            """从东方财富获取估值指标（ROE和负债率）— 暂未实现"""
             return None
 
         # 尝试多个数据源

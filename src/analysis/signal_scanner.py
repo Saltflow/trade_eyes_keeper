@@ -236,11 +236,17 @@ class SignalScanner:
             if code not in today_indicators:
                 continue
             today = today_indicators[code]
+            seen_rules: set[tuple[str, str]] = set()  # dedup by (code, rule_label)
             for s_idx, strat in enumerate(strategies):
                 rules = strat.get("rules", [])
                 for r in rules:
                     if r.get("type") != "buy" or r.get("condition", "False") == "False":
                         continue
+                    rule_label = r.get("label", r.get("id", "?"))
+                    dedup_key = (code, rule_label)
+                    if dedup_key in seen_rules:
+                        continue
+                    seen_rules.add(dedup_key)
                     cond = r.get("condition", "False")
                     # 构建上下文
                     ctx = self._build_context(today, historical.get(code), code)
