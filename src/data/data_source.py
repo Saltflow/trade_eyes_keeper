@@ -81,21 +81,28 @@ class DataSource:
         stock_code = str(stock_code)
         today = datetime.now()
         requested_start = today - timedelta(days=days)
+        # 统一用 date 维度做 DataFrame 过滤，避免时间分量导致首行被误删
+        requested_start_ts = pd.Timestamp(requested_start.date())
 
-        # 1. 尝试缓存（日期范围判定）
+        # 1. 尝试缓存（日期范围判定 + bypass 检查）
         cached_df, cache_start, cache_end = self._read_cache(stock_code)
         if cached_df is not None and cache_start is not None and cache_end is not None:
             if (
                 cache_start.date() <= requested_start.date()
                 and cache_end.date() >= today.date()
             ):
+                # 检查是否需要绕过缓存（15:55 后非当日缓存失效）
+                if not self._should_bypass_cache(cache_end.date()):
+                    logger.info(
+                        f"DataSource 缓存命中: {stock_code} "
+                        f"({len(cached_df)} 行, {cache_start.date()}~{cache_end.date()})"
+                    )
+                    return cached_df[
+                        cached_df["date"] >= requested_start_ts
+                    ]
                 logger.info(
-                    f"DataSource 缓存命中: {stock_code} "
-                    f"({len(cached_df)} 行, {cache_start.date()}~{cache_end.date()})"
+                    f"{stock_code} 缓存范围覆盖但触发 bypass，强制刷新"
                 )
-                return cached_df[
-                    cached_df["date"] >= pd.Timestamp(requested_start)
-                ]
 
         # 2. 确定需要拉取的天数
         if (
@@ -121,7 +128,7 @@ class DataSource:
             if cached_df is not None and not cached_df.empty:
                 logger.warning(f"{stock_code} 拉取新数据失败, 返回缓存")
                 return cached_df[
-                    cached_df["date"] >= pd.Timestamp(requested_start)
+                    cached_df["date"] >= requested_start_ts
                 ]
             return pd.DataFrame()
 
@@ -134,13 +141,13 @@ class DataSource:
                     result = cached_df if cached_df is not None else pd.DataFrame()
                     if not result.empty:
                         result = result[
-                            result["date"] >= pd.Timestamp(requested_start)
+                            result["date"] >= requested_start_ts
                         ]
                     return result
                 # 全量覆盖写缓存（不复用旧缓存）
                 self._write_cache(stock_code, new_data)
                 return new_data[
-                    new_data["date"] >= pd.Timestamp(requested_start)
+                    new_data["date"] >= requested_start_ts
                 ]
 
         # 5. 合并缓存 + 新数据
@@ -158,7 +165,7 @@ class DataSource:
         # 6. 写缓存
         self._write_cache(stock_code, merged)
         return merged[
-            merged["date"] >= pd.Timestamp(requested_start)
+            merged["date"] >= requested_start_ts
         ]
 
     def fetch_raw_data(self, stock_code: str, days: int = 120) -> pd.DataFrame:
@@ -239,6 +246,42 @@ class DataSource:
             )
         except Exception as e:
             logger.warning(f"写入缓存失败 {stock_code}: {e}")
+
+    def _should_bypass_cache(self, cache_end_date) -> bool:
+        """
+        判断是否应该绕过缓存。
+
+        规则：当前时间 >= cache_bypass_cutoff 且缓存最后一天不是今天 → 绕过。
+        该检查按投资标的粒度生效，用于除权除息后强制刷新前复权数据。
+
+        Args:
+            cache_end_date: 缓存数据的最后一天 (datetime.date)
+
+        Returns:
+            bool: True 表示应绕过缓存，False 表示可使用缓存
+        """
+        now = datetime.now()
+        cutoff_str = self.config.get("scheduler", {}).get(
+            "cache_bypass_cutoff", "15:55"
+        )
+        try:
+            hour, minute = map(int, cutoff_str.split(":"))
+            cutoff_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        except (ValueError, AttributeError):
+            logger.warning(
+                f"无效的 cache_bypass_cutoff 格式: {cutoff_str}，使用默认 15:55"
+            )
+            cutoff_time = now.replace(hour=15, minute=55, second=0, microsecond=0)
+
+        if now >= cutoff_time:
+            today = now.date()
+            if cache_end_date != today:
+                logger.info(
+                    f"缓存 bypass: 当前时间 {now.strftime('%H:%M')} >= cutoff "
+                    f"{cutoff_str}，缓存结束日期 {cache_end_date} != 今天 {today}"
+                )
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # 数据获取 + 交叉验证

@@ -1,7 +1,7 @@
 # 股票量化系统 - 关键设计决策文档
 
-**文档版本**: v1.16 (xelatex PDF 日报 + 安全加固 + 开源准备)
-**最后更新**: 2026-05-03
+**文档版本**: v1.16.1 (缓存 bypass 修复 + 复权检测回归)
+**最后更新**: 2026-05-25
 **压缩目标**: ~800行，保留关键设计决策
 
 ---
@@ -81,12 +81,22 @@
 **类型安全**: `StockPriceData` / `AlertStock` Pydantic 模型，自动验证数据完整性
 **文件**: `src/session/session_manager.py` / `src/models/schemas.py`
 
-### 2. DataSource 统一数据源 (v3.2)
+### 2. DataSource 统一数据源 (v3.2 → v3.2.1)
 
 **决策**: CSV 缓存 + meta 文件替代 JSON 缓存
 **特性**: 7 天保留 / 15:55 当日过期 / 复权交叉验证（双源 3 日 close 比对）/ 价格关系校验
 **影响**: `data_fetcher.py` 删 ~170 行缓存代码，`backtest_framework.py` 删内存缓存
-**文件**: `src/data_source.py` (239行)
+**文件**: `src/data/data_source.py`
+
+#### v3.2.1 修复：缓存 bypass + 复权检测回归 (2026-05-25)
+
+**问题**: 重构 DataSource 时丢失了 `_should_bypass_cache`，导致 15:55 后非当日缓存不会被强制刷新，除权后的前复权历史数据持续错误。
+**根因**: `fetch_stock_data()` 缓存命中路径直接 `return cached_df`，完全跳过了时间检查和复权检测。
+**修复**:
+  - 恢复 `_should_bypass_cache(cutoff="15:55", granularity=per-stock)`，按标的粒度生效
+  - 缓存命中前增加 bypass 判断，触发后进入增量/全量拉取 → `_check_forward_adjustment` → 合并/覆盖
+  - 统一 `requested_start_ts = pd.Timestamp(requested_start.date())`，消除时间分量导致的首行误删 bug
+**测试**: `tests/test_data_source.py` 14 个用例覆盖 bypass 边界、复权修正检测、ETF 场景、fallback 路径
 
 ### 3. 数据获取
 
