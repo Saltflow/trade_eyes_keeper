@@ -782,7 +782,6 @@ class EmailNotifier:
                 pe_ratio = None
                 pb_ratio = None
                 roe = None
-                debt_ratio = None
 
                 if not stock_row.empty:
                     dividend_per_share = stock_row.iloc[0].get("dividend_per_share")
@@ -790,7 +789,6 @@ class EmailNotifier:
                     pe_ratio = stock_row.iloc[0].get("pe_ratio")
                     pb_ratio = stock_row.iloc[0].get("pb_ratio")
                     roe = stock_row.iloc[0].get("roe")
-                    debt_ratio = stock_row.iloc[0].get("debt_ratio")
 
                 # 格式化基本面数据
                 dividend_per_share_str = (
@@ -815,11 +813,6 @@ class EmailNotifier:
                     else "—"
                 )
                 roe_str = f"{roe:.2f}%" if roe is not None and not pd.isna(roe) else "—"
-                debt_ratio_str = (
-                    f"{debt_ratio:.2f}%"
-                    if debt_ratio is not None and not pd.isna(debt_ratio)
-                    else "—"
-                )
 
                 # 确定颜色样式（inline for email clients）
                 pos_color = "color:#27ae60"
@@ -891,7 +884,6 @@ class EmailNotifier:
                         <td>{pe_ratio_str}</td>
                         <td>{pb_ratio_str}</td>
                         <td>{roe_str}</td>
-                        <td>{debt_ratio_str}</td>
                     </tr>
                 """
                     seen_fundamental.add(stock_code)
@@ -931,7 +923,6 @@ class EmailNotifier:
             pe_ratio = row.get("pe_ratio")
             pb_ratio = row.get("pb_ratio")
             roe = row.get("roe")
-            debt_ratio = row.get("debt_ratio")
 
             # 格式化基本面数据
             dividend_per_share_str = (
@@ -955,11 +946,6 @@ class EmailNotifier:
                 else "—"
             )
             roe_str = f"{roe:.2f}%" if roe is not None and not pd.isna(roe) else "—"
-            debt_ratio_str = (
-                f"{debt_ratio:.2f}%"
-                if debt_ratio is not None and not pd.isna(debt_ratio)
-                else "—"
-            )
 
             # 检查是否满足条件（最低价 < MA60）- 安全处理None值
             status = "正常"
@@ -1030,7 +1016,6 @@ class EmailNotifier:
                 f'<td style="{neut}">{pe_ratio_str}</td>'
                 f'<td style="{neut}">{pb_ratio_str}</td>'
                 f'<td style="{neut}">{roe_str}</td>'
-                f'<td style="{neut}">{debt_ratio_str}</td>'
                 f'</tr>'
             )
 
@@ -1513,7 +1498,6 @@ class EmailNotifier:
         pe_ratio = None
         pb_ratio = None
         roe = None
-        debt_ratio = None
 
         if not stock_row.empty:
             dividend_per_share = stock_row.iloc[0].get("dividend_per_share")
@@ -1521,7 +1505,6 @@ class EmailNotifier:
             pe_ratio = stock_row.iloc[0].get("pe_ratio")
             pb_ratio = stock_row.iloc[0].get("pb_ratio")
             roe = stock_row.iloc[0].get("roe")
-            debt_ratio = stock_row.iloc[0].get("debt_ratio")
 
         # 格式化基本面数据
         dividend_per_share_str = (
@@ -1541,11 +1524,6 @@ class EmailNotifier:
             f"{pb_ratio:.2f}" if pb_ratio is not None and not pd.isna(pb_ratio) else "—"
         )
         roe_str = f"{roe:.2f}%" if roe is not None and not pd.isna(roe) else "—"
-        debt_ratio_str = (
-            f"{debt_ratio:.2f}%"
-            if debt_ratio is not None and not pd.isna(debt_ratio)
-            else "—"
-        )
 
         # 构建技术指标行
         condition = f"{anchor_name} 区间 {interval_label} (连续{consecutive_days}天)"
@@ -1591,7 +1569,6 @@ class EmailNotifier:
                 <td>{pe_ratio_str}</td>
                 <td>{pb_ratio_str}</td>
                 <td>{roe_str}</td>
-                <td>{debt_ratio_str}</td>
             </tr>
         """
 

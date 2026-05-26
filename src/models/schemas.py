@@ -84,8 +84,7 @@ class StockPriceData(BaseModel):
     earnings_growth: Optional[float] = None  # 业绩增长率（%）
     pe_ratio: Optional[float] = None  # 市盈率
     pb_ratio: Optional[float] = None  # 市净率
-    roe: Optional[float] = None  # 净资产收益率（%）
-    debt_ratio: Optional[float] = None  # 资产负债率（%）
+    roe: Optional[float] = None  # 净资产收益率（%），由 PB/PE 计算得出
 
     # ── 元数据 ──
     data_source: Optional[DataSource] = None
@@ -116,7 +115,6 @@ class StockPriceData(BaseModel):
         "pe_ratio",
         "pb_ratio",
         "roe",
-        "debt_ratio",
     ]
 
     @validator(*_float_fields, pre=True, always=False)

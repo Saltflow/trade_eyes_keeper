@@ -1315,18 +1315,16 @@ class StockWebCrawler:
 
     def fetch_valuation_data(self, stock_code):
         """
-        获取股票估值指标数据（PE, PB, ROE, 负债率）
-         使用腾讯财经(QQ)实时API获取估值指标，包含数据有效性验证
+        获取股票估值指标数据（PE, PB）
+        使用腾讯财经(QQ)实时API获取估值指标，ROE 由调用方根据 PB/PE 计算。
 
         Args:
             stock_code: 股票代码
 
         Returns:
             dict: 包含估值指标的字典，键包括：
-                - pe_ratio: 市盈率
-                - pb_ratio: 市净率
-                - roe: 净资产收益率（%）
-                - debt_ratio: 资产负债率（%）
+                - pe_ratio: 市盈率 (items[39])
+                - pb_ratio: 市净率 (items[46])
         """
         stock_code = str(stock_code)
         logger.info(f"尝试获取股票 {stock_code} 的估值指标数据")
@@ -1353,48 +1351,18 @@ class StockWebCrawler:
                     # PB可以为负值（净资产为负），但0无效，极高值(>50)视为异常
                     if value == 0 or abs(value) > 50:
                         return None
-                elif metric_name == "roe":
-                    # ROE百分比范围 -100 到 100
-                    if value < -100 or value > 100:
-                        return None
-                elif metric_name == "debt":
-                    # 负债率百分比范围 0 到 100
-                    if value < 0 or value > 100:
-                        return None
                 return value
 
             # QQ实时数据字段映射:
-            # 39: 市盈率(PE), 46: 市净率(PB), 52: 净资产收益率(ROE%), 53: 资产负债率(%)
+            # 39: 市盈率(PE, TTM), 46: 市净率(PB)
+            # 注意: items[52] 是动态PE，items[53] 是静态PE，均不直接用于 ROE/负债率
             pe = safe_float(items[39]) if len(items) > 39 else None
             pb = safe_float(items[46]) if len(items) > 46 else None
-            roe = safe_float(items[52]) if len(items) > 52 else None
-            debt = safe_float(items[53]) if len(items) > 53 else None
 
             pe = validate_metric(pe, "pe")
             pb = validate_metric(pb, "pb")
-            roe = validate_metric(roe, "roe")
-            debt = validate_metric(debt, "debt")
 
-            # 计算基于PB/PE的ROE并验证一致性
-            roe_calculated = None
-            if pe is not None and pb is not None and pe != 0:
-                roe_calculated = (pb / pe) * 100
-
-                # 验证ROE数据一致性（允许±5%的差异）
-                if roe is not None and abs(roe - roe_calculated) > 5.0:
-                    logger.warning(
-                        f"ROE数据不一致: 股票估值数据中ROE={roe}%与计算值ROE(PB/PE)={roe_calculated:.2f}%差异过大"
-                    )
-                    # 使用计算值以确保数据一致性
-                    roe = roe_calculated
-                elif roe is None:
-                    # 如果缺少ROE数据，使用计算值
-                    roe = roe_calculated
-            elif roe is None:
-                # 无法计算ROE且无原始ROE数据，保持None
-                pass
-
-            return {"pe_ratio": pe, "pb_ratio": pb, "roe": roe, "debt_ratio": debt}
+            return {"pe_ratio": pe, "pb_ratio": pb}
 
         def fetch_from_qq(stock_code):
             """从腾讯财经获取估值指标"""
@@ -1408,18 +1376,14 @@ class StockWebCrawler:
                 if "=" in content:
                     data_str = content.split("=")[1].strip('";')
                     items = data_str.split("~")
-                    if len(items) > 53:
+                    if len(items) > 46:
                         return parse_qq_items(items)
             except Exception as e:
                 logger.warning(f"从腾讯财经获取股票 {stock_code} 估值数据失败: {e}")
             return None
 
-        def fetch_from_eastmoney(stock_code):
-            """从东方财富获取估值指标（ROE和负债率）— 暂未实现"""
-            return None
-
         # 尝试多个数据源
-        data_sources = [fetch_from_qq, fetch_from_eastmoney]
+        data_sources = [fetch_from_qq]
 
         for source_func in data_sources:
             try:
@@ -1444,8 +1408,6 @@ class StockWebCrawler:
         return {  # type: ignore
             "pe_ratio": None,
             "pb_ratio": None,
-            "roe": None,
-            "debt_ratio": None,
         }
 
     def _fetch_dividend_from_sina(self, stock_code):

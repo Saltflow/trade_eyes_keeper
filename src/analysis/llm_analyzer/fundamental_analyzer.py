@@ -115,7 +115,6 @@ class FundamentalAnalyzer(BaseLLMClient):
             # 新增字段用于分红可持续性和股价稳定性分析
             "dividend_per_share": "",
             "roe": "",
-            "debt_ratio": "",
             "earnings_growth": "",
             "current_price": "",
             "ma60": "",
@@ -133,7 +132,6 @@ class FundamentalAnalyzer(BaseLLMClient):
                 "pe_ratio": "pe_ratio",
                 "pb_ratio": "pb_ratio",
                 "roe": "roe",
-                "debt_ratio": "debt_ratio",
                 "earnings_growth": "earnings_growth",
                 "current_price": "close",  # 修正：stock_info["current_price"] = data_row["close"]
                 "ma60": "ma60",
@@ -305,7 +303,6 @@ class FundamentalAnalyzer(BaseLLMClient):
         pe_ratio = stock_info.get("pe_ratio", "")
         pb_ratio = stock_info.get("pb_ratio", "")
         roe = stock_info.get("roe", "")
-        debt_ratio = stock_info.get("debt_ratio", "")
         earnings_growth = stock_info.get("earnings_growth", "")
         current_price = stock_info.get("current_price", "")
         ma60 = stock_info.get("ma60", "")
@@ -322,7 +319,6 @@ class FundamentalAnalyzer(BaseLLMClient):
 - 市盈率(PE)：{pe_ratio if pe_ratio else "未知"}
 - 市净率(PB)：{pb_ratio if pb_ratio else "未知"}
 - 净资产收益率(ROE)：{roe if roe else "未知"} %
-- 资产负债率：{debt_ratio if debt_ratio else "未知"} %
 - 业绩增长：{earnings_growth if earnings_growth else "未知"} %
 
 **价格技术指标：**

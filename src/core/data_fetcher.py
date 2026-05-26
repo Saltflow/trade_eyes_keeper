@@ -169,8 +169,7 @@ class StockDataFetcher:
             "dividend_yield": None,  # 当前价年化股息率（%）
             "pe_ratio": None,  # 市盈率 (PE)
             "pb_ratio": None,  # 市净率 (PB)
-            "roe": None,  # 净资产收益率 (ROE)
-            "debt_ratio": None,  # 资产负债率
+            "roe": None,  # 净资产收益率 (ROE)，由 PB/PE 计算得出
         }
 
         # 确保股票代码是字符串
@@ -184,13 +183,20 @@ class StockDataFetcher:
         # 2. 获取业绩增长数据（暂时返回None，后续可通过web_crawler实现）
         # 保留为None，避免使用不可靠的API
 
-        # 3. 获取估值指标
+        # 3. 获取估值指标（PE、PB），ROE 由 PB/PE 计算
         valuation_data = self._fetch_valuation_from_web_crawler(stock_code)
         if valuation_data:
-            fundamental_data["pe_ratio"] = valuation_data.get("pe_ratio")  # type: ignore
-            fundamental_data["pb_ratio"] = valuation_data.get("pb_ratio")  # type: ignore
-            fundamental_data["roe"] = valuation_data.get("roe")  # type: ignore
-            fundamental_data["debt_ratio"] = valuation_data.get("debt_ratio")  # type: ignore
+            pe = valuation_data.get("pe_ratio")
+            pb = valuation_data.get("pb_ratio")
+            fundamental_data["pe_ratio"] = pe  # type: ignore
+            fundamental_data["pb_ratio"] = pb  # type: ignore
+            if pe is not None and pb is not None and pe != 0:
+                roe = (pb / pe) * 100
+                fundamental_data["roe"] = round(roe, 3)
+                logger.info(
+                    f"股票 {stock_code} ROE 计算: PE={pe:.2f}, PB={pb:.2f}, "
+                    f"ROE={roe:.2f}%"
+                )
 
         logger.info(
             f"股票 {stock_code} 基本面数据获取完成: "
@@ -255,19 +261,9 @@ class StockDataFetcher:
                 if valuation_data.get("pb_ratio") is not None
                 else "None"
             )
-            roe_str = (
-                f"{valuation_data.get('roe'):.2f}%"
-                if valuation_data.get("roe") is not None
-                else "None"
-            )
-            debt_str = (
-                f"{valuation_data.get('debt_ratio'):.2f}%"
-                if valuation_data.get("debt_ratio") is not None
-                else "None"
-            )
             logger.info(
                 f"股票 {stock_code} 估值指标: "
-                f"PE={pe_str}, PB={pb_str}, ROE={roe_str}, 负债率={debt_str}"
+                f"PE={pe_str}, PB={pb_str}"
             )
             return cast(Dict[str, Optional[float]], valuation_data)  # type: ignore
         else:
@@ -335,7 +331,6 @@ class StockDataFetcher:
                     latest_data["pe_ratio"] = fundamental_data["pe_ratio"]
                     latest_data["pb_ratio"] = fundamental_data["pb_ratio"]
                     latest_data["roe"] = fundamental_data["roe"]
-                    latest_data["debt_ratio"] = fundamental_data["debt_ratio"]
 
                     # 计算股息率
                     if (

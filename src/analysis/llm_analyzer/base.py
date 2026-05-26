@@ -257,7 +257,6 @@ class BaseLLMClient:
             "pe_ratio",  # 市盈率
             "pb_ratio",  # 市净率
             "roe",  # 净资产收益率
-            "debt_ratio",  # 负债率
             "earnings_growth",  # 业绩增长
             "ma60",  # 60日移动平均线
         ]
