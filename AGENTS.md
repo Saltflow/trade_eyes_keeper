@@ -145,7 +145,8 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 - **Data sources**: Web crawler (Sina → QQ → Eastmoney) with LLM extraction cache for dividends, never use simulated/hardcoded data
 - **Cache**: `cache/data/` and `cache/analysis/`, 7-day retention, bypass after 15:55 if cached data not from today
 - **Config**: `config/config.yaml`, environment variables in `config/.env` (gitignored)
-- **Scheduler**: Run at 16:00 daily, cache bypass cutoff 15:55, timezone Asia/Shanghai
+- **Scheduler**: Run at 19:00 daily, cache bypass cutoff 15:55, timezone Asia/Shanghai
+- **Brief reports**: Morning snapshot 09:50 + Afternoon snapshot 14:30, both skip weekends
 
 ### Development Practices
 - **No hardcoded data**: Solutions must work automatically for all stocks
@@ -189,7 +190,13 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 | Health Server Security | `src/health_server.py` | ✅ HTML escaping, rate limiting, HTTPS, IP validation |
 | ROE Inconsistency | `src/web_crawler.py:563-578` | ✅ Added validation (5% threshold) |
 | Price Validation | `src/condition_checker.py:46-58` | ✅ Checks close≥low≤high, logs warnings |
-| Cache Oversharing | `src/data_source.py:96,121,130,133,149` | ✅ 5 return paths trimmed to requested days |
+| Cache Oversharing | `src/data/data_source.py:96,121,130,133,149` | ✅ 5 return paths trimmed to requested days |
+| Cache Bypass Regression | `src/data/data_source.py` | ✅ Restored `_should_bypass_cache` with per-stock granularity |
+| Debt Ratio Removal | `src/models/schemas.py` + `data_fetcher.py` + `web_crawler.py` | ✅ Full-stack deletion, `items[52/53]` were mis-mapped PEs |
+| ROE Calculation | `src/core/data_fetcher.py` | ✅ Derived from `PB/PE × 100`, <0.2% error vs financial reports |
+| Brief Report Sorting | `src/notification/email_notifier.py` | ✅ Ascending by anchor deviation, larger drops first |
+| Afternoon Brief Report | `config/config.yaml` + `ci_cd_deploy.py` | ✅ Added `afternoon_snapshot` at 14:30 |
+| Daily Run Time | `config/config.yaml` + `ci_cd_deploy.py` | ✅ Changed from 16:00 to 19:00 |
 | CJK Font (Windows) | `src/chart_generator.py` → `_setup_cjk_font()` | ✅ Unified platform-aware font setup |
 | Date Alignment | `src/portfolio_strategy.py:evaluate()` | ✅ Real-date alignment instead of index-based |
 | Dividend Architecture | `cache_manager.py`, `data_fetcher.py` | ✅ LLM extraction cache prioritized |
@@ -204,5 +211,5 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 - **Flake8 configuration**: `.flake8` (max-line-length 88, ignore E203/W503)
 - **YAPF configuration**: `.style.yapf` (pep8 style, column_limit 88)
 
-**Last Updated**: 2026-05-03  
-**Project Version**: v1.16 (xelatex PDF 日报 + 安全加固 + 公式附录)
+**Last Updated**: 2026-05-27  
+**Project Version**: v1.17 (简报增强 + 数据清理 + 调度调整)

@@ -1,7 +1,7 @@
 # 股票量化系统 - 关键设计决策文档
 
-**文档版本**: v1.16.1 (缓存 bypass 修复 + 复权检测回归)
-**最后更新**: 2026-05-25
+**文档版本**: v1.17 (简报增强 + 数据清理 + 调度调整)
+**最后更新**: 2026-05-27
 **压缩目标**: ~800行，保留关键设计决策
 
 ---
@@ -97,6 +97,24 @@
   - 缓存命中前增加 bypass 判断，触发后进入增量/全量拉取 → `_check_forward_adjustment` → 合并/覆盖
   - 统一 `requested_start_ts = pd.Timestamp(requested_start.date())`，消除时间分量导致的首行误删 bug
 **测试**: `tests/test_data_source.py` 14 个用例覆盖 bypass 边界、复权修正检测、ETF 场景、fallback 路径
+
+#### v3.2.2 数据清理：debt_ratio 删除 + ROE 计算修复 (2026-05-27)
+
+**问题 1**: `debt_ratio`（资产负债率）从腾讯 API `items[52]` 获取，但该字段实为**动态 PE**；`items[53]` 实为**静态 PE**。原映射完全错误，且 debt_ratio 对投资决策无直接价值。
+**决策**: 全链路删除 `debt_ratio`（schemas、data_fetcher、web_crawler、email_notifier、模板、LLM analyzers）。
+**影响文件**: `src/models/schemas.py`, `src/core/data_fetcher.py`, `src/data/web_crawler.py`, `src/notification/email_notifier.py`, `src/templates/email_template.html`, `src/analysis/llm_analyzer/*`
+
+**问题 2**: ROE 原从 `items[52]` 获取，映射错误后数据不可信。
+**修复**: ROE 改为**推导计算**: `ROE = (PB / PE) × 100`，与财报披露值误差 <0.2%（以 600000 实测验证）。
+**文件**: `src/core/data_fetcher.py`
+
+#### v1.17 简报增强 (2026-05-27)
+
+**排序**: `send_brief_report()` 按锚点偏离率**升序排列**，跌幅越大越靠前；无有效锚点的股票 `dev_pct=None` 用 `float("inf")` 兜底排最后。
+**新增收盘简报**: `config.yaml` 新增 `afternoon_snapshot`（14:30），与 `morning_snapshot`（09:50）共用同一函数，仅标签不同。
+**日报时间调整**: `scheduler.run_time` 从 `16:00` 改为 `19:00`，确保 A 股收盘后数据完整（港股 16:00 收盘，美股隔夜）。
+**CI/CD 同步**: `ci_cd_deploy.py` 自动注册 3 条 cron：09:50 早盘 / 14:30 收盘 / 19:00 日报 / 02:00 优化。
+**文件**: `src/notification/email_notifier.py`, `config/config.yaml`, `ci_cd_deploy.py`
 
 ### 3. 数据获取
 
@@ -345,6 +363,7 @@ pytest tests/test_import_smoke.py         # 导入完整性
 | v3.4 | 2026-04-27 | 早盘简报 + 锚点择优算法 |
 | v1.14 | 2026-04-29 | 策略搜索优化器 (贝叶斯+构建器池+超额收益) |
 | v1.15 | 2026-05-01 | 信号扫描器 + 回测嵌入日报 + HTML 报告 |
+| v1.17 | 2026-05-27 | 简报排序 + 收盘简报 14:30 + 日报 19:00 + debt_ratio 删除 + ROE PB/PE 推导 |
 | **v1.16** | **2026-05-03** | **xelatex PDF 日报 + 安全加固 + 开源准备** |
 
 ---

@@ -86,8 +86,8 @@ sudo journalctl -u stock-quant -f
 ### 方式二：Cron + 单次模式
 
 ```bash
-# 每天 16:05 执行
-5 16 * * * cd /opt/stock-quant && .venv/bin/python main.py --once >> logs/cron.log 2>&1
+# 每天 19:05 执行（A股/港股收盘后数据完整）
+5 19 * * * cd /opt/stock-quant && .venv/bin/python main.py --once >> logs/cron.log 2>&1
 ```
 
 ---

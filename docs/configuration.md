@@ -137,10 +137,27 @@ llm:
 
 ```yaml
 scheduler:
-  run_time: "16:00"             # 每日运行时间（24小时制）
+  run_time: "19:00"             # 每日完整日报运行时间（24小时制）
   cache_bypass_cutoff: "15:55"  # 超过此时间且缓存非当日则强制刷新
   timezone: Asia/Shanghai
+  brief_reports:
+    - id: morning_snapshot
+      run_time: '09:50'
+      label: '早盘简报'
+      enabled: true
+      skip_weekends: true
+    - id: afternoon_snapshot
+      run_time: '14:30'
+      label: '收盘简报'
+      enabled: true
+      skip_weekends: true
 ```
+
+| 字段 | 说明 |
+|------|------|
+| `run_time` | 完整日报（含图表/基本面/公告/PDF）触发时间 |
+| `brief_reports` | 轻量简报列表，仅价格+锚点，每条独立配置时间和标签 |
+| `skip_weekends` | 周末是否跳过（A股/港股休市） |
 
 ### health_server
 

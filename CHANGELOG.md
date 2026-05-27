@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.17 (2026-05-27)
+
+### Added
+- **收盘简报** (`afternoon_snapshot`): 每日 14:30 自动发送，与早盘简报共用同一渲染逻辑
+- **简报排序**: 按锚点偏离率升序排列，跌幅越大越靠前；无锚点股票排最后
+
+### Fixed
+- **Cache Bypass 回归**: 恢复 `_should_bypass_cache()`，15:55 后非当日缓存强制刷新（per-stock 粒度）
+- **ROE 数据源错误**: 腾讯 API `items[52/53]` 实为动态/静态 PE，原 ROE/debt_ratio 映射完全错误
+- **简报崩溃**: `UnboundLocalError: dev_color` 当股票无有效锚点时触发，导致 09:50 简报邮件中断
+
+### Changed
+- **日报时间**: `scheduler.run_time` 16:00 → 19:00（确保港股 16:00、美股隔夜数据完整）
+- **ROE 计算**: 改为 `PB/PE × 100` 推导，与财报披露值误差 <0.2%
+- **CI/CD cron**: 自动注册 09:50 早盘 / 14:30 收盘 / 19:00 日报 / 02:00 优化
+
+### Removed
+- **`debt_ratio` 全链路删除**: schemas、data_fetcher、web_crawler、email_notifier、模板、LLM analyzers
+
+---
+
 ## v1.16 (2026-05-03)
 
 ### Added
