@@ -1796,8 +1796,8 @@ class EmailNotifier:
         today = datetime.now()
         today_date = today.date()
 
-        # ── 构建每只股票的行 ──
-        rows = ""
+        # ── 构建每只股票的行（先收集，再按偏离率升序排序）──
+        entries = []
         active_count = 0
         total_count = len(stock_data)
 
@@ -1839,6 +1839,7 @@ class EmailNotifier:
 
             # 选最优锚点
             best = None
+            dev_pct = None
             if close_price is not None and not pd.isna(close_price) and anchors:
                 best = self._pick_best_anchor(float(close_price), anchors)
 
@@ -1854,7 +1855,7 @@ class EmailNotifier:
                 dev_color = ""
                 name_str = "-"
 
-            rows += (
+            html_row = (
                 f'<tr>'
                 f'<td>{code}</td>'
                 f'<td>{name}</td>'
@@ -1865,6 +1866,13 @@ class EmailNotifier:
                 f'<td style="color:{dev_color}">{dev_str}</td>'
                 f'</tr>\n'
             )
+            # None 放最后（无法比较时兜底为 +inf）
+            sort_key = dev_pct if dev_pct is not None else float("inf")
+            entries.append((sort_key, html_row))
+
+        # 按偏离率升序排列：跌幅越大越靠前
+        entries.sort(key=lambda x: x[0])
+        rows = "".join(html_row for _sort_key, html_row in entries)
 
         # ── 加载模板 ──
         template_dir = Path(__file__).parent.parent / "templates"

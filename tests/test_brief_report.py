@@ -144,13 +144,14 @@ class TestSendBriefReport:
 
     @pytest.fixture
     def mock_session(self):
-        """构建模拟 Session"""
+        """构建模拟 Session（日期用今天，避免时间漂移导致过滤）"""
+        today = datetime.now()
         session = Mock()
         session.get_all_dataframe.return_value = pd.DataFrame([
             {
                 "stock_code": "601728",
                 "stock_name": "中国电信",
-                "date": datetime(2026, 4, 27),
+                "date": today,
                 "open": 5.70,
                 "close": 5.76,
                 "ma60": 5.91,
@@ -161,7 +162,7 @@ class TestSendBriefReport:
             {
                 "stock_code": "VOO",
                 "stock_name": "标普500",
-                "date": datetime(2026, 4, 26),  # 昨天 → 美股休市
+                "date": today,  # 今天 → 活跃
                 "open": 485.0,
                 "close": 486.5,
                 "ma60": 480.0,
@@ -172,7 +173,7 @@ class TestSendBriefReport:
             {
                 "stock_code": "00883",
                 "stock_name": "中海油",
-                "date": datetime(2026, 4, 27),
+                "date": today,
                 "open": 18.50,
                 "close": 18.62,
                 "ma60": 18.00,
@@ -187,7 +188,7 @@ class TestSendBriefReport:
         """超过3天的旧数据被过滤"""
         # 把 VOO 日期改成 10 天前
         df = mock_session.get_all_dataframe.return_value
-        df.at[1, "date"] = datetime(2026, 4, 17)
+        df.at[1, "date"] = datetime.now() - __import__("datetime").timedelta(days=10)
 
         notifier = EmailNotifier({"email": {}})
         with patch.object(notifier, "_send_email") as mock_send:
@@ -220,11 +221,8 @@ class TestSendBriefReport:
                 {"id": "test", "label": "测试简报"},
             )
             body = mock_send.call_args[0][1]
-            # 00883: close=18.62, wma20=18.40 → dev=+1.20% (不在区间)
-            # ma60=18.0 → dev=+3.44% (也不在区间, [0,5)被跳过)
-            # wma30=17.80 → dev=+4.61% (也不在区间)
-            # wma50=17.50 → dev=+6.4% [5,10) ← 在区间! 窗口50
-            # 601728: close=5.76, wma20=5.78 → -0.35% (-5,0)←在区间! 窗口20
+            # 00883: close=18.62, wma50=17.50 → dev=+6.4% [5,10) ← 在区间!
+            # 601728: close=5.76, wma20=5.78 → -0.35% (-5,0)←在区间!
             # 所以两行都应有锚点数据
             assert "601728" in body
             assert "wma20" in body or "ma60" in body  # 至少有一个锚点
@@ -250,6 +248,100 @@ class TestSendBriefReport:
                 session, {"id": "test", "label": "空测试"}
             )
             assert mock_send.called
+
+    def test_rows_sorted_by_deviation_ascending(self):
+        """按锚点偏离率升序排列：跌幅越大越靠前"""
+        session = Mock()
+        today = datetime.now()
+        session.get_all_dataframe.return_value = pd.DataFrame([
+            {
+                "stock_code": "A",
+                "stock_name": "涨最多",
+                "date": today,
+                "open": 10.0,
+                "close": 10.8,   # ma60=10.0 → +8%  (5,10) 区间内
+                "ma60": 10.0,
+                "wma20": None,
+                "wma30": None,
+                "wma50": None,
+            },
+            {
+                "stock_code": "B",
+                "stock_name": "跌最多",
+                "date": today,
+                "open": 10.0,
+                "close": 8.5,    # ma60=10.0 → -15%  (<-10) 区间内
+                "ma60": 10.0,
+                "wma20": None,
+                "wma30": None,
+                "wma50": None,
+            },
+            {
+                "stock_code": "C",
+                "stock_name": "微跌",
+                "date": today,
+                "open": 10.0,
+                "close": 9.2,    # ma60=10.0 → -8%  (-10,-5) 区间内
+                "ma60": 10.0,
+                "wma20": None,
+                "wma30": None,
+                "wma50": None,
+            },
+        ])
+        notifier = EmailNotifier({"email": {}})
+        with patch.object(notifier, "_send_email") as mock_send:
+            notifier.send_brief_report(
+                session, {"id": "test", "label": "排序测试"}
+            )
+            body = mock_send.call_args[0][1]
+            # 用完整的 <td>CODE</td> 定位，避免命中 HTML class/style 中的字母
+            pos_b = body.find("<td>B</td>")  # 跌最多 -15% 应排第一
+            pos_c = body.find("<td>C</td>")  # -8% 排第二
+            pos_a = body.find("<td>A</td>")  # +8% 排第三
+            assert pos_b < pos_c < pos_a, (
+                f"Expected order B(-15%) < C(-8%) < A(+8%), "
+                f"got positions B={pos_b}, C={pos_c}, A={pos_a}"
+            )
+
+    def test_none_deviation_sorted_last(self):
+        """无有效锚点的股票排在最后"""
+        session = Mock()
+        today = datetime.now()
+        session.get_all_dataframe.return_value = pd.DataFrame([
+            {
+                "stock_code": "Z",
+                "stock_name": "无锚点",
+                "date": today,
+                "open": 10.0,
+                "close": 10.0,
+                "ma60": None,
+                "wma20": None,
+                "wma30": None,
+                "wma50": None,
+            },
+            {
+                "stock_code": "B",
+                "stock_name": "跌",
+                "date": today,
+                "open": 10.0,
+                "close": 8.5,
+                "ma60": 10.0,
+                "wma20": None,
+                "wma30": None,
+                "wma50": None,
+            },
+        ])
+        notifier = EmailNotifier({"email": {}})
+        with patch.object(notifier, "_send_email") as mock_send:
+            notifier.send_brief_report(
+                session, {"id": "test", "label": "None排序测试"}
+            )
+            body = mock_send.call_args[0][1]
+            pos_b = body.find("<td>B</td>")
+            pos_z = body.find("<td>Z</td>")
+            assert pos_b < pos_z, (
+                f"Expected B before Z, got B={pos_b}, Z={pos_z}"
+            )
 
 
 # ════════════════════════════════════════════════════════

@@ -597,25 +597,34 @@ def deploy():
         ok, out, _ = _ssh_cmd("crontab -l", "Current cron jobs")
 
         has_once = "python3 main.py --once" in (out or "")
-        has_brief = "python3 main.py --brief" in (out or "")
+        has_brief_morning = "--brief morning_snapshot" in (out or "")
+        has_brief_afternoon = "--brief afternoon_snapshot" in (out or "")
         has_optimize = "python3 main.py --optimize" in (out or "")
 
         # ── 9. 更新cron（如需） ──
         if not has_once:
             _info("Configuring daily cron job...")
-            cron_line = f"00 16 * * * cd {REMOTE_DIR} && python3 main.py --once >> {REMOTE_DIR}/logs/cron.log 2>&1  # Stock quantitative system"
+            cron_line = f"00 19 * * * cd {REMOTE_DIR} && python3 main.py --once >> {REMOTE_DIR}/logs/cron.log 2>&1  # Stock quantitative system"
             _ssh_cmd(
                 f"(crontab -l 2>/dev/null; echo '{cron_line}') | crontab -",
                 "Add main cron",
             )
-        if not has_brief:
-            _info("Configuring brief report cron at 09:50...")
-            brief_line = f"50 9 * * * cd {REMOTE_DIR} && python3 main.py --brief >> {REMOTE_DIR}/logs/cron_brief.log 2>&1"
+        if not has_brief_morning:
+            _info("Configuring morning brief report cron at 09:50...")
+            brief_line = f"50 9 * * * cd {REMOTE_DIR} && python3 main.py --brief morning_snapshot >> {REMOTE_DIR}/logs/cron_brief.log 2>&1"
             _ssh_cmd(
                 f"(crontab -l 2>/dev/null; echo '{brief_line}') | crontab -",
-                "Add brief report cron",
+                "Add morning brief report cron",
             )
-            _info("Brief report cron registered (09:50 daily)")
+            _info("Morning brief report cron registered (09:50 daily)")
+        if not has_brief_afternoon:
+            _info("Configuring afternoon brief report cron at 14:30...")
+            brief_line = f"30 14 * * * cd {REMOTE_DIR} && python3 main.py --brief afternoon_snapshot >> {REMOTE_DIR}/logs/cron_brief_afternoon.log 2>&1"
+            _ssh_cmd(
+                f"(crontab -l 2>/dev/null; echo '{brief_line}') | crontab -",
+                "Add afternoon brief report cron",
+            )
+            _info("Afternoon brief report cron registered (14:30 daily)")
         if not has_optimize:
             _info("Configuring strategy optimizer cron at 02:00...")
             opt_line = f"0 2 * * * cd {REMOTE_DIR} && python3 main.py --optimize >> {REMOTE_DIR}/logs/cron_optimize.log 2>&1"
@@ -627,7 +636,12 @@ def deploy():
 
         # 重新检查 cron
         ok, out, _ = _ssh_cmd("crontab -l", "Verify final cron")
-        cron_ok = ("--once" in (out or "")) and ("--brief" in (out or "")) and ("--optimize" in (out or ""))
+        cron_ok = (
+            ("--once" in (out or ""))
+            and ("--brief morning_snapshot" in (out or ""))
+            and ("--brief afternoon_snapshot" in (out or ""))
+            and ("--optimize" in (out or ""))
+        )
         _step("cron", cron_ok, "daily+brief+optimize registered" if cron_ok else "missing")
 
         # ── 9c. 检查优化器数据, 首次部署触发初始运行 ──
