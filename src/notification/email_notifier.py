@@ -1851,7 +1851,7 @@ class EmailNotifier:
             else:
                 anchor_str = "-"
                 dev_str = "-"
-                dev_class = ""
+                dev_color = ""
                 name_str = "-"
 
             rows += (
