@@ -136,18 +136,29 @@ class TestFetchStockDataCacheBehavior:
 
     @patch("src.data.data_source.datetime")
     def test_cache_hit_without_bypass_returns_cached(self, mock_dt):
-        """缓存命中且 bypass=False → 直接返回缓存子集"""
+        """缓存命中且 bypass=False → 仍走增量拉取刷新盘中数据，然后合并返回"""
         mock_dt.now.return_value = datetime(2026, 5, 25, 10, 0, 0)
         ds = self._build_ds("15:55")
         dates = pd.date_range("2026-04-25", periods=31)
         cached = _make_df(dates, [10.0 + i * 0.1 for i in range(31)])
+        fresh = _make_df(
+            pd.date_range("2026-05-25", periods=1),
+            [14.0],
+        )
 
-        with patch.object(ds, "_read_cache", return_value=(cached, dates[0], dates[-1])):
+        with patch.object(
+            ds, "_read_cache", return_value=(cached, dates[0], dates[-1])
+        ), patch.object(
+            ds, "_fetch_with_verify", return_value=fresh
+        ) as mock_fetch, patch.object(
+            ds, "_check_forward_adjustment", return_value=False
+        ), patch.object(
+            ds, "_write_cache", return_value=None
+        ):
             result = ds.fetch_stock_data("000001", days=30)
-
-        # 缓存 31 天（2026-04-25 ~ 2026-05-25），请求 30 天，应返回 31 天
-        assert len(result) == 31
-        assert result["close"].iloc[-1] == cached["close"].iloc[-1]
+            # 新行为：即使缓存覆盖到今天，仍做增量拉取 + merge
+            mock_fetch.assert_called_once()
+            assert len(result) >= 31
 
     @patch("src.data.data_source.datetime")
     def test_cache_hit_with_bypass_fetches_fresh(self, mock_dt):
@@ -257,18 +268,26 @@ class TestFetchStockDataCacheBehavior:
 
     @patch("src.data.data_source.datetime")
     def test_cache_hit_but_no_bypass_before_cutoff(self, mock_dt):
-        """15:55 前缓存命中 → 直接返回，不触发 bypass"""
+        """15:55 前缓存覆盖到今天 → 仍走增量拉取刷新盘中数据"""
         mock_dt.now.return_value = datetime(2026, 5, 25, 15, 54, 0)
         ds = self._build_ds("15:55")
         dates = pd.date_range("2026-04-25", periods=31)
         cached = _make_df(dates, [10.0 + i * 0.1 for i in range(31)])
+        fresh = _make_df(
+            pd.date_range("2026-05-25", periods=1),
+            [14.0],
+        )
 
         with patch.object(
             ds, "_read_cache", return_value=(cached, dates[0], dates[-1])
         ), patch.object(
-            ds, "_fetch_with_verify", return_value=pd.DataFrame()
-        ) as mock_fetch:
+            ds, "_fetch_with_verify", return_value=fresh
+        ) as mock_fetch, patch.object(
+            ds, "_check_forward_adjustment", return_value=False
+        ), patch.object(
+            ds, "_write_cache", return_value=None
+        ):
             result = ds.fetch_stock_data("000001", days=30)
 
-        mock_fetch.assert_not_called()
-        assert len(result) == 31
+        mock_fetch.assert_called_once()
+        assert len(result) >= 31

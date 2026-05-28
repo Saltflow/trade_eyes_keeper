@@ -91,18 +91,18 @@ class DataSource:
                 cache_start.date() <= requested_start.date()
                 and cache_end.date() >= today.date()
             ):
-                # 检查是否需要绕过缓存（15:55 后非当日缓存失效）
                 if not self._should_bypass_cache(cache_end.date()):
+                    # 缓存覆盖到今天但未过 bypass cutoff（如 14:30 盘中）
+                    # 不能直接返回缓存，因为盘中价格可能已变化。
+                    # 走增量拉取刷新最新数据（tail_days=5，远小于全量拉取）
                     logger.info(
-                        f"DataSource 缓存命中: {stock_code} "
-                        f"({len(cached_df)} 行, {cache_start.date()}~{cache_end.date()})"
+                        f"{stock_code} 缓存覆盖但盘中（未过cutoff），将做轻量增量刷新"
                     )
-                    return cached_df[
-                        cached_df["date"] >= requested_start_ts
-                    ]
-                logger.info(
-                    f"{stock_code} 缓存范围覆盖但触发 bypass，强制刷新"
-                )
+                    # 不 return，继续执行下面的增量拉取逻辑
+                else:
+                    logger.info(
+                        f"{stock_code} 缓存范围覆盖但触发 bypass，强制刷新"
+                    )
 
         # 2. 确定需要拉取的天数
         if (

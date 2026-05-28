@@ -1,0 +1,8 @@
+{
+  "stock_code": "000001",
+  "fetch_time": "2026-05-25T10:00:00",
+  "start_date": "2026-04-25",
+  "end_date": "2026-05-28",
+  "rows": 34,
+  "source": "_fetch_from_qq"
+}
