@@ -323,9 +323,7 @@ class SessionContext(BaseModel):
     alerts: list[AlertStock] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     # 扩展字段
-    analysis_results: dict[str, dict] = Field(default_factory=dict)
     announcements: dict[str, list] = Field(default_factory=dict)
-    financial_analysis_results: dict[str, list] = Field(default_factory=dict)
     portfolio_results: Optional[dict] = None
     signal_scan: Optional["ScanResult"] = None  # 信号扫描结果 (Pydantic)
     backtest: Optional[dict] = None  # backtest results {group: dict}

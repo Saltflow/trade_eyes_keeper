@@ -26,10 +26,8 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 from src.core.data_fetcher import StockDataFetcher
 from src.core.condition_checker import ConditionChecker
 from src.notification.email_notifier import EmailNotifier
-from src.analysis.llm_analyzer import LLMAnalyzer
 from src.core.scheduler_manager import SchedulerManager
 from src.data.announcement_fetcher import AnnouncementFetcher
-from src.analysis.financial_report_manager import FinancialReportManager
 from src.session.session_manager import SessionManager
 
 
@@ -246,93 +244,8 @@ def run_daily_task():
 
         # 4. 创建邮件通知器
         notifier = EmailNotifier(config)
-        # 5. LLM分析基本面（可选）
-        llm_config = config.get("llm", {})
-        api_key = llm_config.get("api_key")
-        analyzer = None  # 初始化分析器变量
-        if api_key and api_key.strip():
-            # 总是创建LLM分析器实例（供财报分析使用）
-            analyzer = LLMAnalyzer(config)
 
-            # 检查是否启用基本面分析
-            enable_fundamental_analysis = llm_config.get(
-                "enable_fundamental_analysis", True
-            )
-            if enable_fundamental_analysis:
-                logger.info("开始LLM基本面分析")
-                # 从Session获取数据并转换为字典格式
-                stock_data_df = session.get_all_dataframe()
-                stock_data_dict = {}
-                if not stock_data_df.empty and "stock_code" in stock_data_df.columns:
-                    for _, row in stock_data_df.iterrows():
-                        stock_code = str(row["stock_code"])
-                        stock_data_dict[stock_code] = row.to_dict()
-                analysis_results = analyzer.analyze_stocks(
-                    config["stocks"], stock_data_dict
-                )
-                session.analysis_results = analysis_results
-                logger.info(f"LLM基本面分析完成，共分析{len(analysis_results)}只股票")
-            else:
-                logger.info("LLM基本面分析已禁用，跳过基本面分析")
-        else:
-            logger.info("LLM API未配置，跳过LLM相关功能")
-
-        # 6. 财报分析（可选）
-        financial_config = config.get("financial_reports", {})
-        if financial_config.get("enable", True):
-            try:
-                logger.info("开始财报分析检查")
-
-                # 确定要传递给财报管理器的LLM分析器
-                financial_llm_analyzer = None
-                if api_key and api_key.strip():
-                    financial_llm_analyzer = analyzer  # 使用已创建的LLM分析器实例
-                    logger.info("使用LLM分析器进行财报分析")
-                else:
-                    logger.warning("LLM API未配置，跳过财报分析")
-
-                # 获取内容抓取器（如果可用）
-                content_fetcher = getattr(announcement_fetcher, "content_fetcher", None)
-
-                financial_manager = FinancialReportManager(
-                    config,
-                    announcement_fetcher,
-                    financial_llm_analyzer,
-                    financial_report_fetcher=None,  # 让管理器自动创建
-                    content_fetcher=content_fetcher,
-                )
-                # 从Session获取警报列表并提取股票代码（确保类型为List[str]）
-                alert_stocks_dicts = session.get_alerts_as_dicts()
-                alert_stock_codes = (
-                    [
-                        str(alert.get("stock_code"))
-                        for alert in alert_stocks_dicts
-                        if alert.get("stock_code") is not None
-                    ]
-                    if alert_stocks_dicts
-                    else []
-                )
-                should_analyze, stocks_to_analyze = (
-                    financial_manager.should_analyze_financial_reports(
-                        alert_stock_codes
-                    )
-                )
-                if should_analyze:
-                    logger.info(f"需要财报分析: {stocks_to_analyze}")
-                    financial_analysis_results = (
-                        financial_manager.analyze_financial_reports(stocks_to_analyze)
-                    )
-                    session.financial_analysis_results = financial_analysis_results
-                    logger.info(
-                        f"财报分析完成: {len(financial_analysis_results)}只股票有结果"
-                    )
-                else:
-                    logger.info("无需财报分析")
-            except Exception as e:
-                logger.error(f"财报分析失败: {e}", exc_info=True)
-                session.errors.append(f"财报分析失败: {e}")
-
-        # 7. 投资组合策略分析
+        # 5. 投资组合策略分析
         try:
             from src.analysis.portfolio_strategy import PortfolioOptimizer
 

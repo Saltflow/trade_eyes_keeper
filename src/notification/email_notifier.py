@@ -97,9 +97,7 @@ class EmailNotifier:
             # 从Session读取所有数据
             alert_stocks = session.get_alerts_as_dicts()
             stock_data = session.get_all_dataframe()
-            analysis_results = session.analysis_results
             announcements = session.announcements
-            financial_analysis_results = session.financial_analysis_results
             # 历史数据（由 data_fetcher 暂存，供图表使用）
             historical_data = getattr(session, "_historical", {})
 
@@ -152,9 +150,7 @@ class EmailNotifier:
             body = self._build_email_body(
                 alert_stocks,
                 stock_data,
-                analysis_results,
                 announcements,
-                financial_analysis_results,
                 historical_data=historical_data,
                 chart_png_bytes=chart_png_bytes,
                 portfolio_results=portfolio_results,
@@ -184,9 +180,7 @@ class EmailNotifier:
         try:
             # 从Session读取所有数据
             stock_data = session.get_all_dataframe()
-            analysis_results = session.analysis_results
             announcements = session.announcements
-            financial_analysis_results = session.financial_analysis_results
             # 历史数据（由 data_fetcher 暂存，供图表使用）
             historical_data = getattr(session, "_historical", {})
 
@@ -227,9 +221,7 @@ class EmailNotifier:
             body = self._build_email_body(
                 [],
                 stock_data,
-                analysis_results,
                 announcements,
-                financial_analysis_results,
                 historical_data=historical_data,
                 portfolio_results=portfolio_results,
                 portfolio_chart_dict=portfolio_chart_dict,
@@ -244,110 +236,6 @@ class EmailNotifier:
 
         except Exception as e:
             logger.error(f"从Session发送每日报告邮件失败: {e}")
-
-    def _build_financial_analysis_section(
-        self, financial_analysis_results, analysis_results=None, stock_data=None
-    ):
-        """
-        构建财报分析部分HTML
-
-        Args:
-            financial_analysis_results: 财报分析结果字典
-            analysis_results: LLM分析结果字典（可选，用于整合展示）
-            stock_data: 完整的股票数据DataFrame（用于获取股票名称）
-
-        Returns:
-            str: HTML格式的财报分析部分
-        """
-        if not financial_analysis_results:
-            return "<h3>财报分析</h3><p>暂无可用财报分析数据（可能无新财报或获取失败）。</p>"
-
-        logger.info(
-            f"构建财报分析部分: 收到{len(financial_analysis_results)}只股票的分析结果"
-        )
-
-        html = """
-            <h3>财报分析</h3>
-            <p>基于最新财报的结构化摘要（按股票展示最近2份）：</p>
-        """
-
-        for stock_code, reports in financial_analysis_results.items():
-            if not reports:
-                logger.info(f"股票{stock_code}没有分析报告，跳过")
-                continue
-
-            # 从stock_data中查找股票名称
-            stock_name = stock_code
-            if stock_data is not None:
-                stock_row = stock_data[stock_data["stock_code"] == stock_code]
-                if not stock_row.empty:
-                    stock_name = stock_row.iloc[0].get("stock_name", stock_code)
-            logger.info(
-                f"处理股票{stock_code}({stock_name})的财报分析，共{len(reports)}份报告"
-            )
-
-            # 限制显示的报告数量，显示前2份报告
-            max_reports = min(2, len(reports))
-            selected_reports = reports[:max_reports]
-
-            for report in selected_reports:
-                report_type = str(report.get("report_type", "未知"))
-                period_date = str(report.get("period_date", ""))
-                analysis = report.get("analysis", {}) or {}
-                numeric_fields = report.get("numeric_fields_detected")
-                short_circuited = report.get("short_circuited", False)
-                success = report.get("success", True)
-
-                # 优先展示包含估值/综合判断的关键字段，最多3项
-                analysis_fields = [
-                    ("overall_assessment", "总体评估"),
-                    ("liquidation_value", "DCF估值"),
-                    ("profit_changes", "利润变化"),
-                    ("cost_structure", "成本结构"),
-                    ("audit_risks", "审计风险"),
-                ]
-                selected_fields = analysis_fields[: min(3, len(analysis_fields))]
-
-                analysis_items = []
-                for field_key, field_name in selected_fields:
-                    value = analysis.get(field_key)
-                    if value:
-                        value_str = escape(str(value))
-                        analysis_items.append(
-                            f"<li><strong>{field_name}：</strong>{value_str}</li>"
-                        )
-
-                if analysis_items:
-                    analysis_html = "<ul>" + "".join(analysis_items) + "</ul>"
-                else:
-                    analysis_html = "<p>无分析数据</p>"
-
-                status_badge = ""
-                if not success:
-                    status_badge = "<span style='color:#e53935;'>未完成</span>"
-                    if short_circuited:
-                        status_badge += " · 短路"
-
-                numeric_badge = (
-                    f"<span style='font-size:0.85em; color:#666;'>数值字段数: {numeric_fields}</span>"
-                    if numeric_fields is not None
-                    else ""
-                )
-
-                html += f"""
-                <div style=\"border: 1px solid #ddd; padding: 12px; margin: 10px 0; border-radius: 6px;\">
-                    <div style=\"display: flex; justify-content: space-between; align-items: center;\">
-                        <h4 style=\"margin: 0;\">{escape(str(stock_code))} {escape(str(stock_name))}</h4>
-                        <div style=\"font-size: 0.9em; color: #666;\">{escape(report_type)} · {escape(period_date)} {status_badge}</div>
-                    </div>
-                    <div style=\"margin-top: 6px;\">{numeric_badge}</div>
-                    <div style=\"margin-top: 8px;\">{analysis_html}</div>
-                </div>
-                """
-
-        html += "<p><em>注：财报分析基于最新财务报告，数据仅供参考。</em></p>"
-
-        return html
 
     def _build_strategy_alert_section(
         self, signal_scan, alert_stocks, stock_data
@@ -691,9 +579,7 @@ class EmailNotifier:
         self,
         alert_stocks,
         stock_data,
-        analysis_results=None,
         announcements=None,
-        financial_analysis_results=None,
         historical_data=None,
         chart_png_bytes=None,
         portfolio_results=None,
@@ -702,14 +588,12 @@ class EmailNotifier:
         backtest=None,
     ):
         """
-         构建邮件正文（完整版：表格 + LLM分析 + 公告 + 财报分析 + 图表）
+        构建邮件正文（完整版：表格 + 公告 + 图表）
 
         Args:
             alert_stocks: 满足条件的股票列表
             stock_data: 完整的股票数据DataFrame
-            analysis_results: LLM分析结果字典（可选）
             announcements: 公告数据字典（可选）
-            financial_analysis_results: 财报分析结果字典（可选）
             historical_data: 完整历史DataFrame字典 stock_code → DataFrame（可选，供图表使用）
             chart_png_bytes: 图表 PNG 原始字节（可选），有值时用 cid:chart001 嵌入
 
@@ -1019,147 +903,7 @@ class EmailNotifier:
                 f'</tr>'
             )
 
-        # 4. 构建LLM分析部分
-        llm_analysis_section = ""
-        if analysis_results and len(analysis_results) > 0:
-            llm_analysis_section = """
-            <h3>LLM基本面分析</h3>
-            """
-            for stock_code, analysis in analysis_results.items():
-                # 从stock_data管道获取股票名称
-                stock_name = stock_code
-                if stock_data is not None:
-                    match_s = stock_data[stock_data["stock_code"] == stock_code]
-                    if not match_s.empty:
-                        stock_name = match_s.iloc[0].get("stock_name", stock_code)
-
-                # 提取分析文本
-                analysis_text = analysis.get("analysis_text", "")
-                summary = analysis.get("summary", {})
-
-                # 截断过长的分析文本（增加到2000字符以避免过度截断）
-                if len(analysis_text) > 2000:
-                    analysis_text = analysis_text[:2000] + "... (分析内容过长，已截断)"
-
-                # 构建分析卡片
-                sentiment = summary.get("sentiment", "中性")
-                sentiment_color = (
-                    "#4caf50"
-                    if sentiment == "积极"
-                    else "#f44336"
-                    if sentiment == "谨慎"
-                    else "#ff9800"
-                )
-
-                # 检查是否有结构化摘要
-                structured_summary = analysis.get("structured_summary")
-
-                if structured_summary:
-                    # 使用结构化摘要显示
-                    sustainability_score = structured_summary.get(
-                        "sustainability_score", 3
-                    )
-                    stability_score = structured_summary.get("stability_score", 3)
-                    overall_rating = structured_summary.get("overall_rating", 3)
-                    key_factors = structured_summary.get("key_factors", [])
-                    major_risks = structured_summary.get("major_risks", [])
-                    investment_recommendation = structured_summary.get(
-                        "investment_recommendation", ""
-                    )
-
-                    # 将Markdown格式的投资建议转换为HTML
-                    investment_recommendation_html = self._markdown_to_html(
-                        investment_recommendation
-                    )
-
-                    # 分数颜色（1-2分红色，3分橙色，4-5分绿色）
-                    def get_score_color(score):
-                        if score >= 4:
-                            return "#4caf50"  # 绿色
-                        elif score == 3:
-                            return "#ff9800"  # 橙色
-                        else:
-                            return "#f44336"  # 红色
-
-                    sustainability_color = get_score_color(sustainability_score)
-                    stability_color = get_score_color(stability_score)
-                    overall_color = get_score_color(overall_rating)
-
-                    # 构建关键因素HTML
-                    key_factors_html = ""
-                    if key_factors:
-                        key_factors_html = "<ul>"
-                        for factor in key_factors[:5]:  # 最多显示5个
-                            key_factors_html += f"<li>{factor}</li>"
-                        key_factors_html += "</ul>"
-                    else:
-                        key_factors_html = "<p>无关键因素信息</p>"
-
-                    # 构建主要风险HTML
-                    major_risks_html = ""
-                    if major_risks:
-                        major_risks_html = "<ul>"
-                        for risk in major_risks[:5]:  # 最多显示5个
-                            major_risks_html += f"<li>{risk}</li>"
-                        major_risks_html += "</ul>"
-                    else:
-                        major_risks_html = "<p>无明确风险信息</p>"
-
-                    llm_analysis_section += f"""
-                <div style="border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 5px;">
-                    <h4>{stock_code} {stock_name} <span style="color: {sentiment_color}; font-weight: bold;">[{sentiment}]</span></h4>
-                    
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 15px;">
-                        <div style="text-align: center; padding: 10px; border-radius: 5px; background-color: #f5f5f5; flex: 1; margin: 0 5px;">
-                            <h5 style="margin: 0 0 5px 0; color: #666;">分红可持续性</h5>
-                            <div style="font-size: 24px; font-weight: bold; color: {sustainability_color};">{sustainability_score}/5</div>
-                        </div>
-                        <div style="text-align: center; padding: 10px; border-radius: 5px; background-color: #f5f5f5; flex: 1; margin: 0 5px;">
-                            <h5 style="margin: 0 0 5px 0; color: #666;">股价稳定性</h5>
-                            <div style="font-size: 24px; font-weight: bold; color: {stability_color};">{stability_score}/5</div>
-                        </div>
-                        <div style="text-align: center; padding: 10px; border-radius: 5px; background-color: #f5f5f5; flex: 1; margin: 0 5px;">
-                            <h5 style="margin: 0 0 5px 0; color: #666;">总体评级</h5>
-                            <div style="font-size: 24px; font-weight: bold; color: {overall_color};">{overall_rating}/5</div>
-                        </div>
-                    </div>
-                    
-                    <div style="margin-bottom: 15px;">
-                        <h5 style="margin: 0 0 5px 0; color: #666;">关键影响因素</h5>
-                        {key_factors_html}
-                    </div>
-                    
-                    <div style="margin-bottom: 15px;">
-                        <h5 style="margin: 0 0 5px 0; color: #666;">主要风险</h5>
-                        {major_risks_html}
-                    </div>
-                    
-                    {f'<div style="margin-bottom: 15px;"><h5 style="margin: 0 0 5px 0; color: #666;">投资建议</h5><div>{investment_recommendation_html}</div></div>' if investment_recommendation else ""}
-                    
-                    <p style="margin-top: 10px; font-size: 0.9em; color: #999;"><em>注：LLM分析仅供参考，不构成投资建议。分数基于分红可持续性和股价稳定性分析。</em></p>
-                </div>
-                """
-                else:
-                    # 使用旧的简单摘要显示（向后兼容）
-                    llm_analysis_section += f"""
-                <div style="border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 5px;">
-                    <h4>{stock_code} {stock_name} <span style="color: {sentiment_color}; font-weight: bold;">[{sentiment}]</span></h4>
-                    <p><strong>关键指标:</strong></p>
-                    <ul>
-                        <li>增长潜力: {"有" if summary.get("has_growth", False) else "无"}</li>
-                        <li>分红情况: {"有" if summary.get("has_dividend", False) else "无"}</li>
-                        <li>风险提示: {"有" if summary.get("has_risk", False) else "无"}</li>
-                    </ul>
-                    <p><em>注：LLM分析仅供参考，不构成投资建议。</em></p>
-                </div>
-                """
-
-        # 5. 构建财报分析部分
-        financial_analysis_section = self._build_financial_analysis_section(
-            financial_analysis_results, analysis_results, stock_data
-        )
-
-        # 6. 构建公告部分
+        # 4. 构建公告部分
         announcements_section = ""
         if announcements and len(announcements) > 0:
             announcements_section = """
@@ -1436,8 +1180,6 @@ class EmailNotifier:
             alert_section=alert_section,
             all_rows_price=all_rows_price,
             all_rows_fundamental=all_rows_fundamental,
-            llm_analysis_section=llm_analysis_section,
-            financial_analysis_section=financial_analysis_section,
             announcements_section=announcements_section,
             chart_section=chart_section,
             portfolio_chart_section=portfolio_chart_section,
