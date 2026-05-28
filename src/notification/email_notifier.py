@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .chart_generator import generate_combined_chart
+from .base import BaseNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,12 @@ def _fmt(v, unit="", fmt_spec=".2f"):
     return f"{v:{fmt_spec}}"
 
 
-class EmailNotifier:
+from .base import BaseNotifier
+
+# ... (keep all existing imports and code)
+
+
+class EmailNotifier(BaseNotifier):
     """邮件通知器"""
 
     def __init__(self, config):

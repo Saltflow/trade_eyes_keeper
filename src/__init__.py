@@ -1,5 +1,5 @@
 """
-股票量化系统 — 核心模块 (v3.5)
+股票量化系统 — 核心模块 (v3.5-beta)
 延迟导入避免测试时加载 matplotlib 等重型依赖
 """
 
@@ -19,9 +19,9 @@ def get_EmailNotifier():
     return EmailNotifier
 
 
-def get_LLMAnalyzer():
-    from .analysis.llm_analyzer import LLMAnalyzer
-    return LLMAnalyzer
+def get_NotifierManager():
+    from .notification.manager import NotifierManager
+    return NotifierManager
 
 
 def get_SchedulerManager():

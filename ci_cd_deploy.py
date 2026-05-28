@@ -706,9 +706,9 @@ if os.getenv('EMAIL_PASSWORD'):
     config.setdefault('email', {{}})['sender_password'] = os.getenv('EMAIL_PASSWORD')
 if os.getenv('EMAIL_RECEIVER'):
     config.setdefault('email', {{}})['receiver_email'] = os.getenv('EMAIL_RECEIVER')
-from src.notification.email_notifier import EmailNotifier
-notifier = EmailNotifier(config)
-ok, msg = notifier.send_deployment_notification('SUCCESS', version='{version}',
+from src.notification.manager import NotifierManager
+notifier = NotifierManager(config)
+ok, msg = notifier.email.send_deployment_notification('SUCCESS', version='{version}',
                                      summary='CI/CD deployment completed successfully')
 if ok:
     print('[NOTIFY_OK] Deployment notification sent')

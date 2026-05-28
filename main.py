@@ -25,7 +25,7 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "config", ".env"
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 from src.core.data_fetcher import StockDataFetcher
 from src.core.condition_checker import ConditionChecker
-from src.notification.email_notifier import EmailNotifier
+from src.notification.manager import NotifierManager
 from src.core.scheduler_manager import SchedulerManager
 from src.data.announcement_fetcher import AnnouncementFetcher
 from src.session.session_manager import SessionManager
@@ -242,8 +242,8 @@ def run_daily_task():
             logger.warning(f"回测分析失败 (非致命): {e}")
             session.backtest = None
 
-        # 4. 创建邮件通知器
-        notifier = EmailNotifier(config)
+        # 4. 创建通知管理器（统一入口）
+        notifier = NotifierManager(config)
 
         # 5. 投资组合策略分析
         try:
@@ -317,8 +317,8 @@ def run_brief_report(report_id: str = "morning_snapshot"):
 
         logger.info(f"简报：获取到 {len(session.stocks_data)} 只股票数据")
 
-        # 发送简报邮件
-        notifier = EmailNotifier(config)
+        # 发送简报（统一入口）
+        notifier = NotifierManager(config)
         notifier.send_brief_report(session, report_config)
 
         logger.info(f"简报任务完成: {report_id}")
