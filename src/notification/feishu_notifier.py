@@ -4,6 +4,7 @@
 
 import json
 import logging
+import os
 import requests
 from datetime import datetime
 
@@ -17,7 +18,7 @@ class FeishuNotifier(BaseNotifier):
 
     def __init__(self, config: dict):
         fc = config.get("notification", {}).get("feishu", {})
-        self.webhook_url = fc.get("webhook_url", "")
+        self.webhook_url = fc.get("webhook_url") or os.getenv("FEISHU_WEBHOOK_URL", "")
         self.msg_type = fc.get("msg_type", "interactive")
         self._enabled = bool(self.webhook_url)
 

@@ -3,6 +3,7 @@ Telegram 通知器 — Bot API 消息推送（HTML 格式）
 """
 
 import logging
+import os
 import requests
 from datetime import datetime
 
@@ -18,8 +19,8 @@ class TelegramNotifier(BaseNotifier):
 
     def __init__(self, config: dict):
         tc = config.get("notification", {}).get("telegram", {})
-        self.bot_token = tc.get("bot_token", "")
-        self.chat_id = tc.get("chat_id", "")
+        self.bot_token = tc.get("bot_token") or os.getenv("TELEGRAM_BOT_TOKEN", "")
+        self.chat_id = tc.get("chat_id") or os.getenv("TELEGRAM_CHAT_ID", "")
         self.parse_mode = tc.get("parse_mode", "HTML")
         self._enabled = bool(self.bot_token and self.chat_id)
 
