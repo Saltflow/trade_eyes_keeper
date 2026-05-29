@@ -14,6 +14,15 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 
 
+def _safe_float(val: str):
+    """安全转换字符串为 float，无效返回 None"""
+    try:
+        v = float(val)
+        return v if v != 0 else None
+    except (ValueError, TypeError):
+        return None
+
+
 class StockWebCrawler:
     """股票网页爬虫"""
 
@@ -244,43 +253,39 @@ class StockWebCrawler:
                     self._fetch_from_qq_international,  # 腾讯国际版（仅实时）
                 ]
             else:
-                # 美股：东方财富优先 → 新浪美股K线（国内可稳定访问）→ Yahoo（备用）
+                # 美股：新浪美股K线优先 → Yahoo（备用）— Eastmoney 已被 GFW 阻断，已移除
                 if market == "us":
                     data_sources = [
-                        self._fetch_from_eastmoney,  # 东方财富（有完整历史+复权数据）
-                        self._fetch_from_sina_us,  # 新浪美股K线API（国内稳定，历史完整）
-                        self._fetch_from_yahoo,  # 雅虎财经（备用，国内可能403）
-                        self._fetch_from_qq_international,  # 腾讯国际版（仅1条实时数据）
+                        self._fetch_from_sina_us,
+                        self._fetch_from_yahoo,
+                        self._fetch_from_qq_international,
                     ]
-                    logger.info(f"美股 {stock_code} 使用东方财富+新浪+雅虎数据源")
+                    logger.info(f"美股 {stock_code} 使用新浪美股+雅虎数据源")
                 else:
-                    # 港股：东方财富优先 → 新浪港股（国内稳定，有完整历史）→ 腾讯财经 → Yahoo
+                    # 港股：新浪港股优先 → 腾讯财经 → Yahoo — Eastmoney 已被 GFW 阻断，已移除
                     data_sources = [
-                        self._fetch_from_eastmoney,  # 东方财富（港股secid=116.*）
-                        self._fetch_from_sina_hk,  # 新浪港股历史API（国内稳定）
-                        self._fetch_from_qq,  # 腾讯财经历史API（支持港股）
-                        self._fetch_from_yahoo,  # 雅虎财经（备用，国内可能403）
-                        self._fetch_from_qq_international,  # 腾讯国际版（仅实时）
+                        self._fetch_from_sina_hk,
+                        self._fetch_from_qq,
+                        self._fetch_from_yahoo,
+                        self._fetch_from_qq_international,
                     ]
                     logger.info(
                         f"港股 {stock_code} 使用东方财富+新浪港股+腾讯+雅虎数据源"
                     )
         elif market == "a_share":
-            # A股原有逻辑
+            # A股原有逻辑 — Eastmoney 已被 GFW 阻断，已移除
             if self._is_etf(stock_code):
                 data_sources = [
-                    self._fetch_from_qq,  # 腾讯财经（有历史数据API，使用qfq前复权）
-                    self._fetch_from_eastmoney,  # 东方财富（使用fqt=1前复权）
-                    self._fetch_from_sina,  # 新浪财经（没有复权参数，备用）
+                    self._fetch_from_qq,
+                    self._fetch_from_sina,
                 ]
                 logger.info(
                     f"ETF {stock_code} 检测到，调整数据源顺序优先使用复权数据源"
                 )
             else:
                 data_sources = [
-                    self._fetch_from_sina,  # 新浪财经（有历史数据API）
-                    self._fetch_from_qq,  # 腾讯财经（有历史数据API）
-                    self._fetch_from_eastmoney,  # 东方财富（API常失败）
+                    self._fetch_from_sina,
+                    self._fetch_from_qq,
                 ]
         else:
             logger.warning(f"无法识别股票 {stock_code} 的市场类型，尝试默认数据源")
@@ -1225,47 +1230,67 @@ class StockWebCrawler:
 
     def _fetch_realtime_from_qq(self, stock_code, days):
         """
-        从腾讯财经获取实时数据（备用方案）
+        从腾讯财经获取实时数据 — 已弃用，请使用 fetch_realtime_quote
+        """
+        return pd.DataFrame()
+
+    def fetch_realtime_quote(self, stock_code):
+        """
+        从腾讯实时行情 API 获取当前瞬时价格 — 全市场支持
+
+        Args:
+            stock_code: 股票代码（A股/ETF/港股/美股/新加坡）
+
+        Returns:
+            dict: {'date','open','close','high','low','volume','amount',
+                   'change_pct','change','turnover','name','time'}
+                   失败返回 None
         """
         try:
-            market = "sz" if stock_code.startswith(("0", "3")) else "sh"
-            url = f"http://qt.gtimg.cn/q={market}{stock_code}"
+            raw_market, qq_symbol, _, _, _ = self._normalize_stock_code(stock_code)
+            url = f"http://qt.gtimg.cn/q={qq_symbol}"
 
             headers = {"User-Agent": self.user_agent}
-
-            response = requests.get(url, headers=headers, timeout=self.timeout)
+            response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
 
             content = response.text
             items = content.split("~")
 
-            if len(items) > 40:
-                current_data = {
-                    "date": datetime.now().strftime("%Y-%m-%d"),
-                    "open": float(items[5]) if items[5] else 0.0,
-                    "close": float(items[3]) if items[3] else 0.0,
-                    "high": float(items[33]) if items[33] else 0.0,
-                    "low": float(items[34]) if items[34] else 0.0,
-                    "volume": float(items[6]) if items[6] else 0.0,
-                    "amount": float(items[37]) if items[37] else 0.0,
-                    "amplitude": float(items[43]) if items[43] else 0.0,
-                    "change_pct": float(items[32]) if items[32] else 0.0,
-                    "change": float(items[31]) if items[31] else 0.0,
-                    "turnover": float(items[38]) if items[38] else 0.0,
-                }
+            if len(items) < 40:
+                logger.warning(f"QQ 实时行情 {stock_code} 返回字段不足 (len={len(items)})")
+                return None
 
-                df = pd.DataFrame([current_data])
-                df["date"] = pd.to_datetime(df["date"])
+            # 字段映射（腾讯实时行情 API ~ 分隔）：
+            #   [1]=名称 [3]=现价 [4]=昨收 [5]=今开
+            #   [6]=成交量 [30]=时间戳 [31]=涨跌额 [32]=涨跌幅%
+            #   [33]=最高 [34]=最低 [37]=成交额 [38]=换手率 [43]=振幅
 
-                logger.warning(
-                    f"获取到股票 {stock_code} 当前数据，但无法获取真实历史数据，无法计算MA60"
-                )
-                return pd.DataFrame()
+            result = {
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "open": _safe_float(items[5]),
+                "close": _safe_float(items[3]),
+                "high": _safe_float(items[33]),
+                "low": _safe_float(items[34]),
+                "volume": _safe_float(items[6]),
+                "amount": _safe_float(items[37]),
+                "change_pct": _safe_float(items[32]),
+                "change": _safe_float(items[31]),
+                "turnover": _safe_float(items[38]),
+                "name": items[1] if items[1] else stock_code,
+                "time": items[30] if len(items) > 30 else "",
+            }
+
+            if result["close"] is None or result["close"] == 0:
+                logger.warning(f"QQ 实时行情 {stock_code} close 无效")
+                return None
+
+            logger.debug(f"QQ 实时行情 {stock_code}: close={result['close']:.2f}")
+            return result
 
         except Exception as e:
-            logger.warning(f"从腾讯财经实时数据获取股票 {stock_code} 数据失败: {e}")
-
-        return pd.DataFrame()
+            logger.warning(f"QQ 实时行情 {stock_code} 失败: {e}")
+            return None
 
     def fetch_dividend_data(self, stock_code):
         """
