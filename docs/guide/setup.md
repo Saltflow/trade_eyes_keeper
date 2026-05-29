@@ -46,14 +46,17 @@ cp config/.env.example config/.env
 cp config/config.yaml.example config/config.yaml
 ```
 
-编辑 `config/.env`，修改这 4 项：
+编辑 `config/.env`，修改这 4 项（必填）：
 
 ```bash
-DEPLOY_HOST=你的服务器IP           # 必填
-DEPLOY_SSH_REMOTE=ssh://root@你的服务器IP/root/trade_eyes_keeper   # 必填
-EMAIL_SENDER=your_email@yeah.net    # 必填
-EMAIL_PASSWORD=你的邮箱授权码        # 必填 (不是登录密码！)
+DEPLOY_HOST=你的服务器IP               # 必填
+DEPLOY_SSH_REMOTE=ssh://root@你的IP/root/trade_eyes_keeper  # 必填
+EMAIL_SENDER=your_email@yeah.net        # 必填
+EMAIL_PASSWORD=你的邮箱授权码            # 必填 (不是登录密码！)
 ```
+
+> **可选：飞书/Telegram 通知** — 启用后在群聊中实时接收日报和简报推送。
+> 配置方法参考：[飞书 & Telegram 消息推送配置](feishu_telegram_setup.md)
 
 编辑 `config/config.yaml`，修改：
 
@@ -79,7 +82,7 @@ python ci_cd_deploy.py
 2. 📦 **代码推送** — git push 到服务器
 3. 🔧 **安装依赖** — 服务器自动 pip install
 4. ✅ **系统测试** — 跑一次 `--once` 验证
-5. 🕐 **配置 cron** — 注册日报 (15:30) + 简报 (09:50)
+5. 🕐 **配置 cron** — 注册日报 (19:00) + 简报 (09:50 + 14:30) + 策略优化 (02:00)
 6. 🏥 **启动健康服务器** — 端口 1933
 
 ---

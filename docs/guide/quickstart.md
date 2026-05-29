@@ -38,7 +38,7 @@ email:
   smtp_port: 465
   enable_ssl: true
 scheduler:
-  run_time: "16:00"
+  run_time: "19:00"
   timezone: Asia/Shanghai
 ```
 
@@ -57,6 +57,7 @@ python main.py --once
 
 # 单次早盘简报
 python main.py --brief
+python main.py --brief afternoon_snapshot  # 收盘简报
 
 # 策略搜索优化 (全量搜索, 15-30 min)
 python main.py --optimize
@@ -76,10 +77,7 @@ chmod +x scripts/run.sh
 ./scripts/run.sh
 ```
 
-系统将在每天 16:00（Asia/Shanghai）自动执行：
-1. 获取股票日线数据
-2. 计算技术指标并检查条件
-3. 发送邮件提醒（如有触发）
+系统将在每天 19:00（Asia/Shanghai）自动执行日报。
 
 ## 5. 查看结果
 
