@@ -164,10 +164,7 @@ class StockWebCrawler:
         Returns:
             bool: True如果是ETF，否则False
         """
-        try:
-            from .utils.etf_detector import is_etf
-        except ImportError:
-            from utils.etf_detector import is_etf
+        from ..utils.etf_detector import is_etf
 
         stock_code = str(stock_code).upper()
         market = self._detect_market(stock_code)

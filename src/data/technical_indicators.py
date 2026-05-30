@@ -43,10 +43,13 @@ class TechnicalIndicators:
     def _load_config(self, config_path: Optional[str]) -> Dict[str, Any]:
         """加载指标配置文件"""
         if config_path is None:
-            # 默认配置路径
-            config_path = os.path.join(
-                os.path.dirname(os.path.dirname(__file__)), "config", "alerts.yaml"
+            # 默认配置路径：项目根 config/alerts.yaml
+            # __file__ = src/data/technical_indicators.py
+            # 往上三层到项目根: src/data → src → 项目根
+            project_root = os.path.dirname(
+                os.path.dirname(os.path.dirname(__file__))
             )
+            config_path = os.path.join(project_root, "config", "alerts.yaml")
 
         try:
             with open(config_path, "r", encoding="utf-8") as f:
