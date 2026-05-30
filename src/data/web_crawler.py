@@ -247,20 +247,17 @@ class StockWebCrawler:
                 # 美股：东方财富优先 → 新浪美股K线（国内可稳定访问）→ Yahoo（备用）
                 if market == "us":
                     data_sources = [
-                        self._fetch_from_eastmoney,  # 东方财富（有完整历史+复权数据）
-                        self._fetch_from_sina_us,  # 新浪美股K线API（国内稳定，历史完整）
-                        self._fetch_from_yahoo,  # 雅虎财经（备用，国内可能403）
-                        self._fetch_from_qq_international,  # 腾讯国际版（仅1条实时数据）
+                        self._fetch_from_sina_us,
+                        self._fetch_from_yahoo,
+                        self._fetch_from_qq_international,
                     ]
-                    logger.info(f"美股 {stock_code} 使用东方财富+新浪+雅虎数据源")
+                    logger.info(f"美股 {stock_code} 使用新浪美股+雅虎数据源")
                 else:
-                    # 港股：东方财富优先 → 新浪港股（国内稳定，有完整历史）→ 腾讯财经 → Yahoo
                     data_sources = [
-                        self._fetch_from_eastmoney,  # 东方财富（港股secid=116.*）
-                        self._fetch_from_sina_hk,  # 新浪港股历史API（国内稳定）
-                        self._fetch_from_qq,  # 腾讯财经历史API（支持港股）
-                        self._fetch_from_yahoo,  # 雅虎财经（备用，国内可能403）
-                        self._fetch_from_qq_international,  # 腾讯国际版（仅实时）
+                        self._fetch_from_sina_hk,
+                        self._fetch_from_qq,
+                        self._fetch_from_yahoo,
+                        self._fetch_from_qq_international,
                     ]
                     logger.info(
                         f"港股 {stock_code} 使用东方财富+新浪港股+腾讯+雅虎数据源"
@@ -269,18 +266,16 @@ class StockWebCrawler:
             # A股原有逻辑
             if self._is_etf(stock_code):
                 data_sources = [
-                    self._fetch_from_qq,  # 腾讯财经（有历史数据API，使用qfq前复权）
-                    self._fetch_from_eastmoney,  # 东方财富（使用fqt=1前复权）
-                    self._fetch_from_sina,  # 新浪财经（没有复权参数，备用）
+                    self._fetch_from_qq,
+                    self._fetch_from_sina,
                 ]
                 logger.info(
                     f"ETF {stock_code} 检测到，调整数据源顺序优先使用复权数据源"
                 )
             else:
                 data_sources = [
-                    self._fetch_from_sina,  # 新浪财经（有历史数据API）
-                    self._fetch_from_qq,  # 腾讯财经（有历史数据API）
-                    self._fetch_from_eastmoney,  # 东方财富（API常失败）
+                    self._fetch_from_sina,
+                    self._fetch_from_qq,
                 ]
         else:
             logger.warning(f"无法识别股票 {stock_code} 的市场类型，尝试默认数据源")
@@ -1316,59 +1311,23 @@ class StockWebCrawler:
     def fetch_valuation_data(self, stock_code):
         """
         获取股票估值指标数据（PE, PB）
-        使用腾讯财经(QQ)实时API获取估值指标，ROE 由调用方根据 PB/PE 计算。
+        多源降级: QQ 实时 → Yahoo 估值
 
         Args:
             stock_code: 股票代码
 
         Returns:
-            dict: 包含估值指标的字典，键包括：
-                - pe_ratio: 市盈率 (items[39])
-                - pb_ratio: 市净率 (items[46])
+            dict: {'pe_ratio': float|None, 'pb_ratio': float|None}
         """
         stock_code = str(stock_code)
         logger.info(f"尝试获取股票 {stock_code} 的估值指标数据")
 
-        def parse_qq_items(items):
-            """解析QQ实时数据项"""
-
-            def safe_float(val):
-                if not val:
-                    return None
-                try:
-                    return float(val)
-                except (ValueError, TypeError):
-                    return None
-
-            def validate_metric(value, metric_name):
-                if value is None:
-                    return None
-                if metric_name == "pe":
-                    # PE可以为负值（亏损企业），但0无效，极高值(>1000)视为异常
-                    if value == 0 or abs(value) > 1000:
-                        return None
-                elif metric_name == "pb":
-                    # PB可以为负值（净资产为负），但0无效，极高值(>50)视为异常
-                    if value == 0 or abs(value) > 50:
-                        return None
-                return value
-
-            # QQ实时数据字段映射:
-            # 39: 市盈率(PE, TTM), 46: 市净率(PB)
-            # 注意: items[52] 是动态PE，items[53] 是静态PE，均不直接用于 ROE/负债率
-            pe = safe_float(items[39]) if len(items) > 39 else None
-            pb = safe_float(items[46]) if len(items) > 46 else None
-
-            pe = validate_metric(pe, "pe")
-            pb = validate_metric(pb, "pb")
-
-            return {"pe_ratio": pe, "pb_ratio": pb}
-
-        def fetch_from_qq(stock_code):
-            """从腾讯财经获取估值指标"""
+        # ── 源 1: QQ 实时行情 ──
+        def fetch_from_qq(code):
+            """从腾讯实时行情获取 PE/PB (全市场支持)"""
             try:
-                market = "sh" if stock_code.startswith(("6", "5")) else "sz"
-                url = f"http://qt.gtimg.cn/q={market}{stock_code}"
+                _, qq_symbol, _, _, _ = self._normalize_stock_code(code)
+                url = f"http://qt.gtimg.cn/q={qq_symbol}"
                 headers = {"User-Agent": self.user_agent}
                 response = requests.get(url, headers=headers, timeout=self.timeout)
                 response.raise_for_status()
@@ -1377,38 +1336,73 @@ class StockWebCrawler:
                     data_str = content.split("=")[1].strip('";')
                     items = data_str.split("~")
                     if len(items) > 46:
-                        return parse_qq_items(items)
+                        # QQ 实时字段: items[39]=PE(TTM), items[46]=PB
+                        pe = _safe_float_v(items[39])
+                        pb = _safe_float_v(items[46])
+                        pe = pe if pe and 0 < abs(pe) <= 1000 else None
+                        pb = pb if pb and 0 < abs(pb) <= 50 else None
+                        if pe or pb:
+                            return {"pe_ratio": pe, "pb_ratio": pb}
             except Exception as e:
-                logger.warning(f"从腾讯财经获取股票 {stock_code} 估值数据失败: {e}")
+                logger.info(
+                    f"QQ 估值 {code} 失败: {e}"
+                )
             return None
 
-        # 尝试多个数据源
-        data_sources = [fetch_from_qq]
+        # ── 源 2: Yahoo Finance (非A股专用) ──
+        def fetch_from_yahoo(code):
+            """从 Yahoo Finance 获取估值 (港/美/新)"""
+            try:
+                _, _, _, _, yahoo_symbol = self._normalize_stock_code(code)
+                if not yahoo_symbol or yahoo_symbol == code:
+                    # A 股不请求 Yahoo (QQ 已覆盖)
+                    return None
+                url = (
+                    f"https://query1.finance.yahoo.com/v10/finance/"
+                    f"quoteSummary/{yahoo_symbol}"
+                    f"?modules=price"
+                )
+                headers = {"User-Agent": self.user_agent}
+                response = requests.get(url, headers=headers, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                price = (
+                    data.get("quoteSummary", {})
+                    .get("result", [{}])[0]
+                    .get("price", {})
+                )
+                pe = price.get("trailingPE")
+                pb = price.get("priceToBook")
+                return {
+                    "pe_ratio": pe if pe and 0 < abs(pe) <= 1000 else None,
+                    "pb_ratio": pb if pb and 0 < abs(pb) <= 50 else None,
+                }
+            except Exception as e:
+                logger.info(f"Yahoo 估值 {code} 失败: {e}")
+            return None
+
+        # ── 降级链 ──
+        data_sources = [fetch_from_qq, fetch_from_yahoo]
 
         for source_func in data_sources:
             try:
                 logger.info(
-                    f"尝试从 {source_func.__name__} 获取股票 {stock_code} 估值数据"
+                    f"估值: 尝试 {source_func.__name__} → {stock_code}"
                 )
                 valuation_data = source_func(stock_code)
                 if valuation_data and any(
                     v is not None for v in valuation_data.values()
                 ):
                     logger.info(
-                        f"从 {source_func.__name__} 成功获取股票 {stock_code} 估值数据"
+                        f"估值: {source_func.__name__} {stock_code} OK"
                     )
                     return valuation_data
             except Exception as e:
-                logger.warning(
-                    f"从 {source_func.__name__} 获取股票 {stock_code} 估值数据失败: {e}"
-                )
+                logger.warning(f"估值: {source_func.__name__} {stock_code} 失败: {e}")
                 continue
 
-        logger.warning(f"所有数据源都失败，无法获取股票 {stock_code} 估值数据")
-        return {  # type: ignore
-            "pe_ratio": None,
-            "pb_ratio": None,
-        }
+        logger.warning(f"估值: 所有源失败 {stock_code}")
+        return {"pe_ratio": None, "pb_ratio": None}
 
     def _fetch_dividend_from_sina(self, stock_code):
         """

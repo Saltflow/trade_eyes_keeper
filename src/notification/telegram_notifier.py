@@ -258,13 +258,18 @@ class TelegramNotifier(BaseNotifier):
         lines.append("</pre>")
         sections.append(("基本面", "\n".join(lines)))
 
-        # 第三段：技术指标
-        lines = ["<pre>"]
-        lines.append(f"{'代码':<10} {'RSI':>5} {'MACD_H':>8} {'VOL比':>6} {'ADX':>5} {'布林%':>7}")
-        for e in entries:
-            lines.append(f"{e['code']:<10} {e['rsi']:>5} {e['macd_h']:>8} {e['vol_r']:>6} {e['adx']:>5} {e['boll']:>7}")
-        lines.append("</pre>")
-        sections.append(("技术指标", "\n".join(lines)))
+        # 第三段：技术指标 — 只在有数据时显示
+        has_tech = any(
+            e["rsi"] != "-" or e["adx"] != "-" or e["macd_h"] != "-"
+            for e in entries
+        )
+        if has_tech:
+            lines = ["<pre>"]
+            lines.append(f"{'代码':<10} {'RSI':>5} {'MACD_H':>8} {'VOL比':>6} {'ADX':>5} {'布林%':>7}")
+            for e in entries:
+                lines.append(f"{e['code']:<10} {e['rsi']:>5} {e['macd_h']:>8} {e['vol_r']:>6} {e['adx']:>5} {e['boll']:>7}")
+            lines.append("</pre>")
+            sections.append(("技术指标", "\n".join(lines)))
 
         return sections
 

@@ -197,6 +197,11 @@ class StockDataFetcher:
                     f"股票 {stock_code} ROE 计算: PE={pe:.2f}, PB={pb:.2f}, "
                     f"ROE={roe:.2f}%"
                 )
+            else:
+                logger.warning(
+                    f"股票 {stock_code} PE/PB 为空，无法计算 ROE "
+                    f"(PE={pe}, PB={pb})"
+                )
 
         logger.info(
             f"股票 {stock_code} 基本面数据获取完成: "

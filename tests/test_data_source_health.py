@@ -158,29 +158,42 @@ class TestRealtimeSources:
 
 
 # ════════════════════════════════════════════════════════
-# 综合: 数据不为空 + 非A股不全空
+# 估值缺口 — xfail 跟踪（QQ+Yahoo 双源后应逐步转绿）
 # ════════════════════════════════════════════════════════
 
 @pytest.mark.smoke
-class TestMultiMarketCompleteness:
-    """跨市场数据完整性"""
+class TestValuationGaps:
+    """非A股估值数据源缺口（已加 Yahoo 降级, 等待服务器验证）"""
 
-    def test_valuation_not_all_empty_across_markets(self):
-        """至少有一部分非A股能拿到估值数据（当前预期：可能为空，记录状态）"""
+    @pytest.mark.xfail(
+        reason="港股估值: QQ hk00883 字段位可能不同, Yahoo 从国内可能 403",
+        strict=False,
+    )
+    def test_valuation_hk_has_data(self):
+        """港股 00883 估值非空"""
         crawler = _make_crawler()
-        results = {}
-        for code, label in [("00883", "hk"), ("GOOG", "us"), ("C38U.SI", "sg")]:
-            data = crawler.fetch_valuation_data(code)
-            has_data = data is not None and (
-                data.get("pe_ratio") or data.get("pb_ratio")
-            )
-            results[label] = has_data
+        data = crawler.fetch_valuation_data("00883")
+        assert data.get("pe_ratio") or data.get("pb_ratio"), \
+            "港股估值为空, QQ+Yahoo 均未返回"
 
-        total = len(results)
-        ok = sum(1 for v in results.values() if v)
-        # 当前预期: 至少 1 个非A股有估值 (宽松)
-        # 后续增加 Yahoo 估值源后可收紧为 total == ok
-        assert ok >= 0, (
-            f"非A股估值覆盖率: {ok}/{total}. 各市场状态: {results}"
-            f"  (预期至少1个有数据，0时检查数据源)"
-        )
+    @pytest.mark.xfail(
+        reason="美股估值: Yahoo 从国内可能 403, QQ usGOOG 字段位可能不同",
+        strict=False,
+    )
+    def test_valuation_us_has_data(self):
+        """美股 GOOG 估值非空"""
+        crawler = _make_crawler()
+        data = crawler.fetch_valuation_data("GOOG")
+        assert data.get("pe_ratio") or data.get("pb_ratio"), \
+            "美股估值为空, QQ+Yahoo 均未返回"
+
+    @pytest.mark.xfail(
+        reason="新加坡估值: Yahoo 从国内可能 403, 无 QQ 源",
+        strict=False,
+    )
+    def test_valuation_sg_has_data(self):
+        """新加坡 C38U.SI 估值非空"""
+        crawler = _make_crawler()
+        data = crawler.fetch_valuation_data("C38U.SI")
+        assert data.get("pe_ratio") or data.get("pb_ratio"), \
+            "新加坡估值为空, Yahoo 可能 403"
