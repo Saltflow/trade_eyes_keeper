@@ -163,29 +163,21 @@ class TestRealtimeSources:
 
 @pytest.mark.smoke
 class TestValuationGaps:
-    """非A股估值数据源缺口（已加 Yahoo 降级, 等待服务器验证）"""
+    """非A股估值数据源（QQ+Yahoo 双源后港/美已修通）"""
 
-    @pytest.mark.xfail(
-        reason="港股估值: QQ hk00883 字段位可能不同, Yahoo 从国内可能 403",
-        strict=False,
-    )
     def test_valuation_hk_has_data(self):
         """港股 00883 估值非空"""
         crawler = _make_crawler()
         data = crawler.fetch_valuation_data("00883")
         assert data.get("pe_ratio") or data.get("pb_ratio"), \
-            "港股估值为空, QQ+Yahoo 均未返回"
+            "港股估值为空"
 
-    @pytest.mark.xfail(
-        reason="美股估值: Yahoo 从国内可能 403, QQ usGOOG 字段位可能不同",
-        strict=False,
-    )
     def test_valuation_us_has_data(self):
         """美股 GOOG 估值非空"""
         crawler = _make_crawler()
         data = crawler.fetch_valuation_data("GOOG")
         assert data.get("pe_ratio") or data.get("pb_ratio"), \
-            "美股估值为空, QQ+Yahoo 均未返回"
+            "美股估值为空"
 
     @pytest.mark.xfail(
         reason="新加坡估值: Yahoo 从国内可能 403, 无 QQ 源",
@@ -197,3 +189,38 @@ class TestValuationGaps:
         data = crawler.fetch_valuation_data("C38U.SI")
         assert data.get("pe_ratio") or data.get("pb_ratio"), \
             "新加坡估值为空, Yahoo 可能 403"
+
+
+# ════════════════════════════════════════════════════════
+# 全量负载测试 — 估值源在真实负载下的表现
+# ════════════════════════════════════════════════════════
+
+@pytest.mark.smoke
+class TestValuationUnderLoad:
+    """全量 26 只标的估值请求 — 验证降级链 + 退避 在负载下工作"""
+
+    STOCKS = [
+        "601728", "600938", "601985", "601919", "600795", "601398",
+        "601088", "512810", "510880", "601818", "601390", "180603",
+        "508091", "513910", "588000", "000958", "515180", "508077",
+        "GOOG", "VOO", "TQQQ", "UPRO", "00883", "01816", "C38U.SI", "AJBU.SI",
+    ]
+
+    def test_full_stock_list_valuation_at_least_half_ok(self):
+        """全量请求估值，至少 50% 非空（QQ+Yahoo 降级后覆盖率）"""
+        crawler = _make_crawler()
+        ok = 0
+        failures = []
+        for code in self.STOCKS:
+            data = crawler.fetch_valuation_data(code)
+            if data.get("pe_ratio") or data.get("pb_ratio"):
+                ok += 1
+            else:
+                failures.append(code)
+        total = len(self.STOCKS)
+        pct = ok / total * 100
+        assert ok >= total * 0.5, (
+            f"估值覆盖率 {ok}/{total} ({pct:.0f}%) 低于 50%\n"
+            f"为空标的: {failures[:8]}{'...' if len(failures) > 8 else ''}\n"
+            f"根因: QQ 限流未退避 且 Yahoo 未降级覆盖 A 股"
+        )

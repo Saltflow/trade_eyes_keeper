@@ -14,6 +14,15 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 
 
+def _safe_float(val: str):
+    """安全转换字符串为 float，无效或为 0 返回 None"""
+    try:
+        v = float(val)
+        return v if v != 0 else None
+    except (ValueError, TypeError):
+        return None
+
+
 class StockWebCrawler:
     """股票网页爬虫"""
 
@@ -133,13 +142,15 @@ class StockWebCrawler:
             if stock_code.startswith("6") or stock_code.startswith("5"):
                 market_prefix_sh = "sh"
                 market_prefix_em = "1"
+                yahoo_suffix = "SS"
             else:
                 market_prefix_sh = "sz"
                 market_prefix_em = "0"
+                yahoo_suffix = "SZ"
             qq_symbol = f"{market_prefix_sh}{stock_code}"
             sina_symbol = f"{market_prefix_sh}{stock_code}"
             eastmoney_secid = f"{market_prefix_em}.{stock_code}"
-            yahoo_symbol = stock_code
+            yahoo_symbol = f"{stock_code}.{yahoo_suffix}"
 
         return market, qq_symbol, sina_symbol, eastmoney_secid, yahoo_symbol
 
@@ -1324,38 +1335,42 @@ class StockWebCrawler:
 
         # ── 源 1: QQ 实时行情 ──
         def fetch_from_qq(code):
-            """从腾讯实时行情获取 PE/PB (全市场支持)"""
-            try:
-                _, qq_symbol, _, _, _ = self._normalize_stock_code(code)
-                url = f"http://qt.gtimg.cn/q={qq_symbol}"
-                headers = {"User-Agent": self.user_agent}
-                response = requests.get(url, headers=headers, timeout=self.timeout)
-                response.raise_for_status()
-                content = response.text
-                if "=" in content:
-                    data_str = content.split("=")[1].strip('";')
-                    items = data_str.split("~")
-                    if len(items) > 46:
-                        # QQ 实时字段: items[39]=PE(TTM), items[46]=PB
-                        pe = _safe_float_v(items[39])
-                        pb = _safe_float_v(items[46])
-                        pe = pe if pe and 0 < abs(pe) <= 1000 else None
-                        pb = pb if pb and 0 < abs(pb) <= 50 else None
-                        if pe or pb:
-                            return {"pe_ratio": pe, "pb_ratio": pb}
-            except Exception as e:
-                logger.info(
-                    f"QQ 估值 {code} 失败: {e}"
-                )
+            """从腾讯实时行情获取 PE/PB (全市场支持, 失败重试1次)"""
+            for attempt in range(2):
+                try:
+                    _, qq_symbol, _, _, _ = self._normalize_stock_code(code)
+                    url = f"http://qt.gtimg.cn/q={qq_symbol}"
+                    headers = {"User-Agent": self.user_agent}
+                    response = requests.get(url, headers=headers, timeout=self.timeout)
+                    response.raise_for_status()
+                    content = response.text
+                    if "=" in content:
+                        data_str = content.split("=")[1].strip('";')
+                        items = data_str.split("~")
+                        if len(items) > 46:
+                            pe = _safe_float(items[39])
+                            pb = _safe_float(items[46])
+                            pe = pe if pe and 0 < abs(pe) <= 1000 else None
+                            pb = pb if pb and 0 < abs(pb) <= 50 else None
+                            if pe or pb:
+                                return {"pe_ratio": pe, "pb_ratio": pb}
+                except Exception as e:
+                    if attempt == 0:
+                        import time
+                        time.sleep(0.5)
+                        continue
+                    logger.info(f"QQ 估值 {code} 失败: {e}")
+                if attempt == 0:
+                    import time
+                    time.sleep(0.5)
             return None
 
-        # ── 源 2: Yahoo Finance (非A股专用) ──
+        # ── 源 2: Yahoo Finance (全市场) ──
         def fetch_from_yahoo(code):
-            """从 Yahoo Finance 获取估值 (港/美/新)"""
+            """从 Yahoo Finance 获取估值"""
             try:
                 _, _, _, _, yahoo_symbol = self._normalize_stock_code(code)
-                if not yahoo_symbol or yahoo_symbol == code:
-                    # A 股不请求 Yahoo (QQ 已覆盖)
+                if not yahoo_symbol:
                     return None
                 url = (
                     f"https://query1.finance.yahoo.com/v10/finance/"
