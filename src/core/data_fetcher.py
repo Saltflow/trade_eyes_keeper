@@ -307,10 +307,26 @@ class StockDataFetcher:
                 if stock_data is not None and not stock_data.empty:
                     stock_data["stock_code"] = stock_code
 
-                    # 计算所有技术指标
+                    # 计算所有技术指标 (MA60/WMA 锚点)
                     stock_data = self.technical_indicators.calculate_indicators(
                         stock_data, stock_code=stock_code
                     )
+
+                    # 计算动量/波动率/成交量指标 (RSI/MACD/ADX/布林/量比)
+                    try:
+                        from ..analysis.indicator_library import (
+                            add_rsi, add_macd, add_adx, add_bollinger, add_volume_ratio,
+                        )
+                        stock_data = add_rsi(stock_data)
+                        stock_data = add_macd(stock_data)
+                        stock_data = add_adx(stock_data)
+                        stock_data = add_bollinger(stock_data)
+                        stock_data = add_volume_ratio(stock_data)
+                        logger.debug(f"股票 {stock_code} 技术指标计算完成")
+                    except Exception as e:
+                        logger.warning(
+                            f"股票 {stock_code} 技术指标计算跳过: {e}"
+                        )
 
                     # 只保留最新一天的数据
                     latest_data = stock_data.iloc[-1:].copy()
