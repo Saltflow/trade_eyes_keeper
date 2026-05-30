@@ -387,6 +387,21 @@ def _pre_deploy_checks(dry_run):
     if not ok:
         _info(f"FAIL: core tests\n{(out or '')[-300:]}{(err or '')[-200:]}")
         return False
+
+    # 3b. 数据源存活探针（真实 API 调用，验证数据可用性）
+    _info("Running data source health smoke tests...")
+    ok, out, err = _run_local(
+        sys.executable, "-m", "pytest",
+        "tests/test_data_source_health.py",
+        "-m", "smoke",
+        "-p", "no:capture", "-q",
+        "--tb=short",
+        timeout=120,
+    )
+    if not ok:
+        _info(f"FAIL: data source health tests\n{(out or '')[-500:]}{(err or '')[-200:]}")
+        return False
+    _info("PASS: data source health tests")
     _info("PASS: core tests")
     _info("All pre-deploy checks passed")
     return True
