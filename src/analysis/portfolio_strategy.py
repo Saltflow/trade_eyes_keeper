@@ -606,12 +606,12 @@ class PortfolioEvaluator:
                 avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
                 rs = avg_gain / avg_loss.replace(0, float("nan"))
                 df["rsi"] = 100.0 - 100.0 / (1.0 + rs)
-            if "boll_pb" not in df.columns:
+            if "boll_pct_b" not in df.columns:
                 roll = df["close"].rolling(20, min_periods=1)
                 upper = roll.mean() + 2 * roll.std()
                 lower = roll.mean() - 2 * roll.std()
                 boll_range = upper - lower
-                df["boll_pb"] = ((df["close"] - lower) / boll_range.replace(0, float("nan"))).clip(0, 1)
+                df["boll_pct_b"] = ((df["close"] - lower) / boll_range.replace(0, float("nan"))).clip(0, 1)
 
             dates = df["date"].dt.date.astype(str)
             for i in range(len(df)):
