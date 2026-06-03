@@ -191,6 +191,10 @@ class GeneticSearcher:
     def run_phase1(self, windows) -> list["ScoredStrategy"]:
         """Phase 1: 随机采样粗筛
 
+        策略: 先只检查最大回撤（防止爆仓），让遗传算法有机会工作。
+        如果前 2000 个策略全部阵亡，自动放宽为仅检查回撤。
+        仓位/一致性/交易密度约束在最终输出前验证。
+
         Returns:
             得分最高的 Top-K 策略列表
         """
@@ -203,18 +207,40 @@ class GeneticSearcher:
         )
 
         scored: list[ScoredStrategy] = []
+        # 自适应约束模式: strict → relaxed
+        use_strict = True
+        auto_switched = False
 
         for i in range(n_samples):
             encoding = self._random_strategy()
             stats, wf_score = self._evaluate_strategy_wf(encoding, windows)
 
-            # 硬性约束检查
-            passes, violations = self.constraints.check_hard_constraints(stats, wf_score)
+            # 自适应约束检查
+            if use_strict:
+                passes, violations = self.constraints.check_hard_constraints(stats, wf_score)
+            else:
+                # 放宽模式: 只检查最大回撤
+                passes = all(
+                    ws.max_drawdown_pct >= self.constraints.max_drawdown_pct
+                    for ws in stats
+                )
+                violations = []
+
             if not passes:
-                if i % 2000 == 0:
+                # 前 2000 个全部阵亡 → 自动放宽
+                if use_strict and i >= 2000 and len(scored) == 0 and not auto_switched:
+                    logger.warning(
+                        "[Phase1] 前 %d 个策略全部未通过严格约束，"
+                        "自动放宽为仅检查最大回撤",
+                        i,
+                    )
+                    use_strict = False
+                    auto_switched = True
+                elif i % 5000 == 0:
                     logger.debug(
                         "[Phase1] %d/%d: 未通过约束 (%s)",
-                        i + 1, n_samples, "; ".join(violations[:3]),
+                        i + 1, n_samples,
+                        "; ".join(violations[:3]) if violations else "仅回撤",
                     )
                 continue
 
@@ -241,8 +267,8 @@ class GeneticSearcher:
         # 按得分排序
         scored.sort(key=lambda x: x.wf_score, reverse=True)
         logger.info(
-            "[Phase1] 完成: %d 个有效策略 / %d 总采样",
-            len(scored), n_samples,
+            "[Phase1] 完成: %d 个有效策略 / %d 总采样 (严格模式=%s)",
+            len(scored), n_samples, "否" if auto_switched else "是",
         )
 
         return scored[:n_keep]
@@ -292,12 +318,14 @@ class GeneticSearcher:
         self,
         population: list["ScoredStrategy"],
         windows,
+        strict_constraints: bool = False,
     ) -> list["ScoredStrategy"]:
         """Phase 2: 遗传优化
 
         Args:
             population: Phase 1 产出的 Top-K 策略
             windows: Walk-Forward 窗口列表
+            strict_constraints: 是否使用完整硬约束（默认放宽，只检查回撤）
 
         Returns:
             优化后的最终种群
@@ -341,8 +369,14 @@ class GeneticSearcher:
                 # 评估后代
                 stats, wf_score = self._evaluate_strategy_wf(child_enc, windows)
 
-                # 约束检查
-                passes, _ = self.constraints.check_hard_constraints(stats, wf_score)
+                # 约束检查（遗传阶段默认放宽，只检查回撤）
+                if strict_constraints:
+                    passes, _ = self.constraints.check_hard_constraints(stats, wf_score)
+                else:
+                    passes = all(
+                        ws.max_drawdown_pct >= self.constraints.max_drawdown_pct
+                        for ws in stats
+                    )
                 if not passes:
                     continue
 

@@ -544,7 +544,65 @@ def run_optimization_v2(config):
             time.time() - t0,
         )
 
+    # ── 发送 Telegram 优化报告 ──
+    _send_optimizer_report_telegram(config, report)
+
     logger.info("策略搜索 V2 完成")
+
+
+def _send_optimizer_report_telegram(config, report):
+    """通过 Telegram 发送 V2 优化器报告摘要"""
+    import logging
+    import os
+    import requests
+
+    _logger = logging.getLogger(__name__)
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if not bot_token or not chat_id:
+        _logger.info("Telegram 未配置，跳过报告发送")
+        return
+
+    lines = []
+    lines.append(f"<b>策略搜索 V2 报告 - {report.report_id}</b>")
+    lines.append(f"组别: {report.group}")
+    lines.append(f"迭代: {report.iterations} | 耗时: {report.elapsed_seconds:.0f}s")
+    lines.append("")
+
+    for i, t in enumerate(report.top_strategies[:5], 1):
+        stocks = t.params.get("_stocks", "?")
+        lines.append(
+            f"#{i} 测试超额 <code>{t.test_return:+.1f}%</code> | "
+            f"回撤 <code>{t.test_drawdown:.1f}%</code> | 夏普 {t.sharpe:.2f} | {t.trade_count}笔"
+        )
+        for j in range(5):
+            sig = t.params.get(f"buy_{j+1}_signal", "?")
+            if sig == "none":
+                continue
+            th = t.params.get(f"buy_{j+1}_t", "?")
+            fr = t.params.get(f"buy_{j+1}_frac", "?")
+            lines.append(f"  • buy_{j+1}: {sig} t={th} frac={fr}")
+        lines.append("")
+
+    text = "\n".join(lines)
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    try:
+        resp = requests.post(
+            url,
+            data={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": "true",
+            },
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            _logger.info("Telegram 优化报告发送成功")
+        else:
+            _logger.warning("Telegram 报告发送失败: HTTP %d", resp.status_code)
+    except Exception as e:
+        _logger.warning("Telegram 报告发送异常: %s", e)
 
 
 def main():

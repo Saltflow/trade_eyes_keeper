@@ -211,21 +211,36 @@ class StrategyOptimizerV2:
         report_id: str,
         elapsed: float,
     ) -> OptimizationReport:
-        """将遗传搜索结果转换为 OptimizationReport"""
+        """将遗传搜索结果转换为 OptimizationReport
+
+        最终输出前执行完整硬约束过滤，确保产出的策略全部合规。
+        """
 
         if not report_id:
             report_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         trials: list[StrategyTrial] = []
+        accepted = 0
 
-        for i, ss in enumerate(scored[:10]):  # Top 10
+        for ss in scored:
+            # 完整硬约束检查
+            passes, violations = self.constraints.check_hard_constraints(
+                ss.window_stats, ss.wf_score,
+            )
+            if not passes:
+                continue
+
+            accepted += 1
+            if accepted > 10:
+                break
+
             # 转换为 Rule 列表（沿用 V1 格式）
             rules = self._encoding_to_rules(ss.encoding)
 
             # 从窗口统计推算训练/测试期指标
             avg_test_ret = np.mean([ws.test_excess_return for ws in ss.window_stats])
             avg_dd = np.mean([ws.max_drawdown_pct for ws in ss.window_stats])
-            avg_sharpe = np.mean([ws.sharpe_ratio for ws in ss.window_stats])
+            avg_sharpe = np.mean([s.sharpe_ratio for s in ss.window_stats])
             total_trades = sum(ws.total_trades for ws in ss.window_stats)
 
             # 构建参数摘要
@@ -242,7 +257,7 @@ class StrategyOptimizerV2:
             trial = StrategyTrial(
                 params=params_summary,
                 rules=rules,
-                train_return=-999,  # V2 不做训练期单独排名
+                train_return=-999,
                 train_drawdown=-999,
                 test_return=round(avg_test_ret, 2),
                 test_drawdown=round(avg_dd, 2),
