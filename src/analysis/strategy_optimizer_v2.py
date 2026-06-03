@@ -223,16 +223,20 @@ class StrategyOptimizerV2:
         accepted = 0
 
         for ss in scored:
-            # 完整硬约束检查
-            passes, violations = self.constraints.check_hard_constraints(
-                ss.window_stats, ss.wf_score,
-            )
-            if not passes:
-                continue
+            # 最终过滤: 只检查最大回撤（关乎生存的唯一硬约束）
+            # 仓位/一致性/交易密度作为风险提示，不阻止入选
+            max_dd = min(ws.max_drawdown_pct for ws in ss.window_stats)
+            if max_dd < self.constraints.max_drawdown_pct:
+                continue  # 回撤超限，丢弃
 
             accepted += 1
             if accepted > 10:
                 break
+
+            # 完整约束检查（用于生成风险提示）
+            _, violations = self.constraints.check_hard_constraints(
+                ss.window_stats, ss.wf_score,
+            )
 
             # 转换为 Rule 列表（沿用 V1 格式）
             rules = self._encoding_to_rules(ss.encoding)
@@ -253,6 +257,8 @@ class StrategyOptimizerV2:
                 params_summary[f"buy_{j+1}_t"] = f"{t / (self.ds_cfg.threshold_levels - 1):.3f}" if self.ds_cfg.threshold_levels > 1 else "0.000"
                 params_summary[f"buy_{j+1}_frac"] = f"{self.ds_cfg.frac_levels[f]:.3f}"
             params_summary["_stocks"] = ",".join(wf_mgr.stock_codes[:5])
+            if violations:
+                params_summary["_warnings"] = "; ".join(violations[:3])
 
             trial = StrategyTrial(
                 params=params_summary,
