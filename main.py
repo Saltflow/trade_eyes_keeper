@@ -544,8 +544,8 @@ def run_optimization_v2(config):
             time.time() - t0,
         )
 
-    # ── 发送 Telegram 优化报告 ──
-    _send_optimizer_report_telegram(config, report)
+        # ── 发送 Telegram 优化报告 ──
+        _send_optimizer_report_telegram(config, report)
 
     logger.info("策略搜索 V2 完成")
 
