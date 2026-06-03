@@ -11,23 +11,17 @@
 hard_constraints:
 
   # 1. 测试期平均仓位下限
-  #    Walk-Forward 各窗口测试期的平均持仓市值/总资产不能低于此值。
-  #    防止选出"几乎空仓"靠运气躲过回撤的策略。
   min_avg_position_pct: 20.0
 
   # 2. 任意窗口最大回撤上限
-  #    任意 Walk-Forward 窗口的最大回撤不得超过此值。
   max_drawdown_pct: -25.0
 
   # 3. 训练-测试一致性
-  #    6个 Walk-Forward 窗口测试期收益的标准差不能超过此值。
-  #    防止选出"某个窗口靠运气大涨"的策略。
   max_return_std_pct: 15.0
 
   # 4. 月度交易密度（整个组合）
-  #    太蹲（几乎不交易）或太频繁（过度交易）都不可接受。
-  min_trades_per_month: 1      # 下限：每月至少1笔交易
-  max_trades_per_month: 6      # 上限：每月最多6笔交易
+  min_trades_per_month: 1
+  max_trades_per_month: 6
 
 # ── 软性约束（不满足扣分，但仍保留）──
 soft_constraints:

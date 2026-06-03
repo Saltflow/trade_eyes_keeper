@@ -47,7 +47,9 @@ IDX_VOL_RATIO = 7
 def _build_deviation_cross(indicator: np.ndarray, threshold_norm: float) -> tuple[np.ndarray, np.ndarray]:
     """MA偏离穿越: 从上方穿越阈值 (买入)"""
     dev = indicator[:, :, IDX_DEVIATION]  # (T, N)
-    t = -0.005 + threshold_norm * (-0.30 + 0.005)  # norm 0→1 maps to -0.005→-0.30
+    t = -0.005 + threshold_norm * (-0.30 + 0.005)
+    if dev.shape[0] == 0:
+        return np.zeros_like(dev, dtype=bool), np.ones_like(dev, dtype=bool)
     prev = np.roll(dev, 1, axis=0)
     prev[0, :] = 0.0
     cond = (dev <= t) & (prev > t)
@@ -58,7 +60,9 @@ def _build_deviation_cross(indicator: np.ndarray, threshold_norm: float) -> tupl
 def _build_rsi_signal(indicator: np.ndarray, threshold_norm: float) -> tuple[np.ndarray, np.ndarray]:
     """RSI 超卖"""
     rsi = indicator[:, :, IDX_RSI]
-    t = 10 + (1.0 - threshold_norm) * 30  # norm 0→1 maps to 40→10
+    if rsi.shape[0] == 0:
+        return np.zeros_like(rsi, dtype=bool), np.ones_like(rsi, dtype=bool)
+    t = 10 + (1.0 - threshold_norm) * 30
     cond = rsi < t
     reset = rsi > 50
     return cond, reset
@@ -67,7 +71,9 @@ def _build_rsi_signal(indicator: np.ndarray, threshold_norm: float) -> tuple[np.
 def _build_bollinger_signal(indicator: np.ndarray, threshold_norm: float) -> tuple[np.ndarray, np.ndarray]:
     """布林带 %B 低位"""
     bb = indicator[:, :, IDX_BOLL_PCT_B]
-    t = 0.0 + (1.0 - threshold_norm) * 0.35  # norm 0→1 maps to 0.35→0.0
+    if bb.shape[0] == 0:
+        return np.zeros_like(bb, dtype=bool), np.ones_like(bb, dtype=bool)
+    t = 0.0 + (1.0 - threshold_norm) * 0.35
     cond = bb < t
     reset = bb > 0.5
     return cond, reset
@@ -76,7 +82,9 @@ def _build_bollinger_signal(indicator: np.ndarray, threshold_norm: float) -> tup
 def _build_volume_spike(indicator: np.ndarray, threshold_norm: float) -> tuple[np.ndarray, np.ndarray]:
     """放量异动 (仅买入)"""
     vr = indicator[:, :, IDX_VOL_RATIO]
-    t = 1.2 + threshold_norm * 2.8  # norm 0→1 maps to 1.2→4.0
+    if vr.shape[0] == 0:
+        return np.zeros_like(vr, dtype=bool), np.ones_like(vr, dtype=bool)
+    t = 1.2 + threshold_norm * 2.8
     cond = vr > t
     reset = vr < 1.0
     return cond, reset
@@ -85,7 +93,9 @@ def _build_volume_spike(indicator: np.ndarray, threshold_norm: float) -> tuple[n
 def _build_deviation_absolute(indicator: np.ndarray, threshold_norm: float) -> tuple[np.ndarray, np.ndarray]:
     """MA绝对偏离 (不要求穿越)"""
     dev = indicator[:, :, IDX_DEVIATION]
-    t = threshold_norm * -0.40  # norm 0→1 maps to 0→-0.40
+    if dev.shape[0] == 0:
+        return np.zeros_like(dev, dtype=bool), np.ones_like(dev, dtype=bool)
+    t = threshold_norm * -0.40
     cond = dev <= t
     reset = dev > 0
     return cond, reset
@@ -95,7 +105,9 @@ def _build_trend_follow(indicator: np.ndarray, threshold_norm: float) -> tuple[n
     """趋势跟踪: ADX确认 + MACD方向"""
     adx = indicator[:, :, IDX_ADX]
     macd = indicator[:, :, IDX_MACD_HIST]
-    t = 15 + threshold_norm * 25  # norm 0→1 maps to 15→40
+    if adx.shape[0] == 0:
+        return np.zeros_like(adx, dtype=bool), np.ones_like(adx, dtype=bool)
+    t = 15 + threshold_norm * 25
     cond = (adx > t) & (macd > 0)
     reset = adx < 15
     return cond, reset
@@ -322,7 +334,7 @@ class FastEvaluator:
         """
         R = len(rule_builders)
         T, N = indicator_matrix.shape[:2]
-        if N == 0:
+        if N == 0 or T == 0:
             return WindowStats()
 
         # ── 1. 构建条件/重置矩阵 ──

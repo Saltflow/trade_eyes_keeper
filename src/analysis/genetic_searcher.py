@@ -148,6 +148,10 @@ class GeneticSearcher:
             test_price = self.wf_manager.get_price_matrix(w, "test")
             T_test = test_ind.shape[0]
 
+            if T_test == 0 or test_ind.shape[1] == 0:
+                # 空窗口，跳过
+                continue
+
             # 现金基准线（从训练期延伸到测试期）
             rf_daily = 0.02 / 252.0  # 简化: A股无风险利率固定2%
             train_end_cash = self.evaluator.initial_cash * (1.0 + rf_daily) ** train_ind.shape[0]
