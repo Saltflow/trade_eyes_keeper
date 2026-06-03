@@ -431,6 +431,122 @@ def run_optimization(config):
     logger.info("策略搜索完成")
 
 
+def run_optimization_v2(config):
+    """
+    运行策略搜索优化器 V2。
+
+    使用 Walk-Forward + 遗传搜索 + 向量化快速评估。
+    深夜运行，3-4 小时完成 A股 + 非A股 两组搜索。
+    """
+    import logging
+    import time
+    from src.data.data_source import DataSource
+    from src.analysis.strategy_optimizer_v2 import StrategyOptimizerV2
+    from src.analysis.portfolio_strategy import _detect_stock_group
+    from src.analysis.indicator_library import compute_all
+
+    logger = logging.getLogger(__name__)
+
+    logger.info("=" * 60)
+    logger.info("策略搜索优化器 V2 启动")
+    logger.info("=" * 60)
+
+    stocks = config.get("stocks", [])
+    if not stocks:
+        logger.error("配置中没有股票列表")
+        return
+
+    # 分组
+    a_codes = []
+    non_a_codes = []
+    for s in stocks:
+        if isinstance(s, str):
+            code = s
+        elif isinstance(s, dict):
+            code = s.get("code", "")
+        else:
+            code = str(s)
+        group = _detect_stock_group(code)
+        if group == "a_share":
+            a_codes.append(code)
+        else:
+            non_a_codes.append(code)
+
+    logger.info(f"A股: {len(a_codes)} 只 | 非A股: {len(non_a_codes)} 只")
+
+    # 数据源
+    data_source = DataSource(config)
+    # V2 需要 3年数据 (36个月 Walk-Forward)
+    lookback = config.get("portfolio_strategy", {}).get("lookback_days", 1095)
+
+    for group_name, codes in [("a_share", a_codes), ("non_a_share", non_a_codes)]:
+        if not codes:
+            logger.info("跳过 %s: 无标的", group_name)
+            continue
+
+        logger.info("-" * 40)
+        logger.info("开始 %s 策略优化 V2 (%d 只标的)", group_name, len(codes))
+
+        # 获取数据
+        stocks_data: dict[str, pd.DataFrame] = {}
+        for code in codes:
+            try:
+                df = data_source.fetch_stock_data(code, days=lookback)
+                if df is not None and not df.empty:
+                    stocks_data[code] = df
+            except Exception as e:
+                logger.warning("获取 %s 数据失败: %s", code, e)
+
+        if not stocks_data:
+            logger.warning("%s 无可用数据，跳过", group_name)
+            continue
+
+        # 预计算指标（供 WalkForwardManager 使用，加速）
+        logger.info("[V2] 预计算技术指标...")
+        t0 = time.time()
+        try:
+            indicators = compute_all(stocks_data)
+            logger.info("[V2] 指标计算完成: %.0fs", time.time() - t0)
+        except Exception as e:
+            logger.warning("[V2] 指标预计算失败，将兜底计算: %s", e)
+            indicators = None
+
+        # 运行 V2 优化器
+        t0 = time.time()
+        optimizer = StrategyOptimizerV2(
+            stocks_data, group_name,
+            indicators_data=indicators,
+        )
+        report = optimizer.run(
+            stock_codes=list(stocks_data.keys()),
+        )
+
+        # 打印报告
+        print("\n" + "=" * 70)
+        print(f"  V2 策略搜索结果 — {group_name} — {report.report_id}")
+        print("=" * 70)
+        for i, t in enumerate(report.top_strategies[:5], 1):
+            stocks_str = t.params.get("_stocks", "?")
+            print(
+                f"  [{i}] WF得分: 测试超额 {t.test_return:+.1f}% | "
+                f"回撤 {t.test_drawdown:+.1f}% | 夏普 {t.sharpe:.3f} | "
+                f"{t.trade_count}笔交易 | {stocks_str}"
+            )
+            for j in range(5):
+                sig = t.params.get(f"buy_{j+1}_signal", "?")
+                th = t.params.get(f"buy_{j+1}_t", "?")
+                fr = t.params.get(f"buy_{j+1}_frac", "?")
+                print(f"       buy_{j+1}: {sig:<20} t={th:<6} frac={fr}")
+
+        logger.info(
+            "%s V2 优化完成: 耗时 %.0fs",
+            group_name,
+            time.time() - t0,
+        )
+
+    logger.info("策略搜索 V2 完成")
+
+
 def main():
     """主函数"""
     # 加载配置
@@ -449,8 +565,11 @@ def main():
             logger.info(f"简报模式: {report_id}")
             run_brief_report(report_id)
         elif sys.argv[1] == "--optimize":
-            # 策略优化模式
+            # 策略优化模式 (V1: 贝叶斯优化)
             run_optimization(config)
+        elif sys.argv[1] == "--optimize-v2":
+            # 策略优化模式 V2 (遗传搜索 + Walk-Forward)
+            run_optimization_v2(config)
         elif sys.argv[1] == "--health-server":
             # 仅启动健康服务器模式
             logger.info("启动健康服务器模式")
@@ -464,7 +583,8 @@ def main():
             print("  python main.py --once       # 单次运行任务")
             print("  python main.py --brief      # 运行早盘简报（默认9:50触发）")
             print("  python main.py --brief <id> # 运行指定简报")
-            print("  python main.py --optimize              # 策略参数贝叶斯优化搜索")
+            print("  python main.py --optimize              # 策略参数贝叶斯优化搜索 (V1)")
+            print("  python main.py --optimize-v2           # 策略参数遗传搜索 + Walk-Forward (V2)")
             print("  python main.py --health-server # 仅启动健康服务器")
             print("  python main.py --help       # 显示此帮助信息")
             print("\n健康服务器端口等配置见 config/config.yaml → health_server")

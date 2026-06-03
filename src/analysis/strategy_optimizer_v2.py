@@ -1,0 +1,339 @@
+"""
+策略搜索器 V2 (StrategyOptimizerV2)
+
+基于 Walk-Forward + 遗传搜索 + 向量化评估的新一代优化器。
+
+与 V1 的关键区别:
+  - 贝叶斯优化 → 遗传搜索 (离散参数空间)
+  - 单测试期排名 → Walk-Forward 多窗口评分
+  - 逐日 Python 回测 → numpy/numba 向量化评估 (100x+ 提速)
+  - 2买3卖 → 5买0卖 (全买入规则)
+  - 软性回撤惩罚 → 硬性约束过滤 + 月度交易密度审核
+
+接口兼容 V1: 构造函数、run() 方法、返回值格式均相同。
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+import yaml
+
+from .optimizer_constraints import (
+    StrategyConstraints,
+    WindowStats,
+    load_constraints,
+)
+from .walk_forward import WalkForwardManager, create_walk_forward_manager
+from .fast_evaluator import FastEvaluator
+from .genetic_searcher import GeneticSearcher, ScoredStrategy, StrategyEncoding
+from .strategy_optimizer import (
+    OptimizationReport,
+    StrategyTrial,
+    build_condition,
+    Rule,
+)
+from .backtest_config import (
+    BacktestConfig,
+    make_default_optimizer_config,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class StrategyOptimizerV2:
+    """策略搜索器 V2
+
+    用法:
+        opt = StrategyOptimizerV2(stocks_data, "a_share")
+        report = opt.run(stock_codes=list(stocks_data.keys()))
+    """
+
+    def __init__(
+        self,
+        stocks_data: dict[str, pd.DataFrame],
+        group: str,
+        constraints_path: str | Path = "config/optimizer_constraints.yaml",
+        indicators_data: dict[str, "pd.DataFrame"] | None = None,
+    ):
+        """
+        Args:
+            stocks_data: {code: DataFrame with date/close/high/low/volume}
+            group: "a_share" 或 "non_a_share"
+            constraints_path: 约束配置文件路径
+            indicators_data: 预计算指标（可选，不传则 WalkForwardManager 兜底计算）
+        """
+        self.stocks_data = stocks_data
+        self.group = group
+        self.constraints_path = Path(constraints_path)
+
+        # 加载约束
+        self.constraints = load_constraints(constraints_path)
+        self.wf_cfg = self.constraints.walk_forward
+        self.gs_cfg = self.constraints.genetic_search
+        self.ds_cfg = self.constraints.discrete_search
+
+        # 预计算指标 (可复用外部传入)
+        self.indicators_data = indicators_data
+
+    def run(
+        self,
+        stock_codes: list[str],
+        max_drawdown_pct: float | None = None,
+        iterations: int | None = None,
+        random_starts: int | None = None,
+        report_id: str = "",
+    ) -> OptimizationReport:
+        """执行完整的三阶段搜索
+
+        Args:
+            stock_codes: 候选股票代码列表（默认全部纳入）
+            max_drawdown_pct: 覆盖约束文件中的最大回撤（None=使用配置文件）
+            iterations: 覆盖遗传搜索参数（None=使用配置文件）
+            random_starts: 覆盖 Phase 1 随机采样数（None=使用配置文件）
+            report_id: 报告 ID（用于文件命名）
+
+        Returns:
+            OptimizationReport (与 V1 格式兼容)
+        """
+        # ── 1. 覆盖配置 ──
+        if max_drawdown_pct is not None:
+            self.constraints.max_drawdown_pct = max_drawdown_pct
+        if iterations is not None:
+            self.gs_cfg.phase1_random_samples = iterations
+        if random_starts is not None:
+            self.gs_cfg.phase1_random_samples = random_starts
+
+        # ── 2. Walk-Forward 管理器 ──
+        t0 = time.time()
+        logger.info("[V2] 构建 Walk-Forward 管理器...")
+        wf_mgr = WalkForwardManager(
+            self.stocks_data,
+            indicators_data=self.indicators_data,
+            train_months=self.wf_cfg.train_months,
+            test_months=self.wf_cfg.test_months,
+            step_months=self.wf_cfg.step_months,
+            num_windows=self.wf_cfg.num_windows,
+        )
+
+        if not wf_mgr.stock_codes:
+            logger.error("[V2] 没有有效的股票数据")
+            return OptimizationReport(
+                report_id=report_id or datetime.now().strftime("%Y%m%d_%H%M%S"),
+                group=self.group,
+                timestamp=datetime.now().isoformat(),
+                iterations=0,
+                top_strategies=[],
+            )
+
+        windows = wf_mgr.iter_windows()
+        logger.info(
+            "[V2] Walk-Forward: %d 个窗口, %d 只股票 (%s)",
+            len(windows), wf_mgr.n_stocks,
+            ", ".join(wf_mgr.stock_codes[:5]) + ("..." if wf_mgr.n_stocks > 5 else ""),
+        )
+
+        # ── 3. 快速评估器 ──
+        # A股用100股手数，非A股用1
+        lot_size = 100 if self.group == "a_share" else 1
+        evaluator = FastEvaluator(
+            initial_cash=100000.0,
+            monthly_buy_limit=15000.0,
+            lot_size=lot_size,
+            commission_rate=0.002,
+        )
+
+        # ── 4. 遗传搜索 ──
+        searcher = GeneticSearcher(self.constraints, wf_mgr, evaluator)
+
+        logger.info(
+            "[V2] Phase 1: 粗筛 %d 个随机策略",
+            self.gs_cfg.phase1_random_samples,
+        )
+        t1 = time.time()
+        phase1_results = searcher.run_phase1(windows)
+        logger.info(
+            "[V2] Phase 1 完成: %d 个有效策略, 耗时 %.0fs",
+            len(phase1_results), time.time() - t1,
+        )
+
+        if not phase1_results:
+            logger.error("[V2] Phase 1 没有策略通过约束，搜索失败")
+            return OptimizationReport(
+                report_id=report_id or datetime.now().strftime("%Y%m%d_%H%M%S"),
+                group=self.group,
+                timestamp=datetime.now().isoformat(),
+                iterations=self.gs_cfg.phase1_random_samples,
+                top_strategies=[],
+            )
+
+        logger.info(
+            "[V2] Phase 2: 遗传优化 %d 代, 种群 %d, 每代 %d 后代",
+            self.gs_cfg.num_generations, self.gs_cfg.population_size,
+            self.gs_cfg.offspring_size,
+        )
+        t2 = time.time()
+        final_population = searcher.run_phase2(phase1_results, windows)
+        logger.info(
+            "[V2] Phase 2 完成: 耗时 %.0fs",
+            time.time() - t2,
+        )
+
+        # ── 5. 构建 OptimizationReport ──
+        report = self._build_report(
+            final_population, wf_mgr, windows, report_id, time.time() - t0,
+        )
+
+        # ── 6. 保存结果 ──
+        save_dir = Path("data/optimizer")
+        save_dir.mkdir(parents=True, exist_ok=True)
+        self._save_results(report, save_dir)
+
+        logger.info(
+            "[V2] 搜索完成: 总耗时 %.0fs, Top1 WF得分 %.2f",
+            report.elapsed_seconds,
+            report.top_strategies[0].test_return if report.top_strategies else -999,
+        )
+
+        return report
+
+    def _build_report(
+        self,
+        scored: list["ScoredStrategy"],
+        wf_mgr,
+        windows,
+        report_id: str,
+        elapsed: float,
+    ) -> OptimizationReport:
+        """将遗传搜索结果转换为 OptimizationReport"""
+
+        if not report_id:
+            report_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        trials: list[StrategyTrial] = []
+
+        for i, ss in enumerate(scored[:10]):  # Top 10
+            # 转换为 Rule 列表（沿用 V1 格式）
+            rules = self._encoding_to_rules(ss.encoding)
+
+            # 从窗口统计推算训练/测试期指标
+            avg_test_ret = np.mean([ws.test_excess_return for ws in ss.window_stats])
+            avg_dd = np.mean([ws.max_drawdown_pct for ws in ss.window_stats])
+            avg_sharpe = np.mean([ws.sharpe_ratio for ws in ss.window_stats])
+            total_trades = sum(ws.total_trades for ws in ss.window_stats)
+
+            # 构建参数摘要
+            params_summary: dict[str, str] = {}
+            for j, (b, t, f) in enumerate(zip(
+                ss.encoding.builders, ss.encoding.thresholds, ss.encoding.fracs,
+            )):
+                builder_name = self.ds_cfg.buy_builders[b]
+                params_summary[f"buy_{j+1}_signal"] = builder_name
+                params_summary[f"buy_{j+1}_t"] = f"{t / (self.ds_cfg.threshold_levels - 1):.3f}" if self.ds_cfg.threshold_levels > 1 else "0.000"
+                params_summary[f"buy_{j+1}_frac"] = f"{self.ds_cfg.frac_levels[f]:.3f}"
+            params_summary["_stocks"] = ",".join(wf_mgr.stock_codes[:5])
+
+            trial = StrategyTrial(
+                params=params_summary,
+                rules=rules,
+                train_return=-999,  # V2 不做训练期单独排名
+                train_drawdown=-999,
+                test_return=round(avg_test_ret, 2),
+                test_drawdown=round(avg_dd, 2),
+                sharpe=round(avg_sharpe, 4),
+                trade_count=total_trades,
+            )
+            trials.append(trial)
+
+        return OptimizationReport(
+            report_id=report_id,
+            group=self.group,
+            timestamp=datetime.now().isoformat(),
+            iterations=self.gs_cfg.phase1_random_samples,
+            n_random_starts=self.gs_cfg.phase1_top_keep,
+            top_strategies=trials,
+            convergence=[],  # V2 不需要收敛曲线
+            all_train_returns=[],
+            elapsed_seconds=round(elapsed, 1),
+            best_params=trials[0].params if trials else {},
+        )
+
+    def _encoding_to_rules(self, encoding: StrategyEncoding) -> list[Rule]:
+        """将遗传编码转换为 Rule 列表（V1 兼容格式）"""
+        rules = []
+        for i in range(encoding.n_rules):
+            builder_name = self.ds_cfg.buy_builders[encoding.builders[i]]
+            t_norm = encoding.thresholds[i] / (self.ds_cfg.threshold_levels - 1) if self.ds_cfg.threshold_levels > 1 else 0.0
+            frac = self.ds_cfg.frac_levels[encoding.fracs[i]]
+
+            condition, reset_when = build_condition(builder_name, t_norm, "buy")
+
+            rule = Rule(
+                id=f"buy_{i+1}",
+                label=f"买入规则{i+1}",
+                type="buy",
+                priority=i + 1,
+                condition=condition,
+                budget_pool="buy",
+                action_amount=f"cash * {frac}",
+                reset_when=reset_when,
+            )
+            rules.append(rule)
+
+        return rules
+
+    def _save_results(self, report: OptimizationReport, save_dir: Path):
+        """保存最优策略到 YAML 文件（V1 兼容格式）"""
+
+        def _native(v):
+            if hasattr(v, "item"):
+                return float(v.item()) if hasattr(v, "dtype") else v
+            return round(float(v), 4) if isinstance(v, float) else v
+
+        fname = save_dir / f"{report.report_id}_{report.group}_strategies.yaml"
+
+        output = {
+            "report_id": report.report_id,
+            "group": report.group,
+            "timestamp": report.timestamp,
+            "iterations": report.iterations,
+            "elapsed_seconds": report.elapsed_seconds,
+            "optimizer_version": "v2",
+            "benchmarks": dict(report.benchmarks),
+        }
+
+        strategies = []
+        for i, t in enumerate(report.top_strategies, 1):
+            strat = {
+                "rank": i,
+                "train_return": _native(t.train_return),
+                "test_return": _native(t.test_return),
+                "test_drawdown": _native(t.test_drawdown),
+                "sharpe": _native(t.sharpe),
+                "trade_count": t.trade_count,
+                "params": t.params,
+                "rules": [
+                    {
+                        "id": r.id, "type": r.type, "priority": r.priority,
+                        "condition": r.condition, "action_amount": r.action_amount,
+                        "action_fraction": r.action_fraction,
+                        "reset_when": r.reset_when,
+                    }
+                    for r in t.rules
+                ],
+            }
+            strategies.append(strat)
+
+        output["strategies"] = strategies
+
+        with open(fname, "w", encoding="utf-8") as f:
+            yaml.dump(output, f, allow_unicode=True, default_flow_style=False,
+                      sort_keys=False)
+
+        logger.info("[V2] 结果已保存到 %s", fname)

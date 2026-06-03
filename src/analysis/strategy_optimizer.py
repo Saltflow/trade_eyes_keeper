@@ -226,7 +226,7 @@ class OptimizationReport(BaseModel):
     convergence: list[float] = Field(default_factory=list)
     all_train_returns: list[float] = Field(default_factory=list)
     elapsed_seconds: float = 0.0
-    best_params: dict[str, float] = Field(default_factory=dict)
+    best_params: dict = Field(default_factory=dict)
     benchmarks: dict[str, float] = Field(default_factory=dict)  # 基准名称 → 测试超额收益
 
 
