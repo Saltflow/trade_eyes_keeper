@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.17.1 (2026-06-04)
+
+### Added
+- **QQ 实时行情接入** (`fetch_realtime_quote`): 解决盘中简报数据不刷新，腾讯 API 全市场支持
+- **数据源健康探针** (`tests/test_data_source_health.py`): 14 个 smoke 测试覆盖 A/港股/ETF 实时+历史+估值
+- **集成测试** (`tests/integration/`): 3 个端到端测试验证优化器、信号扫描器、报告生成不崩溃
+- **简报锚点兜底**: `_pick_best_anchor=None` 时 fallback 到 `ma60`，防止 `UnboundLocalError`
+
+### Fixed
+- **优化器 P0 Crash** (`strategy_optimizer.py`): `best_params: dict[str,float]` → `dict`，兼容空/字符串值
+- **布林带列名统一**: `boll_pb` → `boll_pct_b`，全链路对齐（指标计算 → 优化器 → 扫描器 → 邮件）
+- **Eastmoney 降级链删除**: 从全部 4 处降级路径移除（历史 K 线、实时行情、估值、基本面）
+- **估值双源降级**: QQ(全市场 PE) → Yahoo(PB + 非A PE)，含重试 + `.SS`/`.SZ` 后缀修复
+- **非A股名称显示**: NaN 时显示默认代码而非空字符串
+- **Eastmoney 静默失败**: 删除假实现 WARNING 日志，减少噪音
+
+### Changed
+- **数据源降级链**: 新浪 → 腾讯 → Yahoo（东方财富完全下线）
+
+---
+
 ## v1.17 (2026-05-27)
 
 ### Added

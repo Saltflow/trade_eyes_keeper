@@ -108,7 +108,7 @@ logger.info(f"Stock {stock_code} cache bypassed")
 
 ### 数据原则
 
-- **真实数据优先**：Web crawler (Sina -> QQ -> Eastmoney) + LLM 提取缓存，绝不使用模拟/硬编码数据
+- **真实数据优先**：Web crawler (Sina -> QQ -> Yahoo) + LLM 提取缓存，绝不使用模拟/硬编码数据
 - **ETF 处理**：ETF（510880, 512810）返回 None，不参与股息计算
 - **单位转换**：分->元、每10股->每股需统一处理
 - **数据验证**：股息率合理范围 0.5%-20%，价格关系 close >= low <= high

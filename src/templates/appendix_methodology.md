@@ -127,7 +127,7 @@ $$
 \mathrm{PE_{TTM}} = \frac{P}{\mathrm{EPS}_{4Q}}
 $$
 
-其中 $\mathrm{EPS}_{4Q}$ 为最近四个季度的每股收益之和。优先使用 TTM 口径，东方财富 API 未提供 TTM 时 fallback 到静态 PE。
+其中 $\mathrm{EPS}_{4Q}$ 为最近四个季度的每股收益之和。优先使用 TTM 口径，腾讯财经 API 未提供 TTM 时 fallback 到静态 PE。
 
 
 ## 9. PB (Price-to-Book)

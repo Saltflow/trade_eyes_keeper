@@ -16,7 +16,7 @@
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │  数据源层 (src/)                                                │
-│  - web_crawler.py      网页爬虫（新浪、腾讯、东方财富）         │
+  │  - web_crawler.py      网页爬虫（新浪、腾讯、Yahoo）            │
 │  - data_fetcher.py     数据获取协调、缓存管理、调用指标计算     │
 │  - announcement_fetcher.py  巨潮资讯网官方公告抓取              │
 │  - financial_report_fetcher.py / manager.py  财报分析          │
@@ -112,7 +112,7 @@ main.py --once
 
 1. **网页爬虫**（新浪财经历史数据 API，主要）
 2. **腾讯财经 API**（备用）
-3. **东方财富 API**（备用）
+3. **Yahoo Finance API**（备用）
 4. **baostock**（回测历史数据专用，前复权）
 
 ### 公司公告

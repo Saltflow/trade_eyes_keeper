@@ -142,7 +142,7 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 ## Project-Specific Conventions
 
 ### Data and Configuration
-- **Data sources**: Web crawler (Sina → QQ → Eastmoney) with LLM extraction cache for dividends, never use simulated/hardcoded data
+- **Data sources**: Web crawler (Sina → QQ → Yahoo) with LLM extraction cache for dividends, never use simulated/hardcoded data
 - **Cache**: `cache/data/` and `cache/analysis/`, 7-day retention, bypass after 15:55 if cached data not from today
 - **Config**: `config/config.yaml`, environment variables in `config/.env` (gitignored)
 - **Scheduler**: Run at 19:00 daily, cache bypass cutoff 15:55, timezone Asia/Shanghai
@@ -202,6 +202,11 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 | Dividend Architecture | `cache_manager.py`, `data_fetcher.py` | ✅ LLM extraction cache prioritized |
 | Brief Report Trading Day | `src/email_notifier.py:send_brief_report()` | ✅ 3-day window + weekend skip |
 | Rule Engine Extensibility | `src/rule_engine.py` | ✅ YAML-driven config, no code change needed |
+| QQ Real-time Quote | `src/data/web_crawler.py` | ✅ `fetch_realtime_quote()` for intraday brief refresh |
+| Eastmoney Removal | `src/data/web_crawler.py` + `data_source.py` | ✅ Removed from all 4 fallback chains |
+| Optimizer P0 Crash | `src/analysis/strategy_optimizer.py` | ✅ `best_params: dict` type relaxed |
+| Bollinger Column Name | `src/core/technical_indicators.py` | ✅ `boll_pb` → `boll_pct_b` unified |
+| Data Source Health Probe | `tests/test_data_source_health.py` | ✅ 14 smoke tests for A/HK/ETF data |
 
 ## Cursor/Copilot Rules
 - No `.cursorrules` or `.cursor/rules/` files found
@@ -211,5 +216,5 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 - **Flake8 configuration**: `.flake8` (max-line-length 88, ignore E203/W503)
 - **YAPF configuration**: `.style.yapf` (pep8 style, column_limit 88)
 
-**Last Updated**: 2026-05-27  
-**Project Version**: v1.17 (简报增强 + 数据清理 + 调度调整)
+**Last Updated**: 2026-06-04  
+**Project Version**: v1.17.1 (简报增强 + 数据清理 + 调度调整 + QQ 实时行情 + 优化器 P0 修复)
