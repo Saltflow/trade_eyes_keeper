@@ -582,6 +582,13 @@ def _send_optimizer_report_telegram(config, report):
             th = t.params.get(f"buy_{j+1}_t", "?")
             fr = t.params.get(f"buy_{j+1}_frac", "?")
             lines.append(f"  • buy_{j+1}: {sig} t={th} frac={fr}")
+        for j in range(3):
+            sig = t.params.get(f"sell_{j+1}_signal", "?")
+            if sig == "none" or sig == "?":
+                continue
+            th = t.params.get(f"sell_{j+1}_t", "?")
+            fr = t.params.get(f"sell_{j+1}_frac", "?")
+            lines.append(f"  • sell_{j+1}: {sig} t={th} frac={fr}")
         lines.append("")
 
     text = "\n".join(lines)

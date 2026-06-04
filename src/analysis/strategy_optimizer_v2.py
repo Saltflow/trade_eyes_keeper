@@ -249,13 +249,24 @@ class StrategyOptimizerV2:
 
             # 构建参数摘要
             params_summary: dict[str, str] = {}
-            for j, (b, t, f) in enumerate(zip(
-                ss.encoding.builders, ss.encoding.thresholds, ss.encoding.fracs,
-            )):
+            # 买入
+            for j in range(ss.encoding.n_buy_rules):
+                b = ss.encoding.buy_builders[j]
+                t = ss.encoding.buy_thresholds[j]
+                f = ss.encoding.buy_fracs[j]
                 builder_name = self.ds_cfg.buy_builders[b]
                 params_summary[f"buy_{j+1}_signal"] = builder_name
                 params_summary[f"buy_{j+1}_t"] = f"{t / (self.ds_cfg.threshold_levels - 1):.3f}" if self.ds_cfg.threshold_levels > 1 else "0.000"
                 params_summary[f"buy_{j+1}_frac"] = f"{self.ds_cfg.frac_levels[f]:.3f}"
+            # 卖出
+            for j in range(ss.encoding.n_sell_rules):
+                b = ss.encoding.sell_builders[j]
+                t = ss.encoding.sell_thresholds[j]
+                f = ss.encoding.sell_fracs[j]
+                builder_name = self.ds_cfg.sell_builders[b]
+                params_summary[f"sell_{j+1}_signal"] = builder_name
+                params_summary[f"sell_{j+1}_t"] = f"{t / (self.ds_cfg.threshold_levels - 1):.3f}" if self.ds_cfg.threshold_levels > 1 else "0.000"
+                params_summary[f"sell_{j+1}_frac"] = f"{self.ds_cfg.sell_frac_levels[f]:.3f}"
             params_summary["_stocks"] = ",".join(wf_mgr.stock_codes[:5])
             if violations:
                 params_summary["_warnings"] = "; ".join(violations[:3])
@@ -286,16 +297,18 @@ class StrategyOptimizerV2:
         )
 
     def _encoding_to_rules(self, encoding: StrategyEncoding) -> list[Rule]:
-        """将遗传编码转换为 Rule 列表（V1 兼容格式）"""
+        """将遗传编码转换为 Rule 列表（V1 兼容格式，支持买入+卖出）"""
         rules = []
-        for i in range(encoding.n_rules):
-            builder_name = self.ds_cfg.buy_builders[encoding.builders[i]]
-            t_norm = encoding.thresholds[i] / (self.ds_cfg.threshold_levels - 1) if self.ds_cfg.threshold_levels > 1 else 0.0
-            frac = self.ds_cfg.frac_levels[encoding.fracs[i]]
+
+        # 买入规则
+        for i in range(encoding.n_buy_rules):
+            builder_name = self.ds_cfg.buy_builders[encoding.buy_builders[i]]
+            t_norm = encoding.buy_thresholds[i] / (self.ds_cfg.threshold_levels - 1) if self.ds_cfg.threshold_levels > 1 else 0.0
+            frac = self.ds_cfg.frac_levels[encoding.buy_fracs[i]]
 
             condition, reset_when = build_condition(builder_name, t_norm, "buy")
 
-            rule = Rule(
+            rules.append(Rule(
                 id=f"buy_{i+1}",
                 label=f"买入规则{i+1}",
                 type="buy",
@@ -304,8 +317,28 @@ class StrategyOptimizerV2:
                 budget_pool="buy",
                 action_amount=f"cash * {frac}",
                 reset_when=reset_when,
-            )
-            rules.append(rule)
+            ))
+
+        # 卖出规则
+        for i in range(encoding.n_sell_rules):
+            builder_name = self.ds_cfg.sell_builders[encoding.sell_builders[i]]
+            t_norm = encoding.sell_thresholds[i] / (self.ds_cfg.threshold_levels - 1) if self.ds_cfg.threshold_levels > 1 else 0.0
+            frac = self.ds_cfg.sell_frac_levels[encoding.sell_fracs[i]]
+
+            condition, reset_when = build_condition(builder_name, t_norm, "sell")
+
+            rules.append(Rule(
+                id=f"sell_{i+1}",
+                label=f"卖出规则{i+1}",
+                type="sell",
+                priority=encoding.n_buy_rules + i + 1,
+                condition=condition,
+                budget_pool="sell",
+                action_fraction=frac,
+                action_min=2500.0,
+                action_max=10000.0,
+                reset_when=reset_when,
+            ))
 
         return rules
 

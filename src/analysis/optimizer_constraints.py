@@ -69,15 +69,26 @@ class DiscreteSearchConfig:
         ])
         self.threshold_levels: int = data.get("threshold_levels", 10)
         self.frac_levels: list[float] = data.get(
-            "frac_levels", [0.05, 0.10, 0.15, 0.20, 0.25],
+            "frac_levels", [0.10, 0.15, 0.20, 0.25, 0.30, 0.40],
         )
         self.num_buy_rules: int = data.get("num_buy_rules", 5)
+
+        # 卖出规则
+        self.sell_builders: list[str] = data.get("sell_builders", [
+            "deviation_cross", "rsi_signal", "bollinger_signal",
+            "deviation_absolute", "trend_follow", "none",
+        ])
+        self.sell_frac_levels: list[float] = data.get(
+            "sell_frac_levels", [0.10, 0.20, 0.30, 0.40, 0.50],
+        )
+        self.num_sell_rules: int = data.get("num_sell_rules", 3)
 
     @property
     def search_space_size(self) -> int:
         """估算搜索空间大小（总组合数）"""
-        singles = len(self.buy_builders) * self.threshold_levels * len(self.frac_levels)
-        return singles ** self.num_buy_rules
+        buy_singles = len(self.buy_builders) * self.threshold_levels * len(self.frac_levels)
+        sell_singles = len(self.sell_builders) * self.threshold_levels * len(self.sell_frac_levels)
+        return (buy_singles ** self.num_buy_rules) * (sell_singles ** self.num_sell_rules)
 
 
 class StrategyConstraints:

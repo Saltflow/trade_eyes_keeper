@@ -77,8 +77,23 @@ discrete_search:
   # 阈值离散档位（归一化值，由 builder 内部映射到真实范围）
   threshold_levels: 10     # 0.0, 0.1, ..., 0.9
 
-  # 仓位比例离散档位（买入动用现金比例）
-  frac_levels: [0.05, 0.10, 0.15, 0.20, 0.25]
+  # 买入仓位比例离散档位（现金比例，放宽到40%）
+  frac_levels: [0.10, 0.15, 0.20, 0.25, 0.30, 0.40]
 
-  # 买入规则数量（全为买入，无卖出）
+  # 买入规则数量
   num_buy_rules: 5
+
+  # ── 卖出规则（实验性）──
+  sell_builders:
+    - deviation_cross      # MA偏离穿越（向上穿越卖出）
+    - rsi_signal           # RSI超买
+    - bollinger_signal      # 布林带上轨
+    - deviation_absolute    # MA绝对偏离（高位）
+    - trend_follow          # 趋势反转(ADX+MACD<0)
+    - none                  # 禁用
+
+  # 卖出比例离散档位（持仓比例）
+  sell_frac_levels: [0.10, 0.20, 0.30, 0.40, 0.50]
+
+  # 卖出规则数量
+  num_sell_rules: 3

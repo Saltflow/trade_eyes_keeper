@@ -113,6 +113,66 @@ def _build_trend_follow(indicator: np.ndarray, threshold_norm: float) -> tuple[n
     return cond, reset
 
 
+# ── 卖出条件构建器 ──
+
+def _build_sell_deviation_cross(indicator: np.ndarray, threshold_norm: float) -> tuple[np.ndarray, np.ndarray]:
+    """MA偏离穿越: 从下方穿越阈值 (卖出)"""
+    dev = indicator[:, :, IDX_DEVIATION]
+    if dev.shape[0] == 0:
+        return np.zeros_like(dev, dtype=bool), np.ones_like(dev, dtype=bool)
+    t = 0.005 + threshold_norm * 0.30  # norm 0→1 maps to 0.005→0.30
+    prev = np.roll(dev, 1, axis=0)
+    prev[0, :] = 0.0
+    cond = (dev >= t) & (prev < t)
+    reset = dev < 0
+    return cond, reset
+
+
+def _build_sell_rsi_signal(indicator: np.ndarray, threshold_norm: float) -> tuple[np.ndarray, np.ndarray]:
+    """RSI 超买"""
+    rsi = indicator[:, :, IDX_RSI]
+    if rsi.shape[0] == 0:
+        return np.zeros_like(rsi, dtype=bool), np.ones_like(rsi, dtype=bool)
+    t = 60 + threshold_norm * 30  # norm 0→1 maps to 60→90
+    cond = rsi > t
+    reset = rsi < 50
+    return cond, reset
+
+
+def _build_sell_bollinger_signal(indicator: np.ndarray, threshold_norm: float) -> tuple[np.ndarray, np.ndarray]:
+    """布林带 %B 高位"""
+    bb = indicator[:, :, IDX_BOLL_PCT_B]
+    if bb.shape[0] == 0:
+        return np.zeros_like(bb, dtype=bool), np.ones_like(bb, dtype=bool)
+    t = 0.65 + threshold_norm * 0.35  # norm 0→1 maps to 0.65→1.0
+    cond = bb > t
+    reset = bb < 0.5
+    return cond, reset
+
+
+def _build_sell_deviation_absolute(indicator: np.ndarray, threshold_norm: float) -> tuple[np.ndarray, np.ndarray]:
+    """MA绝对偏离 (高位)"""
+    dev = indicator[:, :, IDX_DEVIATION]
+    if dev.shape[0] == 0:
+        return np.zeros_like(dev, dtype=bool), np.ones_like(dev, dtype=bool)
+    t = threshold_norm * 0.50  # norm 0→1 maps to 0→0.50
+    cond = dev >= t
+    reset = dev < 0
+    return cond, reset
+
+
+def _build_sell_trend_follow(indicator: np.ndarray, threshold_norm: float) -> tuple[np.ndarray, np.ndarray]:
+    """趋势反转: ADX确认 + MACD<0"""
+    adx = indicator[:, :, IDX_ADX]
+    macd = indicator[:, :, IDX_MACD_HIST]
+    if adx.shape[0] == 0:
+        return np.zeros_like(adx, dtype=bool), np.ones_like(adx, dtype=bool)
+    t = 15 + threshold_norm * 25
+    cond = (adx > t) & (macd < 0)
+    reset = adx < 15
+    return cond, reset
+
+
 def _build_none(indicator: np.ndarray, threshold_norm: float) -> tuple[np.ndarray, np.ndarray]:
     """禁用 (永假)"""
     T, N = indicator.shape[:2]
@@ -130,6 +190,12 @@ CONDITION_BUILDERS_FAST: dict[str, callable] = {
     "deviation_absolute": _build_deviation_absolute,
     "trend_follow": _build_trend_follow,
     "none": _build_none,
+    # 卖出构建器（前缀 sell_）
+    "sell_deviation_cross": _build_sell_deviation_cross,
+    "sell_rsi_signal": _build_sell_rsi_signal,
+    "sell_bollinger_signal": _build_sell_bollinger_signal,
+    "sell_deviation_absolute": _build_sell_deviation_absolute,
+    "sell_trend_follow": _build_sell_trend_follow,
 }
 
 
@@ -198,21 +264,23 @@ try:
 
     @jit(nopython=True, parallel=False, cache=True)
     def _simulate_portfolio_numba(
-        signals,          # (T, N) bool — 买入信号
+        buy_signals,      # (T, N) bool — 买入信号
+        sell_signals,     # (T, N) bool — 卖出信号
         prices,           # (T, N) float32
-        rule_fracs,       # (R,) float32 — 各规则买入比例
+        buy_fracs,        # (R,) float32 — 各规则买入比例
+        sell_fracs,       # (S,) float32 — 各规则卖出比例
         initial_cash,     # float
         monthly_limit,    # float
         lot_size,         # int — A股100, 非A股1
         commission_rate,  # float
     ):
-        """numba 加速版组合模拟
+        """numba 加速版组合模拟（支持买入+卖出）
 
         Returns:
             daily_values: (T,) float64 — 每日总资产
             total_trades: int
         """
-        T, N = signals.shape
+        T, N = buy_signals.shape
         shares = np.zeros(N, dtype=np.float64)
         cash = float(initial_cash)
         daily_values = np.zeros(T, dtype=np.float64)
@@ -226,25 +294,53 @@ try:
                 monthly_spent = 0.0
                 current_month = month
 
-            if signals[t].any() and cash > 0:
+            # ── 先卖后买 ──
+            if sell_signals[t].any():
                 for n in range(N):
-                    if not signals[t, n]:
+                    if not sell_signals[t, n] or shares[n] <= 0:
                         continue
                     price = float(prices[t, n])
                     if price <= 0.0 or np.isnan(price):
                         continue
 
-                    # 买入金额 = 平均规则比例 × 当前现金
+                    # 平均卖出比例
                     avg_frac = 0.0
                     count = 0
-                    for r in range(len(rule_fracs)):
-                        if rule_fracs[r] > 0:
-                            avg_frac += rule_fracs[r]
+                    for r in range(len(sell_fracs)):
+                        if sell_fracs[r] > 0:
+                            avg_frac += sell_fracs[r]
                             count += 1
                     if count > 0:
                         avg_frac /= count
                     else:
-                        avg_frac = 0.10  # fallback
+                        avg_frac = 0.25
+
+                    sell_qty = shares[n] * avg_frac
+                    sell_value = sell_qty * price
+                    fee = sell_value * commission_rate
+                    cash += sell_value - fee
+                    shares[n] -= sell_qty
+                    total_trades += 1
+
+            if buy_signals[t].any() and cash > 0:
+                for n in range(N):
+                    if not buy_signals[t, n]:
+                        continue
+                    price = float(prices[t, n])
+                    if price <= 0.0 or np.isnan(price):
+                        continue
+
+                    # 平均买入比例
+                    avg_frac = 0.0
+                    count = 0
+                    for r in range(len(buy_fracs)):
+                        if buy_fracs[r] > 0:
+                            avg_frac += buy_fracs[r]
+                            count += 1
+                    if count > 0:
+                        avg_frac /= count
+                    else:
+                        avg_frac = 0.15
 
                     buy_amount = cash * avg_frac
                     remaining = monthly_limit - monthly_spent
@@ -253,7 +349,6 @@ try:
                     if buy_amount <= 0:
                         continue
 
-                    # 忽略整手数约束（向量化层近似）
                     cost = buy_amount * (1.0 - commission_rate)
                     qty = cost / price
                     cost_real = qty * price
@@ -315,65 +410,91 @@ class FastEvaluator:
         indicator_matrix: np.ndarray,
         price_matrix: np.ndarray,
         cash_baseline: np.ndarray,
-        rule_builders: list[str],
-        rule_thresholds: list[float],
-        rule_fracs: list[float],
+        buy_builders: list[str],
+        buy_thresholds: list[float],
+        buy_fracs: list[float],
+        sell_builders: list[str] | None = None,
+        sell_thresholds: list[float] | None = None,
+        sell_fracs: list[float] | None = None,
     ) -> "WindowStats":
-        """评估单窗口单策略
+        """评估单窗口单策略（支持买入+卖出）
 
         Args:
             indicator_matrix: (T, N, K) float32 指标矩阵
             price_matrix: (T, N) float32 价格矩阵
-            cash_baseline: (T,) float64 现金基准线(含无风险复利)
-            rule_builders: 每条规则的构建器名
-            rule_thresholds: 每条规则的归一化阈值
-            rule_fracs: 每条规则的买入比例
+            cash_baseline: (T,) float64 现金基准线
+            buy_builders: 买入规则构建器名列表
+            buy_thresholds: 买入规则阈值列表
+            buy_fracs: 买入规则比例列表
+            sell_builders: 卖出规则构建器名列表（可选）
+            sell_thresholds: 卖出规则阈值列表（可选）
+            sell_fracs: 卖出规则比例列表（可选）
 
         Returns:
             WindowStats 包含各项测试期统计指标
         """
-        R = len(rule_builders)
         T, N = indicator_matrix.shape[:2]
         if N == 0 or T == 0:
             return WindowStats()
 
-        # ── 1. 构建条件/重置矩阵 ──
-        conditions = np.zeros((R, T, N), dtype=bool)
-        resets = np.zeros((R, T, N), dtype=bool)
+        # ── 1. 构建买入条件/重置矩阵 ──
+        R_buy = len(buy_builders)
+        buy_conditions = np.zeros((R_buy, T, N), dtype=bool)
+        buy_resets = np.zeros((R_buy, T, N), dtype=bool)
 
-        for r in range(R):
-            builder_name = rule_builders[r]
-            threshold = rule_thresholds[r]
-
+        for r in range(R_buy):
             builder_fn = CONDITION_BUILDERS_FAST.get(
-                builder_name, _build_none,
+                buy_builders[r], _build_none,
             )
-            cond, rst = builder_fn(indicator_matrix, threshold)
-            conditions[r] = cond
-            resets[r] = rst
+            cond, rst = builder_fn(indicator_matrix, buy_thresholds[r])
+            buy_conditions[r] = cond
+            buy_resets[r] = rst
 
-        # ── 2. 锁/重置状态机 → 实际信号 ──
-        if HAS_NUMBA:
-            signals, signal_count = _apply_lock_reset_numba(conditions, resets)
+        # ── 2. 构建卖出条件/重置矩阵 ──
+        if sell_builders:
+            R_sell = len(sell_builders)
+            sell_conditions = np.zeros((R_sell, T, N), dtype=bool)
+            sell_resets = np.zeros((R_sell, T, N), dtype=bool)
+            for r in range(R_sell):
+                builder_fn = CONDITION_BUILDERS_FAST.get(
+                    sell_builders[r], _build_none,
+                )
+                cond, rst = builder_fn(indicator_matrix, sell_thresholds[r])
+                sell_conditions[r] = cond
+                sell_resets[r] = rst
         else:
-            signals, signal_count = _apply_lock_reset(conditions, resets)
+            sell_conditions = np.zeros((1, T, N), dtype=bool)
+            sell_resets = np.ones((1, T, N), dtype=bool)
 
-        # ── 3. 组合模拟 → 日资产 ──
-        fracs_arr = np.array(rule_fracs, dtype=np.float32)
+        # ── 3. 锁/重置状态机 → 实际信号 ──
+        if HAS_NUMBA:
+            buy_signals, _ = _apply_lock_reset_numba(buy_conditions, buy_resets)
+            sell_signals, _ = _apply_lock_reset_numba(sell_conditions, sell_resets)
+        else:
+            buy_signals, _ = _apply_lock_reset(buy_conditions, buy_resets)
+            sell_signals, _ = _apply_lock_reset(sell_conditions, sell_resets)
+
+        # ── 4. 组合模拟 → 日资产 ──
+        buy_fracs_arr = np.array(buy_fracs, dtype=np.float32)
+        sell_fracs_arr = np.array(sell_fracs if sell_fracs else [0.0], dtype=np.float32)
+
         if HAS_NUMBA:
             daily_values, trade_count = _simulate_portfolio_numba(
-                signals, price_matrix, fracs_arr,
+                buy_signals, sell_signals, price_matrix,
+                buy_fracs_arr, sell_fracs_arr,
                 float(self.initial_cash), float(self.monthly_buy_limit),
                 self.lot_size, float(self.commission_rate),
             )
         else:
             daily_values, trade_count = _simulate_portfolio_python(
-                signals, price_matrix, fracs_arr,
+                buy_signals, sell_signals, price_matrix,
+                buy_fracs_arr, sell_fracs_arr,
                 self.initial_cash, self.monthly_buy_limit,
                 self.lot_size, self.commission_rate,
             )
 
-        # ── 4. 计算指标 ──
+        # ── 5. 计算指标 ──
+        signal_count = int(buy_signals.sum()) + int(sell_signals.sum())
         return self._compute_stats(daily_values, price_matrix, cash_baseline, trade_count, signal_count)
 
     def _compute_stats(
@@ -465,16 +586,18 @@ class FastEvaluator:
 
 
 def _simulate_portfolio_python(
-    signals,
+    buy_signals,
+    sell_signals,
     prices,
-    rule_fracs,
+    buy_fracs,
+    sell_fracs,
     initial_cash,
     monthly_limit,
     lot_size,
     commission_rate,
 ):
-    """纯 Python 回退, 与 numba 版本逻辑一致"""
-    T, N = signals.shape
+    """纯 Python 回退, 与 numba 版本逻辑一致（支持买入+卖出）"""
+    T, N = buy_signals.shape
     shares = np.zeros(N, dtype=np.float64)
     cash = float(initial_cash)
     daily_values = np.zeros(T, dtype=np.float64)
@@ -482,7 +605,8 @@ def _simulate_portfolio_python(
     current_month = -1
     total_trades = 0
 
-    avg_frac = float(np.mean(rule_fracs)) if len(rule_fracs) > 0 else 0.10
+    avg_buy_frac = float(np.mean(buy_fracs)) if len(buy_fracs) > 0 else 0.15
+    avg_sell_frac = float(np.mean(sell_fracs)) if len(sell_fracs) > 0 else 0.25
 
     for t in range(T):
         month = t // 21
@@ -490,13 +614,28 @@ def _simulate_portfolio_python(
             monthly_spent = 0.0
             current_month = month
 
+        # 先卖
         for n in range(N):
-            if signals[t, n] and cash > 0:
+            if sell_signals[t, n] and shares[n] > 0:
                 price = float(prices[t, n])
                 if price <= 0 or np.isnan(price):
                     continue
 
-                buy_amount = cash * avg_frac
+                sell_qty = shares[n] * avg_sell_frac
+                sell_value = sell_qty * price
+                fee = sell_value * commission_rate
+                cash += sell_value - fee
+                shares[n] -= sell_qty
+                total_trades += 1
+
+        # 后买
+        for n in range(N):
+            if buy_signals[t, n] and cash > 0:
+                price = float(prices[t, n])
+                if price <= 0 or np.isnan(price):
+                    continue
+
+                buy_amount = cash * avg_buy_frac
                 remaining = monthly_limit - monthly_spent
                 buy_amount = min(buy_amount, remaining)
 

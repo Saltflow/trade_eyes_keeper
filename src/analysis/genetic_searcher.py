@@ -40,48 +40,83 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class StrategyEncoding:
-    """策略的离散编码
+    """策略的离散编码（买入+卖出）
 
-    每条规则: (builder_idx, threshold_level, frac_level)
-    5 条规则 → 15 个整数的一维数组。
+    买入规则: (builder_idx, threshold_level, frac_level) × num_buy_rules
+    卖出规则: (builder_idx, threshold_level, frac_level) × num_sell_rules
     """
 
-    builders: list[int]      # len=R, 0-based index into buy_builders
-    thresholds: list[int]    # len=R, 0-based level index
-    fracs: list[int]         # len=R, 0-based level index
+    # 买入
+    buy_builders: list[int]
+    buy_thresholds: list[int]
+    buy_fracs: list[int]
+
+    # 卖出
+    sell_builders: list[int] = field(default_factory=list)
+    sell_thresholds: list[int] = field(default_factory=list)
+    sell_fracs: list[int] = field(default_factory=list)
 
     @property
-    def n_rules(self) -> int:
-        return len(self.builders)
+    def n_buy_rules(self) -> int:
+        return len(self.buy_builders)
+
+    @property
+    def n_sell_rules(self) -> int:
+        return len(self.sell_builders)
 
     def to_flat(self) -> list[int]:
         """扁平化为一维列表"""
         result = []
-        for i in range(self.n_rules):
-            result.extend([self.builders[i], self.thresholds[i], self.fracs[i]])
+        for i in range(self.n_buy_rules):
+            result.extend([self.buy_builders[i], self.buy_thresholds[i], self.buy_fracs[i]])
+        for i in range(self.n_sell_rules):
+            result.extend([self.sell_builders[i], self.sell_thresholds[i], self.sell_fracs[i]])
         return result
 
     @classmethod
-    def from_flat(cls, flat: list[int], n_rules: int = 5) -> "StrategyEncoding":
+    def from_flat(
+        cls, flat: list[int], n_buy: int = 5, n_sell: int = 3,
+    ) -> "StrategyEncoding":
         """从一维列表恢复"""
-        builders = [flat[i * 3] for i in range(n_rules)]
-        thresholds = [flat[i * 3 + 1] for i in range(n_rules)]
-        fracs = [flat[i * 3 + 2] for i in range(n_rules)]
-        return cls(builders=builders, thresholds=thresholds, fracs=fracs)
+        p = 0
+        buy_builders = [flat[p + i * 3] for i in range(n_buy)]
+        buy_thresholds = [flat[p + i * 3 + 1] for i in range(n_buy)]
+        buy_fracs = [flat[p + i * 3 + 2] for i in range(n_buy)]
+        p = n_buy * 3
+        sell_builders = [flat[p + i * 3] for i in range(n_sell)]
+        sell_thresholds = [flat[p + i * 3 + 1] for i in range(n_sell)]
+        sell_fracs = [flat[p + i * 3 + 2] for i in range(n_sell)]
+        return cls(
+            buy_builders=buy_builders, buy_thresholds=buy_thresholds, buy_fracs=buy_fracs,
+            sell_builders=sell_builders, sell_thresholds=sell_thresholds, sell_fracs=sell_fracs,
+        )
 
-    def to_rule_params(self, ds_cfg: DiscreteSearchConfig) -> tuple[list[str], list[float], list[float]]:
-        """转换为 FastEvaluator 可用的 (builders, thresholds, fracs)"""
-        builder_names = [ds_cfg.buy_builders[i] for i in self.builders]
+    def to_buy_params(self, ds_cfg: DiscreteSearchConfig) -> tuple[list[str], list[float], list[float]]:
+        """转换为 FastEvaluator 买入参数"""
+        builder_names = [ds_cfg.buy_builders[i] for i in self.buy_builders]
         threshold_vals = [i / (ds_cfg.threshold_levels - 1) if ds_cfg.threshold_levels > 1 else 0.0
-                          for i in self.thresholds]
-        frac_vals = [ds_cfg.frac_levels[i] for i in self.fracs]
+                          for i in self.buy_thresholds]
+        frac_vals = [ds_cfg.frac_levels[i] for i in self.buy_fracs]
+        return builder_names, threshold_vals, frac_vals
+
+    def to_sell_params(self, ds_cfg: DiscreteSearchConfig) -> tuple[list[str], list[float], list[float]]:
+        """转换为 FastEvaluator 卖出参数"""
+        if not self.sell_builders:
+            return [], [], []
+        builder_names = [ds_cfg.sell_builders[i] for i in self.sell_builders]
+        threshold_vals = [i / (ds_cfg.threshold_levels - 1) if ds_cfg.threshold_levels > 1 else 0.0
+                          for i in self.sell_thresholds]
+        frac_vals = [ds_cfg.sell_frac_levels[i] for i in self.sell_fracs]
         return builder_names, threshold_vals, frac_vals
 
     def clone(self) -> "StrategyEncoding":
         return StrategyEncoding(
-            builders=list(self.builders),
-            thresholds=list(self.thresholds),
-            fracs=list(self.fracs),
+            buy_builders=list(self.buy_builders),
+            buy_thresholds=list(self.buy_thresholds),
+            buy_fracs=list(self.buy_fracs),
+            sell_builders=list(self.sell_builders),
+            sell_thresholds=list(self.sell_thresholds),
+            sell_fracs=list(self.sell_fracs),
         )
 
 
@@ -115,15 +150,24 @@ class GeneticSearcher:
     # ════════════════════════════════════════════════════════
 
     def _random_strategy(self) -> StrategyEncoding:
-        """生成随机策略"""
-        n_rules = self.ds_cfg.num_buy_rules
-        n_builders = len(self.ds_cfg.buy_builders)
-        builders = [self._rng.randint(0, n_builders - 1) for _ in range(n_rules)]
-        thresholds = [self._rng.randint(0, self.ds_cfg.threshold_levels - 1)
-                      for _ in range(n_rules)]
-        fracs = [self._rng.randint(0, len(self.ds_cfg.frac_levels) - 1)
-                 for _ in range(n_rules)]
-        return StrategyEncoding(builders, thresholds, fracs)
+        """生成随机策略（买入+卖出）"""
+        n_buy = self.ds_cfg.num_buy_rules
+        n_sell = self.ds_cfg.num_sell_rules
+        n_buy_builders = len(self.ds_cfg.buy_builders)
+        n_sell_builders = len(self.ds_cfg.sell_builders)
+
+        buy_builders = [self._rng.randint(0, n_buy_builders - 1) for _ in range(n_buy)]
+        buy_thresholds = [self._rng.randint(0, self.ds_cfg.threshold_levels - 1) for _ in range(n_buy)]
+        buy_fracs = [self._rng.randint(0, len(self.ds_cfg.frac_levels) - 1) for _ in range(n_buy)]
+
+        sell_builders = [self._rng.randint(0, n_sell_builders - 1) for _ in range(n_sell)]
+        sell_thresholds = [self._rng.randint(0, self.ds_cfg.threshold_levels - 1) for _ in range(n_sell)]
+        sell_fracs = [self._rng.randint(0, len(self.ds_cfg.sell_frac_levels) - 1) for _ in range(n_sell)]
+
+        return StrategyEncoding(
+            buy_builders=buy_builders, buy_thresholds=buy_thresholds, buy_fracs=buy_fracs,
+            sell_builders=sell_builders, sell_thresholds=sell_thresholds, sell_fracs=sell_fracs,
+        )
 
     def _evaluate_strategy_wf(
         self,
@@ -135,25 +179,20 @@ class GeneticSearcher:
         Returns:
             (window_stats_list, wf_score)
         """
-        builder_names, threshold_vals, frac_vals = encoding.to_rule_params(self.ds_cfg)
+        buy_names, buy_thresh, buy_fracs = encoding.to_buy_params(self.ds_cfg)
+        sell_names, sell_thresh, sell_fracs = encoding.to_sell_params(self.ds_cfg)
         all_stats: list[WindowStats] = []
 
         for w in windows:
-            # 训练期: 计算现金基准
             train_ind = self.wf_manager.build_matrices(w, "train")
-            train_price = self.wf_manager.get_price_matrix(w, "train")
-
-            # 测试期: 评估
             test_ind = self.wf_manager.build_matrices(w, "test")
             test_price = self.wf_manager.get_price_matrix(w, "test")
             T_test = test_ind.shape[0]
 
             if T_test == 0 or test_ind.shape[1] == 0:
-                # 空窗口，跳过
                 continue
 
-            # 现金基准线（从训练期延伸到测试期）
-            rf_daily = 0.02 / 252.0  # 简化: A股无风险利率固定2%
+            rf_daily = 0.02 / 252.0
             train_end_cash = self.evaluator.initial_cash * (1.0 + rf_daily) ** train_ind.shape[0]
             cash_baseline = np.cumsum(
                 np.ones(T_test) * train_end_cash * rf_daily,
@@ -161,11 +200,11 @@ class GeneticSearcher:
 
             stats = self.evaluator.evaluate(
                 test_ind, test_price, cash_baseline,
-                builder_names, threshold_vals, frac_vals,
+                buy_names, buy_thresh, buy_fracs,
+                sell_names, sell_thresh, sell_fracs,
             )
             all_stats.append(stats)
 
-        # 计算 Walk-Forward 得分
         wf_score = self._compute_wf_score(all_stats)
         return all_stats, wf_score
 
@@ -278,38 +317,71 @@ class GeneticSearcher:
     # ════════════════════════════════════════════════════════
 
     def _crossover(self, parent1: StrategyEncoding, parent2: StrategyEncoding) -> StrategyEncoding:
-        """均匀交叉：每条规则随机从父1或父2继承"""
+        """均匀交叉：每条规则（买入+卖出）随机从父1或父2继承"""
         child = parent1.clone()
-        for i in range(parent1.n_rules):
+
+        # 买入规则交叉
+        for i in range(parent1.n_buy_rules):
             if self._rng.random() < 0.5:
-                child.builders[i] = parent2.builders[i]
-                child.thresholds[i] = parent2.thresholds[i]
-                child.fracs[i] = parent2.fracs[i]
+                child.buy_builders[i] = parent2.buy_builders[i]
+                child.buy_thresholds[i] = parent2.buy_thresholds[i]
+                child.buy_fracs[i] = parent2.buy_fracs[i]
+
+        # 卖出规则交叉
+        for i in range(parent1.n_sell_rules):
+            if self._rng.random() < 0.5:
+                child.sell_builders[i] = parent2.sell_builders[i]
+                child.sell_thresholds[i] = parent2.sell_thresholds[i]
+                child.sell_fracs[i] = parent2.sell_fracs[i]
+
         return child
 
     def _mutate(self, encoding: StrategyEncoding) -> StrategyEncoding:
         """变异：随机改变某条规则的某个维度"""
         mutant = encoding.clone()
-        n_builders = len(self.ds_cfg.buy_builders)
+        n_buy_builders = len(self.ds_cfg.buy_builders)
+        n_sell_builders = len(self.ds_cfg.sell_builders)
 
-        for i in range(mutant.n_rules):
+        # 买入规则变异
+        for i in range(mutant.n_buy_rules):
             if self._rng.random() < self.cfg.mutation_builder_rate:
-                mutant.builders[i] = self._rng.randint(0, n_builders - 1)
+                mutant.buy_builders[i] = self._rng.randint(0, n_buy_builders - 1)
 
             if self._rng.random() < self.cfg.mutation_rate:
                 step = self._rng.randint(-self.cfg.mutation_threshold_step,
                                          self.cfg.mutation_threshold_step)
-                mutant.thresholds[i] = max(0, min(
+                mutant.buy_thresholds[i] = max(0, min(
                     self.ds_cfg.threshold_levels - 1,
-                    mutant.thresholds[i] + step,
+                    mutant.buy_thresholds[i] + step,
                 ))
 
             if self._rng.random() < self.cfg.mutation_rate:
                 step = self._rng.randint(-self.cfg.mutation_frac_step,
                                          self.cfg.mutation_frac_step)
-                mutant.fracs[i] = max(0, min(
+                mutant.buy_fracs[i] = max(0, min(
                     len(self.ds_cfg.frac_levels) - 1,
-                    mutant.fracs[i] + step,
+                    mutant.buy_fracs[i] + step,
+                ))
+
+        # 卖出规则变异
+        for i in range(mutant.n_sell_rules):
+            if self._rng.random() < self.cfg.mutation_builder_rate:
+                mutant.sell_builders[i] = self._rng.randint(0, n_sell_builders - 1)
+
+            if self._rng.random() < self.cfg.mutation_rate:
+                step = self._rng.randint(-self.cfg.mutation_threshold_step,
+                                         self.cfg.mutation_threshold_step)
+                mutant.sell_thresholds[i] = max(0, min(
+                    self.ds_cfg.threshold_levels - 1,
+                    mutant.sell_thresholds[i] + step,
+                ))
+
+            if self._rng.random() < self.cfg.mutation_rate:
+                step = self._rng.randint(-self.cfg.mutation_frac_step,
+                                         self.cfg.mutation_frac_step)
+                mutant.sell_fracs[i] = max(0, min(
+                    len(self.ds_cfg.sell_frac_levels) - 1,
+                    mutant.sell_fracs[i] + step,
                 ))
 
         return mutant

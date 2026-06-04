@@ -300,16 +300,19 @@ class TestGeneticSearcher:
         from src.analysis.genetic_searcher import StrategyEncoding
 
         enc = StrategyEncoding(
-            builders=[0, 1, 2, 3, 4],
-            thresholds=[5, 2, 7, 0, 9],
-            fracs=[0, 1, 2, 3, 4],
+            buy_builders=[0, 1, 2, 3, 4],
+            buy_thresholds=[5, 2, 7, 0, 9],
+            buy_fracs=[0, 1, 2, 3, 4],
+            sell_builders=[0, 1, 1],
+            sell_thresholds=[2, 3, 4],
+            sell_fracs=[0, 1, 2],
         )
         flat = enc.to_flat()
-        assert len(flat) == 15  # 5 rules × 3 dims
+        assert len(flat) == 24  # 5 buy + 3 sell = 8 rules × 3 dims
 
-        decoded = StrategyEncoding.from_flat(flat)
-        assert decoded.builders == enc.builders
-        assert decoded.thresholds == enc.thresholds
+        decoded = StrategyEncoding.from_flat(flat, n_buy=5, n_sell=3)
+        assert decoded.buy_builders == enc.buy_builders
+        assert decoded.sell_builders == enc.sell_builders
 
     def test_to_rule_params(self):
         """编码 → FastEvaluator 参数"""
@@ -321,17 +324,28 @@ class TestGeneticSearcher:
             "threshold_levels": 10,
             "frac_levels": [0.05, 0.10],
             "num_buy_rules": 3,
+            "sell_builders": ["sell_bollinger_signal", "none"],
+            "sell_frac_levels": [0.20, 0.50],
+            "num_sell_rules": 2,
         })
 
         enc = StrategyEncoding(
-            builders=[0, 1, 1],
-            thresholds=[3, 0, 9],
-            fracs=[0, 1, 0],
+            buy_builders=[0, 1, 1],
+            buy_thresholds=[3, 0, 9],
+            buy_fracs=[0, 1, 0],
+            sell_builders=[0, 1],
+            sell_thresholds=[5, 2],
+            sell_fracs=[0, 1],
         )
-        names, vals, fracs = enc.to_rule_params(cfg)
-        assert names == ["bollinger_signal", "none", "none"]
-        assert len(vals) == 3
-        assert fracs == [0.05, 0.10, 0.05]
+        buy_names, buy_vals, buy_fracs = enc.to_buy_params(cfg)
+        assert buy_names == ["bollinger_signal", "none", "none"]
+        assert len(buy_vals) == 3
+        assert buy_fracs == [0.05, 0.10, 0.05]
+
+        sell_names, sell_vals, sell_fracs = enc.to_sell_params(cfg)
+        assert sell_names == ["sell_bollinger_signal", "none"]
+        assert len(sell_vals) == 2
+        assert sell_fracs == [0.20, 0.50]
 
     def test_crossover(self, synthetic_stocks_data, constraints_config):
         """交叉操作不抛异常"""
@@ -353,7 +367,7 @@ class TestGeneticSearcher:
         p2 = searcher._random_strategy()
         child = searcher._crossover(p1, p2)
 
-        assert len(child.builders) == constraints_config.discrete_search.num_buy_rules
+        assert len(child.buy_builders) == constraints_config.discrete_search.num_buy_rules
 
     def test_mutation(self, synthetic_stocks_data, constraints_config):
         """变异操作不抛异常"""
@@ -372,7 +386,7 @@ class TestGeneticSearcher:
         enc = searcher._random_strategy()
         mutated = searcher._mutate(enc)
 
-        assert len(mutated.builders) == len(enc.builders)
+        assert len(mutated.buy_builders) == len(enc.buy_builders)
 
 
 # ════════════════════════════════════════════════════════
