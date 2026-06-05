@@ -1,10 +1,14 @@
 [project]
 name = "stock-quant-system"
-version = "1.15.0"
+version = "1.17.1"
 description = "A股/美股/港股量化监控系统: 策略搜索优化器 + 日报/早盘简报 + 健康服务器"
 readme = "README.md"
 license = {text = "BSD-3-Clause"}
 requires-python = ">=3.8"
+authors = [
+    {name = "Saltflow", email = "lizx21@mails.tsinghua.edu.cn"}
+]
+repository = "https://github.com/Saltflow/trade_eyes_keeper"
 dependencies = [
     "pandas>=2.0.0",
     "numpy>=1.24.0",

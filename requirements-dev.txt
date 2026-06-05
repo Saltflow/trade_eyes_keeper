@@ -1,0 +1,5 @@
+# 开发依赖
+pytest>=7.4.0
+pytest-mock>=3.11.0
+pytest-cov>=4.0.0
+ruff>=0.4.0  # 代码格式化和检查

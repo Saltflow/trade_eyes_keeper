@@ -4,6 +4,8 @@
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://python.org)
 [![Version](https://img.shields.io/badge/version-1.17.1-green)]()
 
+> **English**: A cross-market quantitative monitoring system for A-shares, US stocks, and HK stocks. Features automatic strategy optimization (Bayesian + genetic search), daily xelatex PDF reports with signal scanning + backtesting analysis, and multi-channel notifications (Email / Telegram / Feishu). Mean-reversion oriented with MA60/WMA anchor deviation alerts.
+
 A股 / 美股 / 港股量化监控系统。策略搜索优化器自动发现最优交易信号，每日 xelatex LaTeX PDF 日报含信号扫描 + 回测分析 + 公式方法论附录，支持 HTML 交互报告链接与 Telegram/飞书多渠道通知。
 
 ## 核心功能
@@ -69,7 +71,8 @@ src/
 | `python main.py` | 启动定时调度器 (cron) |
 | `python main.py --once` | 单次收盘日报 |
 | `python main.py --brief [id]` | 早盘/收盘简报 (`morning_snapshot` / `afternoon_snapshot`) |
-| `python main.py --optimize` | 策略搜索优化 |
+| `python main.py --optimize` | 策略搜索优化 V1 (贝叶斯，稳定) |
+| `python main.py --optimize-v2` | 策略搜索优化 V2 (遗传搜索+Walk-Forward，实验性) |
 | `python main.py --health-server` | 仅启动健康服务器 |
 
 ## 配置
@@ -98,6 +101,16 @@ pytest tests/ --cov=src                 # 覆盖率报告
 pytest tests/test_import_smoke.py       # 模块导入完整性
 pytest tests/test_security.py           # 安全测试
 ```
+
+## Roadmap
+
+| 版本 | 状态 | 内容 |
+|------|------|------|
+| **v1.17.1** | ✅ 当前 master | 数据源清理（Eastmoney 删除）+ QQ 实时行情 + 优化器 P0 修复 + 布林带列名统一 |
+| **v1.18-beta** | 🔄 开发中 | 多渠道通知统一配置（Telegram + 飞书 + 邮件，YAML 驱动） |
+| **v1.18-beta** | 🔄 开发中 | 策略优化器 V2（Walk-Forward 6窗口 + 遗传搜索 + numba 向量化，实验性） |
+
+> Beta 分支功能稳定后将合并入 master 发布。
 
 ## 许可
 
