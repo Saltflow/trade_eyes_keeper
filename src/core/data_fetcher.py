@@ -275,13 +275,14 @@ class StockDataFetcher:
             logger.warning(f"股票 {stock_code} 未获取到估值指标数据")
             return None
 
-    def fetch_to_session(self, session, session_manager=None):
+    def fetch_to_session(self, session, session_manager=None, realtime_mode=False):
         """
         获取股票数据并存入Session（新数据流）
 
         Args:
             session: SessionContext对象
-            session_manager: SessionManager对象（可选，用于更新session）
+            session_manager: SessionManager对象（可选）
+            realtime_mode: True=简报/盘中模式，用实时行情补充当日缺失数据
         """
         if session_manager is None:
             from ..session.session_manager import SessionManager
@@ -341,6 +342,20 @@ class StockDataFetcher:
                                     f"股票 {stock_code} 最新数据日期为 "
                                     f"{latest_date.date()}，不是今天 {today}"
                                 )
+                                # 简报/盘中模式：用 QQ 实时行情补充当日数据
+                                if realtime_mode:
+                                    rt = self.web_crawler.fetch_realtime_quote(stock_code)
+                                    if rt:
+                                        logger.info(
+                                            f"股票 {stock_code} 用QQ实时行情补充: "
+                                            f"close={rt['close']:.2f} open={rt['open']:.2f}"
+                                        )
+                                        # 更新 latest_data 的价格字段
+                                        for field in ("open", "close", "high", "low", "volume", "amount"):
+                                            if rt.get(field) is not None:
+                                                latest_data[field] = rt[field]
+                                        # 更新日期为今天
+                                        latest_data["date"] = pd.Timestamp(rt["date"])
 
                     # 获取基本面数据
                     fundamental_data = self._fetch_fundamental_data(stock_code)

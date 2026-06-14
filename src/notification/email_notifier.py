@@ -1551,7 +1551,7 @@ class EmailNotifier(BaseNotifier):
 
         for _, row in stock_data.iterrows():
             code = row.get("stock_code", "")
-            name = row.get("stock_name", code)
+            name = str(row.get("stock_name") or code)
             open_price = row.get("open")
             close_price = row.get("close")
 
@@ -1598,10 +1598,26 @@ class EmailNotifier(BaseNotifier):
                 anchor_str = f"{anchor_val:.2f}"
                 name_str = anchor_name
             else:
-                anchor_str = "-"
-                dev_str = "-"
-                dev_color = ""
-                name_str = "-"
+                # 简报用 ma60 兜底：不在告警区间也显示偏离
+                ma60_val = anchors.get("ma60") if anchors else row.get("ma60")
+                if (
+                    close_price is not None
+                    and not pd.isna(close_price)
+                    and ma60_val is not None
+                    and not pd.isna(ma60_val)
+                    and float(ma60_val) > 0
+                ):
+                    ma60_val = float(ma60_val)
+                    dev_pct = (float(close_price) - ma60_val) / ma60_val * 100
+                    anchor_str = f"{ma60_val:.2f}"
+                    dev_str = f"{dev_pct:+.2f}%"
+                    dev_color = "#27ae60" if dev_pct >= 0 else "#c0392b"
+                    name_str = "ma60"
+                else:
+                    anchor_str = "-"
+                    dev_str = "-"
+                    dev_color = ""
+                    name_str = "-"
 
             html_row = (
                 f'<tr>'

@@ -307,9 +307,9 @@ def run_brief_report(report_id: str = "morning_snapshot"):
         session = session_manager.create_session(config)
         logger.info(f"简报Session创建: {session.session_id}")
 
-        # 只获取股票数据，跳过 LLM/财报/回测/投资组合
+        # 只获取股票数据，跳过 LLM/财报/回测/投资组合（使用实时行情模式）
         fetcher = StockDataFetcher(config)
-        fetcher.fetch_to_session(session, session_manager)
+        fetcher.fetch_to_session(session, session_manager, realtime_mode=True)
 
         if not session.stocks_data:
             logger.warning("简报：Session 中无股票数据")
