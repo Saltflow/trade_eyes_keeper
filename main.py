@@ -641,6 +641,13 @@ def main():
             from src.health_server import start_health_server
 
             start_health_server()
+        elif sys.argv[1] == "--interactive":
+            # Telegram 交互 Bot 模式
+            logger.info("启动 Telegram 交互 Bot")
+            from src.interactive.telegram_bot import TelegramBot
+
+            bot = TelegramBot(config)
+            bot.run()
         elif sys.argv[1] == "--help":
             # 显示帮助信息
             print("股票量化系统使用说明:")
@@ -651,6 +658,7 @@ def main():
             print("  python main.py --optimize              # 策略参数贝叶斯优化搜索 (V1)")
             print("  python main.py --optimize-v2           # 策略参数遗传搜索 + Walk-Forward (V2)")
             print("  python main.py --health-server # 仅启动健康服务器")
+            print("  python main.py --interactive   # 启动 Telegram 交互 Bot")
             print("  python main.py --help       # 显示此帮助信息")
             print("\n健康服务器端口等配置见 config/config.yaml → health_server")
             return
