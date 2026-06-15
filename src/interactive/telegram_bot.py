@@ -42,8 +42,18 @@ class TelegramBot:
             env_chat = os.getenv("TELEGRAM_CHAT_ID", "")
             allowed = [env_chat] if env_chat else []
         self.allowed_chat_ids = set(str(cid) for cid in allowed if cid)
-        self.polling_interval = ic.get("polling_interval", 2)  # type: ignore[assignment]
+        self.polling_interval = ic.get("polling_interval", 2)
         self._running = False
+
+        # 代理配置（中国大陆服务器访问 Telegram API 需要）
+        proxy_url = (
+            ic.get("proxy")
+            or os.getenv("TELEGRAM_PROXY")
+            or os.getenv("HTTPS_PROXY")
+            or os.getenv("https_proxy")
+            or ""
+        )
+        self._proxies = {"https": proxy_url} if proxy_url else None
 
         self.gate = SecurityGate(self.allowed_chat_ids)
         self.rate_limiter = RateLimiter(
@@ -54,7 +64,11 @@ class TelegramBot:
         """调用 Telegram Bot API。"""
         url = f"{TELEGRAM_API}/bot{self.bot_token}/{method}"
         try:
-            resp = requests.post(url, data=params, timeout=15)
+            resp = requests.post(
+                url, data=params,
+                timeout=30 if method == "getUpdates" else 15,
+                proxies=self._proxies,
+            )
             if resp.status_code != 200:
                 logger.error(f"Telegram API {method} HTTP {resp.status_code}")
                 return None
