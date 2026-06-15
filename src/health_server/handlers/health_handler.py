@@ -383,6 +383,8 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
         try:
             if self.path == "/update-watchlist":
                 self.handle_watchlist_update()
+            elif self.path == "/feishu/events":
+                self._handle_feishu_event()
             else:
                 self.send_error(404, "Not Found")
         except Exception as e:
@@ -999,3 +1001,26 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
             lines.append(f"{ip}: {data['recent_requests']}/60 请求 {status}")
 
         return "<br>".join(lines)
+
+    def _handle_feishu_event(self):
+        """处理飞书事件回调 POST /feishu/events。"""
+        import json
+        import yaml
+        from pathlib import Path
+        from src.interactive.feishu_app import FeishuApp
+        from src.interactive.feishu_handler import handle_feishu_event
+
+        config_path = Path("config/config.yaml")
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        content_length = int(self.headers.get("Content-Length", 0))
+        raw_body = self.rfile.read(content_length)
+        body = json.loads(raw_body.decode("utf-8"))
+
+        app = FeishuApp(config)
+        status, resp = handle_feishu_event(app, dict(self.headers), body)
+
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(json.dumps(resp, ensure_ascii=False).encode("utf-8"))
