@@ -2,11 +2,13 @@
 飞书通知器 — 交互卡片消息推送
 """
 
-import json
 import logging
 import os
-import requests
+import unicodedata
 from datetime import datetime
+
+import pandas as pd
+import requests
 
 from .base import BaseNotifier
 
@@ -65,34 +67,19 @@ class FeishuNotifier(BaseNotifier):
     # ── 接口实现 ───────────────────────────────
 
     def send_from_session(self, session) -> None:
-        from .email_notifier import EmailNotifier
-        email = EmailNotifier.__new__(EmailNotifier)
-        email.__init__({"email": {}})  # dummy
-        body = email._build_email_body(
-            session.get_alerts_as_dicts(),
-            session.get_all_dataframe(),
-            announcements=getattr(session, "announcements", {}),
-            signal_scan=getattr(session, "signal_scan", None),
-            backtest=getattr(session, "backtest", None),
-            portfolio_results=getattr(session, "portfolio_results", None),
-        )
+        stock_data = session.get_all_dataframe()
+        alerts = session.get_alerts_as_dicts()
         title = f"股票提醒 - {datetime.now().strftime('%Y-%m-%d')}"
-        self._send(title, _html_to_markdown(body))
+        for label, body in self._build_report_sections(
+            stock_data, alerts=alerts, alert_only=True
+        ):
+            self._send(f"{title} · {label}", body)
 
     def send_daily_report_from_session(self, session) -> None:
-        from .email_notifier import EmailNotifier
-        email = EmailNotifier.__new__(EmailNotifier)
-        email.__init__({"email": {}})
-        body = email._build_email_body(
-            [],
-            session.get_all_dataframe(),
-            announcements=getattr(session, "announcements", {}),
-            signal_scan=getattr(session, "signal_scan", None),
-            backtest=getattr(session, "backtest", None),
-            portfolio_results=getattr(session, "portfolio_results", None),
-        )
+        stock_data = session.get_all_dataframe()
         title = f"股票日报 - {datetime.now().strftime('%Y-%m-%d')}"
-        self._send(title, _html_to_markdown(body))
+        for label, body in self._build_report_sections(stock_data):
+            self._send(f"{title} · {label}", body)
 
     def send_brief_report(self, session, report_config: dict) -> None:
         label = report_config.get("label", "简报")
@@ -100,7 +87,11 @@ class FeishuNotifier(BaseNotifier):
         today = datetime.now()
         rows = self._build_brief_rows(stock_data, today)
         title = f"{label} - {today.strftime('%Y-%m-%d')}"
-        body = f"**{label}** | {today.strftime('%H:%M')}\n\n{rows}" if rows else f"**{label}** | 无活跃标的"
+        body = (
+            f"**{label}** | {today.strftime('%H:%M')}\n\n{rows}"
+            if rows
+            else f"**{label}** | 无活跃标的"
+        )
         self._send(title, body)
 
     def send_deployment_notification(
@@ -112,6 +103,89 @@ class FeishuNotifier(BaseNotifier):
         return self._send(title, body)
 
     # ── 辅助 ──────────────────────────────────
+
+    @staticmethod
+    def _build_report_sections(stock_data, alerts=None, alert_only: bool = False) -> list:
+        """构建飞书日报分段，按价格/基本面/技术指标拆成多张卡片。"""
+        today = datetime.now()
+        all_entries = _collect_report_entries(stock_data, today)
+        alert_codes = _extract_alert_codes(alerts or [])
+        entries = all_entries
+
+        if alert_only:
+            entries = [e for e in all_entries if e["code"] in alert_codes]
+            title = "**告警标的**"
+            empty_text = "本次没有可展示的告警标的。"
+        else:
+            title = "**监控日报**"
+            empty_text = "本次没有可展示的活跃标的。"
+
+        summary = [f"{title} | {today.strftime('%Y-%m-%d %H:%M')}", ""]
+        summary.append(f"活跃标的: **{len(entries)}**")
+        if alert_codes:
+            summary.append(f"告警标的: **{len(alert_codes)}**")
+
+        if not entries:
+            summary.extend(["", empty_text])
+            return [("摘要", "\n".join(summary))]
+
+        worst = min(entries, key=lambda x: x["dev_sort"])
+        best = max(entries, key=lambda x: x["dev_sort"])
+        summary.append(
+            f"最大负偏离: `{worst['code']}` {worst['name']} {worst['dev']}"
+        )
+        summary.append(
+            f"最大正偏离: `{best['code']}` {best['name']} {best['dev']}"
+        )
+        summary.extend(["", "**价格 / 锚点偏离**"])
+        summary.append(
+            _build_plain_table(
+                entries,
+                [
+                    ("code", "代码"),
+                    ("name", "名称"),
+                    ("close", "收盘"),
+                    ("anchor", "锚点"),
+                    ("dev", "偏离"),
+                ],
+            )
+        )
+
+        sections = [("价格", "\n".join(summary))]
+
+        fundamental = ["**基本面**", ""]
+        fundamental.append(
+            _build_plain_table(
+                entries,
+                [
+                    ("code", "代码"),
+                    ("div_y", "息%"),
+                    ("pe", "PE"),
+                    ("pb", "PB"),
+                    ("roe", "ROE%"),
+                ],
+            )
+        )
+        sections.append(("基本面", "\n".join(fundamental)))
+
+        if _has_technical_data(entries):
+            technical = ["**技术指标**", ""]
+            technical.append(
+                _build_plain_table(
+                    entries,
+                    [
+                        ("code", "代码"),
+                        ("rsi", "RSI"),
+                        ("macd_h", "MACD_H"),
+                        ("vol_r", "VOL比"),
+                        ("adx", "ADX"),
+                        ("boll", "布林%"),
+                    ],
+                )
+            )
+            sections.append(("技术", "\n".join(technical)))
+
+        return sections
 
     @staticmethod
     def _build_brief_rows(stock_data, today) -> str:
@@ -152,11 +226,172 @@ class FeishuNotifier(BaseNotifier):
         entries.sort(key=lambda x: x[0])
         if not entries:
             return ""
-        lines = ["```", f"{'代码':<10} {'收盘':>8} {'偏离':>10}", "-" * 30]
-        for _, code, close_str, dev_str in entries:
-            lines.append(f"{code:<10} {close_str:>8} {dev_str:>10}")
-        lines.append("```")
+        headers = ["代码", "收盘", "偏离"]
+        rows = [
+            [str(code), close_str, dev_str]
+            for _, code, close_str, dev_str in entries
+        ]
+        widths = _calc_column_widths(headers, rows)
+        lines = [_format_table_row(headers, widths)]
+        lines.append(_format_table_row(["-" * width for width in widths], widths))
+        for row in rows:
+            lines.append(_format_table_row(row, widths))
         return "\n".join(lines)
+
+
+def _collect_report_entries(stock_data, today) -> list[dict]:
+    """从监控 DataFrame 提取飞书日报行，按锚点偏离升序排序。"""
+    from .email_notifier import EmailNotifier
+
+    entries = []
+    today_date = today.date()
+    for _, row in stock_data.iterrows():
+        data_date = row.get("date")
+        if data_date is None or pd.isna(data_date):
+            continue
+        date_value = pd.Timestamp(str(data_date)[:10]).date()
+        if not 0 <= (today_date - date_value).days <= 3:
+            continue
+
+        close_price = row.get("close")
+        anchors = {}
+        for anchor_name in ("ma60", "wma20", "wma30", "wma50"):
+            anchor_value = row.get(anchor_name)
+            if anchor_value is not None and not pd.isna(anchor_value):
+                anchors[anchor_name] = float(anchor_value)
+
+        best_anchor = None
+        dev_pct = None
+        if close_price is not None and not pd.isna(close_price) and anchors:
+            best_anchor = EmailNotifier._pick_best_anchor(float(close_price), anchors)
+        if best_anchor:
+            anchor_name, _, dev_pct = best_anchor
+        else:
+            anchor_name = "-"
+
+        code = str(row.get("stock_code", ""))
+        name = _short_text(str(row.get("stock_name", code)), 10)
+        entries.append({
+            "code": code,
+            "name": name,
+            "close": _fmt_num(close_price),
+            "anchor": anchor_name,
+            "dev": f"{dev_pct:+.2f}%" if dev_pct is not None else "-",
+            "dev_sort": dev_pct if dev_pct is not None else float("inf"),
+            "div_y": _fmt_num(row.get("dividend_yield")),
+            "pe": _fmt_num(row.get("pe_ratio")),
+            "pb": _fmt_num(row.get("pb_ratio")),
+            "roe": _fmt_num(row.get("roe")),
+            "rsi": _fmt_num(row.get("rsi"), ".1f"),
+            "macd_h": _fmt_num(row.get("macd_hist"), ".3f"),
+            "vol_r": _fmt_num(row.get("vol_ratio")),
+            "adx": _fmt_num(row.get("adx"), ".1f"),
+            "boll": _fmt_num(row.get("boll_pct_b")),
+        })
+
+    entries.sort(key=lambda x: x["dev_sort"])
+    return entries
+
+
+def _extract_alert_codes(alerts) -> set[str]:
+    codes = set()
+    for alert in alerts:
+        code = alert.get("stock_code") or alert.get("code")
+        if code:
+            codes.add(str(code))
+    return codes
+
+
+def _has_technical_data(entries: list[dict]) -> bool:
+    fields = ("rsi", "macd_h", "vol_r", "adx", "boll")
+    return any(
+        any(entry.get(field) not in (None, "-") for field in fields)
+        for entry in entries
+    )
+
+
+def _build_plain_table(entries: list[dict], columns: list[tuple[str, str]]) -> str:
+    """构建飞书可读表格。
+
+    飞书群机器人卡片支持粗体/标题，但不渲染 Markdown 管道表格或
+    fenced code block，因此这里直接输出空格对齐的纯文本表格。
+    """
+    rows = [
+        [_escape_cell(str(entry.get(key, "-"))) for key, _ in columns]
+        for entry in entries
+    ]
+    headers = [title for _, title in columns]
+    widths = _calc_column_widths(headers, rows)
+
+    lines = [_format_table_row(headers, widths)]
+    lines.append(_format_table_row(["-" * width for width in widths], widths))
+    for row in rows:
+        lines.append(_format_table_row(row, widths))
+    return "\n".join(lines)
+
+
+def _calc_column_widths(headers: list[str], rows: list[list[str]]) -> list[int]:
+    widths = [_display_width(header) for header in headers]
+    for row in rows:
+        for idx, cell in enumerate(row):
+            widths[idx] = max(widths[idx], _display_width(cell))
+    return [min(max(width, 4), 14) for width in widths]
+
+
+def _format_table_row(values: list[str], widths: list[int]) -> str:
+    padded = [
+        _pad_display_width(value, widths[idx])
+        for idx, value in enumerate(values)
+    ]
+    return "  ".join(padded)
+
+
+def _pad_display_width(text: str, width: int) -> str:
+    shortened = _truncate_display_width(text, width)
+    padding = max(width - _display_width(shortened), 0)
+    return shortened + " " * padding
+
+
+def _truncate_display_width(text: str, max_width: int) -> str:
+    if _display_width(text) <= max_width:
+        return text
+    ellipsis = "…"
+    target = max(max_width - _display_width(ellipsis), 1)
+    result = ""
+    used = 0
+    for char in text:
+        char_width = _char_display_width(char)
+        if used + char_width > target:
+            break
+        result += char
+        used += char_width
+    return result + ellipsis
+
+
+def _display_width(text: str) -> int:
+    return sum(_char_display_width(char) for char in text)
+
+
+def _char_display_width(char: str) -> int:
+    if unicodedata.east_asian_width(char) in {"F", "W"}:
+        return 2
+    return 1
+
+
+def _fmt_num(value, spec=".2f") -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    return f"{float(value):{spec}}"
+
+
+def _short_text(text: str, max_len: int) -> str:
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1] + "…"
+
+
+def _escape_cell(text: str) -> str:
+    return text.replace("|", "/").replace("\n", " ")
 
 
 def _build_interactive_card(title: str, body: str) -> dict:
@@ -173,29 +408,3 @@ def _build_interactive_card(title: str, body: str) -> dict:
             }
         ],
     }
-
-
-def _html_to_markdown(html: str) -> str:
-    """HTML → 飞书卡片兼容的 Markdown（去标签 + 保留换行结构）"""
-    import re
-    text = html
-    # 去掉 style 属性
-    text = re.sub(r'\s*style="[^"]*"', "", text)
-    # 基本转换
-    text = text.replace("<br/>", "\n").replace("<br>", "\n")
-    text = re.sub(r"</?strong>", "**", text)
-    text = re.sub(r"</?b>", "**", text)
-    text = re.sub(r"</?em>", "*", text)
-    text = re.sub(r"</?h[1-6][^>]*>", "\n\n**", text)
-    # 表格 → 紧凑代码块
-    text = re.sub(r"</tr>", "\n", text)
-    text = re.sub(r"<t[dh][^>]*>", " ", text)
-    text = re.sub(r"</t[dh]>", "", text)
-    # 去掉所有剩余 HTML 标签
-    text = re.sub(r"<[^>]+>", "", text)
-    # 合并多余空行
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    # 截断过长的卡片内容（飞书限制）
-    if len(text) > 28000:
-        text = text[:28000] + "\n\n... (内容过长已截断)"
-    return text.strip()

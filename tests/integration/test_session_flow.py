@@ -43,7 +43,7 @@ class TestSessionFlow:
     def test_fetch_to_session(self):
         """测试fetch_to_session方法"""
         from src.session.session_manager import SessionManager
-        from data_fetcher import StockDataFetcher
+        from src.core.data_fetcher import StockDataFetcher
 
         config = {
             "stocks": ["000001"],  # 只测试一只股票，节省时间
@@ -102,8 +102,8 @@ class TestSessionFlow:
     def test_email_notifier_from_session(self):
         """测试email_notifier的send_from_session方法"""
         from src.session.session_manager import SessionManager
-        from email_notifier import EmailNotifier
-        from models.schemas import AlertStock
+        from src.notification.email_notifier import EmailNotifier
+        from src.models.schemas import AlertStock
 
         config = {
             "stocks": [],
@@ -121,6 +121,7 @@ class TestSessionFlow:
         test_alert = AlertStock(
             stock_code="000001",
             low_price=9.8,
+            price=9.8,
             ma60=10.2,
             price_difference=0.4,
             percentage_difference=3.92,
