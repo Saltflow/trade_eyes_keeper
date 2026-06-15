@@ -1,6 +1,7 @@
 """Telegram 交互机器人 — 轮询 + 命令分发。"""
 
 import logging
+import os
 import time
 from typing import Optional
 
@@ -35,10 +36,12 @@ class TelegramBot:
 
     def __init__(self, config: dict):
         ic = config.get("interactive", {}).get("telegram", {})
-        self.bot_token = ic.get("bot_token", "")
-        self.allowed_chat_ids = set(
-            str(cid) for cid in ic.get("allowed_chat_ids", [])
-        )
+        self.bot_token = ic.get("bot_token") or os.getenv("TELEGRAM_BOT_TOKEN", "")
+        allowed = ic.get("allowed_chat_ids", [])
+        if not allowed or allowed == [""]:
+            env_chat = os.getenv("TELEGRAM_CHAT_ID", "")
+            allowed = [env_chat] if env_chat else []
+        self.allowed_chat_ids = set(str(cid) for cid in allowed if cid)
         self.polling_interval = ic.get("polling_interval", 2)  # type: ignore[assignment]
         self._running = False
 
