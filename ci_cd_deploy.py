@@ -398,7 +398,6 @@ def _pre_deploy_checks(dry_run):
         "-p", "no:capture", "-q",
         "--tb=short",
         timeout=120,
-        check=False,  # 不抛异常，手工检查返回值
     )
     # smoke 结果通过查看上一次 run 的退出码间接判断（非严格阻断）
     ok2, smoke_out, smoke_err = _run_local(
