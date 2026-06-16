@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 
 from .command_parser import (
     AddCommand,
@@ -105,6 +106,15 @@ def handle_feishu_event(app: FeishuApp, headers: dict, body: dict) -> tuple[int,
     cmd = parse_command(text)
     logger.info(f"飞书命令: chat={chat_id} text={text!r} cmd={cmd.cmd_type.name}")
 
+    # 回测异步执行（避免 HTTP 超时吞结果）
+    if isinstance(cmd, BacktestCommand):
+        threading.Thread(
+            target=_run_backtest_async,
+            args=(app, chat_id, cmd),
+            daemon=True,
+        ).start()
+        return 200, {"msg": "ok"}
+
     # 6. 执行 + 回复
     response = _dispatch(cmd)
     ok, msg = app.send_message(chat_id, response)
@@ -126,8 +136,18 @@ def _dispatch(cmd) -> str:
         return handle_remove(cmd.codes)
     if isinstance(cmd, SaveCommand):
         return handle_save()
-    if isinstance(cmd, BacktestCommand):
-        return handle_backtest(cmd.stock_code, cmd.start_date, cmd.end_date)
     if isinstance(cmd, ErrorCommand):
         return f"❌ {cmd.message}"
     return "❌ 未知命令。发送 /help 查看可用命令。"
+
+
+def _run_backtest_async(app, chat_id, cmd):
+    """后台线程执行回测，先发提示，跑完发结果。"""
+    logger.info(f"异步回测开始: {cmd.stock_code} {cmd.start_date}~{cmd.end_date}")
+    app.send_message(chat_id, f"⏳ 正在回测 <code>{cmd.stock_code}</code>…")
+    result = handle_backtest(cmd.stock_code, cmd.start_date, cmd.end_date)
+    ok, msg = app.send_message(chat_id, result)
+    if ok:
+        logger.info(f"异步回测完成: {cmd.stock_code} len={len(result)}")
+    else:
+        logger.error(f"异步回测发送失败: {cmd.stock_code} msg={msg}")
