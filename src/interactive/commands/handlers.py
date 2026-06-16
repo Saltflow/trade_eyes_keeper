@@ -129,15 +129,30 @@ def handle_backtest(code: str, start: str, end: str) -> str:
 
         s = datetime.strptime(start, "%Y-%m-%d")
         e = datetime.strptime(end, "%Y-%m-%d")
-        days = (e - s).days + 60  # 多取 60 天余量给 MA60
+        requested_days = (e - s).days
+        days = max(requested_days + 365, 1000)  # 至少请求约 2.7 年数据给 MA60
 
         data = ds.fetch_stock_data(code, days=days)
         if data is None or data.empty:
             return f"❌ 未获取到 <code>{code}</code> 的行情数据"
 
+        # 检查实际可用数据范围
+        actual_start = str(data["date"].min())[:10]
+        actual_end = str(data["date"].max())[:10]
         data = data[(data["date"] >= start) & (data["date"] <= end)]
         if data.empty:
-            return f"❌ <code>{code}</code> 在 {start} ~ {end} 无数据"
+            return (
+                f"❌ <code>{code}</code> 在 {start} ~ {end} 无数据\n"
+                f"缓存数据范围: {actual_start} ~ {actual_end}"
+            )
+
+        # 数据完整性提示
+        data_note = ""
+        if actual_start > start:
+            data_note = (
+                f"⚠ 数据不完整：请求 {start}，最早可用 {actual_start}。"
+                f"请 <code>/add {code}</code> 后等待系统缓存更久。"
+            )
 
         engine = TimingStrategyEngine(code, data)
         metrics = engine.run_simulation(initial_cash=100000)
@@ -160,7 +175,8 @@ def handle_backtest(code: str, start: str, end: str) -> str:
         return (
             f"<b>回测报告</b> — <code>{code}</code>\n"
             f"区间: {start} ~ {end}（{len(data)} 天）\n"
-            f"策略: MA60 均值回归（买 ≤-5%/-10%，卖 ≥+5%/+10%/+15%）\n\n"
+            + (f"{data_note}\n" if data_note else "")
+            + f"策略: MA60 均值回归（买 ≤-5%/-10%，卖 ≥+5%/+10%/+15%）\n\n"
             f"<b>策略收益</b>: {metrics.total_return:+.2f}%"
             f"  |  <b>买入持有</b>: {bh_return:+.2f}%\n"
             f"<b>年化收益</b>: {metrics.annual_return:+.2f}%"
