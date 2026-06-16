@@ -105,7 +105,11 @@ def handle_feishu_event(app: FeishuApp, headers: dict, body: dict) -> tuple[int,
 
     # 6. 执行 + 回复
     response = _dispatch(cmd)
-    app.send_message(chat_id, response)
+    ok, msg = app.send_message(chat_id, response)
+    if ok:
+        logger.info(f"飞书回复成功: chat={chat_id} cmd={cmd.cmd_type.name} len={len(response)}")
+    else:
+        logger.error(f"飞书回复失败: chat={chat_id} msg={msg}")
     return 200, {"msg": "ok"}
 
 

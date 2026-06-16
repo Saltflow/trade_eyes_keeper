@@ -1010,7 +1010,7 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
         from src.interactive.feishu_app import FeishuApp
         from src.interactive.feishu_handler import handle_feishu_event
 
-        config_path = Path("config/config.yaml")
+        config_path = Path(__file__).parent.parent.parent.parent / "config" / "config.yaml"
         config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
         content_length = int(self.headers.get("Content-Length", 0))

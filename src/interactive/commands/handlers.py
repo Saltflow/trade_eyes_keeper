@@ -7,19 +7,27 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-CONFIG_PATH = Path("config/config.yaml")
+CONFIG_PATH = Path(__file__).parent.parent.parent.parent / "config" / "config.yaml"
 
 
 def _load_config() -> dict:
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f)
+    except Exception as e:
+        logger.exception(f"读取配置失败: {CONFIG_PATH}")
+        return {}
 
 
 def _save_config(config: dict) -> None:
     tmp = CONFIG_PATH.with_suffix(".yaml.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-    tmp.replace(CONFIG_PATH)
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        tmp.replace(CONFIG_PATH)
+        logger.info(f"配置已保存: {CONFIG_PATH}")
+    except Exception as e:
+        logger.exception(f"保存配置失败: {tmp} -> {CONFIG_PATH}")
 
 
 def handle_help() -> str:
@@ -49,6 +57,7 @@ def handle_list() -> str:
 def handle_add(code: str) -> str:
     config = _load_config()
     stocks: list[str] = config.get("stocks", [])
+    logger.info(f"handle_add: code={code} stocks_before={len(stocks)}")
 
     if code.upper() in (s.upper() for s in stocks):
         return f"<code>{code}</code> 已在监控列表中。"
@@ -56,13 +65,14 @@ def handle_add(code: str) -> str:
     stocks.append(code)
     config["stocks"] = stocks
     _save_config(config)
-    logger.info(f"已添加 {code} 到监控列表")
+    logger.info(f"已添加 {code} 到监控列表，共 {len(stocks)} 只")
     return f"✅ 已添加 <code>{code}</code> 到监控列表（共 {len(stocks)} 只）"
 
 
 def handle_remove(code: str) -> str:
     config = _load_config()
     stocks: list[str] = config.get("stocks", [])
+    logger.info(f"handle_remove: code={code} stocks_before={len(stocks)}")
 
     matched = None
     for s in stocks:
@@ -76,7 +86,7 @@ def handle_remove(code: str) -> str:
     stocks.remove(matched)
     config["stocks"] = stocks
     _save_config(config)
-    logger.info(f"已从监控列表移除 {matched}")
+    logger.info(f"已从监控列表移除 {matched}，剩余 {len(stocks)} 只")
     return f"✅ 已移除 <code>{matched}</code>（剩余 {len(stocks)} 只）"
 
 
