@@ -7,6 +7,7 @@ from src.interactive.command_parser import (
     HelpCommand,
     ListCommand,
     RemoveCommand,
+    SaveCommand,
     parse_command,
 )
 
@@ -75,3 +76,39 @@ class TestCommandParser:
     def test_parse_non_command(self):
         cmd = parse_command("hello world")
         assert cmd.cmd_type == CommandType.ERROR
+
+    # ── 批量 add/remove ──
+
+    def test_parse_add_comma_separated(self):
+        cmd = parse_command("/add 601728,GOOG,00883")
+        assert isinstance(cmd, AddCommand)
+        assert cmd.codes == ["601728", "GOOG", "00883"]
+
+    def test_parse_add_space_separated(self):
+        cmd = parse_command("/add 601728 GOOG 00883")
+        assert isinstance(cmd, AddCommand)
+        assert cmd.codes == ["601728", "GOOG", "00883"]
+
+    def test_parse_add_mixed_separator(self):
+        cmd = parse_command("/add 601728, GOOG 00883")
+        assert isinstance(cmd, AddCommand)
+        assert cmd.codes == ["601728", "GOOG", "00883"]
+
+    def test_parse_add_dedup(self):
+        cmd = parse_command("/add 601728,601728, GOOG")
+        assert isinstance(cmd, AddCommand)
+        assert cmd.codes == ["601728", "GOOG"]
+
+    def test_parse_add_stock_code_backcompat(self):
+        cmd = parse_command("/add 601728")
+        assert cmd.stock_code == "601728"
+        assert cmd.codes == ["601728"]
+
+    def test_parse_remove_batch(self):
+        cmd = parse_command("/remove 00883,GOOG")
+        assert isinstance(cmd, RemoveCommand)
+        assert cmd.codes == ["00883", "GOOG"]
+
+    def test_parse_save(self):
+        cmd = parse_command("/save")
+        assert isinstance(cmd, SaveCommand)

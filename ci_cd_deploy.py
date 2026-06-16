@@ -514,6 +514,13 @@ def deploy():
         if not _ensure_remote_repo():
             _info("WARNING: Remote repo setup may have issues")
 
+        # ── 0c. 备份服务器 config.yaml (bot 修改不会被覆盖) ──
+        _ssh_cmd(
+            f"cp {REMOTE_DIR}/config/config.yaml /tmp/config.yaml.bot_backup 2>/dev/null;"
+            " echo 'backed_up'",
+            "Backup server config.yaml",
+        )
+
         # ── 1. git push 本地代码到远程 ──
         pushed = _git_push()
         _step("git_push", pushed)
@@ -529,6 +536,15 @@ def deploy():
 
         # ── 2b. 同步配置文件到服务器 ──
         _sync_config()
+
+        # ── 2c. 恢复服务器 config.yaml (保留 bot 修改) ──
+        _ssh_cmd(
+            f"if [ -f /tmp/config.yaml.bot_backup ]; then"
+            f" cp /tmp/config.yaml.bot_backup {REMOTE_DIR}/config/config.yaml;"
+            " echo 'config_restored';"
+            " else echo 'no_backup'; fi",
+            "Restore server config.yaml",
+        )
 
         # ── 3. 清理旧日志 ──
         clean = os.getenv("CLEAN_BEFORE_DEPLOY", "true").strip().lower() in (

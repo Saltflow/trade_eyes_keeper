@@ -11,6 +11,7 @@ class CommandType(Enum):
     ADD = auto()
     REMOVE = auto()
     BACKTEST = auto()
+    SAVE = auto()
     ERROR = auto()
 
 
@@ -26,14 +27,23 @@ class ListCommand:
 
 @dataclass
 class AddCommand:
-    stock_code: str
+    codes: list[str]
     cmd_type: CommandType = CommandType.ADD
+
+    @property
+    def stock_code(self) -> str:
+        """向后兼容：取第一只。"""
+        return self.codes[0] if self.codes else ""
 
 
 @dataclass
 class RemoveCommand:
-    stock_code: str
+    codes: list[str]
     cmd_type: CommandType = CommandType.REMOVE
+
+    @property
+    def stock_code(self) -> str:
+        return self.codes[0] if self.codes else ""
 
 
 @dataclass
@@ -42,6 +52,11 @@ class BacktestCommand:
     start_date: str
     end_date: str
     cmd_type: CommandType = CommandType.BACKTEST
+
+
+@dataclass
+class SaveCommand:
+    cmd_type: CommandType = CommandType.SAVE
 
 
 @dataclass
@@ -54,6 +69,29 @@ _STOCK_CODE_RE = re.compile(r"^[A-Za-z0-9]{1,8}$")
 
 
 def _validate_stock_code(code: str) -> str | None:
+    """单个股票代码验证（backtest 用）。"""
+    if not code:
+        return "缺少股票代码"
+    if not _STOCK_CODE_RE.match(code):
+        return f"股票代码格式无效: {code}，应为 1-8 位字母数字"
+    return None
+
+
+def _split_codes(raw: str) -> list[str]:
+    """将逗号/空格分隔的代码拆为列表，统一大写去重。"""
+    parts = re.split(r"[,\s]+", raw.strip().upper())
+    return list(dict.fromkeys(p for p in parts if p))  # 去重保序
+
+
+def _validate_codes(raw: str) -> tuple[list[str], str | None]:
+    """批量验证股票代码。返回 (codes, error_msg)。"""
+    codes = _split_codes(raw)
+    if not codes:
+        return [], "缺少股票代码，格式: /add 601728,GOOG,00883"
+    for code in codes:
+        if not _STOCK_CODE_RE.match(code):
+            return [], f"股票代码格式无效: {code}，应为 1-8 位字母数字"
+    return codes, None
     """验证股票代码格式。返回错误消息或 None（有效）。"""
     if not code:
         return "缺少股票代码，格式: /add 601728"
@@ -106,18 +144,19 @@ def parse_command(text: str):
         return ListCommand()
 
     if cmd_name == "add":
-        code = args.strip().upper() if args else ""
-        err = _validate_stock_code(code)
+        codes, err = _validate_codes(args)
         if err:
             return ErrorCommand(message=err)
-        return AddCommand(stock_code=code)
+        return AddCommand(codes=codes)
 
     if cmd_name == "remove":
-        code = args.strip().upper() if args else ""
-        err = _validate_stock_code(code)
+        codes, err = _validate_codes(args)
         if err:
             return ErrorCommand(message=err)
-        return RemoveCommand(stock_code=code)
+        return RemoveCommand(codes=codes)
+
+    if cmd_name == "save":
+        return SaveCommand()
 
     if cmd_name == "backtest":
         arg_parts = args.split()

@@ -35,10 +35,12 @@ def handle_help() -> str:
         "<b>可用命令</b>\n\n"
         "<code>/help</code> — 显示此帮助\n"
         "<code>/list</code> — 查看监控列表\n"
-        "<code>/add 代码</code> — 添加股票到监控列表\n"
-        "<code>/remove 代码</code> — 从监控列表移除股票\n"
+        "<code>/add 代码,代码,...</code> — 批量添加（逗号或空格分隔）\n"
+        " 例: <code>/add 601728,GOOG,00883</code>\n"
+        "<code>/remove 代码,代码,...</code> — 批量移除\n"
         "<code>/backtest 代码 开始 结束</code> — 回测\n"
-        " 例: <code>/backtest 601919 2024-01-01 2024-12-31</code>"
+        " 例: <code>/backtest 601919 2024-01-01 2024-12-31</code>\n"
+        "<code>/save</code> — 保存当前监控列表到 git"
     )
 
 
@@ -54,40 +56,67 @@ def handle_list() -> str:
     return "\n".join(lines)
 
 
-def handle_add(code: str) -> str:
+def handle_add(codes: list[str]) -> str:
     config = _load_config()
     stocks: list[str] = config.get("stocks", [])
-    logger.info(f"handle_add: code={code} stocks_before={len(stocks)}")
+    upper_stocks = {str(s).upper() for s in stocks}
 
-    if str(code).upper() in (str(s).upper() for s in stocks):
-        return f"<code>{code}</code> 已在监控列表中。"
+    added = []
+    skipped = []
+    for code in codes:
+        if code.upper() in upper_stocks:
+            skipped.append(code)
+        else:
+            stocks.append(code)
+            upper_stocks.add(code.upper())
+            added.append(code)
 
-    stocks.append(code)
-    config["stocks"] = stocks
-    _save_config(config)
-    logger.info(f"已添加 {code} 到监控列表，共 {len(stocks)} 只")
-    return f"✅ 已添加 <code>{code}</code> 到监控列表（共 {len(stocks)} 只）"
+    if not added and not skipped:
+        return "没有可添加的标的。"
+
+    if added:
+        config["stocks"] = stocks
+        _save_config(config)
+
+    lines = []
+    if added:
+        lines.append(f"✅ 已添加 {len(added)} 只：{' '.join(f'<code>{c}</code>' for c in added)}")
+    if skipped:
+        lines.append(f"⏭ 已存在 {len(skipped)} 只：{' '.join(f'<code>{c}</code>' for c in skipped)}")
+    lines.append(f"当前共 {len(stocks)} 只")
+    return "\n".join(lines)
 
 
-def handle_remove(code: str) -> str:
+def handle_remove(codes: list[str]) -> str:
     config = _load_config()
     stocks: list[str] = config.get("stocks", [])
-    logger.info(f"handle_remove: code={code} stocks_before={len(stocks)}")
+    upper_stocks = {str(s).upper(): s for s in stocks}
 
-    matched = None
-    for s in stocks:
-        if str(s).upper() == str(code).upper():
-            matched = s
-            break
+    removed = []
+    not_found = []
+    for code in codes:
+        matched = upper_stocks.get(code.upper())
+        if matched is not None:
+            stocks.remove(matched)
+            del upper_stocks[code.upper()]
+            removed.append(code)
+        else:
+            not_found.append(code)
 
-    if matched is None:
-        return f"<code>{code}</code> 不在监控列表中。"
+    if not removed and not not_found:
+        return "没有可移除的标的。"
 
-    stocks.remove(matched)
-    config["stocks"] = stocks
-    _save_config(config)
-    logger.info(f"已从监控列表移除 {matched}，剩余 {len(stocks)} 只")
-    return f"✅ 已移除 <code>{matched}</code>（剩余 {len(stocks)} 只）"
+    if removed:
+        config["stocks"] = stocks
+        _save_config(config)
+
+    lines = []
+    if removed:
+        lines.append(f"✅ 已移除 {len(removed)} 只：{' '.join(f'<code>{c}</code>' for c in removed)}")
+    if not_found:
+        lines.append(f"❌ 未找到 {len(not_found)} 只：{' '.join(f'<code>{c}</code>' for c in not_found)}")
+    lines.append(f"当前共 {len(stocks)} 只")
+    return "\n".join(lines)
 
 
 def handle_backtest(code: str, start: str, end: str) -> str:
@@ -133,3 +162,33 @@ def handle_backtest(code: str, start: str, end: str) -> str:
     except Exception as exc:
         logger.exception(f"回测失败 {code} {start} {end}")
         return f"❌ 回测失败: {exc}"
+
+
+def handle_save(config_path=None) -> str:
+    """把当前 config.yaml 提交到 git。"""
+    import subprocess
+
+    if config_path is None:
+        config_path = CONFIG_PATH
+    repo = config_path.parent.parent  # .../trade_eyes_keeper
+    try:
+        subprocess.run(
+            ["git", "add", "config/config.yaml"],
+            cwd=repo, check=True, capture_output=True,
+            timeout=10,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "bot: watchlist updated via /save",
+             "--no-verify"],
+            cwd=repo, check=True, capture_output=True,
+            timeout=10,
+        )
+        logger.info("配置已提交到 git")
+        return "✅ 监控列表已保存到 git。下次本地 <code>git pull</code> 即可同步。"
+    except subprocess.CalledProcessError as e:
+        msg = e.stderr.decode() if e.stderr else str(e)
+        logger.error(f"git commit 失败: {msg}")
+        return f"❌ git 保存失败: {msg[:200]}"
+    except Exception as e:
+        logger.exception("git 保存异常")
+        return f"❌ 保存失败: {e}"

@@ -10,6 +10,7 @@ from .command_parser import (
     HelpCommand,
     ListCommand,
     RemoveCommand,
+    SaveCommand,
     parse_command,
 )
 from .commands.handlers import (
@@ -18,6 +19,7 @@ from .commands.handlers import (
     handle_help,
     handle_list,
     handle_remove,
+    handle_save,
 )
 from .feishu_app import FeishuApp
 
@@ -119,9 +121,11 @@ def _dispatch(cmd) -> str:
     if isinstance(cmd, ListCommand):
         return handle_list()
     if isinstance(cmd, AddCommand):
-        return handle_add(cmd.stock_code)
+        return handle_add(cmd.codes)
     if isinstance(cmd, RemoveCommand):
-        return handle_remove(cmd.stock_code)
+        return handle_remove(cmd.codes)
+    if isinstance(cmd, SaveCommand):
+        return handle_save()
     if isinstance(cmd, BacktestCommand):
         return handle_backtest(cmd.stock_code, cmd.start_date, cmd.end_date)
     if isinstance(cmd, ErrorCommand):
