@@ -140,24 +140,37 @@ def handle_backtest(code: str, start: str, end: str) -> str:
             return f"❌ <code>{code}</code> 在 {start} ~ {end} 无数据"
 
         engine = TimingStrategyEngine(code, data)
-        rules = config.get("portfolio_strategy", {}).get("rules")
-        metrics = engine.run_simulation(
-            initial_cash=100000,
-            rules=rules,
-        )
+        metrics = engine.run_simulation(initial_cash=100000)
 
         bh_start = float(data["close"].iloc[0])
         bh_end = float(data["close"].iloc[-1])
         bh_return = (bh_end - bh_start) / bh_start * 100
 
+        # 交易统计
+        buy_count = sum(1 for t in metrics.trade_log if t.trade_type == "buy")
+        sell_count = sum(1 for t in metrics.trade_log if t.trade_type == "sell")
+        total_fee = sum(t.fee for t in metrics.trade_log)
+
+        # 最近 3 笔
+        recent = ""
+        for t in metrics.trade_log[-3:]:
+            emoji = "🟢" if t.trade_type == "buy" else "🔴"
+            recent += f"{emoji} {t.date} {t.trade_type} {t.shares}股@{t.price:.2f} {t.reason}\n"
+
         return (
             f"<b>回测报告</b> — <code>{code}</code>\n"
-            f"区间: {start} ~ {end}（{len(data)} 天）\n\n"
-            f"<b>策略收益</b>: {metrics.total_return:+.2f}%\n"
-            f"<b>买入持有</b>: {bh_return:+.2f}%\n"
-            f"<b>最大回撤</b>: {metrics.max_drawdown:.2f}%\n"
-            f"<b>夏普比率</b>: {metrics.sharpe_ratio:.2f}\n"
-            f"<b>总交易</b>: {metrics.total_trades}\n"
+            f"区间: {start} ~ {end}（{len(data)} 天）\n"
+            f"策略: MA60 均值回归（买 ≤-5%/-10%，卖 ≥+5%/+10%/+15%）\n\n"
+            f"<b>策略收益</b>: {metrics.total_return:+.2f}%"
+            f"  |  <b>买入持有</b>: {bh_return:+.2f}%\n"
+            f"<b>年化收益</b>: {metrics.annual_return:+.2f}%"
+            f"  |  <b>最大回撤</b>: {metrics.max_drawdown:.2f}%\n"
+            f"<b>夏普比率</b>: {metrics.sharpe_ratio:.2f}"
+            f"  |  <b>交易</b>: {metrics.total_trades} 笔"
+            f"（买{buy_count}/卖{sell_count}）\n"
+            f"<b>期末持仓</b>: ¥{metrics.final_position_value:,.0f}"
+            f"  |  <b>手续费</b>: ¥{total_fee:,.2f}"
+            + (f"\n\n<b>最近交易:</b>\n{recent}" if recent else "")
         )
     except Exception as exc:
         logger.exception(f"回测失败 {code} {start} {end}")
