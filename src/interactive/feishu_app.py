@@ -70,7 +70,10 @@ class FeishuApp:
         """验证事件：challenge → 返回 {"challenge": ...}；普通事件 → True。"""
         if body.get("type") == "url_verification":
             challenge = body.get("challenge", "")
-            if challenge and body.get("token") == self.verification_token:
+            if not challenge:
+                return True
+            # token 未配置时接受任意值，已配置时精确匹配
+            if not self.verification_token or body.get("token") == self.verification_token:
                 return {"challenge": challenge}
         return True
 
