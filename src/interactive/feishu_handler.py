@@ -92,6 +92,14 @@ def handle_feishu_event(app: FeishuApp, headers: dict, body: dict) -> tuple[int,
     if not text:
         text = message.get("text", "")
 
+    # 去掉 @机器人 前缀 (如 "@试用clawbot /help" → "/help")
+    text = text.strip()
+    if text and not text.startswith("/"):
+        # 尝试在文本中找第一个 "/" 作为命令起点
+        slash_idx = text.find("/")
+        if slash_idx >= 0:
+            text = text[slash_idx:]
+
     cmd = parse_command(text)
     logger.info(f"飞书命令: chat={chat_id} text={text!r} cmd={cmd.cmd_type.name}")
 
