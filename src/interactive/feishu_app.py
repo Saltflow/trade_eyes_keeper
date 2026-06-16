@@ -30,8 +30,10 @@ class FeishuApp:
         )
 
         allowed = ic.get("allowed_chat_ids", [])
-        self.allowed_chat_ids = set(str(cid) for cid in allowed if cid)
-        self.gate = SecurityGate(self.allowed_chat_ids)
+        has_wildcard = any(str(cid).strip() == "*" for cid in allowed)
+        self.allowed_chat_ids = set(str(cid) for cid in allowed if cid and str(cid).strip())
+        self._allow_all = has_wildcard or not bool(self.allowed_chat_ids)
+        self.gate = SecurityGate(self.allowed_chat_ids) if self.allowed_chat_ids else None
         self.rate_limiter = RateLimiter(
             max_per_minute=ic.get("rate_limit_per_minute", 10)
         )

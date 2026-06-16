@@ -65,7 +65,7 @@ def handle_feishu_event(app: FeishuApp, headers: dict, body: dict) -> tuple[int,
         return 200, {"msg": "no chat_id"}
 
     # 4. 安全校验
-    if not app.gate.is_allowed(chat_id):
+    if not app._allow_all and app.gate and not app.gate.is_allowed(chat_id):
         logger.warning(f"未授权的 chat_id: {chat_id}")
         return 200, {"msg": "unauthorized"}
 
