@@ -790,18 +790,34 @@ print('[HS_CONFIG_OK]')
 
         # ── 13. 停止旧健康服务器 ──
         _info("Stopping old health server...")
-        kill_cmds = [
-            f"pkill -f 'health_server' 2>/dev/null || echo 'No health_server process found'",
-            f"pkill -f 'python.*main.py.*--health-server' 2>/dev/null || echo 'No health-server process found'",
-            f"screen -XS health_server quit 2>/dev/null || echo 'No screen session found'",
+        stop_cmds = [
+            # 用 PID 文件精确杀
+            "if [ -f /tmp/hs.pid ]; then kill $(cat /tmp/hs.pid) 2>/dev/null; rm -f /tmp/hs.pid; fi",
+            # 兜底：pkill 模糊匹配
+            "pkill -f 'python.*main.py.*--health-server' 2>/dev/null || true",
         ]
-        for cmd in kill_cmds:
+        for cmd in stop_cmds:
             _ssh_cmd(cmd, "Stop health server processes")
         time.sleep(2)
 
-        # ── 14. 启动健康服务器 + 真 HTTP 验证 ──
-        start_cmd = f"cd {REMOTE_DIR} && screen -dmS health_server python3 main.py --health-server"
+        # ── 14. 启动健康服务器 (nohup + PID 文件，不用 screen) ──
+        start_cmd = (
+            f"cd {REMOTE_DIR} && "
+            f"nohup python3 main.py --health-server > /tmp/hs.log 2>&1 & "
+            f"echo $! > /tmp/hs.pid"
+        )
         _ssh_cmd(start_cmd, "Start health server", timeout=10)
+        time.sleep(4)
+
+        # 验证进程存在，失败重试一次
+        _ssh_cmd(
+            "if ! kill -0 $(cat /tmp/hs.pid) 2>/dev/null; then"
+            f" cd {REMOTE_DIR} &&"
+            f" nohup python3 main.py --health-server > /tmp/hs.log 2>&1 &"
+            f" echo $! > /tmp/hs.pid;"
+            " echo RETRIED; else echo OK; fi",
+            "Verify health server alive",
+        )
         time.sleep(3)
 
         verify_cmd = f"""cd {REMOTE_DIR} && python3 -c "
