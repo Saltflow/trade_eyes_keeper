@@ -1015,7 +1015,9 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
 
         content_length = int(self.headers.get("Content-Length", 0))
         raw_body = self.rfile.read(content_length)
-        body = json.loads(raw_body.decode("utf-8"))
+        raw_text = raw_body.decode("utf-8")
+        logger.info(f"飞书原始事件({len(raw_text)}B): {raw_text[:500]}")
+        body = json.loads(raw_text)
 
         app = FeishuApp(config)
         status, resp = handle_feishu_event(app, dict(self.headers), body)
