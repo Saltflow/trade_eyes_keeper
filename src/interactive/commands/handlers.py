@@ -59,7 +59,7 @@ def handle_add(code: str) -> str:
     stocks: list[str] = config.get("stocks", [])
     logger.info(f"handle_add: code={code} stocks_before={len(stocks)}")
 
-    if code.upper() in (s.upper() for s in stocks):
+    if str(code).upper() in (str(s).upper() for s in stocks):
         return f"<code>{code}</code> 已在监控列表中。"
 
     stocks.append(code)
@@ -76,7 +76,7 @@ def handle_remove(code: str) -> str:
 
     matched = None
     for s in stocks:
-        if s.upper() == code.upper():
+        if str(s).upper() == str(code).upper():
             matched = s
             break
 
