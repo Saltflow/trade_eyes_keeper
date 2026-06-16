@@ -73,11 +73,22 @@ def handle_feishu_event(app: FeishuApp, headers: dict, body: dict) -> tuple[int,
         app.send_message(chat_id, "操作过于频繁，请稍后再试。")
         return 200, {"msg": "rate_limited"}
 
-    # 5. 解析命令
-    content = json.loads(message.get("content", "{}"))
+    # 5. 解析命令 — 飞书 content 是 JSON 字符串, 需二次解析
     text = ""
-    for block in content.get("blocks", []) if isinstance(content, dict) else []:
-        text += block.get("elements", [{}])[0].get("text", "")
+    raw_content = message.get("content", "")
+    if raw_content:
+        try:
+            parsed = json.loads(raw_content)
+            # 简单文本消息: {"text": "/help"}
+            if isinstance(parsed, dict):
+                text = parsed.get("text", "")
+            if not text and isinstance(parsed, dict):
+                # 富文本消息: {"blocks": [{"elements": [{"text": "/help"}]}]}
+                for block in parsed.get("blocks", []):
+                    for element in block.get("elements", []):
+                        text += element.get("text", "")
+        except (json.JSONDecodeError, TypeError):
+            pass
     if not text:
         text = message.get("text", "")
 
