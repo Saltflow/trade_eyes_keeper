@@ -803,19 +803,18 @@ print('[HS_CONFIG_OK]')
         # ── 14. 启动健康服务器 (nohup + PID 文件，不用 screen) ──
         start_cmd = (
             f"cd {REMOTE_DIR} && "
-            f"nohup python3 main.py --health-server > /tmp/hs.log 2>&1 & "
-            f"echo $! > /tmp/hs.pid"
+            f"bash -c 'nohup python3 main.py --health-server > /tmp/hs.log 2>&1 & echo $! > /tmp/hs.pid'"
         )
         _ssh_cmd(start_cmd, "Start health server", timeout=10)
         time.sleep(4)
 
         # 验证进程存在，失败重试一次
         _ssh_cmd(
-            "if ! kill -0 $(cat /tmp/hs.pid) 2>/dev/null; then"
+            "bash -c 'if ! kill -0 $(cat /tmp/hs.pid) 2>/dev/null; then"
             f" cd {REMOTE_DIR} &&"
             f" nohup python3 main.py --health-server > /tmp/hs.log 2>&1 &"
             f" echo $! > /tmp/hs.pid;"
-            " echo RETRIED; else echo OK; fi",
+            " echo RETRIED; else echo OK; fi'",
             "Verify health server alive",
         )
         time.sleep(3)
