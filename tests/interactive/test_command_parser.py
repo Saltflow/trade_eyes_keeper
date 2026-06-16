@@ -112,3 +112,33 @@ class TestCommandParser:
     def test_parse_save(self):
         cmd = parse_command("/save")
         assert isinstance(cmd, SaveCommand)
+
+    # ── 真实代码格式覆盖 ──
+
+    def test_valid_codes_from_config(self):
+        """config.yaml 里出现的所有代码格式都应通过验证。"""
+        real_codes = [
+            "601728", "600938", "601985", "601919",  # 6-digit A-share
+            "512810", "513910", "588000", "000958",  # ETF
+            "515180", "508077", "180603",            # 混合
+            "GOOG", "VOO", "TQQQ", "UPRO",           # US tickers
+            "00883", "01816", "1355",                 # HK
+            "C38U.SI", "AJBU.SI",                     # Singapore
+        ]
+        for code in real_codes:
+            cmd = parse_command(f"/add {code}")
+            assert isinstance(cmd, AddCommand), f"code={code} should be valid"
+            assert code in cmd.codes, f"code={code} should be in codes"
+
+    def test_valid_batch_with_real_codes(self):
+        cmd = parse_command("/add C38U.SI,AJBU.SI, 513000,588510,518660")
+        assert isinstance(cmd, AddCommand)
+        assert "C38U.SI" in cmd.codes
+        assert "AJBU.SI" in cmd.codes
+        assert "513000" in cmd.codes
+        assert "588510" in cmd.codes
+        assert "518660" in cmd.codes
+
+    def test_invalid_code_with_special_chars(self):
+        cmd = parse_command("/add not_a_stock!")
+        assert cmd.cmd_type == CommandType.ERROR

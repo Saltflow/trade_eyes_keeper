@@ -65,7 +65,7 @@ class ErrorCommand:
     cmd_type: CommandType = CommandType.ERROR
 
 
-_STOCK_CODE_RE = re.compile(r"^[A-Za-z0-9]{1,8}$")
+_STOCK_CODE_RE = re.compile(r"^[A-Za-z0-9]{1,8}(\.[A-Za-z]{1,4})?$")
 
 
 def _validate_stock_code(code: str) -> str | None:
