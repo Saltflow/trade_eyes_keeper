@@ -517,12 +517,16 @@ def run_optimization_v2(config):
 
         # 运行 V2 优化器
         t0 = time.time()
+        n_samples = int(os.getenv("OPTIMIZER_SAMPLES") or "0")
+        n_gens = int(os.getenv("OPTIMIZER_GENERATIONS") or "0")
         optimizer = StrategyOptimizerV2(
             stocks_data, group_name,
             indicators_data=indicators,
         )
         report = optimizer.run(
             stock_codes=list(stocks_data.keys()),
+            iterations=n_samples or None,
+            random_starts=n_gens or None,
         )
 
         # 打印报告

@@ -226,18 +226,22 @@ def handle_save(config_path=None) -> str:
         return f"❌ 保存失败: {e}"
 
 
-def _run_main(command_args: list[str]) -> str:
+def _run_main(command_args: list[str], env_extra: dict | None = None) -> str:
     """后台启动 main.py 子进程。返回提示消息。"""
     import subprocess
     import sys
+    import os
     from pathlib import Path
 
     project_root = Path(__file__).parent.parent.parent.parent
     main_py = project_root / "main.py"
     cmd = [sys.executable, str(main_py)] + command_args
+    env = os.environ.copy()
+    if env_extra:
+        env.update(env_extra)
     try:
         subprocess.Popen(
-            cmd, cwd=str(project_root),
+            cmd, cwd=str(project_root), env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         logger.info(f"后台进程已启动: {' '.join(cmd)}")
@@ -260,17 +264,21 @@ def handle_optimize(preset: str = "v2") -> str:
     if preset == "v1":
         label = "策略优化 V1（贝叶斯）"
         args = ["--optimize"]
+        env = {}
     elif preset == "fast":
         label = "策略优化 V2 快速（~2 分钟）"
-        args = ["--optimize-v2", "--samples", "2000", "--generations", "1"]
+        args = ["--optimize-v2"]
+        env = {"OPTIMIZER_SAMPLES": "2000", "OPTIMIZER_GENERATIONS": "1"}
     elif preset == "deep":
         label = "策略优化 V2 深度（~30 分钟）"
-        args = ["--optimize-v2", "--samples", "20000", "--generations", "5"]
+        args = ["--optimize-v2"]
+        env = {"OPTIMIZER_SAMPLES": "20000", "OPTIMIZER_GENERATIONS": "5"}
     else:
         label = "策略优化 V2"
         args = ["--optimize-v2"]
+        env = {}
 
-    if _run_main(args):
+    if _run_main(args, env):
         return f"⏳ {label}已在后台启动。跑完后自动推送到飞书/邮件。"
     return f"❌ {label}启动失败"
 

@@ -61,17 +61,23 @@ class StrategyOptimizerV2:
         group: str,
         constraints_path: str | Path = "config/optimizer_constraints.yaml",
         indicators_data: dict[str, "pd.DataFrame"] | None = None,
+        n_samples: int | None = None,
+        n_generations: int | None = None,
     ):
         """
         Args:
             stocks_data: {code: DataFrame with date/close/high/low/volume}
             group: "a_share" 或 "non_a_share"
             constraints_path: 约束配置文件路径
-            indicators_data: 预计算指标（可选，不传则 WalkForwardManager 兜底计算）
+            indicators_data: 预计算指标（可选）
+            n_samples: Phase 1 采样数覆盖（None=config 默认）
+            n_generations: Phase 2 遗传代数覆盖（None=config 默认）
         """
         self.stocks_data = stocks_data
         self.group = group
         self.constraints_path = Path(constraints_path)
+        self.n_samples = n_samples
+        self.n_generations = n_generations
 
         # 加载约束
         self.constraints = load_constraints(constraints_path)
