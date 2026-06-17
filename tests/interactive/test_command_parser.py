@@ -3,9 +3,12 @@
 from src.interactive.command_parser import (
     AddCommand,
     BacktestCommand,
+    BriefCommand,
     CommandType,
+    DailyCommand,
     HelpCommand,
     ListCommand,
+    OptimizeCommand,
     RemoveCommand,
     SaveCommand,
     parse_command,
@@ -142,3 +145,44 @@ class TestCommandParser:
     def test_invalid_code_with_special_chars(self):
         cmd = parse_command("/add not_a_stock!")
         assert cmd.cmd_type == CommandType.ERROR
+
+    # ── 系统命令 ──
+
+    def test_parse_brief_default(self):
+        cmd = parse_command("/brief")
+        assert isinstance(cmd, BriefCommand)
+        assert cmd.report_id == "morning_snapshot"
+
+    def test_parse_brief_morning(self):
+        cmd = parse_command("/brief morning")
+        assert isinstance(cmd, BriefCommand)
+        assert cmd.report_id == "morning_snapshot"
+
+    def test_parse_brief_afternoon(self):
+        cmd = parse_command("/brief afternoon")
+        assert isinstance(cmd, BriefCommand)
+        assert cmd.report_id == "afternoon_snapshot"
+
+    def test_parse_brief_afternoon_snapshot(self):
+        cmd = parse_command("/brief afternoon_snapshot")
+        assert isinstance(cmd, BriefCommand)
+        assert cmd.report_id == "afternoon_snapshot"
+
+    def test_parse_optimize_default(self):
+        cmd = parse_command("/optimize")
+        assert isinstance(cmd, OptimizeCommand)
+        assert cmd.version == "v2"
+
+    def test_parse_optimize_v1(self):
+        cmd = parse_command("/optimize v1")
+        assert isinstance(cmd, OptimizeCommand)
+        assert cmd.version == "v1"
+
+    def test_parse_optimize_v2(self):
+        cmd = parse_command("/optimize v2")
+        assert isinstance(cmd, OptimizeCommand)
+        assert cmd.version == "v2"
+
+    def test_parse_daily(self):
+        cmd = parse_command("/daily")
+        assert isinstance(cmd, DailyCommand)

@@ -7,9 +7,12 @@ import threading
 from .command_parser import (
     AddCommand,
     BacktestCommand,
+    BriefCommand,
+    DailyCommand,
     ErrorCommand,
     HelpCommand,
     ListCommand,
+    OptimizeCommand,
     RemoveCommand,
     SaveCommand,
     parse_command,
@@ -17,8 +20,11 @@ from .command_parser import (
 from .commands.handlers import (
     handle_add,
     handle_backtest,
+    handle_brief,
+    handle_daily,
     handle_help,
     handle_list,
+    handle_optimize,
     handle_remove,
     handle_save,
 )
@@ -136,6 +142,12 @@ def _dispatch(cmd) -> str:
         return handle_remove(cmd.codes)
     if isinstance(cmd, SaveCommand):
         return handle_save()
+    if isinstance(cmd, BriefCommand):
+        return handle_brief(cmd.report_id)
+    if isinstance(cmd, OptimizeCommand):
+        return handle_optimize(cmd.version)
+    if isinstance(cmd, DailyCommand):
+        return handle_daily()
     if isinstance(cmd, ErrorCommand):
         return f"❌ {cmd.message}"
     return "❌ 未知命令。发送 /help 查看可用命令。"

@@ -12,6 +12,9 @@ class CommandType(Enum):
     REMOVE = auto()
     BACKTEST = auto()
     SAVE = auto()
+    BRIEF = auto()
+    OPTIMIZE = auto()
+    DAILY = auto()
     ERROR = auto()
 
 
@@ -57,6 +60,23 @@ class BacktestCommand:
 @dataclass
 class SaveCommand:
     cmd_type: CommandType = CommandType.SAVE
+
+
+@dataclass
+class BriefCommand:
+    report_id: str = "morning_snapshot"
+    cmd_type: CommandType = CommandType.BRIEF
+
+
+@dataclass
+class OptimizeCommand:
+    version: str = "v2"
+    cmd_type: CommandType = CommandType.OPTIMIZE
+
+
+@dataclass
+class DailyCommand:
+    cmd_type: CommandType = CommandType.DAILY
 
 
 @dataclass
@@ -157,6 +177,21 @@ def parse_command(text: str):
 
     if cmd_name == "save":
         return SaveCommand()
+
+    if cmd_name == "brief":
+        mode = args.strip().lower()
+        if mode in ("afternoon", "afternoon_snapshot"):
+            return BriefCommand(report_id="afternoon_snapshot")
+        return BriefCommand(report_id="morning_snapshot")
+
+    if cmd_name == "optimize":
+        mode = args.strip().lower()
+        if mode == "v1":
+            return OptimizeCommand(version="v1")
+        return OptimizeCommand(version="v2")
+
+    if cmd_name == "daily":
+        return DailyCommand()
 
     if cmd_name == "backtest":
         arg_parts = args.split()

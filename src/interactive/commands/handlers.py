@@ -40,7 +40,10 @@ def handle_help() -> str:
         "<code>/remove 代码,代码,...</code> — 批量移除\n"
         "<code>/backtest 代码 开始 结束</code> — 回测\n"
         " 例: <code>/backtest 601919 2024-01-01 2024-12-31</code>\n"
-        "<code>/save</code> — 保存当前监控列表到 git"
+        "<code>/save</code> — 保存监控列表到 git\n"
+        "<code>/brief [afternoon]</code> — 触发简报（默认早盘）\n"
+        "<code>/optimize [v1]</code> — 触发策略优化（默认 V2）\n"
+        "<code>/daily</code> — 触发完整日报"
     )
 
 
@@ -221,3 +224,49 @@ def handle_save(config_path=None) -> str:
     except Exception as e:
         logger.exception("git 保存异常")
         return f"❌ 保存失败: {e}"
+
+
+def _run_main(command_args: list[str]) -> str:
+    """后台启动 main.py 子进程。返回提示消息。"""
+    import subprocess
+    from pathlib import Path
+
+    project_root = Path(__file__).parent.parent.parent.parent
+    main_py = project_root / "main.py"
+    cmd = ["python3", str(main_py)] + command_args
+    try:
+        subprocess.Popen(
+            cmd, cwd=str(project_root),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        logger.info(f"后台进程已启动: {' '.join(cmd)}")
+        return True
+    except Exception as e:
+        logger.exception(f"后台进程启动失败: {cmd}")
+        return False
+
+
+def handle_brief(report_id: str = "morning_snapshot") -> str:
+    label = "早盘简报" if report_id == "morning_snapshot" else "收盘简报"
+    if _run_main(["--brief", report_id]):
+        return (
+            f"⏳ {label}已触发。稍后飞书会推送简报卡片。"
+        )
+    return f"❌ {label}触发失败"
+
+
+def handle_optimize(version: str = "v2") -> str:
+    label = "策略优化 V2" if version == "v2" else "策略优化 V1（贝叶斯）"
+    flag = "--optimize-v2" if version == "v2" else "--optimize"
+    if _run_main([flag]):
+        return (
+            f"⏳ {label}已在后台启动。"
+            f"跑完后结果写入 <code>data/optimizer/</code>。"
+        )
+    return f"❌ {label}启动失败"
+
+
+def handle_daily() -> str:
+    if _run_main(["--once"]):
+        return "⏳ 完整日报已触发。稍后飞书+邮件会推送。"
+    return "❌ 日报触发失败"
