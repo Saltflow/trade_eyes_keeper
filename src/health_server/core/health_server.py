@@ -6,6 +6,7 @@
 import threading
 import socketserver
 import logging
+import os
 import time
 import sys
 from datetime import datetime
@@ -25,36 +26,28 @@ class HealthServer:
     """健康检查服务器"""
 
     def __init__(self, config, host=None, port=None):
-        """
-        初始化健康服务器
-
-        Args:
-            config: 系统配置
-            host: 监听主机 (None 则从 config 读取)
-            port: 监听端口 (None 则从 config 读取)
-        """
         self.config = config
         self.start_time = time.time()
 
-        # 从配置中获取设置
         self.health_config = config.get("health_server", {})
         self.host = host or self.health_config.get("host", "0.0.0.0")
         self.port = port or self.health_config.get("port", 1933)
         self.server = None
         self.thread = None
+        self._watchdog_thread = None
+        self._watchdog_failures = 0
 
     def start(self, daemon=True):
         """启动健康服务器"""
         try:
-            # 创建自定义Handler工厂
             def handler_factory(*args, **kwargs):
-                logger.info("Creating HealthHandler for request")
                 return HealthHandler(*args, health_server=self, **kwargs)
 
-            # 创建HTTP服务器
-            self.server = socketserver.TCPServer(
+            # ThreadingTCPServer: 每个请求独立线程，坏连接不阻塞其他请求
+            self.server = socketserver.ThreadingTCPServer(
                 (self.host, self.port), handler_factory
             )
+            self.server.timeout = 30  # 30s 无数据则断开卡住的连接
 
             # SSL/TLS: 如果存在证书文件则启用 HTTPS (路径从 config.yaml 读取)
             cert_path = self.health_config.get("cert_file", "cert.pem")
@@ -81,6 +74,13 @@ class HealthServer:
             logger.info(f"  测试邮件端点: http://{self.host}:{self.port}/test-email")
 
             self.thread.start()
+
+            # Watchdog: 每 60s 自检 /health，连续 3 次失败则 exit
+            self._watchdog_thread = threading.Thread(
+                target=self._watchdog_loop, daemon=True
+            )
+            self._watchdog_thread.start()
+
             return True
 
         except Exception as e:
@@ -93,6 +93,35 @@ class HealthServer:
             self.server.shutdown()
             self.server.server_close()
             logger.info("健康服务器已停止")
+
+    def _watchdog_loop(self):
+        """自检循环：每 60s 检查 /health，连续 3 次失败则 exit。"""
+        interval = 60
+        max_failures = 3
+        while True:
+            time.sleep(interval)
+            self._watchdog_step(max_failures)
+
+    def _watchdog_step(self, max_failures=3):
+        try:
+            import urllib.request as ur
+            url = f"http://127.0.0.1:{self.port}/health"
+            req = ur.Request(url, headers={"User-Agent": "Watchdog/1.0"})
+            resp = ur.urlopen(req, timeout=5)
+            if resp.status == 200:
+                self._watchdog_failures = 0
+                return
+        except Exception:
+            pass
+        self._watchdog_failures += 1
+        logger.warning(
+            f"Watchdog: /health 自检失败 ({self._watchdog_failures}/{max_failures})"
+        )
+        if self._watchdog_failures >= max_failures:
+            logger.critical(
+                f"Watchdog: 连续 {max_failures} 次自检失败，强制退出"
+            )
+            os._exit(1)
 
     def get_status(self):
         """获取系统状态信息"""

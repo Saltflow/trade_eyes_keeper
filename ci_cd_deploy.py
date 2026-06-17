@@ -800,10 +800,17 @@ print('[HS_CONFIG_OK]')
             _ssh_cmd(cmd, "Stop health server processes")
         time.sleep(2)
 
-        # ── 14. 启动健康服务器 (nohup + PID 文件，不用 screen) ──
+        # ── 14. 启动健康服务器 (nohup + PID + 异常退出自动重启) ──
         start_cmd = (
             f"cd {REMOTE_DIR} && "
-            f"bash -c 'nohup python3 main.py --health-server > /tmp/hs.log 2>&1 & echo $! > /tmp/hs.pid'"
+            f"bash -c '"
+            f"while true; do "
+            f"  nohup python3 main.py --health-server >> /tmp/hs.log 2>&1; "
+            f"  echo $! > /tmp/hs.pid; "
+            f"  rc=$?; "
+            f"  echo \"[$(date)] health-server exited with code=$rc, restarting in 5s...\" >> /tmp/hs.log;"
+            f"  sleep 5; "
+            f"done &'"
         )
         _ssh_cmd(start_cmd, "Start health server", timeout=10)
         time.sleep(4)
