@@ -428,6 +428,10 @@ def run_optimization(config):
             time.time() - t0,
         )
 
+        # ── 发送优化结果通知 ──
+        notifier = NotifierManager(config)
+        notifier.send_optimizer_notification(report, group_name)
+
     logger.info("策略搜索完成")
 
 
@@ -544,8 +548,9 @@ def run_optimization_v2(config):
             time.time() - t0,
         )
 
-        # ── 发送 Telegram 优化报告 ──
-        _send_optimizer_report_telegram(config, report)
+        # ── 发送优化结果通知（飞书 + Telegram + 邮件）──
+        notifier = NotifierManager(config)
+        notifier.send_optimizer_notification(report, group_name)
 
     logger.info("策略搜索 V2 完成")
 

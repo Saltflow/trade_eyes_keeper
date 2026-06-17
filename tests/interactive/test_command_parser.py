@@ -171,17 +171,22 @@ class TestCommandParser:
     def test_parse_optimize_default(self):
         cmd = parse_command("/optimize")
         assert isinstance(cmd, OptimizeCommand)
-        assert cmd.version == "v2"
+        assert cmd.preset == "v2"
 
     def test_parse_optimize_v1(self):
         cmd = parse_command("/optimize v1")
         assert isinstance(cmd, OptimizeCommand)
-        assert cmd.version == "v1"
+        assert cmd.preset == "v1"
 
-    def test_parse_optimize_v2(self):
-        cmd = parse_command("/optimize v2")
+    def test_parse_optimize_fast(self):
+        cmd = parse_command("/optimize fast")
         assert isinstance(cmd, OptimizeCommand)
-        assert cmd.version == "v2"
+        assert cmd.preset == "fast"
+
+    def test_parse_optimize_deep(self):
+        cmd = parse_command("/optimize deep")
+        assert isinstance(cmd, OptimizeCommand)
+        assert cmd.preset == "deep"
 
     def test_parse_daily(self):
         cmd = parse_command("/daily")

@@ -109,6 +109,13 @@ class TelegramNotifier(BaseNotifier):
         body = f"<b>状态</b>: {status}\n<b>版本</b>: {version}\n<b>概要</b>: {summary}"
         return self._send(title, body)
 
+    def send_optimizer_notification(self, report, group_name: str = "") -> None:
+        from ..notification.email_notifier import build_optimizer_summary
+
+        title = f"策略优化完成 · {group_name}" if group_name else "策略优化完成"
+        body = build_optimizer_summary(report, group_name)
+        self._send(title, body)
+
     # ── 构建方法 ─────────────────────────────
 
     @staticmethod

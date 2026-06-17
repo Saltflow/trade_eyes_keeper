@@ -102,6 +102,13 @@ class FeishuNotifier(BaseNotifier):
         body = f"**状态**: {status}\n**版本**: {version}\n**概要**: {summary}"
         return self._send(title, body)
 
+    def send_optimizer_notification(self, report, group_name: str = "") -> None:
+        from ..notification.email_notifier import build_optimizer_summary
+
+        title = f"策略优化完成 · {group_name}" if group_name else "策略优化完成"
+        body = build_optimizer_summary(report, group_name)
+        self._send(title, body)
+
     # ── 辅助 ──────────────────────────────────
 
     @staticmethod

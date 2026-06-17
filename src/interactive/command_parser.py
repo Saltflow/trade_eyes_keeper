@@ -70,7 +70,7 @@ class BriefCommand:
 
 @dataclass
 class OptimizeCommand:
-    version: str = "v2"
+    preset: str = "v2"
     cmd_type: CommandType = CommandType.OPTIMIZE
 
 
@@ -186,9 +186,13 @@ def parse_command(text: str):
 
     if cmd_name == "optimize":
         mode = args.strip().lower()
-        if mode == "v1":
-            return OptimizeCommand(version="v1")
-        return OptimizeCommand(version="v2")
+        if mode in ("v1",):
+            return OptimizeCommand(preset="v1")
+        if mode in ("fast",):
+            return OptimizeCommand(preset="fast")
+        if mode in ("deep",):
+            return OptimizeCommand(preset="deep")
+        return OptimizeCommand(preset="v2")
 
     if cmd_name == "daily":
         return DailyCommand()

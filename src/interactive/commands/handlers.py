@@ -229,11 +229,12 @@ def handle_save(config_path=None) -> str:
 def _run_main(command_args: list[str]) -> str:
     """后台启动 main.py 子进程。返回提示消息。"""
     import subprocess
+    import sys
     from pathlib import Path
 
     project_root = Path(__file__).parent.parent.parent.parent
     main_py = project_root / "main.py"
-    cmd = ["python3", str(main_py)] + command_args
+    cmd = [sys.executable, str(main_py)] + command_args
     try:
         subprocess.Popen(
             cmd, cwd=str(project_root),
@@ -255,14 +256,22 @@ def handle_brief(report_id: str = "morning_snapshot") -> str:
     return f"❌ {label}触发失败"
 
 
-def handle_optimize(version: str = "v2") -> str:
-    label = "策略优化 V2" if version == "v2" else "策略优化 V1（贝叶斯）"
-    flag = "--optimize-v2" if version == "v2" else "--optimize"
-    if _run_main([flag]):
-        return (
-            f"⏳ {label}已在后台启动。"
-            f"跑完后结果写入 <code>data/optimizer/</code>。"
-        )
+def handle_optimize(preset: str = "v2") -> str:
+    if preset == "v1":
+        label = "策略优化 V1（贝叶斯）"
+        args = ["--optimize"]
+    elif preset == "fast":
+        label = "策略优化 V2 快速（~2 分钟）"
+        args = ["--optimize-v2", "--samples", "2000", "--generations", "1"]
+    elif preset == "deep":
+        label = "策略优化 V2 深度（~30 分钟）"
+        args = ["--optimize-v2", "--samples", "20000", "--generations", "5"]
+    else:
+        label = "策略优化 V2"
+        args = ["--optimize-v2"]
+
+    if _run_main(args):
+        return f"⏳ {label}已在后台启动。跑完后自动推送到飞书/邮件。"
     return f"❌ {label}启动失败"
 
 

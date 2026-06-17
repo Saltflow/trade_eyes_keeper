@@ -125,6 +125,42 @@ def build_brief_entries(stock_data, today) -> list[dict]:
     return entries
 
 
+def build_optimizer_summary(report, group_name: str = "") -> str:
+    """将 OptimizationReport 格式化为三端可用的摘要文本。"""
+    lines = [f"<b>策略优化完成</b>"]
+    if group_name:
+        lines.append(f"分组: <code>{group_name}</code>")
+    lines.append(
+        f"耗时: {report.elapsed_seconds:.0f}s  |  "
+        f"评估: {report.iterations} 策略"
+    )
+
+    if not report.top_strategies:
+        return "\n".join(lines) + "\n(无有效策略)"
+
+    lines.append("")
+    for i, t in enumerate(report.top_strategies[:3]):
+        lines.append(
+            f"<b>#{i+1}</b> 收益 {t.test_return:+.1f}%  |  "
+            f"回撤 {t.test_drawdown:.1f}%  |  "
+            f"夏普 {t.sharpe:.2f}  |  "
+            f"交易 {t.trade_count}"
+        )
+        # 买入卖出规则
+        rule_texts = []
+        for k, v in t.params.items():
+            if k not in ("_stocks", "_stock_count", "_group"):
+                rule_texts.append(f"{k}={v}")
+        if rule_texts:
+            lines.append("  " + "  ".join(rule_texts))
+
+    rid = getattr(report, "report_id", "")
+    lines.append(
+        f"\n完整结果: <code>data/optimizer/{rid}_strategies.yaml</code>"
+    )
+    return "\n".join(lines)
+
+
 class EmailNotifier(BaseNotifier):
     """邮件通知器"""
 
@@ -1861,6 +1897,12 @@ class EmailNotifier(BaseNotifier):
             msg = str(e)
             logger.error(f"发送部署通知邮件失败: {msg}")
             return False, msg
+
+    def send_optimizer_notification(self, report, group_name: str = "") -> None:
+        """发送优化结果邮件。"""
+        body = build_optimizer_summary(report, group_name)
+        subject = f"策略优化完成 · {group_name}" if group_name else "策略优化完成"
+        self._send_email(subject, f"<pre>{body}</pre>")
 
     def _save_email_copy(self, subject, body):
         """

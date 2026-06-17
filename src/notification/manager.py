@@ -88,3 +88,14 @@ class NotifierManager:
         if self.email:
             return self.email.send_test_email()
         return False, "Email 频道未启用"
+
+    def send_optimizer_notification(self, report, group_name: str = "") -> None:
+        """分发优化结果到所有频道。"""
+        for ch in self._channels():
+            try:
+                if hasattr(ch, "send_optimizer_notification"):
+                    ch.send_optimizer_notification(report, group_name)
+            except Exception as e:
+                logger.error(
+                    f"频道 {ch.__class__.__name__} send_optimizer_notification 失败: {e}"
+                )
