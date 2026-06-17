@@ -46,6 +46,85 @@ from .base import BaseNotifier
 # ... (keep all existing imports and code)
 
 
+def build_brief_entries(stock_data, today) -> list[dict]:
+    """从 DataFrame 提取简报行。Email/Feishu/Telegram 三端共享。
+
+    1. 过滤最近 3 天内有交易的标的
+    2. 收集 MA60/WMA20/WMA30/WMA50 锚点
+    3. 用 _pick_best_anchor 选最优锚点
+    4. 不在预警区间 → MA60 兜底
+    5. 按偏离率升序排列（跌幅越大越靠前）
+
+    Returns:
+        [{code, name, close, open, anchor_name, anchor_val, dev_pct, dev_str}]
+        dev_pct 为 None 时排到最后，dev_str 为 "-"
+    """
+    import pandas as pd
+    from datetime import datetime as dt_mod
+
+    today_date = today.date() if hasattr(today, "date") else today
+    entries = []
+
+    for _, row in stock_data.iterrows():
+        code = str(row.get("stock_code", ""))
+        name = str(row.get("stock_name") or code)
+        close_price = row.get("close")
+        open_price = row.get("open")
+
+        # 3 天日期过滤
+        data_date = row.get("date")
+        in_trading = False
+        if data_date is not None and not pd.isna(data_date):
+            try:
+                date_str = str(data_date)[:10]
+                data_dt = dt_mod.strptime(date_str, "%Y-%m-%d").date()
+                days_since = (today_date - data_dt).days
+                in_trading = 0 <= days_since <= 3
+            except Exception:
+                continue
+        if not in_trading:
+            continue
+
+        # 收集锚点
+        anchors = {}
+        for an in ("ma60", "wma20", "wma30", "wma50"):
+            v = row.get(an)
+            if v is not None and not pd.isna(v):
+                anchors[an] = float(v)
+
+        # 最优锚点 + MA60 兜底
+        dev_pct = None
+        anchor_name = "-"
+        anchor_val = None
+        if close_price is not None and not pd.isna(close_price) and anchors:
+            best = EmailNotifier._pick_best_anchor(float(close_price), anchors)
+            if best:
+                anchor_name, anchor_val, dev_pct = best
+            else:
+                # MA60 兜底：不在预警区间也显示偏离
+                ma60_v = anchors.get("ma60") or row.get("ma60")
+                if ma60_v is not None and not pd.isna(ma60_v) and float(ma60_v) > 0:
+                    ma60_v = float(ma60_v)
+                    dev_pct = (float(close_price) - ma60_v) / ma60_v * 100
+                    anchor_name = "ma60"
+                    anchor_val = ma60_v
+
+        entries.append({
+            "code": code,
+            "name": name,
+            "close": close_price,
+            "open": open_price,
+            "anchor_name": anchor_name,
+            "anchor_val": anchor_val,
+            "dev_pct": dev_pct,
+            "dev_str": f"{dev_pct:+.2f}%" if dev_pct is not None else "-",
+            "sort_key": dev_pct if dev_pct is not None else float("inf"),
+        })
+
+    entries.sort(key=lambda x: x["sort_key"])
+    return entries
+
+
 class EmailNotifier(BaseNotifier):
     """邮件通知器"""
 
@@ -1544,101 +1623,43 @@ class EmailNotifier(BaseNotifier):
         today = datetime.now()
         today_date = today.date()
 
-        # ── 构建每只股票的行（先收集，再按偏离率升序排序）──
-        entries = []
-        active_count = 0
-        total_count = len(stock_data)
+        # ── 构建每只股票的行（共享逻辑：日期过滤 + 锚点 + MA60 兜底 + 排序）──
+        rows_data = build_brief_entries(stock_data, today)
 
-        for _, row in stock_data.iterrows():
-            code = row.get("stock_code", "")
-            name = str(row.get("stock_name") or code)
-            open_price = row.get("open")
-            close_price = row.get("close")
-
-            # 判断是否为最近交易数据（最近3天内有数据=活跃标的）
-            data_date = row.get("date")
-            in_trading = False
-            if data_date is not None and not pd.isna(data_date):
-                try:
-                    date_str = str(data_date)[:10]
-                    from datetime import datetime as dt_mod
-                    data_dt = dt_mod.strptime(date_str, "%Y-%m-%d").date()
-                    days_since = (today_date - data_dt).days
-                    in_trading = 0 <= days_since <= 3  # 最近3天内
-                except Exception as e:
-                    logger.debug(f"日期解析失败(简报): date={data_date[:10]} | {e}")
-
-            if not in_trading:
-                # 非交易日：跳过不显示
-                continue
-
-            active_count += 1
-
-            # 格式化价格
-            open_str = f"{open_price:.2f}" if open_price is not None and not pd.isna(open_price) else "—"
-            close_str = f"{close_price:.2f}" if close_price is not None and not pd.isna(close_price) else "—"
-
-            # 收集所有锚点
-            anchors = {}
-            for anchor_name in ("ma60", "wma20", "wma30", "wma50"):
-                val = row.get(anchor_name)
-                if val is not None and not pd.isna(val):
-                    anchors[anchor_name] = float(val)
-
-            # 选最优锚点
-            best = None
-            dev_pct = None
-            if close_price is not None and not pd.isna(close_price) and anchors:
-                best = self._pick_best_anchor(float(close_price), anchors)
-
-            if best:
-                anchor_name, anchor_val, dev_pct = best
-                dev_color = "#27ae60" if dev_pct >= 0 else "#c0392b"
-                dev_str = f"{dev_pct:+.2f}%"
-                anchor_str = f"{anchor_val:.2f}"
-                name_str = anchor_name
-            else:
-                # 简报用 ma60 兜底：不在告警区间也显示偏离
-                ma60_val = anchors.get("ma60") if anchors else row.get("ma60")
-                if (
-                    close_price is not None
-                    and not pd.isna(close_price)
-                    and ma60_val is not None
-                    and not pd.isna(ma60_val)
-                    and float(ma60_val) > 0
-                ):
-                    ma60_val = float(ma60_val)
-                    dev_pct = (float(close_price) - ma60_val) / ma60_val * 100
-                    anchor_str = f"{ma60_val:.2f}"
-                    dev_str = f"{dev_pct:+.2f}%"
-                    dev_color = "#27ae60" if dev_pct >= 0 else "#c0392b"
-                    name_str = "ma60"
-                else:
-                    anchor_str = "-"
-                    dev_str = "-"
-                    dev_color = ""
-                    name_str = "-"
-
-            html_row = (
-                f'<tr>'
-                f'<td>{code}</td>'
-                f'<td>{name}</td>'
-                f'<td>{open_str}</td>'
-                f'<td>{close_str}</td>'
-                f'<td>{name_str}</td>'
-                f'<td>{anchor_str}</td>'
-                f'<td style="color:{dev_color}">{dev_str}</td>'
-                f'</tr>\n'
+        # ── 渲染 HTML ──
+        html_rows = []
+        for entry in rows_data:
+            open_str = (
+                f"{entry['open']:.2f}"
+                if entry["open"] is not None and not pd.isna(entry["open"])
+                else "—"
             )
-            # None 放最后（无法比较时兜底为 +inf）
-            sort_key = dev_pct if dev_pct is not None else float("inf")
-            entries.append((sort_key, html_row))
+            close_str = (
+                f"{entry['close']:.2f}"
+                if entry["close"] is not None and not pd.isna(entry["close"])
+                else "—"
+            )
+            anchor_str = (
+                f"{entry['anchor_val']:.2f}"
+                if entry["anchor_val"] is not None
+                else "-"
+            )
+            dev_color = "#27ae60" if (entry["dev_pct"] or 0) >= 0 else "#c0392b"
+            html_row = (
+                f"<tr>"
+                f"<td>{entry['code']}</td>"
+                f"<td>{entry['name']}</td>"
+                f"<td>{open_str}</td>"
+                f"<td>{close_str}</td>"
+                f"<td>{entry['anchor_name']}</td>"
+                f"<td>{anchor_str}</td>"
+                f'<td style="color:{dev_color}">{entry["dev_str"]}</td>'
+                f"</tr>\n"
+            )
+            html_rows.append(html_row)
 
-        # 按偏离率升序排列：跌幅越大越靠前
-        entries.sort(key=lambda x: x[0])
-        rows = "".join(html_row for _sort_key, html_row in entries)
-
-        # ── 加载模板 ──
+        rows = "".join(html_rows)
+        active_count = len(rows_data)
         template_dir = Path(__file__).parent.parent / "templates"
         template = (template_dir / "brief_email.html").read_text(encoding="utf-8")
 

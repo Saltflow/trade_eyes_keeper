@@ -155,13 +155,13 @@ def _make_brief_df():
     return pd.DataFrame([
         {
             "stock_code": "601728", "stock_name": "中国电信",
-            "date": pd.Timestamp("2026-05-27"),
+            "date": pd.Timestamp.today().normalize(),
             "open": 5.70, "close": 5.76,
             "ma60": 5.91, "wma20": 5.78, "wma30": 5.65, "wma50": 5.50,
         },
         {
             "stock_code": "00883", "stock_name": "中海油",
-            "date": pd.Timestamp("2026-05-27"),
+            "date": pd.Timestamp.today().normalize(),
             "open": 18.50, "close": 18.62,
             "ma60": 18.00, "wma20": 18.40, "wma30": 17.80, "wma50": 17.50,
         },

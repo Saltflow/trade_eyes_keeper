@@ -189,47 +189,16 @@ class FeishuNotifier(BaseNotifier):
 
     @staticmethod
     def _build_brief_rows(stock_data, today) -> str:
-        """构建简报表格行（Markdown）"""
-        import pandas as pd
-        from .email_notifier import EmailNotifier
+        """构建简报表格行，三端共享数据。"""
+        from ..notification.email_notifier import build_brief_entries
 
-        entries = []
-        today_date = today.date()
-        for _, row in stock_data.iterrows():
-            data_date = row.get("date")
-            in_trading = False
-            if data_date is not None and not pd.isna(data_date):
-                try:
-                    d = pd.Timestamp(str(data_date)[:10]).date()
-                    in_trading = 0 <= (today_date - d).days <= 3
-                except Exception:
-                    continue
-            if not in_trading:
-                continue
-            close_price = row.get("close")
-            anchors = {}
-            for an in ("ma60", "wma20", "wma30", "wma50"):
-                v = row.get(an)
-                if v is not None and not pd.isna(v):
-                    anchors[an] = float(v)
-            best = None
-            dev_pct = None
-            if close_price is not None and not pd.isna(close_price) and anchors:
-                best = EmailNotifier._pick_best_anchor(float(close_price), anchors)
-            if best:
-                _, _, dev_pct = best
-            code = row.get("stock_code", "")
-            close_str = f"{close_price:.2f}" if close_price is not None and not pd.isna(close_price) else "-"
-            dev_str = f"{dev_pct:+.2f}%" if dev_pct is not None else "-"
-            sort_key = dev_pct if dev_pct is not None else float("inf")
-            entries.append((sort_key, code, close_str, dev_str))
-        entries.sort(key=lambda x: x[0])
+        entries = build_brief_entries(stock_data, today)
         if not entries:
             return ""
-        headers = ["代码", "收盘", "偏离"]
+        headers = ["代码", "名称", "收盘", "偏离"]
         rows = [
-            [str(code), close_str, dev_str]
-            for _, code, close_str, dev_str in entries
+            [str(e["code"]), e["name"][:6], f"{e['close']:.2f}", e["dev_str"]]
+            for e in entries
         ]
         widths = _calc_column_widths(headers, rows)
         lines = [_format_table_row(headers, widths)]

@@ -112,64 +112,27 @@ class TelegramNotifier(BaseNotifier):
     # ── 构建方法 ─────────────────────────────
 
     @staticmethod
+    @staticmethod
     def _build_brief_blocks(stock_data, today) -> str:
-        """简报：每只标的独立小段，emoji 着色"""
-        from .email_notifier import EmailNotifier
+        """简报：每只标的独立小段，emoji 着色。三端共享数据。"""
+        from ..notification.email_notifier import build_brief_entries
 
-        entries = []
-        today_date = today.date()
-        for _, row in stock_data.iterrows():
-            data_date = row.get("date")
-            in_trading = False
-            if data_date is not None and not pd.isna(data_date):
-                try:
-                    d = pd.Timestamp(str(data_date)[:10]).date()
-                    in_trading = 0 <= (today_date - d).days <= 3
-                except Exception:
-                    continue
-            if not in_trading:
-                continue
-
-            close_price = row.get("close")
-            anchors = {}
-            for an in ("ma60", "wma20", "wma30", "wma50"):
-                v = row.get(an)
-                if v is not None and not pd.isna(v):
-                    anchors[an] = float(v)
-
-            best = None
-            dev_pct = None
-            anchor_name = ""
-            anchor_val = None
-            if close_price is not None and not pd.isna(close_price) and anchors:
-                best = EmailNotifier._pick_best_anchor(float(close_price), anchors)
-            if best:
-                anchor_name, anchor_val, dev_pct = best
-
-            code = str(row.get("stock_code", ""))
-            name = str(row.get("stock_name", code))
-            close_str = f"{close_price:.2f}" if close_price is not None and not pd.isna(close_price) else "-"
-            anchor_str = f"{anchor_val:.2f}" if anchor_val is not None else "-"
-
-            if dev_pct is not None:
-                emoji = UP if dev_pct > 0 else DOWN if dev_pct < 0 else FLAT
-                dev_str = f"{dev_pct:+.2f}%"
-            else:
-                emoji = FLAT
-                dev_str = "-"
-
-            sort_key = dev_pct if dev_pct is not None else float("inf")
-            entries.append((sort_key, code, name, close_str, anchor_name, anchor_str, dev_str, emoji))
-
-        entries.sort(key=lambda x: x[0])
+        entries = build_brief_entries(stock_data, today)
         if not entries:
             return ""
 
         lines = []
-        for _, code, name, close_str, aname, aval, dev_str, emoji in entries:
+        for e in entries:
+            close_str = f"{e['close']:.2f}" if e["close"] is not None else "-"
+            anchor_str = f"{e['anchor_val']:.2f}" if e["anchor_val"] is not None else "-"
+            if e["dev_pct"] is not None:
+                emoji = UP if e["dev_pct"] > 0 else DOWN if e["dev_pct"] < 0 else FLAT
+            else:
+                emoji = FLAT
             lines.append(
-                f"<code>{code}</code> {name}\n"
-                f"现价 {close_str}  {aname} {aval}  <b>{dev_str}</b>  {emoji}"
+                f"<code>{e['code']}</code> {e['name']}\n"
+                f"现价 {close_str}  {e['anchor_name']} {anchor_str}  "
+                f"<b>{e['dev_str']}</b>  {emoji}"
             )
         return "\n\n".join(lines)
 
