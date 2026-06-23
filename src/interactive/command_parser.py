@@ -15,6 +15,9 @@ class CommandType(Enum):
     BRIEF = auto()
     OPTIMIZE = auto()
     DAILY = auto()
+    SCHEDULE = auto()
+    ALERTS = auto()
+    RESET_ALERTS = auto()
     ERROR = auto()
 
 
@@ -77,6 +80,25 @@ class OptimizeCommand:
 @dataclass
 class DailyCommand:
     cmd_type: CommandType = CommandType.DAILY
+
+
+@dataclass
+class ScheduleCommand:
+    action: str = "view"  # "view" or "set"
+    task_id: str = ""
+    time_str: str = ""
+    cmd_type: CommandType = CommandType.SCHEDULE
+
+
+@dataclass
+class AlertsCommand:
+    cmd_type: CommandType = CommandType.ALERTS
+
+
+@dataclass
+class ResetAlertsCommand:
+    stock_code: str = ""  # 空 = 全部重置
+    cmd_type: CommandType = CommandType.RESET_ALERTS
 
 
 @dataclass
@@ -196,6 +218,24 @@ def parse_command(text: str):
 
     if cmd_name == "daily":
         return DailyCommand()
+
+    if cmd_name == "schedule":
+        parts = args.split()
+        if not parts or not parts[0]:
+            return ScheduleCommand(action="view")
+        task_id = parts[0].lower()
+        if len(parts) < 2:
+            return ErrorCommand(
+                message=f"缺少时间。格式: /schedule {task_id} 20:00"
+            )
+        return ScheduleCommand(action="set", task_id=task_id, time_str=parts[1])
+
+    if cmd_name == "alerts":
+        return AlertsCommand()
+
+    if cmd_name == "reset_alerts":
+        code = args.strip().upper() if args else ""
+        return ResetAlertsCommand(stock_code=code)
 
     if cmd_name == "backtest":
         arg_parts = args.split()

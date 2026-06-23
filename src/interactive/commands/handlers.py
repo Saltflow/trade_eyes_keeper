@@ -43,7 +43,11 @@ def handle_help() -> str:
         "<code>/save</code> — 保存监控列表到 git\n"
         "<code>/brief [afternoon]</code> — 触发简报（默认早盘）\n"
         "<code>/optimize [v1]</code> — 触发策略优化（默认 V2）\n"
-        "<code>/daily</code> — 触发完整日报"
+        "<code>/daily</code> — 触发完整日报\n"
+        "<code>/schedule [任务 时间]</code> — 查看/修改调度时间\n"
+        " 例: <code>/schedule daily 20:00</code>\n"
+        "<code>/alerts</code> — 查看报警状态\n"
+        "<code>/reset_alerts [代码]</code> — 重置报警（不填代码=全部）"
     )
 
 
@@ -287,3 +291,101 @@ def handle_daily() -> str:
     if _run_main(["--once"]):
         return "⏳ 完整日报已触发。稍后飞书+邮件会推送。"
     return "❌ 日报触发失败"
+
+
+def handle_schedule(action: str, task_id: str, time_str: str) -> str:
+    """查看或修改调度时间。"""
+    # 从 health server 全局实例获取 ScheduleManager
+    try:
+        from src.health_server.core.global_instances import get_schedule_manager
+        mgr = get_schedule_manager()
+    except Exception:
+        return "❌ 调度管理器未启动"
+
+    if action == "view" or not task_id:
+        items = mgr.get_schedule()
+        if not items:
+            return "当前无调度任务"
+        lines = ["<b>当前调度</b>\n"]
+        for s in items:
+            lines.append(f"<code>{s['name']}</code>: {s['time']}")
+        return "\n".join(lines)
+
+    # set
+    ok = mgr.reschedule(task_id, time_str)
+    if ok:
+        label = {
+            "daily": "日报",
+            "morning_snapshot": "早盘简报",
+            "afternoon_snapshot": "收盘简报",
+            "optimize": "策略优化",
+        }.get(task_id, task_id)
+        return f"✅ {label}时间已改为 <code>{time_str}</code>（立即生效）"
+    return f"❌ 修改失败。任务名: {task_id}，时间: {time_str}"
+
+
+def handle_alerts() -> str:
+    """查看当前报警状态。"""
+    import json
+    from pathlib import Path
+
+    state_path = Path("cache/alerts/alerts_state.json")
+    if not state_path.exists():
+        return "暂无报警状态记录"
+
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        return "报警状态文件读取失败"
+
+    alerts = data.get("alerts", {})
+    if not alerts:
+        return "当前无活跃报警状态"
+
+    lines = [f"<b>报警状态</b>（共 {len(alerts)} 条）\n"]
+    for key, info in alerts.items():
+        parts = key.split("_", 2)
+        code = parts[0] if parts else "?"
+        anchor = parts[1] if len(parts) > 1 else "?"
+        interval = parts[2] if len(parts) > 2 else "?"
+        days = info.get("consecutive_days", 0)
+        suppressed = " ⚠️ 已抑制" if days > 5 else ""
+        lines.append(
+            f"<code>{code}</code>  {anchor}  {interval}  连续 {days} 天{suppressed}"
+        )
+    return "\n".join(lines)
+
+
+def handle_reset_alerts(stock_code: str = "") -> str:
+    """清零报警状态。"""
+    import json
+    from pathlib import Path
+
+    state_path = Path("cache/alerts/alerts_state.json")
+    if not state_path.exists():
+        return "暂无报警状态记录，无需重置"
+
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        return "报警状态文件读取失败"
+
+    alerts = data.get("alerts", {})
+    if not alerts:
+        return "当前无报警状态，无需重置"
+
+    if stock_code:
+        # 定向清除
+        keys_to_delete = [k for k in alerts if k.startswith(f"{stock_code}_")]
+        if not keys_to_delete:
+            return f"<code>{stock_code}</code> 无报警状态记录"
+        for k in keys_to_delete:
+            del alerts[k]
+        data["alerts"] = alerts
+        state_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return f"✅ 已重置 <code>{stock_code}</code> 的报警状态（清除 {len(keys_to_delete)} 条）"
+    else:
+        # 全部清除
+        data["alerts"] = {}
+        state_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return f"✅ 已重置所有报警状态（清除 {len(alerts)} 条）"

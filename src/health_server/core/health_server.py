@@ -81,6 +81,19 @@ class HealthServer:
             )
             self._watchdog_thread.start()
 
+            # 启动内嵌调度器（替代外部 crontab）
+            try:
+                from src.core.schedule_manager import ScheduleManager
+                from .global_instances import set_schedule_manager
+
+                config_path = Path("config/config.yaml")
+                mgr = ScheduleManager(self.config, config_path=config_path)
+                mgr.start()
+                set_schedule_manager(mgr)
+                logger.info("内嵌调度器已启动（替代 crontab）")
+            except Exception as e:
+                logger.error(f"内嵌调度器启动失败: {e}")
+
             return True
 
         except Exception as e:

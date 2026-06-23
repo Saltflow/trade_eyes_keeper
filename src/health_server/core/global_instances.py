@@ -26,6 +26,20 @@ otp_manager = OTPManager(expiry_minutes=10)
 # 会话管理器实例 (30分钟有效期)
 session_manager = AuthSessionManager(expiry_minutes=30)
 
+# 全局调度管理器实例 (由 health server 启动时设置)
+_schedule_manager = None
+
+
+def set_schedule_manager(mgr):
+    global _schedule_manager
+    _schedule_manager = mgr
+
+
+def get_schedule_manager():
+    if _schedule_manager is None:
+        raise RuntimeError("调度管理器未初始化")
+    return _schedule_manager
+
 
 def audit_log(action, ip_address, details=""):
     """

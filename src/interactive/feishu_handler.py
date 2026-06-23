@@ -6,6 +6,7 @@ import threading
 
 from .command_parser import (
     AddCommand,
+    AlertsCommand,
     BacktestCommand,
     BriefCommand,
     DailyCommand,
@@ -14,11 +15,14 @@ from .command_parser import (
     ListCommand,
     OptimizeCommand,
     RemoveCommand,
+    ResetAlertsCommand,
+    ScheduleCommand,
     SaveCommand,
     parse_command,
 )
 from .commands.handlers import (
     handle_add,
+    handle_alerts,
     handle_backtest,
     handle_brief,
     handle_daily,
@@ -26,7 +30,9 @@ from .commands.handlers import (
     handle_list,
     handle_optimize,
     handle_remove,
+    handle_reset_alerts,
     handle_save,
+    handle_schedule,
 )
 from .feishu_app import FeishuApp
 
@@ -148,6 +154,12 @@ def _dispatch(cmd) -> str:
         return handle_optimize(cmd.preset)
     if isinstance(cmd, DailyCommand):
         return handle_daily()
+    if isinstance(cmd, ScheduleCommand):
+        return handle_schedule(cmd.action, cmd.task_id, cmd.time_str)
+    if isinstance(cmd, AlertsCommand):
+        return handle_alerts()
+    if isinstance(cmd, ResetAlertsCommand):
+        return handle_reset_alerts(cmd.stock_code)
     if isinstance(cmd, ErrorCommand):
         return f"❌ {cmd.message}"
     return "❌ 未知命令。发送 /help 查看可用命令。"
