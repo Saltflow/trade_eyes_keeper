@@ -41,34 +41,31 @@ class ScheduleManager:
 
         # 日报
         daily_time = sched_cfg.get("run_time", "19:00")
-        self._add_job(
-            "daily", daily_time,
-            "main:run_daily_task",
-            "每日日报",
-        )
+        if sched_cfg.get("daily_enabled", True):
+            self._add_job("daily", daily_time, ["--once"], "每日日报")
 
         # 简报
         for br in sched_cfg.get("brief_reports", []):
+            br_id = br.get("id", "morning_snapshot")
             if not br.get("enabled", True):
                 continue
-            br_id = br.get("id", "morning_snapshot")
             br_time = br.get("run_time", "09:50")
             job_id = _JOB_IDS.get(br_id, f"brief_{br_id}")
             self._add_job(
                 br_id, br_time,
-                "main:run_brief_report",
+                ["--brief", br_id],
                 br.get("label", br_id),
-                kwargs={"report_id": br_id},
                 job_id_override=job_id,
             )
 
         # 策略优化（每天凌晨 2:00）
         opt_time = sched_cfg.get("optimize_time", "02:00")
-        self._add_job(
-            "optimize", opt_time,
-            "main:run_optimization_v2",
-            "策略优化",
-        )
+        if sched_cfg.get("optimize_enabled", True):
+            self._add_job(
+                "optimize", opt_time,
+                ["--optimize-v2"],
+                "策略优化",
+            )
 
         self.scheduler.start()
         logger.info(
@@ -79,12 +76,11 @@ class ScheduleManager:
         self,
         task_id: str,
         time_str: str,
-        func_ref: str,
+        cli_args: list[str],
         name: str,
-        kwargs: dict | None = None,
         job_id_override: str | None = None,
     ):
-        """注册一个 job。func_ref 格式 'module:function'。"""
+        """注册一个 job，通过子进程执行 main.py。"""
         hour, minute = self._parse_time(time_str)
         if hour is None:
             logger.warning(f"跳过无效调度时间: {task_id}={time_str}")
@@ -92,25 +88,24 @@ class ScheduleManager:
 
         job_id = job_id_override or _JOB_IDS.get(task_id, task_id)
 
-        # 用 lambda 包装，避免 import 循环
         def _run():
+            import subprocess
+            import sys
+            import os
+            from pathlib import Path
+
+            project_root = Path(__file__).parent.parent.parent
+            main_py = project_root / "main.py"
+            cmd = [sys.executable, str(main_py)] + cli_args
             try:
-                if func_ref == "main:run_daily_task":
-                    from main import run_daily_task
-                    run_daily_task()
-                elif func_ref == "main:run_brief_report":
-                    from main import run_brief_report
-                    run_brief_report(**(kwargs or {}))
-                elif func_ref == "main:run_optimization_v2":
-                    from main import run_optimization_v2
-                    from main import load_config
-                    run_optimization_v2(load_config())
-                elif func_ref == "main:run_optimization":
-                    from main import run_optimization
-                    from main import load_config
-                    run_optimization(load_config())
+                subprocess.Popen(
+                    cmd, cwd=str(project_root),
+                    env=os.environ.copy(),
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                logger.info(f"调度任务已启动子进程: {' '.join(cmd)}")
             except Exception as e:
-                logger.exception(f"调度任务执行失败: {task_id}: {e}")
+                logger.exception(f"调度任务启动失败: {task_id}: {e}")
 
         trigger = CronTrigger(hour=hour, minute=minute)
         self.scheduler.add_job(

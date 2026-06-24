@@ -317,10 +317,10 @@ def run_brief_report(report_id: str = "morning_snapshot"):
 
         logger.info(f"简报：获取到 {len(session.stocks_data)} 只股票数据")
 
-        # 休市检测：数据指纹比较
+        # 休市检测：数据指纹比较（按简报类型区分文件，避免早盘/收盘互相干扰）
         from src.utils.market_status import is_market_closed, mark_pushed
         stock_data_df = session.get_all_dataframe()
-        last_pushed_file = Path("cache/last_pushed_brief.txt")
+        last_pushed_file = Path(f"cache/last_pushed_{report_id}.txt")
         if is_market_closed(stock_data_df, last_pushed_file):
             logger.info("数据未更新（疑似休市），跳过简报推送")
             return
