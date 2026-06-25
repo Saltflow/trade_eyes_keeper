@@ -236,6 +236,42 @@ def _apply_lock_reset(
     return triggered_combined, trade_count
 
 
+def _apply_confirmation(
+    conditions: np.ndarray,
+    confirmation_days: int,
+) -> np.ndarray:
+    """连续确认过滤。
+
+    只有连续 confirmation_days 天条件都满足时，才在第 confirmation_days 天
+    输出 True 信号。中断后计数归零。
+
+    Args:
+        conditions: (T, N) bool — 每日条件是否满足
+        confirmation_days: 需要连续满足的天数
+
+    Returns:
+        (T, N) bool — 确认后的信号
+    """
+    if confirmation_days <= 1:
+        return conditions.copy()
+
+    T, N = conditions.shape
+    result = np.zeros((T, N), dtype=bool)
+    streak = np.zeros(N, dtype=np.int32)
+
+    for t in range(T):
+        for n in range(N):
+            if conditions[t, n]:
+                streak[n] += 1
+                if streak[n] == confirmation_days:
+                    result[t, n] = True
+                    streak[n] = 0  # 重置，等下一轮连续
+            else:
+                streak[n] = 0
+
+    return result
+
+
 try:
     from numba import jit, prange
 
@@ -399,11 +435,15 @@ class FastEvaluator:
         monthly_buy_limit: float = 15000.0,
         lot_size: int = 100,  # A股默认100股/手，非A股改为1
         commission_rate: float = 0.002,
+        buy_confirmation_days: int = 3,
+        sell_confirmation_days: int = 1,
     ):
         self.initial_cash = initial_cash
         self.monthly_buy_limit = monthly_buy_limit
         self.lot_size = lot_size
         self.commission_rate = commission_rate
+        self.buy_confirmation_days = buy_confirmation_days
+        self.sell_confirmation_days = sell_confirmation_days
 
     def evaluate(
         self,
@@ -416,12 +456,13 @@ class FastEvaluator:
         sell_builders: list[str] | None = None,
         sell_thresholds: list[float] | None = None,
         sell_fracs: list[float] | None = None,
+        price_open_matrix: np.ndarray | None = None,
     ) -> "WindowStats":
         """评估单窗口单策略（支持买入+卖出）
 
         Args:
             indicator_matrix: (T, N, K) float32 指标矩阵
-            price_matrix: (T, N) float32 价格矩阵
+            price_matrix: (T, N) float32 收盘价矩阵
             cash_baseline: (T,) float64 现金基准线
             buy_builders: 买入规则构建器名列表
             buy_thresholds: 买入规则阈值列表
@@ -429,6 +470,7 @@ class FastEvaluator:
             sell_builders: 卖出规则构建器名列表（可选）
             sell_thresholds: 卖出规则阈值列表（可选）
             sell_fracs: 卖出规则比例列表（可选）
+            price_open_matrix: (T, N) float32 开盘价矩阵（可选，用于均价执行）
 
         Returns:
             WindowStats 包含各项测试期统计指标
@@ -466,13 +508,26 @@ class FastEvaluator:
             sell_conditions = np.zeros((1, T, N), dtype=bool)
             sell_resets = np.ones((1, T, N), dtype=bool)
 
-        # ── 3. 锁/重置状态机 → 实际信号 ──
+        # ── 3. 锁/重置状态机 → 原始信号 ──
         if HAS_NUMBA:
-            buy_signals, _ = _apply_lock_reset_numba(buy_conditions, buy_resets)
-            sell_signals, _ = _apply_lock_reset_numba(sell_conditions, sell_resets)
+            buy_signals_raw, _ = _apply_lock_reset_numba(buy_conditions, buy_resets)
+            sell_signals_raw, _ = _apply_lock_reset_numba(sell_conditions, sell_resets)
         else:
-            buy_signals, _ = _apply_lock_reset(buy_conditions, buy_resets)
-            sell_signals, _ = _apply_lock_reset(sell_conditions, sell_resets)
+            buy_signals_raw, _ = _apply_lock_reset(buy_conditions, buy_resets)
+            sell_signals_raw, _ = _apply_lock_reset(sell_conditions, sell_resets)
+
+        # ── 3b. 连续确认过滤 ──
+        # 买入信号需要连续 N 日满足（用原始条件，不是锁后信号）
+        # 卖出信号需要连续 M 日满足
+        buy_cond_any = buy_conditions.any(axis=0)  # (T, N) 任一规则条件满足
+        sell_cond_any = sell_conditions.any(axis=0)
+
+        buy_signals = _apply_confirmation(
+            buy_cond_any, self.buy_confirmation_days,
+        )
+        sell_signals = _apply_confirmation(
+            sell_cond_any, self.sell_confirmation_days,
+        )
 
         # ── 4. 组合模拟 → 日资产 ──
         buy_fracs_arr = np.array(buy_fracs, dtype=np.float32)
@@ -491,6 +546,8 @@ class FastEvaluator:
                 buy_fracs_arr, sell_fracs_arr,
                 self.initial_cash, self.monthly_buy_limit,
                 self.lot_size, self.commission_rate,
+                self.buy_confirmation_days, self.sell_confirmation_days,
+                price_open_matrix,
             )
 
         # ── 5. 计算指标 ──
@@ -595,8 +652,17 @@ def _simulate_portfolio_python(
     monthly_limit,
     lot_size,
     commission_rate,
+    buy_confirmation_days=3,
+    sell_confirmation_days=1,
+    price_open=None,
 ):
-    """纯 Python 回退, 与 numba 版本逻辑一致（支持买入+卖出）"""
+    """纯 Python 回退, 支持均价执行。
+
+    信号已在上游 _apply_confirmation 做了连续确认过滤。
+    本函数只负责执行：
+    - 买入价 = 确认窗口内每日开盘+收盘的均值
+    - 卖出价 = 当日开盘+收盘均值
+    """
     T, N = buy_signals.shape
     shares = np.zeros(N, dtype=np.float64)
     cash = float(initial_cash)
@@ -608,52 +674,83 @@ def _simulate_portfolio_python(
     avg_buy_frac = float(np.mean(buy_fracs)) if len(buy_fracs) > 0 else 0.15
     avg_sell_frac = float(np.mean(sell_fracs)) if len(sell_fracs) > 0 else 0.25
 
+    if price_open is None:
+        price_open = prices.copy()
+
+    # 记录买入信号触发的窗口（用于算均价）
+    # buy_window[n] = (start_day, end_day) 或 None
+    buy_window: list[tuple | None] = [None] * N
+
     for t in range(T):
         month = t // 21
         if month != current_month:
             monthly_spent = 0.0
             current_month = month
 
-        # 先卖
+        # 计算买入窗口（从 confirmation_days 往前数）
         for n in range(N):
-            if sell_signals[t, n] and shares[n] > 0:
-                price = float(prices[t, n])
-                if price <= 0 or np.isnan(price):
-                    continue
+            if buy_signals[t, n] and buy_window[n] is None:
+                start = max(0, t - buy_confirmation_days + 1)
+                buy_window[n] = (start, t)
 
-                sell_qty = shares[n] * avg_sell_frac
-                sell_value = sell_qty * price
-                fee = sell_value * commission_rate
-                cash += sell_value - fee
-                shares[n] -= sell_qty
+        # ── 先卖后买 ──
+        # 执行卖出
+        for n in range(N):
+            if not sell_signals[t, n] or shares[n] <= 0:
+                continue
+            p_open = float(price_open[t, n])
+            p_close = float(prices[t, n])
+            if p_open <= 0 or p_close <= 0 or np.isnan(p_open) or np.isnan(p_close):
+                continue
+            exec_price = (p_open + p_close) / 2.0
+
+            sell_qty = shares[n] * avg_sell_frac
+            sell_value = sell_qty * exec_price
+            fee = sell_value * commission_rate
+            cash += sell_value - fee
+            shares[n] -= sell_qty
+            total_trades += 1
+
+        # 执行买入
+        for n in range(N):
+            if buy_window[n] is None or cash <= 0:
+                continue
+            start_day, end_day = buy_window[n]
+            buy_window[n] = None  # 消费掉
+
+            # 买入价 = 窗口内每日开盘+收盘的均值
+            window_prices = []
+            for d in range(start_day, end_day + 1):
+                po = float(price_open[d, n])
+                pc = float(prices[d, n])
+                if po > 0 and not np.isnan(po):
+                    window_prices.append(po)
+                if pc > 0 and not np.isnan(pc):
+                    window_prices.append(pc)
+            if not window_prices:
+                continue
+            exec_price = np.mean(window_prices)
+
+            buy_amount = cash * avg_buy_frac
+            remaining = monthly_limit - monthly_spent
+            buy_amount = min(buy_amount, remaining)
+
+            if buy_amount <= 0:
+                continue
+
+            cost = buy_amount * (1.0 - commission_rate)
+            qty = cost / exec_price
+            cost_real = qty * exec_price
+            fee = cost_real * commission_rate
+            total_cost = cost_real + fee
+
+            if total_cost <= cash:
+                shares[n] += qty
+                cash -= total_cost
+                monthly_spent += total_cost
                 total_trades += 1
 
-        # 后买
-        for n in range(N):
-            if buy_signals[t, n] and cash > 0:
-                price = float(prices[t, n])
-                if price <= 0 or np.isnan(price):
-                    continue
-
-                buy_amount = cash * avg_buy_frac
-                remaining = monthly_limit - monthly_spent
-                buy_amount = min(buy_amount, remaining)
-
-                if buy_amount <= 0:
-                    continue
-
-                cost = buy_amount * (1.0 - commission_rate)
-                qty = cost / price
-                cost_real = qty * price
-                fee = cost_real * commission_rate
-                total_cost = cost_real + fee
-
-                if total_cost <= cash:
-                    shares[n] += qty
-                    cash -= total_cost
-                    monthly_spent += total_cost
-                    total_trades += 1
-
+        # 当日总资产
         pos_value = sum(
             shares[n] * float(prices[t, n])
             for n in range(N)
