@@ -9,6 +9,16 @@ from pathlib import Path
 import pandas as pd
 
 
+def _extract_date_str(value) -> str:
+    """从 date 列的 max() 值提取 YYYY-MM-DD 字符串。
+
+    兼容 Timestamp、datetime、str 等类型。
+    """
+    if hasattr(value, "date"):
+        return str(value.date())[:10]
+    return str(value)[:10]
+
+
 def is_market_closed(stock_data, last_pushed_file) -> bool:
     """判断是否休市：最新数据日期 == 上次推送日期。
 
@@ -27,7 +37,9 @@ def is_market_closed(stock_data, last_pushed_file) -> bool:
     if "date" not in stock_data.columns:
         return True
 
-    latest = str(stock_data["date"].max().date())[:10]
+    # 统一转成字符串再取 max，避免 Timestamp/str 混合比较报错
+    date_series = stock_data["date"].astype(str)
+    latest = _extract_date_str(date_series.max())
     try:
         last = Path(last_pushed_file).read_text(encoding="utf-8").strip()
     except (FileNotFoundError, OSError):
@@ -45,5 +57,7 @@ def mark_pushed(last_pushed_file, stock_data) -> None:
     """
     if stock_data is None or stock_data.empty:
         return
-    latest = str(stock_data["date"].max().date())[:10]
+    # 统一转成字符串再取 max，避免 Timestamp/str 混合比较报错
+    date_series = stock_data["date"].astype(str)
+    latest = _extract_date_str(date_series.max())
     Path(last_pushed_file).write_text(latest, encoding="utf-8")
