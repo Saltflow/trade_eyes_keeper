@@ -201,6 +201,41 @@ class StrategyOptimizerV2:
         save_dir.mkdir(parents=True, exist_ok=True)
         self._save_results(report, save_dir)
 
+        # ── 6b. 更新策略分布池（贝叶斯增量更新）──
+        try:
+            from .strategy_distribution import StrategyDistributionPool
+            pool_path = save_dir / "strategy_distributions.yaml"
+            pool = StrategyDistributionPool(pool_path)
+
+            # 取 Top10 搜索结果转为分布池更新格式
+            search_results = []
+            for t in report.top_strategies[:10]:
+                # 过滤掉元数据字段
+                clean_params = {
+                    k: float(v) for k, v in t.params.items()
+                    if not k.startswith("_") and isinstance(v, (int, float, str))
+                }
+                try:
+                    clean_params = {k: float(v) for k, v in clean_params.items()}
+                except (ValueError, TypeError):
+                    continue
+
+                search_results.append({
+                    "params": clean_params,
+                    "wf_scores": [t.test_return] * 6,  # V2 只有一个聚合得分，复制为6份
+                    "recent_return": t.test_return,
+                })
+
+            if search_results:
+                pool.update(search_results)
+                logger.info(
+                    "[V2] 策略分布池已更新: %d 个分布, Top1 评分 %.2f",
+                    len(pool.distributions),
+                    pool.distributions[0].overall_score if pool.distributions else 0,
+                )
+        except Exception as e:
+            logger.warning(f"[V2] 策略分布池更新失败: {e}")
+
         logger.info(
             "[V2] 搜索完成: 总耗时 %.0fs, Top1 WF得分 %.2f",
             report.elapsed_seconds,

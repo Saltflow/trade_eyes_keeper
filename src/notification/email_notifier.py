@@ -126,10 +126,11 @@ def build_brief_entries(stock_data, today) -> list[dict]:
 
 
 def build_optimizer_summary(report, group_name: str = "") -> str:
-    """将 OptimizationReport 格式化为三端可用的摘要文本。"""
-    lines = [f"<b>策略优化完成</b>"]
+    """将 OptimizationReport 格式化为人话摘要。"""
+    lines = ["<b>策略优化完成</b>"]
     if group_name:
-        lines.append(f"分组: <code>{group_name}</code>")
+        label = "A股" if group_name == "a_share" else "非A股"
+        lines.append(f"分组: {label}")
     lines.append(
         f"耗时: {report.elapsed_seconds:.0f}s  |  "
         f"评估: {report.iterations} 策略"
@@ -138,26 +139,63 @@ def build_optimizer_summary(report, group_name: str = "") -> str:
     if not report.top_strategies:
         return "\n".join(lines) + "\n(无有效策略)"
 
+    # 买入卖出信号中文映射
+    SIGNAL_NAMES = {
+        "deviation_cross": "偏离穿越",
+        "deviation_absolute": "偏离达标",
+        "rsi_signal": "RSI超卖",
+        "bollinger_signal": "布林低位",
+        "volume_spike": "放量异动",
+        "trend_follow": "趋势跟踪",
+        "sell_deviation_cross": "偏离穿越(卖)",
+        "sell_deviation_absolute": "偏离达标(卖)",
+        "sell_rsi_signal": "RSI超买",
+        "sell_bollinger_signal": "布林高位",
+        "sell_trend_follow": "趋势反转",
+        "none": "无",
+    }
+
     lines.append("")
     for i, t in enumerate(report.top_strategies[:3]):
+        lines.append(f"<b>策略 #{i+1}</b>")
         lines.append(
-            f"<b>#{i+1}</b> 收益 {t.test_return:+.1f}%  |  "
-            f"回撤 {t.test_drawdown:.1f}%  |  "
-            f"夏普 {t.sharpe:.2f}  |  "
-            f"交易 {t.trade_count}"
+            f"  收益 {t.test_return:+.1f}%  回撤 {t.test_drawdown:.1f}%  "
+            f"夏普 {t.sharpe:.2f}  交易 {t.trade_count}笔"
         )
-        # 买入卖出规则
-        rule_texts = []
+
+        # 翻译参数为人话
+        buy_rules = []
+        sell_rules = []
         for k, v in t.params.items():
-            if k not in ("_stocks", "_stock_count", "_group"):
-                rule_texts.append(f"{k}={v}")
-        if rule_texts:
-            lines.append("  " + "  ".join(rule_texts))
+            if k.startswith("_"):
+                continue
+            if k.startswith("buy_"):
+                idx = k.split("_")[1]
+                if k.endswith("_signal"):
+                    name = SIGNAL_NAMES.get(str(v), str(v))
+                    buy_rules.append(f"买{idx}: {name}")
+                elif k.endswith("_t"):
+                    buy_rules.append(f"买{idx}阈值: {float(v):.3f}")
+                elif k.endswith("_frac"):
+                    buy_rules.append(f"买{idx}仓位: {float(v)*100:.0f}%")
+            elif k.startswith("sell_"):
+                idx = k.split("_")[1]
+                if k.endswith("_signal"):
+                    name = SIGNAL_NAMES.get(str(v), str(v))
+                    sell_rules.append(f"卖{idx}: {name}")
+                elif k.endswith("_t"):
+                    sell_rules.append(f"卖{idx}阈值: {float(v):.3f}")
+                elif k.endswith("_frac"):
+                    sell_rules.append(f"卖{idx}仓位: {float(v)*100:.0f}%")
+
+        if buy_rules:
+            lines.append(f"  买入: {'  '.join(buy_rules)}")
+        if sell_rules:
+            lines.append(f"  卖出: {'  '.join(sell_rules)}")
+        lines.append("")
 
     rid = getattr(report, "report_id", "")
-    lines.append(
-        f"\n完整结果: <code>data/optimizer/{rid}_strategies.yaml</code>"
-    )
+    lines.append(f"完整结果: data/optimizer/{rid}_strategies.yaml")
     return "\n".join(lines)
 
 
