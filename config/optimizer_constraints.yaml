@@ -97,3 +97,22 @@ discrete_search:
 
   # 卖出规则数量
   num_sell_rules: 3
+
+  # ── 仓位目标模型（实验性）──
+  # 启用时，交易量由 bullish_score → sigmoid 仓位目标驱动，
+  # 而非固定的 buy_frac / sell_frac
+  position_model:
+    # sigmoid 斜率：控制仓位对信号的敏感度
+    # 值越高，信号一变仓位就大幅调整
+    slope_range: [0.5, 10.0]
+    slope_step: 0.5
+    slope_levels: 20    # 0-19 → 映射到 0.5..10.0
+
+    # sigmoid 偏移：控制基准仓位偏保守/偏激进
+    # 负值 = 偏保守（更低仓位），正值 = 偏激进（更高仓位）
+    bias_range: [-3.0, 3.0]
+    bias_step: 0.3
+    bias_levels: 20     # 0-19 → 映射到 -3.0..3.0
+
+    # 每日最大调仓幅度（仓位率变化上限）
+    max_daily_adjust: 0.10

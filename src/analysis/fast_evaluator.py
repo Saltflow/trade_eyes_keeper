@@ -419,6 +419,67 @@ except ImportError:
 
 
 # ════════════════════════════════════════════════════════════
+# 仓位目标模型 (Position Target Model)
+# ════════════════════════════════════════════════════════════
+
+
+def _aggregate_bullish(
+    buy_signals: np.ndarray,
+    sell_signals: np.ndarray,
+) -> np.ndarray:
+    """聚合买卖信号为 portfolio bullish score。
+
+    buy_signals:  (T, N) bool — 已确认的买入信号
+    sell_signals: (T, N) bool — 已确认的卖出信号
+
+    Returns:
+        bullish_score: (T,) float64 in [0, 1]
+        0 = 全卖出信号，1 = 全买入信号，0.5 = 中性（无信号或均衡）
+    """
+    T, N = buy_signals.shape
+    bullish = np.full(T, 0.5, dtype=np.float64)
+
+    for t in range(T):
+        n_buy = int(buy_signals[t].sum())
+        n_sell = int(sell_signals[t].sum())
+        total = n_buy + n_sell
+        if total > 0:
+            bullish[t] = n_buy / total
+
+    return bullish
+
+
+def _sigmoid(x: float) -> float:
+    """稳定版 sigmoid，防溢出。"""
+    if x >= 0:
+        return 1.0 / (1.0 + np.exp(-x))
+    else:
+        ex = np.exp(x)
+        return ex / (1.0 + ex)
+
+
+def _compute_position_target(
+    bullish_scores: np.ndarray,
+    slope: float,
+    bias: float,
+) -> np.ndarray:
+    """sigmoid 映射 bullish_score → 目标仓位比例。
+
+    Args:
+        bullish_scores: (T,) float in [0, 1]
+        slope: 敏感度，越大越激进（0.5~10.0）
+        bias: 基准偏移，负=偏保守，正=偏激进（-3.0~3.0）
+
+    Returns:
+        target: (T,) float in [0, 1]
+    """
+    # 归一化: bullish -> [-1, 1] 区间
+    centered = (bullish_scores - 0.5) * 2.0
+    x = slope * centered + bias
+    return np.array([_sigmoid(float(v)) for v in x], dtype=np.float64)
+
+
+# ════════════════════════════════════════════════════════════
 # FastEvaluator 主类
 # ════════════════════════════════════════════════════════════
 
@@ -612,6 +673,106 @@ class FastEvaluator:
             test_months=9,  # 窗口测试期月数，调用方应覆盖
         )
 
+    def evaluate_position_target(
+        self,
+        indicator_matrix: np.ndarray,
+        price_matrix: np.ndarray,
+        cash_baseline: np.ndarray,
+        buy_builders: list[str],
+        buy_thresholds: list[float],
+        sell_builders: list[str] | None = None,
+        sell_thresholds: list[float] | None = None,
+        position_slope: float = 1.0,
+        position_bias: float = 0.0,
+        price_open_matrix: np.ndarray | None = None,
+    ) -> "WindowStats":
+        """仓位目标模式评估单窗口单策略。
+
+        与 evaluate() 的区别: 交易量由 bullish_score → sigmoid 仓位目标驱动，
+        而非固定的 buy_frac / sell_frac。
+
+        Args:
+            indicator_matrix: (T, N, K) float32 指标矩阵
+            price_matrix: (T, N) float32 收盘价矩阵
+            cash_baseline: (T,) float64 现金基准线
+            buy_builders: 买入规则构建器名列表
+            buy_thresholds: 买入规则阈值列表
+            sell_builders: 卖出规则构建器名列表（可选）
+            sell_thresholds: 卖出规则阈值列表（可选）
+            position_slope: sigmoid 斜率（0.5~10.0）
+            position_bias: sigmoid 偏移（-3.0~3.0）
+            price_open_matrix: (T, N) float32 开盘价矩阵（可选，用于均价执行）
+
+        Returns:
+            WindowStats
+        """
+        T, N = indicator_matrix.shape[:2]
+        if N == 0 or T == 0:
+            return WindowStats()
+
+        # ── 1. 构建买入条件/重置矩阵 ──
+        R_buy = len(buy_builders)
+        buy_conditions = np.zeros((R_buy, T, N), dtype=bool)
+        buy_resets = np.zeros((R_buy, T, N), dtype=bool)
+        for r in range(R_buy):
+            builder_fn = CONDITION_BUILDERS_FAST.get(
+                buy_builders[r], _build_none,
+            )
+            cond, rst = builder_fn(indicator_matrix, buy_thresholds[r])
+            buy_conditions[r] = cond
+            buy_resets[r] = rst
+
+        # ── 2. 构建卖出条件/重置矩阵 ──
+        if sell_builders and sell_thresholds:
+            R_sell = len(sell_builders)
+            sell_conditions = np.zeros((R_sell, T, N), dtype=bool)
+            sell_resets = np.zeros((R_sell, T, N), dtype=bool)
+            for r in range(R_sell):
+                builder_fn = CONDITION_BUILDERS_FAST.get(
+                    sell_builders[r], _build_none,
+                )
+                cond, rst = builder_fn(indicator_matrix, sell_thresholds[r])
+                sell_conditions[r] = cond
+                sell_resets[r] = rst
+        else:
+            R_sell = 1
+            sell_conditions = np.zeros((1, T, N), dtype=bool)
+            sell_resets = np.ones((1, T, N), dtype=bool)
+
+        # ── 3. 锁/重置状态机 ──
+        if HAS_NUMBA:
+            buy_signals_raw, _ = _apply_lock_reset_numba(buy_conditions, buy_resets)
+            sell_signals_raw, _ = _apply_lock_reset_numba(sell_conditions, sell_resets)
+        else:
+            buy_signals_raw, _ = _apply_lock_reset(buy_conditions, buy_resets)
+            sell_signals_raw, _ = _apply_lock_reset(sell_conditions, sell_resets)
+
+        # ── 4. 连续确认过滤 ──
+        buy_cond_any = buy_conditions.any(axis=0)
+        sell_cond_any = sell_conditions.any(axis=0)
+        buy_signals = _apply_confirmation(buy_cond_any, self.buy_confirmation_days)
+        sell_signals = _apply_confirmation(sell_cond_any, self.sell_confirmation_days)
+
+        # ── 5. 仓位目标模拟 ──
+        if price_open_matrix is None:
+            price_open_matrix = price_matrix.copy()
+
+        daily_values, trade_count = _simulate_position_target_python(
+            buy_signals, sell_signals,
+            price_matrix, price_open_matrix,
+            self.initial_cash, self.lot_size, self.commission_rate,
+            position_slope, position_bias,
+            max_daily_adjust=0.10,
+            buy_confirm_days=self.buy_confirmation_days,
+            sell_confirm_days=self.sell_confirmation_days,
+        )
+
+        # ── 6. 计算统计 ──
+        signal_count = int(buy_signals.sum()) + int(sell_signals.sum())
+        return self._compute_stats(
+            daily_values, price_matrix, cash_baseline, trade_count, signal_count,
+        )
+
     def evaluate_multiple(
         self,
         indicator_matrix: np.ndarray,
@@ -757,5 +918,190 @@ def _simulate_portfolio_python(
             if not np.isnan(prices[t, n]) and prices[t, n] > 0
         )
         daily_values[t] = cash + pos_value
+
+    return daily_values, total_trades
+
+
+def _simulate_position_target_python(
+    buy_signals: np.ndarray,
+    sell_signals: np.ndarray,
+    prices_close: np.ndarray,
+    prices_open: np.ndarray,
+    initial_cash: float,
+    lot_size: int,
+    commission_rate: float,
+    position_slope: float,
+    position_bias: float,
+    max_daily_adjust: float = 0.10,
+    buy_confirm_days: int = 3,
+    sell_confirm_days: int = 1,
+):
+    """仓位目标模型：每日渐进调仓。
+
+    每日流程:
+      1. 算 bullish_score → target_position
+      2. delta = clamp(target - current_pct, -max_daily_adjust, max_daily_adjust)
+      3. delta > 0: 买入（候选=有买入信号的股票，等额分配）
+      4. delta < 0: 卖出（候选=有卖出信号的股票优先，按持仓比例）
+
+    执行价格:
+      买入: buy_confirm_days 窗口内的每日 (open+close)/2 均值
+      卖出: 当日 (open+close)/2
+
+    每标的每日最多 1 次操作。
+
+    Returns:
+        daily_values: (T,) float64 — 每日总资产
+        total_trades: int
+    """
+    T, N = buy_signals.shape
+
+    shares = np.zeros(N, dtype=np.float64)
+    cash = float(initial_cash)
+    daily_values = np.zeros(T, dtype=np.float64)
+
+    # 记录各类交易的消费
+    # buy_window[n] = (start_day, end_day) 或 None
+    buy_window: list[tuple | None] = [None] * N
+    total_trades = 0
+
+    for t in range(T):
+        # ── 更新买入窗口（连续确认日记录） ──
+        for n in range(N):
+            if buy_signals[t, n] and buy_window[n] is None:
+                start = max(0, t - buy_confirm_days + 1)
+                buy_window[n] = (start, t)
+
+        # ── 计算当前位置和目标仓位 ──
+        position_value = 0.0
+        for n in range(N):
+            p = float(prices_close[t, n])
+            if not np.isnan(p) and p > 0:
+                position_value += shares[n] * p
+        nav = cash + position_value
+        current_pct = position_value / nav if nav > 0 else 0.0
+
+        # 聚合信号 → 仓位目标
+        bullish = _aggregate_bullish(
+            buy_signals[t:t + 1], sell_signals[t:t + 1],
+        )[0]
+        target_pct = _compute_position_target(
+            np.array([bullish]),
+            position_slope, position_bias,
+        )[0]
+
+        # 每日调仓 delta
+        delta = target_pct - current_pct
+        delta = float(np.clip(delta, -max_daily_adjust, max_daily_adjust))
+
+        # ── 执行调仓 ──
+        if delta > 1e-6 and cash > 0:
+            # 买入方向
+            buy_cash = delta * nav
+            buy_cash = min(buy_cash, cash)
+
+            # 候选标的：当日有买入窗口的股票
+            active_buyers = [
+                n for n in range(N)
+                if buy_window[n] is not None
+            ]
+            if active_buyers:
+                per_stock_cash = buy_cash / len(active_buyers)
+                for n in active_buyers:
+                    if per_stock_cash <= 0 or buy_window[n] is None:
+                        continue
+                    start_day, end_day = buy_window[n]
+                    buy_window[n] = None  # 消费掉
+
+                    # 买入价 = 窗口内每日(开+收)/2 的均值
+                    window_prices = []
+                    for d in range(start_day, end_day + 1):
+                        po = float(prices_open[d, n])
+                        pc = float(prices_close[d, n])
+                        if po > 0 and not np.isnan(po):
+                            window_prices.append(po)
+                        if pc > 0 and not np.isnan(pc):
+                            window_prices.append(pc)
+                    if not window_prices:
+                        continue
+                    exec_price = float(np.mean(window_prices))
+
+                    cost = per_stock_cash * (1.0 - commission_rate)
+                    qty_raw = cost / exec_price
+                    if lot_size > 1:
+                        qty = float(int(qty_raw / lot_size) * lot_size)
+                    else:
+                        qty = qty_raw
+                    if qty <= 0:
+                        continue
+                    cost_real = qty * exec_price
+                    fee = cost_real * commission_rate
+                    total_cost = cost_real + fee
+
+                    if total_cost <= cash:
+                        shares[n] += qty
+                        cash -= total_cost
+                        total_trades += 1
+
+        elif delta < -1e-6:
+            # 卖出方向
+            sell_value_needed = abs(delta) * nav
+
+            # 候选：有卖出信号的持仓股票优先，否则所有持仓按比例
+            has_sell_signal = [
+                n for n in range(N)
+                if sell_signals[t, n] and shares[n] > 0
+            ]
+            all_holders = [
+                n for n in range(N) if shares[n] > 0
+            ]
+
+            # 按持仓市值比例分配卖出金额
+            total_position = sum(
+                shares[n] * float(prices_close[t, n])
+                for n in all_holders
+                if not np.isnan(float(prices_close[t, n]))
+                and float(prices_close[t, n]) > 0
+            )
+            if total_position > 0 and all_holders:
+                for n in all_holders:
+                    if sell_value_needed <= 0:
+                        break
+                    p_o = float(prices_open[t, n])
+                    p_c = float(prices_close[t, n])
+                    if p_o <= 0 or p_c <= 0 or np.isnan(p_o) or np.isnan(p_c):
+                        continue
+                    exec_price = (p_o + p_c) / 2.0
+
+                    # 该标的持仓占比
+                    pos_val_n = shares[n] * p_c
+                    weight = pos_val_n / total_position if total_position > 0 else 0
+                    sell_amount = sell_value_needed * weight
+                    sell_amount = min(sell_amount, pos_val_n)  # 不超过持仓市值
+
+                    sell_qty_raw = sell_amount / exec_price
+                    if lot_size > 1:
+                        sell_qty = float(
+                            int(sell_qty_raw / lot_size) * lot_size
+                        )
+                    else:
+                        sell_qty = sell_qty_raw
+                    if sell_qty <= 0:
+                        continue
+
+                    sell_value = sell_qty * exec_price
+                    fee = sell_value * commission_rate
+                    cash += sell_value - fee
+                    shares[n] -= sell_qty
+                    sell_value_needed -= sell_value
+                    total_trades += 1
+
+        # ── 记录当日净值 ──
+        position_value = 0.0
+        for n in range(N):
+            p = float(prices_close[t, n])
+            if not np.isnan(p) and p > 0:
+                position_value += shares[n] * p
+        daily_values[t] = cash + position_value
 
     return daily_values, total_trades

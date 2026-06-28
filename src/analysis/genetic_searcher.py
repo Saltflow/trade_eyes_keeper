@@ -40,10 +40,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class StrategyEncoding:
-    """策略的离散编码（买入+卖出）
+    """策略的离散编码（买入+卖出+仓位目标）
 
     买入规则: (builder_idx, threshold_level, frac_level) × num_buy_rules
     卖出规则: (builder_idx, threshold_level, frac_level) × num_sell_rules
+    仓位控制: position_slope (0-19), position_bias (0-19)
     """
 
     # 买入
@@ -56,6 +57,15 @@ class StrategyEncoding:
     sell_thresholds: list[int] = field(default_factory=list)
     sell_fracs: list[int] = field(default_factory=list)
 
+    # 仓位目标模型（可选，0=未启用）
+    position_slope: int = 0
+    position_bias: int = 0
+
+    @property
+    def uses_position_target(self) -> bool:
+        """是否启用仓位目标模式"""
+        return self.position_slope > 0 or self.position_bias != 0
+
     @property
     def n_buy_rules(self) -> int:
         return len(self.buy_builders)
@@ -65,12 +75,14 @@ class StrategyEncoding:
         return len(self.sell_builders)
 
     def to_flat(self) -> list[int]:
-        """扁平化为一维列表"""
+        """扁平化为一维列表（含仓位参数）"""
         result = []
         for i in range(self.n_buy_rules):
             result.extend([self.buy_builders[i], self.buy_thresholds[i], self.buy_fracs[i]])
         for i in range(self.n_sell_rules):
             result.extend([self.sell_builders[i], self.sell_thresholds[i], self.sell_fracs[i]])
+        # 仓位目标参数（2维）
+        result.extend([self.position_slope, self.position_bias])
         return result
 
     @classmethod
@@ -78,6 +90,7 @@ class StrategyEncoding:
         cls, flat: list[int], n_buy: int = 5, n_sell: int = 3,
     ) -> "StrategyEncoding":
         """从一维列表恢复"""
+        total_expected = n_buy * 3 + n_sell * 3 + 2
         p = 0
         buy_builders = [flat[p + i * 3] for i in range(n_buy)]
         buy_thresholds = [flat[p + i * 3 + 1] for i in range(n_buy)]
@@ -86,9 +99,14 @@ class StrategyEncoding:
         sell_builders = [flat[p + i * 3] for i in range(n_sell)]
         sell_thresholds = [flat[p + i * 3 + 1] for i in range(n_sell)]
         sell_fracs = [flat[p + i * 3 + 2] for i in range(n_sell)]
+        p = n_buy * 3 + n_sell * 3
+        # 仓位目标参数（兼容旧编码：无此字段时默认 0,0）
+        pos_slope = flat[p] if len(flat) > p else 0
+        pos_bias = flat[p + 1] if len(flat) > p + 1 else 0
         return cls(
             buy_builders=buy_builders, buy_thresholds=buy_thresholds, buy_fracs=buy_fracs,
             sell_builders=sell_builders, sell_thresholds=sell_thresholds, sell_fracs=sell_fracs,
+            position_slope=pos_slope, position_bias=pos_bias,
         )
 
     def to_buy_params(self, ds_cfg: DiscreteSearchConfig) -> tuple[list[str], list[float], list[float]]:
@@ -117,6 +135,8 @@ class StrategyEncoding:
             sell_builders=list(self.sell_builders),
             sell_thresholds=list(self.sell_thresholds),
             sell_fracs=list(self.sell_fracs),
+            position_slope=self.position_slope,
+            position_bias=self.position_bias,
         )
 
 
