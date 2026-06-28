@@ -469,7 +469,65 @@ pytest tests/test_import_smoke.py         # 导入完整性
 - `email_template.html` 删除僵尸 CSS (`.positive`/`.negative`/`.alert-row`)
 
 **文档维护**: 本文档应在每次重大架构变更后更新  
-**下次审查**: 2026-06-15
+**下次审查**: 2026-07-15
+
+---
+
+## 🎯 仓位目标模型 (Position Target Model) — v1.18-beta
+
+### 动机
+原有优化器使用 **Fixed-Frac（固定分数）** 交易执行：每次信号触发时，买入 `cash × buy_frac`、卖出 `position × sell_frac`。问题是 `buy_frac`/`sell_frac` 是静态的，无法根据市场信号强弱自适应调整仓位。
+
+新模型将"买多少/卖多少"从固定分数升级为**动态仓位目标**：
+1. 聚合全体股票的买卖信号 → **bullish_score** ∈ [0, 1]
+2. sigmoid 映射 → **target_position**（目标仓位占 NAV 比例）
+3. 每日渐进调仓（最多 ±10%/天），朝目标收敛
+
+### 核心算法
+```
+每天:
+  bullish = aggregate(buy_signals, sell_signals)
+           = n_buy_active / (n_buy_active + n_sell_active)
+  target  = sigmoid(slope × (bullish - 0.5) × 2 + bias)
+  delta   = clamp(target - current_pct, -0.10, 0.10)
+  
+  delta > 0: 买入（候选=有买入信号的股票，等额分配，均价执行）
+  delta < 0: 卖出（所有持仓按比例减持，均价执行）
+```
+
+### 参数
+| 参数 | 范围 | 含义 |
+|------|------|------|
+| `position_slope` | 0.5 ~ 10.0 (20 档) | 仓位对信号的敏感度 |
+| `position_bias` | -3.0 ~ 3.0 (20 档) | 基准仓位偏移（负数偏保守） |
+| `max_daily_adjust` | 0.10 (固定) | 每日最大调仓幅度 |
+
+### 与旧模式对比
+| | Fixed-Frac (旧) | Position-Target (新) |
+|---|---|---|
+| 买入量 | `cash × buy_frac` 固定 | `delta × NAV` 动态 |
+| 卖出量 | `position × sell_frac` 固定 | `delta × NAV` 动态 |
+| 仓位控制 | 无全局概念 | 有全局目标仓位 |
+| 月度上限 | 有 (15000) | **无**（删除了） |
+| 每标每日操盘 | 不限制 | **最多 1 次** |
+| 执行价格 | 3日6价均值 (buy) / 当日均价 (sell) | 同左 |
+
+### 新增文件/改动
+- `src/analysis/fast_evaluator.py`: 
+  - `_aggregate_bullish()` — 信号聚合
+  - `_sigmoid()` / `_compute_position_target()` — sigmoid 映射
+  - `_simulate_position_target_python()` — 每日渐进调仓模拟
+  - `FastEvaluator.evaluate_position_target()` — 新评估入口
+- `src/analysis/genetic_searcher.py`: `StrategyEncoding` 新增 `position_slope`/`position_bias`（向后兼容）
+- `config/optimizer_constraints.yaml`: 新增 `position_model` 段
+- `tests/test_fast_evaluator.py`: 10 个新测试（信号聚合、sigmoid 映射、仿真场景）
+- `scripts/preview_position_target.py`: 对比预览脚本
+
+### 当前状态
+- ✅ 核心算法实现 + 22 个测试全绿
+- ✅ 旧 evaluate() 路径不受影响（增量添加，未替换）
+- 🔄 预览脚本已部署到服务器（需 `python main.py --once` 先跑一遍数据）
+- 📋 TODO: 集成到优化器 V2 搜索流程（`evaluate_position_target` 替代 `evaluate`）
 
 ---
 
