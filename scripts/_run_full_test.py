@@ -30,11 +30,11 @@ print(f"A-shares: {len(stocks_data)} stocks: {list(stocks_data.keys())}")
 from src.analysis.strategy_optimizer_v2 import StrategyOptimizerV2
 
 opt = StrategyOptimizerV2(stocks_data, "a_share")
-print(f"Running optimizer ({len(stocks_data)} stocks, 3000 samples)...")
+print(f"Running optimizer ({len(stocks_data)} stocks, 20000 samples)...")
 t0 = time.time()
 report = opt.run(
     stock_codes=list(stocks_data.keys()),
-    random_starts=3000, iterations=3000,
+    random_starts=20000, iterations=20000,
 )
 elapsed = time.time() - t0
 
@@ -44,12 +44,17 @@ print(f"Top strategies: {len(report.top_strategies)}")
 
 if report.top_strategies:
     for i, t in enumerate(report.top_strategies[:5]):
-        print(f"  #{i+1}: ret={t.test_return:+.2f}%  dd={t.test_drawdown:.2f}%  "
-              f"trades={t.trade_count}")
-    # Show first strategy params
+        ex_880 = t.test_return  # primary = vs 510880
+        ex_300 = round(t.strategy_return - t.benchmark_returns.get('510300', 0), 2)
+        ex_rf = round(t.strategy_return - t.benchmark_returns.get('risk_free', 0), 2)
+        print(f"  #{i+1}: strategy={t.strategy_return:+.1f}%  "
+              f"vs510880={ex_880:+.1f}%  "
+              f"vs510300={ex_300:+.1f}%  "
+              f"vsRF={ex_rf:+.1f}%  "
+              f"dd={t.test_drawdown:.2f}%  trades={t.trade_count}")
     t1 = report.top_strategies[0]
-    print(f"\n  Top1 params: {dict(list(t1.params.items())[:6])}")
+    print(f"\n  Benchmarks (w0): {t1.benchmark_returns}")
+    print(f"  Top1 params: {dict(list(t1.params.items())[:6])}")
 else:
     print("  No strategies passed constraints")
-    print("  (Try more samples or relax min_avg_position_pct in config)")
 print(f"{'='*60}")

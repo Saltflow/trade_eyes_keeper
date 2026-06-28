@@ -202,11 +202,13 @@ class StrategyTrial(BaseModel):
     rules: list[Rule]  # 生成的规则列表
     train_return: float  # 训练期（0-12月）总收益率(%)
     train_drawdown: float  # 训练期最大回撤(%)
-    test_return: float  # 测试期（12-24月）总收益率(%)
+    test_return: float  # 测试期（12-24月）总收益率(%, vs primary benchmark)
     test_drawdown: float  # 测试期最大回撤(%)
     sharpe: float  # 全期夏普比
     trade_count: int  # 总交易次数
     sub_periods: dict | None = None  # PortfolioResult.sub_periods 原始数据
+    benchmark_returns: dict[str, float] = Field(default_factory=dict)  # 全部基准收益
+    strategy_return: float = 0.0  # 策略绝对收益
 
     @property
     def fitness(self) -> float:

@@ -207,13 +207,15 @@ class WalkForwardManager:
             for i, d in enumerate(self._unified_dates):
                 if d in bdf.index:
                     aligned[i] = float(bdf.loc[d, "close"])
-            # forward-fill gaps
+            # forward-fill gaps (for missing dates within the data range)
             last_valid = np.nan
             for i in range(len(aligned)):
                 if not np.isnan(aligned[i]):
                     last_valid = aligned[i]
                 elif not np.isnan(last_valid):
                     aligned[i] = last_valid
+            # Do NOT backward-fill leading NaN — benchmark is simply unavailable
+            # for windows that start before its data range.
             self._benchmark_aligned[code] = aligned
 
     def get_benchmark_price(

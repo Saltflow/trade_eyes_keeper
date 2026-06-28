@@ -350,6 +350,13 @@ class StrategyOptimizerV2:
             avg_sharpe = np.mean([s.sharpe_ratio for s in ss.window_stats])
             total_trades = sum(ws.total_trades for ws in ss.window_stats)
 
+            # 收集基准收益（取首个窗口的 benchmark_returns）
+            bench_info: dict[str, float] = {}
+            strat_ret: float = 0.0
+            if ss.window_stats and ss.window_stats[0].benchmark_returns:
+                bench_info = dict(ss.window_stats[0].benchmark_returns)
+                strat_ret = ss.window_stats[0].strategy_return
+
             # 构建参数摘要
             params_summary: dict[str, str] = {}
             # 买入
@@ -383,6 +390,8 @@ class StrategyOptimizerV2:
                 test_drawdown=round(avg_dd, 2),
                 sharpe=round(avg_sharpe, 4),
                 trade_count=total_trades,
+                benchmark_returns=bench_info,
+                strategy_return=round(strat_ret, 2),
             )
             trials.append(trial)
 

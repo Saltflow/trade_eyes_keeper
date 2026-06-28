@@ -231,7 +231,8 @@ class GeneticSearcher:
                     benchmark_series["risk_free"] = rf_series
                 else:
                     b_close = self.wf_manager.get_benchmark_price(bcode, w, "test")
-                    if b_close is not None and len(b_close) == T_test:
+                    if (b_close is not None and len(b_close) == T_test
+                            and not np.isnan(b_close[0])):
                         benchmark_series[bcode] = b_close
 
             stats = self.evaluator.evaluate(

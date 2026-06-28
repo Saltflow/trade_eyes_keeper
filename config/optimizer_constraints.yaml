@@ -9,7 +9,7 @@
 
 # ── 业绩基准 ──
 benchmarks:
-  a_share: ["510300", "510880", "risk_free"]
+  a_share: ["510880", "510300", "risk_free"]
   non_a_share: ["VOO", "BRK.B", "risk_free"]
   risk_free_rates:
     a_share: 0.02        # 中国 2%
@@ -29,7 +29,7 @@ hard_constraints:
 
   # 4. 月度交易密度（整个组合）
   min_trades_per_month: 1
-  max_trades_per_month: 6
+  max_trades_per_month: 100
 
 # ── 软性约束（不满足扣分，但仍保留）──
 soft_constraints:
