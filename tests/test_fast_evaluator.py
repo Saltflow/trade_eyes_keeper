@@ -289,7 +289,7 @@ class TestPositionTargetSimulation:
         p_close = np.array(closes, dtype=np.float32).reshape(T, 1)
         p_open = np.array(opens, dtype=np.float32).reshape(T, 1)
 
-        values, trades = _simulate_position_target_python(
+        values, trades, avg_pos = _simulate_position_target_python(
             buy_signals, sell_signals,
             p_close, p_open,
             initial_cash=100000.0,
@@ -303,8 +303,7 @@ class TestPositionTargetSimulation:
         )
         # 应该发生了交易（至少1次买入）
         assert trades > 0
-        # 最终资产应 > 初始现金（盈利）
-        # 或者至少不完全等于初始现金
+        assert avg_pos >= 0  # 仓位率非负
 
     def test_sell_when_bearish(self):
         """持有仓位 → bearish 信号 → target < current → 卖出"""
@@ -326,7 +325,7 @@ class TestPositionTargetSimulation:
         p_close = np.array(closes, dtype=np.float32).reshape(T, 1)
         p_open = np.array(opens, dtype=np.float32).reshape(T, 1)
 
-        values, trades = _simulate_position_target_python(
+        values, trades, avg_pos = _simulate_position_target_python(
             buy_signals, sell_signals,
             p_close, p_open,
             initial_cash=100000.0,
@@ -356,7 +355,7 @@ class TestPositionTargetSimulation:
         p_close = np.array(closes, dtype=np.float32).reshape(T, 1)
         p_open = np.array(opens, dtype=np.float32).reshape(T, 1)
 
-        values, trades = _simulate_position_target_python(
+        values, trades, avg_pos = _simulate_position_target_python(
             buy_signals, sell_signals,
             p_close, p_open,
             initial_cash=100000.0,
@@ -394,7 +393,7 @@ class TestPositionTargetSimulation:
         p_close = np.tile(np.array(closes, dtype=np.float32).reshape(T, 1), (1, N))
         p_open = p_close.copy()
 
-        values, trades = _simulate_position_target_python(
+        values, trades, avg_pos = _simulate_position_target_python(
             buy_signals, sell_signals,
             p_close, p_open,
             initial_cash=100000.0,
@@ -426,7 +425,7 @@ class TestPositionTargetSimulation:
         p_close = np.array(closes, dtype=np.float32).reshape(T, 1)
         p_open = np.array(opens, dtype=np.float32).reshape(T, 1)
 
-        values, trades = _simulate_position_target_python(
+        values, trades, avg_pos = _simulate_position_target_python(
             buy_signals, sell_signals,
             p_close, p_open,
             initial_cash=100000.0,

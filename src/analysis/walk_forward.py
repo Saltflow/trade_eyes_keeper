@@ -81,6 +81,7 @@ class WalkForwardManager:
         step_months: int = 3,
         num_windows: int = 6,
         min_trading_days: int = 200,
+        benchmark_dfs: dict[str, pd.DataFrame] | None = None,
     ):
         """
         Args:
@@ -91,6 +92,7 @@ class WalkForwardManager:
             step_months: 滑动步长月数
             num_windows: 窗口数量
             min_trading_days: 最少交易日数（数据不足则跳过该股票）
+            benchmark_dfs: {bench_code: DataFrame} 基准 ETF 数据（可选）
         """
         self.train_months = train_months
         self.test_months = test_months
@@ -98,10 +100,18 @@ class WalkForwardManager:
         self.num_windows = num_windows
         self.min_trading_days = min_trading_days
 
+        # 基准 ETF 数据（可选）
+        self._benchmark_dfs: dict[str, pd.DataFrame] = benchmark_dfs or {}
+        # 预对齐的基准 close 序列，按日期索引
+        self._benchmark_aligned: dict[str, np.ndarray] = {}
+
         # ── 预处理: 构建统一的日期轴和指标矩阵 ──
         self.stock_codes: list[str] = []
         self._unified_dates: list[str] = []
         self._prepare_data(stocks_data, indicators_data)
+
+        # ── 对齐基准 ETF 数据到统一日期轴 ──
+        self._align_benchmarks()
 
     # ════════════════════════════════════════════════════════
     # 索引: 统一日期轴 + 指标矩阵
@@ -177,6 +187,60 @@ class WalkForwardManager:
             )
 
         return windows
+
+    # ════════════════════════════════════════════════════════
+    # 基准 ETF 数据对齐
+    # ════════════════════════════════════════════════════════
+
+    def _align_benchmarks(self):
+        """将基准 ETF 的收盘价对齐到统一日期轴。"""
+        if not self._benchmark_dfs or not self._unified_dates:
+            return
+        date_to_idx = {d: i for i, d in enumerate(self._unified_dates)}
+        for code, bdf in self._benchmark_dfs.items():
+            if bdf is None or bdf.empty:
+                continue
+            bdf = bdf.copy()
+            bdf["date_str"] = pd.to_datetime(bdf["date"]).dt.strftime("%Y-%m-%d")
+            bdf = bdf.set_index("date_str")
+            aligned = np.full(len(self._unified_dates), np.nan, dtype=np.float64)
+            for i, d in enumerate(self._unified_dates):
+                if d in bdf.index:
+                    aligned[i] = float(bdf.loc[d, "close"])
+            # forward-fill gaps
+            last_valid = np.nan
+            for i in range(len(aligned)):
+                if not np.isnan(aligned[i]):
+                    last_valid = aligned[i]
+                elif not np.isnan(last_valid):
+                    aligned[i] = last_valid
+            self._benchmark_aligned[code] = aligned
+
+    def get_benchmark_price(
+        self, bench_code: str, window: "WindowSlice", phase: str = "test",
+    ) -> np.ndarray | None:
+        """获取基准 ETF 在指定窗口的收盘价序列。
+
+        Args:
+            bench_code: 基准代码（如 "510300"）
+            window: Walk-Forward 窗口切片
+            phase: "train" / "test" / "all"
+
+        Returns:
+            (T,) float64 数组，若数据不可用返回 None
+        """
+        if bench_code not in self._benchmark_aligned:
+            return None
+        full = self._benchmark_aligned[bench_code]
+        if phase == "train":
+            start, end = window.train_start_idx, window.train_end_idx
+        elif phase == "test":
+            start, end = window.test_start_idx, window.test_end_idx
+        else:
+            start, end = 0, len(full)
+        if start < 0 or end > len(full) or end <= start:
+            return None
+        return full[start:end].copy()
 
     # ════════════════════════════════════════════════════════
     # numpy 矩阵构建

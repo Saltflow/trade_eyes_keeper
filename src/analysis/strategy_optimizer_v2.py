@@ -88,6 +88,65 @@ class StrategyOptimizerV2:
         # 预计算指标 (可复用外部传入)
         self.indicators_data = indicators_data
 
+    def _load_benchmarks(self) -> dict[str, "pd.DataFrame"]:
+        """加载基准 ETF 数据（cache/data/ 优先，缓存缺失则通过 DataSource 网络拉取）。
+
+        Returns:
+            {bench_code: DataFrame with date/close} dict
+        """
+        self.constraints.set_group(self.group)
+        benchmark_codes = self.constraints.benchmark_codes
+        if not benchmark_codes:
+            return {}
+
+        from pathlib import Path
+        cache_dir = Path("cache/data")
+
+        # 延迟导入 DataSource（避免循环依赖）
+        _ds = None
+
+        def _get_ds():
+            nonlocal _ds
+            if _ds is not None:
+                return _ds
+            from src.data.data_source import DataSource
+            import yaml
+            config_path = Path("config") / "config.yaml"
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+            _ds = DataSource(config)
+            return _ds
+
+        bench_dfs: dict[str, pd.DataFrame] = {}
+        for bcode in benchmark_codes:
+            if bcode == "risk_free":
+                continue
+            csv_path = cache_dir / f"{bcode}.csv"
+            bdf = None
+            try:
+                if csv_path.exists():
+                    bdf = pd.read_csv(csv_path, encoding="utf-8")
+                    bdf["date"] = pd.to_datetime(bdf["date"])
+                    bdf = bdf.sort_values("date")
+                    logger.info(f"[V2] 基准 {bcode}: {len(bdf)} 行数据 (缓存)")
+                else:
+                    logger.info(f"[V2] 基准 {bcode}: 缓存缺失，尝试网络拉取...")
+                    ds = _get_ds()
+                    bdf = ds.fetch_stock_data(bcode, days=252 * 5)
+                    if bdf is not None and not bdf.empty:
+                        bdf = bdf.sort_values("date")
+                        logger.info(f"[V2] 基准 {bcode}: {len(bdf)} 行数据 (网络)")
+                    else:
+                        logger.warning(f"[V2] 基准 {bcode}: 网络拉取失败，跳过")
+
+            except Exception as e:
+                logger.warning(f"[V2] 基准 {bcode} 加载失败: {e}")
+
+            if bdf is not None and not bdf.empty:
+                bench_dfs[bcode] = bdf
+
+        return bench_dfs
+
     def run(
         self,
         stock_codes: list[str],
@@ -119,6 +178,8 @@ class StrategyOptimizerV2:
         # ── 2. Walk-Forward 管理器 ──
         t0 = time.time()
         logger.info("[V2] 构建 Walk-Forward 管理器...")
+        # 加载基准 ETF 数据
+        benchmark_dfs = self._load_benchmarks()
         wf_mgr = WalkForwardManager(
             self.stocks_data,
             indicators_data=self.indicators_data,
@@ -126,6 +187,7 @@ class StrategyOptimizerV2:
             test_months=self.wf_cfg.test_months,
             step_months=self.wf_cfg.step_months,
             num_windows=self.wf_cfg.num_windows,
+            benchmark_dfs=benchmark_dfs,
         )
 
         if not wf_mgr.stock_codes:

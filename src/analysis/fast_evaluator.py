@@ -405,7 +405,25 @@ try:
                     pos_value += shares[n] * p
             daily_values[t] = cash + pos_value
 
-        return daily_values, total_trades
+        # 计算平均仓位率
+        avg_pos_pct = 0.0
+        valid_days = 0
+        for t in range(T):
+            if daily_values[t] > 0:
+                pos_value_t = daily_values[t] - cash  # 估算；下面更精确
+                # 更精确：遍历持仓
+                pv = 0.0
+                for n in range(N):
+                    px = float(prices[t, n])
+                    if not np.isnan(px) and px > 0:
+                        pv += shares[n] * px
+                if daily_values[t] > 0:
+                    avg_pos_pct += pv / daily_values[t]
+                    valid_days += 1
+        if valid_days > 0:
+            avg_pos_pct = avg_pos_pct / valid_days * 100.0
+
+        return daily_values, total_trades, avg_pos_pct
 
     HAS_NUMBA = True
     logger.info("numba JIT 已启用，FastEvaluator 将使用加速内核")
@@ -518,6 +536,7 @@ class FastEvaluator:
         sell_thresholds: list[float] | None = None,
         sell_fracs: list[float] | None = None,
         price_open_matrix: np.ndarray | None = None,
+        benchmark_series: dict[str, np.ndarray] | None = None,
     ) -> "WindowStats":
         """评估单窗口单策略（支持买入+卖出）
 
@@ -595,14 +614,14 @@ class FastEvaluator:
         sell_fracs_arr = np.array(sell_fracs if sell_fracs else [0.0], dtype=np.float32)
 
         if HAS_NUMBA:
-            daily_values, trade_count = _simulate_portfolio_numba(
+            daily_values, trade_count, avg_pos_pct = _simulate_portfolio_numba(
                 buy_signals, sell_signals, price_matrix,
                 buy_fracs_arr, sell_fracs_arr,
                 float(self.initial_cash), float(self.monthly_buy_limit),
                 self.lot_size, float(self.commission_rate),
             )
         else:
-            daily_values, trade_count = _simulate_portfolio_python(
+            daily_values, trade_count, avg_pos_pct = _simulate_portfolio_python(
                 buy_signals, sell_signals, price_matrix,
                 buy_fracs_arr, sell_fracs_arr,
                 self.initial_cash, self.monthly_buy_limit,
@@ -613,7 +632,11 @@ class FastEvaluator:
 
         # ── 5. 计算指标 ──
         signal_count = int(buy_signals.sum()) + int(sell_signals.sum())
-        return self._compute_stats(daily_values, price_matrix, cash_baseline, trade_count, signal_count)
+        return self._compute_stats(
+            daily_values, price_matrix, cash_baseline,
+            trade_count, signal_count, avg_pos_pct=avg_pos_pct,
+            benchmark_series=benchmark_series,
+        )
 
     def _compute_stats(
         self,
@@ -622,8 +645,16 @@ class FastEvaluator:
         cash_baseline: np.ndarray,
         trade_count: int,
         signal_count: int,
+        avg_pos_pct: float | None = None,
+        benchmark_series: dict[str, np.ndarray] | None = None,
     ) -> "WindowStats":
-        """从日资产序列计算 WindowStats"""
+        """从日资产序列计算 WindowStats
+
+        Args:
+            daily_values: (T,) 每日净值
+            avg_pos_pct: 仿真循环直接计算的仓位率（None=回退到旧启发式）
+            benchmark_series: {"510300": (T,) close, "risk_free": (T,) nav, ...}
+        """
         from .optimizer_constraints import WindowStats
 
         T = len(daily_values)
@@ -632,26 +663,42 @@ class FastEvaluator:
 
         initial_val = daily_values[0]
         final_val = daily_values[-1]
-        total_return = (final_val - initial_val) / initial_val * 100.0 if initial_val > 0 else 0.0
+        strategy_return = (final_val - initial_val) / initial_val * 100.0 if initial_val > 0 else 0.0
 
-        # 现金基准超额收益
-        bench_initial = cash_baseline[0]
-        bench_final = cash_baseline[-1]
-        bench_return = (bench_final - bench_initial) / bench_initial * 100.0 if bench_initial > 0 else 0.0
-        excess_return = total_return - bench_return
+        # 基准收益
+        benchmark_returns: dict[str, float] = {}
+        if benchmark_series:
+            # 使用提供的多基准序列
+            for label, b_series in benchmark_series.items():
+                if b_series is not None and len(b_series) > 1 and b_series[0] > 0:
+                    bench_ret = (b_series[-1] - b_series[0]) / b_series[0] * 100.0
+                    benchmark_returns[label] = round(bench_ret, 2)
+            # 主超额 = vs 第一个基准
+            if benchmark_returns:
+                primary_label = next(iter(benchmark_returns))
+                excess_return = strategy_return - benchmark_returns[primary_label]
+            else:
+                excess_return = strategy_return
+        else:
+            # 回退：用 cash_baseline 作为基准（旧行为兼容）
+            bench_initial = cash_baseline[0]
+            bench_final = cash_baseline[-1]
+            bench_return = (bench_final - bench_initial) / bench_initial * 100.0 if bench_initial > 0 else 0.0
+            excess_return = strategy_return - bench_return
+            benchmark_returns = {"cash_baseline": round(bench_return, 2)}
 
         # 最大回撤
         peak = np.maximum.accumulate(daily_values)
         drawdown = (daily_values - peak) / peak * 100.0
         max_dd = float(np.min(drawdown))
 
-        # 平均仓位率 (估算)
-        # position_value ≈ daily_values - remaining_cash
-        # 简化: 用 daily_values 的波动性 vs 价格波动来估计
-        # 更精确的做法: 直接用 _simulate 中的 shares 计算, 但这里用近似
-        # 简化: 如果 daily_values 远大于初始现金, 说明仓位重
-        avg_val = float(np.mean(daily_values))
-        avg_position_pct = max(0.0, (avg_val - self.initial_cash) / avg_val * 100.0)
+        # 平均仓位率
+        if avg_pos_pct is not None:
+            avg_position_pct = avg_pos_pct
+        else:
+            # 回退：旧启发式（仅兼容，不应再走到这里）
+            avg_val = float(np.mean(daily_values))
+            avg_position_pct = max(0.0, (avg_val - self.initial_cash) / avg_val * 100.0)
 
         # 夏普比率
         sharpe = 0.0
@@ -671,6 +718,8 @@ class FastEvaluator:
             sharpe_ratio=round(sharpe, 4),
             total_trades=trade_count,
             test_months=9,  # 窗口测试期月数，调用方应覆盖
+            benchmark_returns=benchmark_returns,
+            strategy_return=round(strategy_return, 2),
         )
 
     def evaluate_position_target(
@@ -685,6 +734,7 @@ class FastEvaluator:
         position_slope: float = 1.0,
         position_bias: float = 0.0,
         price_open_matrix: np.ndarray | None = None,
+        benchmark_series: dict[str, np.ndarray] | None = None,
     ) -> "WindowStats":
         """仓位目标模式评估单窗口单策略。
 
@@ -757,7 +807,7 @@ class FastEvaluator:
         if price_open_matrix is None:
             price_open_matrix = price_matrix.copy()
 
-        daily_values, trade_count = _simulate_position_target_python(
+        daily_values, trade_count, avg_pos_pct = _simulate_position_target_python(
             buy_signals, sell_signals,
             price_matrix, price_open_matrix,
             self.initial_cash, self.lot_size, self.commission_rate,
@@ -770,7 +820,9 @@ class FastEvaluator:
         # ── 6. 计算统计 ──
         signal_count = int(buy_signals.sum()) + int(sell_signals.sum())
         return self._compute_stats(
-            daily_values, price_matrix, cash_baseline, trade_count, signal_count,
+            daily_values, price_matrix, cash_baseline,
+            trade_count, signal_count, avg_pos_pct=avg_pos_pct,
+            benchmark_series=benchmark_series,
         )
 
     def evaluate_multiple(
@@ -919,7 +971,23 @@ def _simulate_portfolio_python(
         )
         daily_values[t] = cash + pos_value
 
-    return daily_values, total_trades
+    # 计算平均仓位率
+    pos_pct_sum = 0.0
+    valid = 0
+    for t in range(T):
+        nav = daily_values[t]
+        if nav <= 0:
+            continue
+        pv = sum(
+            shares[n] * float(prices[t, n])
+            for n in range(N)
+            if not np.isnan(prices[t, n]) and prices[t, n] > 0
+        )
+        pos_pct_sum += pv / nav
+        valid += 1
+    avg_pos_pct = (pos_pct_sum / valid * 100.0) if valid > 0 else 0.0
+
+    return daily_values, total_trades, avg_pos_pct
 
 
 def _simulate_position_target_python(
@@ -1104,4 +1172,20 @@ def _simulate_position_target_python(
                 position_value += shares[n] * p
         daily_values[t] = cash + position_value
 
-    return daily_values, total_trades
+    # 计算平均仓位率
+    pos_pct_sum = 0.0
+    valid = 0
+    for t in range(T):
+        nav = daily_values[t]
+        if nav <= 0:
+            continue
+        pv = 0.0
+        for n in range(N):
+            p = float(prices_close[t, n])
+            if not np.isnan(p) and p > 0:
+                pv += shares[n] * p
+        pos_pct_sum += pv / nav
+        valid += 1
+    avg_pos_pct = (pos_pct_sum / valid * 100.0) if valid > 0 else 0.0
+
+    return daily_values, total_trades, avg_pos_pct

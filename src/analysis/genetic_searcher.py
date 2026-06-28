@@ -212,16 +212,33 @@ class GeneticSearcher:
             if T_test == 0 or test_ind.shape[1] == 0:
                 continue
 
-            rf_daily = 0.02 / 252.0
+            rf_rate = getattr(self.constraints, "risk_free_rate", 0.02)
+            rf_daily = rf_rate / 252.0
             train_end_cash = self.evaluator.initial_cash * (1.0 + rf_daily) ** train_ind.shape[0]
             cash_baseline = np.cumsum(
                 np.ones(T_test) * train_end_cash * rf_daily,
             ) + train_end_cash
 
+            # 构造多基准序列
+            from collections import OrderedDict
+            benchmark_series = OrderedDict()
+            rf_rate = getattr(self.constraints, "risk_free_rate", 0.02)
+            for bcode in self.constraints.benchmark_codes:
+                if bcode == "risk_free":
+                    # 用无风险利率构造等比序列
+                    rr_daily = rf_rate / 252.0
+                    rf_series = np.cumsum(np.ones(T_test) * train_end_cash * rr_daily) + train_end_cash
+                    benchmark_series["risk_free"] = rf_series
+                else:
+                    b_close = self.wf_manager.get_benchmark_price(bcode, w, "test")
+                    if b_close is not None and len(b_close) == T_test:
+                        benchmark_series[bcode] = b_close
+
             stats = self.evaluator.evaluate(
                 test_ind, test_price, cash_baseline,
                 buy_names, buy_thresh, buy_fracs,
                 sell_names, sell_thresh, sell_fracs,
+                benchmark_series=benchmark_series if benchmark_series else None,
             )
             all_stats.append(stats)
 

@@ -116,6 +116,23 @@ class StrategyConstraints:
         self.genetic_search = GeneticSearchConfig(raw_config.get("genetic_search", {}))
         self.discrete_search = DiscreteSearchConfig(raw_config.get("discrete_search", {}))
 
+        # 业绩基准
+        bc = raw_config.get("benchmarks", {})
+        self.benchmark_codes: list[str] = []
+        self.risk_free_rate: float = 0.02
+        # 由调用方在创建后按 group 设置（a_share / non_a_share）
+        self._raw_benchmarks = bc
+
+    def set_group(self, group: str):
+        """设置所属组别，从 benchmarks 配置中提取对应基准代码和利率。
+
+        Args:
+            group: "a_share" 或 "non_a_share"
+        """
+        self.benchmark_codes = list(self._raw_benchmarks.get(group, []))
+        rates = self._raw_benchmarks.get("risk_free_rates", {})
+        self.risk_free_rate = rates.get(group, 0.02)
+
     def check_hard_constraints(
         self,
         window_stats: list[WindowStats],
@@ -194,6 +211,8 @@ class WindowStats:
         sharpe_ratio: float = 0.0,
         total_trades: int = 0,
         test_months: int = 9,
+        benchmark_returns: dict[str, float] | None = None,
+        strategy_return: float = 0.0,
     ):
         self.test_excess_return = test_excess_return
         self.max_drawdown_pct = max_drawdown_pct
@@ -201,6 +220,10 @@ class WindowStats:
         self.sharpe_ratio = sharpe_ratio
         self.total_trades = total_trades
         self.test_months = test_months
+        # 多基准超额收益: {"510300": 12.5, "510880": 10.2, "risk_free": 2.0}
+        self.benchmark_returns: dict[str, float] = benchmark_returns or {}
+        # 策略绝对收益（用于推算各基准超额）
+        self.strategy_return = strategy_return
 
     @property
     def trades_per_month(self) -> float:
@@ -208,6 +231,12 @@ class WindowStats:
         if self.test_months <= 0:
             return 0.0
         return self.total_trades / self.test_months
+
+    def excess_vs(self, bench_label: str) -> float:
+        """对特定基准的超额收益"""
+        if bench_label in self.benchmark_returns:
+            return round(self.strategy_return - self.benchmark_returns[bench_label], 2)
+        return self.test_excess_return
 
 
 def load_constraints(path: Path | str | None = None) -> StrategyConstraints:

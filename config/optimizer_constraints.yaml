@@ -7,6 +7,14 @@
 #   - hard: 不满足直接丢弃策略
 #   - soft: 不满足扣分惩罚
 
+# ── 业绩基准 ──
+benchmarks:
+  a_share: ["510300", "510880", "risk_free"]
+  non_a_share: ["VOO", "BRK.B", "risk_free"]
+  risk_free_rates:
+    a_share: 0.02        # 中国 2%
+    non_a_share: 0.038   # 美国 10 年期 3.8%
+
 # ── 硬性约束（必须全部满足）──
 hard_constraints:
 
@@ -46,15 +54,15 @@ walk_forward:
 
 # ── 遗传搜索配置 ──
 genetic_search:
-  # Phase 1: 粗筛
-  phase1_random_samples: 10000  # 随机采样策略数
-  phase1_top_keep: 1000          # 保留数
+  # Phase 1: 粗筛 (翻10倍算力)
+  phase1_random_samples: 100000  # 随机采样策略数 (原 10000)
+  phase1_top_keep: 10000          # 保留数 (原 1000)
 
-  # Phase 2: 遗传优化
-  num_generations: 3            # 遗传代数
-  population_size: 1000         # 每代种群大小
-  offspring_size: 5000          # 每代生成子代数
-  
+  # Phase 2: 遗传优化 (翻5倍)
+  num_generations: 5             # 遗传代数 (原 3)
+  population_size: 5000          # 每代种群大小 (原 1000)
+  offspring_size: 25000          # 每代生成子代数 (原 5000)
+   
   # 遗传操作参数
   crossover_rate: 0.70          # 交叉概率
   mutation_rate: 0.30           # 变异概率
