@@ -94,12 +94,26 @@ def load_config(config_path=None):
         sys.exit(1)
 
 
-def run_daily_task():
-    """每日运行的任务"""
+def run_daily_task(force: bool = False):
+    """每日运行的任务
+
+    Args:
+        force: True = 手动触发，跳过周末/休市检查
+    """
+    if not force:
+        force = os.getenv("BOT_FORCE") == "1"
     logger = logging.getLogger(__name__)
     logger.info("开始执行每日任务")
     # 加载配置
     config = load_config()
+
+    # 周末跳过（仅定时）
+    if not force:
+        today = datetime.now().date()
+        if today.weekday() >= 5:
+            logger.info(f"今天是周末 ({today})，跳过日报")
+            return
+
     try:
         # 创建Session（新数据流）
         session_manager = SessionManager(config)
@@ -272,7 +286,7 @@ def run_daily_task():
         logger.error(f"执行任务时发生错误: {e}", exc_info=True)
 
 
-def run_brief_report(report_id: str = "morning_snapshot"):
+def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
     """
     运行简报任务（轻量级：仅价格 + 锚点偏离率）。
 
@@ -280,15 +294,19 @@ def run_brief_report(report_id: str = "morning_snapshot"):
 
     Args:
         report_id: 简报 ID，对应 config scheduler.brief_reports[].id
+        force: True = 跳过周末/休市检测（手动触发用）
     """
+    if not force:
+        force = os.getenv("BOT_FORCE") == "1"
+
     logger = logging.getLogger(__name__)
     logger.info(f"开始执行简报任务: {report_id}")
 
     config = load_config()
     today = datetime.now().date()
 
-    # 周末跳过
-    if today.weekday() >= 5:
+    # 周末跳过（仅定时）
+    if not force and today.weekday() >= 5:
         logger.info(f"今天是周末 ({today})，跳过简报")
         return
 
@@ -317,20 +335,25 @@ def run_brief_report(report_id: str = "morning_snapshot"):
 
         logger.info(f"简报：获取到 {len(session.stocks_data)} 只股票数据")
 
-        # 休市检测：数据指纹比较（按简报类型区分文件，避免早盘/收盘互相干扰）
-        from src.utils.market_status import is_market_closed, mark_pushed
-        stock_data_df = session.get_all_dataframe()
-        last_pushed_file = Path(f"cache/last_pushed_{report_id}.txt")
-        if is_market_closed(stock_data_df, last_pushed_file):
-            logger.info("数据未更新（疑似休市），跳过简报推送")
-            return
+        # 休市检测：数据指纹比较（仅定时，按简报类型区分文件）
+        if not force:
+            from src.utils.market_status import is_market_closed, mark_pushed
+            stock_data_df = session.get_all_dataframe()
+            last_pushed_file = Path(f"cache/last_pushed_{report_id}.txt")
+            if is_market_closed(stock_data_df, last_pushed_file):
+                logger.info("数据未更新（疑似休市），跳过简报推送")
+                return
 
-        # 发送简报（统一入口）
-        notifier = NotifierManager(config)
-        notifier.send_brief_report(session, report_config)
+            # 发送简报（统一入口）
+            notifier = NotifierManager(config)
+            notifier.send_brief_report(session, report_config)
 
-        # 记录推送日期
-        mark_pushed(last_pushed_file, stock_data_df)
+            # 记录推送日期
+            mark_pushed(last_pushed_file, stock_data_df)
+        else:
+            # 手动触发：直接推送，不记录
+            notifier = NotifierManager(config)
+            notifier.send_brief_report(session, report_config)
 
         logger.info(f"简报任务完成: {report_id}")
 

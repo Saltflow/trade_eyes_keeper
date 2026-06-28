@@ -257,10 +257,8 @@ def _run_main(command_args: list[str], env_extra: dict | None = None) -> str:
 
 def handle_brief(report_id: str = "morning_snapshot") -> str:
     label = "早盘简报" if report_id == "morning_snapshot" else "收盘简报"
-    if _run_main(["--brief", report_id]):
-        return (
-            f"⏳ {label}已触发。稍后飞书会推送简报卡片。"
-        )
+    if _run_main(["--brief", report_id], env_extra={"BOT_FORCE": "1"}):
+        return f"⏳ {label}已触发。稍后飞书会推送简报卡片。"
     return f"❌ {label}触发失败"
 
 
@@ -288,7 +286,7 @@ def handle_optimize(preset: str = "v2") -> str:
 
 
 def handle_daily() -> str:
-    if _run_main(["--once"]):
+    if _run_main(["--once"], env_extra={"BOT_FORCE": "1"}):
         return "⏳ 完整日报已触发。稍后飞书+邮件会推送。"
     return "❌ 日报触发失败"
 
