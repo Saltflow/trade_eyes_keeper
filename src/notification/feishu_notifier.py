@@ -87,10 +87,22 @@ class FeishuNotifier(BaseNotifier):
         today = datetime.now()
         rows = self._build_brief_rows(stock_data, today)
         title = f"{label} - {today.strftime('%Y-%m-%d')}"
+
+        # 策略建议
+        from ..notification.email_notifier import build_strategy_suggestions
+        sug = build_strategy_suggestions(stock_data, today)
+        strat_text = ""
+        if sug and sug["active_count"] > 0:
+            strat_text = (
+                f"\n\n**策略建议** ({sug['strategy_label']})\n"
+                f"活跃信号: {sug['active_count']}/{sug['total_count']}\n"
+                f"```\n代码     名称   现价    触发信号\n{sug['text_rows']}\n```"
+            )
+
         body = (
-            f"**{label}** | {today.strftime('%H:%M')}\n\n{rows}"
+            f"**{label}** | {today.strftime('%H:%M')}\n\n{rows}{strat_text}"
             if rows
-            else f"**{label}** | 无活跃标的"
+            else f"**{label}** | 无活跃标的{strat_text}"
         )
         self._send(title, body)
 

@@ -44,7 +44,7 @@ walk_forward:
   train_months: 12    # 每个窗口训练期月数
   test_months: 9      # 每个窗口测试期月数
   step_months: 3      # 滑动步长月数
-  num_windows: 6      # 窗口数量
+  num_windows: 14     # 窗口数量 (12+9+13*3=60月≈5年)
 
   # 窗口评分权重（等权重）
   window_weights: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]

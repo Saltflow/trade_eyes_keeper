@@ -367,7 +367,7 @@ class StrategyOptimizerV2:
                 if last_ws.final_shares is not None:
                     last_window = windows[-1] if windows else None
                     if last_window is not None:
-                        final_prices = wf_mgr.get_price_matrix(last_window, "test")
+                        final_prices = wf_mgr.get_price_matrix(last_window, "all")
                         final_day_prices = final_prices[-1] if final_prices.shape[0] > 0 else None
                         codes = wf_mgr.stock_codes
                         if final_day_prices is not None:

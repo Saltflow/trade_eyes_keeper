@@ -125,6 +125,197 @@ def build_brief_entries(stock_data, today) -> list[dict]:
     return entries
 
 
+def build_strategy_suggestions(stock_data, today=None) -> dict | None:
+    """从最新优化结果生成策略建议（简报用）。
+
+    1. 读取 data/optimizer/ 下最新的 A 股策略 YAML
+    2. 取 Top1 策略的买入规则
+    3. 对每只标的评估是否有买入信号触发
+    4. 返回结构化建议数据
+
+    Returns:
+        None 如果没有优化结果
+        {
+            "strategy_label": "deep_value + deviation_absolute",
+            "active_count": 3,
+            "total_count": 10,
+            "entries": [{code, name, close, signals: [str]}],
+            "html_rows": "HTML 表格行",
+            "text_rows": "纯文本行",
+        }
+    """
+    from pathlib import Path
+    from datetime import datetime
+
+    today_date = today.date() if hasattr(today, "date") else (today or datetime.now().date())
+
+    # 找最新 A 股优化结果
+    opt_dir = Path("data/optimizer")
+    yaml_files = sorted(
+        opt_dir.glob("*_a_share_strategies.yaml"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not yaml_files:
+        return None
+    try:
+        with open(yaml_files[0], "r", encoding="utf-8") as f:
+            import yaml
+            data = yaml.safe_load(f)
+        strategies = data.get("strategies", [])
+        if not strategies:
+            return None
+        top = strategies[0]
+        params = top.get("params", {})
+    except Exception:
+        return None
+
+    # 解析买入规则
+    buy_rules = []
+    for i in range(1, 6):
+        signal = params.get(f"buy_{i}_signal", "none")
+        if signal == "none" or not signal:
+            continue
+        t_raw = float(params.get(f"buy_{i}_t", "0.3"))
+        frac = float(params.get(f"buy_{i}_frac", "0.15"))
+        buy_rules.append((signal, t_raw, frac))
+
+    if not buy_rules:
+        return None
+
+    # 构建策略标签
+    unique_signals = list(dict.fromkeys(s[0] for s in buy_rules))
+    strategy_label = " + ".join(unique_signals[:3])
+
+    # 补算新因子需要的列
+    df = stock_data.copy()
+    close = df["close"].astype(float)
+    if "ma60" in df.columns:
+        ma60 = df["ma60"].astype(float)
+    else:
+        ma60 = close.rolling(window=60, min_periods=1).mean()
+
+    # deep_value needs ma200_dev, ma60_slope
+    need_ma200 = any("ma200" in r[0] or r[0] == "deep_value" for r in buy_rules)
+    need_slope = any("slope" in r[0] or r[0] == "deep_value" for r in buy_rules)
+    need_ath = any("ath" in r[0] or "discount" in r[0] for r in buy_rules)
+
+    if need_ma200 and "ma200_dev" not in df.columns:
+        ma200 = close.rolling(window=200, min_periods=1).mean()
+        df["ma200_dev"] = (close - ma200) / ma200.replace(0, float("nan"))
+    if need_slope and "ma60_slope" not in df.columns:
+        df["ma60_slope"] = ma60 / ma60.shift(20).replace(0, float("nan")) - 1.0
+    if need_ath and "pct_from_ath" not in df.columns:
+        ath = close.rolling(window=504, min_periods=1).max()
+        df["pct_from_ath"] = close / ath.replace(0, float("nan")) - 1.0
+
+    # 对每只标的评估信号
+    entries = []
+    for _, row in df.iterrows():
+        code = str(row.get("stock_code", ""))
+        name = str(row.get("stock_name") or code)
+        c = row.get("close")
+        if c is None or pd.isna(c):
+            continue
+        c = float(c)
+
+        # 3 天日期过滤（同 brief 逻辑）
+        data_date = row.get("date")
+        if data_date is not None and not pd.isna(data_date):
+            try:
+                data_dt = datetime.strptime(str(data_date)[:10], "%Y-%m-%d").date()
+                days_since = (today_date - data_dt).days
+                if days_since < 0 or days_since > 3:
+                    continue
+            except Exception:
+                continue
+
+        active_signals = []
+        for signal, t_raw, frac in buy_rules:
+            triggered = False
+            try:
+                if signal == "deviation_cross":
+                    dev = float(row.get("deviation", np.nan))
+                    t = -0.005 + t_raw * (-0.295)
+                    triggered = not np.isnan(dev) and dev <= t
+                elif signal == "deviation_absolute":
+                    dev = float(row.get("deviation", np.nan))
+                    t = t_raw * -0.40
+                    triggered = not np.isnan(dev) and dev <= t
+                elif signal == "rsi_signal":
+                    rsi = float(row.get("rsi", np.nan))
+                    t = 10 + (1.0 - t_raw) * 30
+                    triggered = not np.isnan(rsi) and rsi < t
+                elif signal == "deep_value":
+                    dev200 = float(df.loc[row.name, "ma200_dev"]) if "ma200_dev" in df.columns else np.nan
+                    slope = float(df.loc[row.name, "ma60_slope"]) if "ma60_slope" in df.columns else np.nan
+                    t = -0.05 + t_raw * (-0.35)
+                    triggered = (
+                        not np.isnan(dev200) and not np.isnan(slope)
+                        and dev200 <= t and slope > -0.005
+                    )
+                elif signal == "absolute_discount":
+                    pct_ath = float(df.loc[row.name, "pct_from_ath"]) if "pct_from_ath" in df.columns else np.nan
+                    t = -0.10 + t_raw * (-0.60)
+                    triggered = not np.isnan(pct_ath) and pct_ath <= t
+                elif signal == "trend_follow":
+                    adx = float(row.get("adx", np.nan))
+                    macd = float(row.get("macd_hist", np.nan))
+                    t = 15 + t_raw * 25
+                    triggered = not np.isnan(adx) and not np.isnan(macd) and adx > t and macd > 0
+                elif signal == "volume_spike":
+                    vr = float(row.get("vol_ratio", np.nan))
+                    t = 1.2 + t_raw * 2.8
+                    triggered = not np.isnan(vr) and vr > t
+                elif signal == "bollinger_signal":
+                    bb = float(row.get("boll_pct_b", np.nan))
+                    t = (1.0 - t_raw) * 0.35
+                    triggered = not np.isnan(bb) and bb < t
+            except Exception:
+                continue
+
+            if triggered:
+                active_signals.append(f"{signal}({frac*100:.0f}%)")
+
+        entries.append({
+            "code": code,
+            "name": name,
+            "close": round(c, 2),
+            "signals": active_signals,
+            "signal_count": len(active_signals),
+        })
+
+    # 排序：有信号的排前面
+    entries.sort(key=lambda x: (-x["signal_count"], x["code"]))
+
+    # 生成 HTML 行
+    html_parts = []
+    for e in entries:
+        sigs = ", ".join(e["signals"]) if e["signals"] else "—"
+        css = "color:#27ae60;font-weight:bold" if e["signals"] else ""
+        html_parts.append(
+            f"<tr><td>{e['code']}</td><td>{e['name']}</td>"
+            f"<td>{e['close']:.2f}</td>"
+            f'<td style="{css}">{sigs}</td></tr>'
+        )
+
+    # 生成纯文本行（飞书用）
+    text_parts = []
+    for e in entries:
+        sigs = ", ".join(e["signals"]) if e["signals"] else "—"
+        text_parts.append(f"{e['code']:<8} {e['name'][:6]:<6} {e['close']:>7.2f}  {sigs}")
+
+    active_count = sum(1 for e in entries if e["signals"])
+    return {
+        "strategy_label": strategy_label,
+        "active_count": active_count,
+        "total_count": len(entries),
+        "entries": entries,
+        "html_rows": "\n".join(html_parts),
+        "text_rows": "\n".join(text_parts),
+    }
+
+
 def build_optimizer_summary(report, group_name: str = "") -> str:
     """将 OptimizationReport 格式化为人话摘要。"""
     lines = ["<b>策略优化完成</b>"]
@@ -1697,8 +1888,21 @@ class EmailNotifier(BaseNotifier):
         today = datetime.now()
         today_date = today.date()
 
-        # ── 构建每只股票的行（共享逻辑：日期过滤 + 锚点 + MA60 兜底 + 排序）──
+        # ── 构建每只股票的行 ──
         rows_data = build_brief_entries(stock_data, today)
+
+        # ── 策略建议 ──
+        suggestions = build_strategy_suggestions(stock_data, today)
+        strat_html = ""
+        if suggestions and suggestions["active_count"] > 0:
+            strat_html = (
+                "<h3>策略建议</h3>"
+                f"<p>最新策略: <b>{suggestions['strategy_label']}</b> | "
+                f"活跃信号: {suggestions['active_count']}/{suggestions['total_count']}</p>"
+                "<table><tr><th>代码</th><th>名称</th><th>现价</th><th>触发信号</th></tr>"
+                f"{suggestions['html_rows']}"
+                "</table><br>"
+            )
 
         # ── 渲染 HTML ──
         html_rows = []
@@ -1742,8 +1946,9 @@ class EmailNotifier(BaseNotifier):
             report_date=today.strftime("%Y-%m-%d"),
             current_time=today.strftime("%H:%M"),
             active_count=active_count,
-            total_count=active_count,  # 只算活跃的
+            total_count=active_count,
             brief_rows=rows,
+            strategy_suggestions=strat_html,
         )
 
         subject = f"{label} - {today.strftime('%Y-%m-%d')}"

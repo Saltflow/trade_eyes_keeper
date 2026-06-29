@@ -25,7 +25,15 @@ for code in config_stocks:
     if len(df) >= 252:
         stocks_data[code] = df
 
+# Trim to last 5 years (1260 trading days)
+LOOKBACK_DAYS = 1260
+stocks_data = {
+    code: df.tail(LOOKBACK_DAYS) if len(df) > LOOKBACK_DAYS else df
+    for code, df in stocks_data.items()
+}
 print(f"A-shares: {len(stocks_data)} stocks: {list(stocks_data.keys())}")
+print(f"Date range: {stocks_data[list(stocks_data.keys())[0]]['date'].iloc[0].strftime('%Y-%m-%d')} -> "
+      f"{stocks_data[list(stocks_data.keys())[0]]['date'].iloc[-1].strftime('%Y-%m-%d')}")
 
 from src.analysis.strategy_optimizer_v2 import StrategyOptimizerV2
 
