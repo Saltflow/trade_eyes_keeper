@@ -80,6 +80,8 @@ discrete_search:
     - volume_spike          # 放量异动
     - deviation_absolute    # MA绝对偏离
     - trend_follow          # 趋势跟踪(ADX+MACD)
+    - absolute_discount     # 距2年高点跌幅 (v1.18)
+    - deep_value            # 长周期低估+趋势启稳 (v1.18)
     - none                  # 禁用
 
   # 阈值离散档位（归一化值，由 builder 内部映射到真实范围）
@@ -98,6 +100,7 @@ discrete_search:
     - bollinger_signal      # 布林带上轨
     - deviation_absolute    # MA绝对偏离（高位）
     - trend_follow          # 趋势反转(ADX+MACD<0)
+    - sell_overextended     # 接近2年高点 (v1.18)
     - none                  # 禁用
 
   # 卖出比例离散档位（持仓比例）

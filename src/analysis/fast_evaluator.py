@@ -39,6 +39,9 @@ IDX_MACD_HIST = 4
 IDX_BOLL_PCT_B = 5
 IDX_ADX = 6
 IDX_VOL_RATIO = 7
+IDX_PCT_FROM_ATH = 8
+IDX_MA60_SLOPE = 9
+IDX_MA200_DEV = 10
 
 # ── 构建器 → 条件/重置矩阵生成函数 ──
 # 每个构建器返回 (condition_matrix, reset_matrix) 各为 (T, N) bool
@@ -181,6 +184,42 @@ def _build_none(indicator: np.ndarray, threshold_norm: float) -> tuple[np.ndarra
     return cond, reset
 
 
+# ── 新增构建器 (v1.18) ──
+
+def _build_absolute_discount(indicator: np.ndarray, threshold_norm: float) -> tuple[np.ndarray, np.ndarray]:
+    """距2年高点跌幅超过阈值 (绝对便宜)"""
+    pct = indicator[:, :, IDX_PCT_FROM_ATH]
+    if pct.shape[0] == 0:
+        return np.zeros_like(pct, dtype=bool), np.ones_like(pct, dtype=bool)
+    t = -0.10 + threshold_norm * (-0.60)  # norm 0→1 maps to -0.10→-0.70
+    cond = pct <= t
+    reset = pct > -0.05  # 回到接近高点解锁
+    return cond, reset
+
+
+def _build_deep_value(indicator: np.ndarray, threshold_norm: float) -> tuple[np.ndarray, np.ndarray]:
+    """长周期低估 + 趋势不再下滑"""
+    dev200 = indicator[:, :, IDX_MA200_DEV]
+    slope60 = indicator[:, :, IDX_MA60_SLOPE]
+    if dev200.shape[0] == 0:
+        return np.zeros_like(dev200, dtype=bool), np.ones_like(dev200, dtype=bool)
+    t = -0.05 + threshold_norm * (-0.35)  # norm 0→1 maps to -0.05→-0.40
+    cond = (dev200 <= t) & (slope60 > -0.005)  # ma200偏离大 + MA60不再加速下跌
+    reset = dev200 > 0
+    return cond, reset
+
+
+def _build_sell_overextended(indicator: np.ndarray, threshold_norm: float) -> tuple[np.ndarray, np.ndarray]:
+    """接近2年高点 → 卖"""
+    pct = indicator[:, :, IDX_PCT_FROM_ATH]
+    if pct.shape[0] == 0:
+        return np.zeros_like(pct, dtype=bool), np.ones_like(pct, dtype=bool)
+    t = -0.05 + threshold_norm * 0.05  # norm 0→1 maps to -0.05→0.0 (越靠近0越卖)
+    cond = pct >= t
+    reset = pct < -0.10  # 回撤10%以上解锁
+    return cond, reset
+
+
 # 构建器注册表
 CONDITION_BUILDERS_FAST: dict[str, callable] = {
     "deviation_cross": _build_deviation_cross,
@@ -190,12 +229,16 @@ CONDITION_BUILDERS_FAST: dict[str, callable] = {
     "deviation_absolute": _build_deviation_absolute,
     "trend_follow": _build_trend_follow,
     "none": _build_none,
+    # v1.18 新增构建器
+    "absolute_discount": _build_absolute_discount,
+    "deep_value": _build_deep_value,
     # 卖出构建器（前缀 sell_）
     "sell_deviation_cross": _build_sell_deviation_cross,
     "sell_rsi_signal": _build_sell_rsi_signal,
     "sell_bollinger_signal": _build_sell_bollinger_signal,
     "sell_deviation_absolute": _build_sell_deviation_absolute,
     "sell_trend_follow": _build_sell_trend_follow,
+    "sell_overextended": _build_sell_overextended,
 }
 
 

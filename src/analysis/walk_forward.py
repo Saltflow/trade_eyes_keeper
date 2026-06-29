@@ -60,6 +60,7 @@ INDICATOR_NAMES = [
     "close", "ma60", "deviation",
     "rsi", "macd_hist", "boll_pct_b",
     "adx", "vol_ratio",
+    "pct_from_ath", "ma60_slope", "ma200_dev",
 ]
 INDICATOR_TO_IDX = {name: idx for idx, name in enumerate(INDICATOR_NAMES)}
 NUM_INDICATORS = len(INDICATOR_NAMES)
@@ -399,6 +400,22 @@ class WalkForwardManager:
             vol_col = df_cols.get("volume", "volume")
             df["_vol_ratio"] = self._compute_vol_ratio(df[vol_col].astype(float))
 
+        # 兜底计算新增指标
+        # pct_from_ath: 距2年高点的距离
+        if "_pct_from_ath" not in df.columns:
+            ath = close_series.rolling(window=504, min_periods=1).max()
+            df["_pct_from_ath"] = close_series / ath.replace(0, np.nan) - 1.0
+
+        # ma60_slope: MA60 20日涨跌
+        if "_ma60_slope" not in df.columns:
+            ma60_s = df["_ma60"]
+            df["_ma60_slope"] = ma60_s / ma60_s.shift(20).replace(0, np.nan) - 1.0
+
+        # ma200_dev: 200日均线偏离
+        if "_ma200_dev" not in df.columns:
+            ma200 = close_series.rolling(window=200, min_periods=1).mean()
+            df["_ma200_dev"] = (close_series - ma200) / ma200.replace(0, np.nan)
+
         # 兜底填充缺失列为 NaN
         matrix = np.full((n_dates, NUM_INDICATORS), np.nan, dtype=np.float32)
 
@@ -413,9 +430,13 @@ class WalkForwardManager:
             matrix[idx, 1] = row.get("_ma60", np.nan)
             matrix[idx, 2] = row.get("_deviation", np.nan)
             # 预计算指标：优先取传入的，再取兜底计算的
-            for j, name in enumerate(INDICATOR_NAMES[3:], 3):
+            for j, name in enumerate(INDICATOR_NAMES[3:8], 3):
                 col_name = f"_{name}" if not name.startswith("_") and name in df.columns else name
                 val = row.get(col_name, row.get(name, np.nan))
+                matrix[idx, j] = val if not (isinstance(val, float) and pd.isna(val)) else np.nan
+            # 新增指标（索引 8-10）
+            for j, bare_name in enumerate(["pct_from_ath", "ma60_slope", "ma200_dev"], 8):
+                val = row.get(f"_{bare_name}", row.get(bare_name, np.nan))
                 matrix[idx, j] = val if not (isinstance(val, float) and pd.isna(val)) else np.nan
 
         # 检查数据充足性
