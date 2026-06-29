@@ -337,7 +337,7 @@ class StockDataFetcher:
                         latest_date = latest_data.iloc[0].get("date")
                         if latest_date:
                             today = datetime.now(self.timezone).date()
-                            if latest_date.date() != today:
+                            if realtime_mode or latest_date.date() != today:
                                 logger.warning(
                                     f"股票 {stock_code} 最新数据日期为 "
                                     f"{latest_date.date()}，不是今天 {today}"

@@ -80,6 +80,17 @@ class TestQQRealtimeQuote:
 class TestRealtimeModeInSession:
     """realtime_mode=True 时价格被补充进 Session"""
 
+    @staticmethod
+    def _make_fetcher(stocks=None):
+        """构造 mock 好的 StockDataFetcher，DataSource + 指标计算均已 stub"""
+        from src.core.data_fetcher import StockDataFetcher
+        from src.data.data_source import DataSource
+        config = {"stocks": stocks or ["601088"], "data_source": {"type": "web_crawler"}}
+        fetcher = StockDataFetcher(config)
+        fetcher._data_source = MagicMock(spec=DataSource)
+        fetcher.technical_indicators.calculate_indicators = lambda df, **kw: df
+        return fetcher
+
     @patch("src.data.web_crawler.StockWebCrawler.fetch_realtime_quote")
     def test_stale_data_gets_price_update(self, mock_qq):
         """历史数据日期为昨天 → realtime_mode 补充当天价格"""
@@ -88,33 +99,73 @@ class TestRealtimeModeInSession:
             "high": 6.20, "low": 5.95, "volume": 10000, "amount": 61500,
             "name": "中国电信"
         }
-        from src.core.data_fetcher import StockDataFetcher
-        config = {"stocks": ["601728"], "data_source": {"type": "web_crawler"}}
-        fetcher = StockDataFetcher(config)
+        fetcher = self._make_fetcher(stocks=["601728"])
 
-        # Mock DataSource
-        from src.data.data_source import DataSource
-        fetcher._data_source = MagicMock(spec=DataSource)
+        # Mock DataSource returns YESTERDAY
         yesterday = pd.Timestamp("2026-05-28")
         fetcher._data_source.fetch_stock_data.return_value = pd.DataFrame([{
             "date": yesterday, "open": 5.96, "close": 5.97,
             "high": 6.07, "low": 5.94, "volume": 10000, "amount": 59700
         }])
 
-        # Mock technical indicators to pass through
-        fetcher.technical_indicators.calculate_indicators = lambda df, **kw: df
-
-        # Properly mock session with _historical attribute
         session = MagicMock()
         session._historical = {}
         session_manager = MagicMock()
 
         fetcher.fetch_to_session(session, session_manager, realtime_mode=True)
 
-        # 验证 realtime quote 被调用
         mock_qq.assert_called_once_with("601728")
-        # 验证 session 被更新
         assert session_manager.update_stock_from_dataframe.called
+
+    @patch("src.core.data_fetcher.datetime")
+    @patch("src.data.web_crawler.StockWebCrawler.fetch_realtime_quote")
+    def test_same_day_cache_still_fetches_qq_realtime(self, mock_qq, mock_dt):
+        """缓存已有今天（早盘旧价）→ realtime_mode 仍需拉 QQ 实时（修复午盘 stale bug）"""
+        mock_dt.now.return_value = datetime(2026, 6, 29, 14, 30, 0)  # 强制 today = 2026-06-29
+        mock_qq.return_value = {
+            "date": "2026-06-29", "close": 39.98, "open": 39.59,
+            "high": 40.30, "low": 38.85, "volume": 41868426,
+            "amount": 1673899671, "name": "中国神华"
+        }
+        fetcher = self._make_fetcher(stocks=["601088"])
+
+        # 关键：DataSource 返回 date=今天 但价格是早盘旧价
+        today = pd.Timestamp("2026-06-29")
+        fetcher._data_source.fetch_stock_data.return_value = pd.DataFrame([{
+            "date": today,
+            "open": 39.59,
+            "close": 38.98,   # 早上 9:50 的价格，下午应该被 QQ 覆盖
+            "high": 39.75, "low": 38.86,
+            "volume": 40000000, "amount": 1560000000,
+        }])
+
+        session = MagicMock()
+        session._historical = {}
+        session_manager = MagicMock()
+
+        fetcher.fetch_to_session(session, session_manager, realtime_mode=True)
+
+        mock_qq.assert_called_once_with("601088")
+
+    @patch("src.data.web_crawler.StockWebCrawler.fetch_realtime_quote")
+    def test_non_realtime_skips_when_cache_has_today(self, mock_qq):
+        """非简报模式 + 缓存已有今天 → 不拉 QQ（避免不必要的网络请求）"""
+        fetcher = self._make_fetcher(stocks=["601088"])
+
+        today = pd.Timestamp("2026-06-29")
+        fetcher._data_source.fetch_stock_data.return_value = pd.DataFrame([{
+            "date": today,
+            "open": 39.59, "close": 39.98,
+            "high": 40.30, "low": 38.85,
+            "volume": 41868426, "amount": 1673899671,
+        }])
+
+        session = MagicMock()
+        session._historical = {}
+        session_manager = MagicMock()
+
+        fetcher.fetch_to_session(session, session_manager, realtime_mode=False)
+        mock_qq.assert_not_called()
 
 
 class TestEastmoneyRemoved:
