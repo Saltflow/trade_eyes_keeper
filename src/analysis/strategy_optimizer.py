@@ -209,6 +209,10 @@ class StrategyTrial(BaseModel):
     sub_periods: dict | None = None  # PortfolioResult.sub_periods 原始数据
     benchmark_returns: dict[str, float] = Field(default_factory=dict)  # 全部基准收益
     strategy_return: float = 0.0  # 策略绝对收益
+    final_position_pct: float = 0.0  # 期末仓位率
+    final_holdings: list[dict] = Field(default_factory=list)  # [{code, shares, price, value, pct, cost}]
+    final_cash: float = 0.0  # 期末现金
+    total_nav: float = 0.0  # 期末总资产
 
     @property
     def fitness(self) -> float:

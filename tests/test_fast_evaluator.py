@@ -289,7 +289,7 @@ class TestPositionTargetSimulation:
         p_close = np.array(closes, dtype=np.float32).reshape(T, 1)
         p_open = np.array(opens, dtype=np.float32).reshape(T, 1)
 
-        values, trades, avg_pos = _simulate_position_target_python(
+        values, trades, avg_pos, final_pos, shares, cash, cost = _simulate_position_target_python(
             buy_signals, sell_signals,
             p_close, p_open,
             initial_cash=100000.0,
@@ -325,7 +325,7 @@ class TestPositionTargetSimulation:
         p_close = np.array(closes, dtype=np.float32).reshape(T, 1)
         p_open = np.array(opens, dtype=np.float32).reshape(T, 1)
 
-        values, trades, avg_pos = _simulate_position_target_python(
+        values, trades, avg_pos, final_pos, shares, cash, cost = _simulate_position_target_python(
             buy_signals, sell_signals,
             p_close, p_open,
             initial_cash=100000.0,
@@ -355,7 +355,7 @@ class TestPositionTargetSimulation:
         p_close = np.array(closes, dtype=np.float32).reshape(T, 1)
         p_open = np.array(opens, dtype=np.float32).reshape(T, 1)
 
-        values, trades, avg_pos = _simulate_position_target_python(
+        values, trades, avg_pos, final_pos, shares, cash, cost = _simulate_position_target_python(
             buy_signals, sell_signals,
             p_close, p_open,
             initial_cash=100000.0,
@@ -393,7 +393,7 @@ class TestPositionTargetSimulation:
         p_close = np.tile(np.array(closes, dtype=np.float32).reshape(T, 1), (1, N))
         p_open = p_close.copy()
 
-        values, trades, avg_pos = _simulate_position_target_python(
+        values, trades, avg_pos, final_pos, shares, cash, cost = _simulate_position_target_python(
             buy_signals, sell_signals,
             p_close, p_open,
             initial_cash=100000.0,
@@ -425,7 +425,7 @@ class TestPositionTargetSimulation:
         p_close = np.array(closes, dtype=np.float32).reshape(T, 1)
         p_open = np.array(opens, dtype=np.float32).reshape(T, 1)
 
-        values, trades, avg_pos = _simulate_position_target_python(
+        values, trades, avg_pos, final_pos, shares, cash, cost = _simulate_position_target_python(
             buy_signals, sell_signals,
             p_close, p_open,
             initial_cash=100000.0,

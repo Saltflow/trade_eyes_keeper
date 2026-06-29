@@ -213,6 +213,10 @@ class WindowStats:
         test_months: int = 9,
         benchmark_returns: dict[str, float] | None = None,
         strategy_return: float = 0.0,
+        final_position_pct: float = 0.0,
+        final_shares: "np.ndarray | None" = None,
+        final_cash: float = 0.0,
+        cost_basis: "np.ndarray | None" = None,
     ):
         self.test_excess_return = test_excess_return
         self.max_drawdown_pct = max_drawdown_pct
@@ -220,10 +224,12 @@ class WindowStats:
         self.sharpe_ratio = sharpe_ratio
         self.total_trades = total_trades
         self.test_months = test_months
-        # 多基准超额收益: {"510300": 12.5, "510880": 10.2, "risk_free": 2.0}
         self.benchmark_returns: dict[str, float] = benchmark_returns or {}
-        # 策略绝对收益（用于推算各基准超额）
         self.strategy_return = strategy_return
+        self.final_position_pct = final_position_pct
+        self.final_shares = final_shares
+        self.final_cash = final_cash
+        self.cost_basis = cost_basis
 
     @property
     def trades_per_month(self) -> float:

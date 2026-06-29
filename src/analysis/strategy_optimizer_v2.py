@@ -350,12 +350,52 @@ class StrategyOptimizerV2:
             avg_sharpe = np.mean([s.sharpe_ratio for s in ss.window_stats])
             total_trades = sum(ws.total_trades for ws in ss.window_stats)
 
-            # 收集基准收益（取首个窗口的 benchmark_returns）
+            # 收集基准收益 + 期末持仓（取最后窗口的数据）
             bench_info: dict[str, float] = {}
             strat_ret: float = 0.0
-            if ss.window_stats and ss.window_stats[0].benchmark_returns:
-                bench_info = dict(ss.window_stats[0].benchmark_returns)
-                strat_ret = ss.window_stats[0].strategy_return
+            final_pos: float = 0.0
+            final_cash_val: float = 0.0
+            final_holdings: list[dict] = []
+            total_nav: float = 0.0
+
+            if ss.window_stats:
+                if ss.window_stats[0].benchmark_returns:
+                    bench_info = dict(ss.window_stats[0].benchmark_returns)
+                    strat_ret = ss.window_stats[0].strategy_return
+                # 期末持仓
+                last_ws = ss.window_stats[-1]
+                if last_ws.final_shares is not None:
+                    last_window = windows[-1] if windows else None
+                    if last_window is not None:
+                        final_prices = wf_mgr.get_price_matrix(last_window, "test")
+                        final_day_prices = final_prices[-1] if final_prices.shape[0] > 0 else None
+                        codes = wf_mgr.stock_codes
+                        if final_day_prices is not None:
+                            shares_arr = last_ws.final_shares
+                            cost_arr = last_ws.cost_basis
+                            total_pos_val = 0.0
+                        for i in range(min(len(codes), len(shares_arr))):
+                            qty = float(shares_arr[i])
+                            if qty <= 0.5:  # 忽略零头
+                                continue
+                                px = float(final_day_prices[i])
+                                if px <= 0 or np.isnan(px):
+                                    continue
+                                value = qty * px
+                                total_pos_val += value
+                                cb = float(cost_arr[i]) if cost_arr is not None and i < len(cost_arr) else 0.0
+                                holding = {
+                                    "code": codes[i],
+                                    "shares": round(qty, 1),
+                                    "price": round(px, 2),
+                                    "value": round(value, 2),
+                                    "cost": round(cb, 2),
+                                    "cost_value": round(qty * cb, 2) if cb > 0 else 0.0,
+                                }
+                                final_holdings.append(holding)
+                            final_cash_val = round(float(last_ws.final_cash), 2) if last_ws.final_cash else 0.0
+                            total_nav = round(total_pos_val + final_cash_val, 2)
+                            final_pos = round(total_pos_val / total_nav * 100, 1) if total_nav > 0 else 0.0
 
             # 构建参数摘要
             params_summary: dict[str, str] = {}
@@ -392,6 +432,10 @@ class StrategyOptimizerV2:
                 trade_count=total_trades,
                 benchmark_returns=bench_info,
                 strategy_return=round(strat_ret, 2),
+                final_position_pct=final_pos,
+                final_holdings=final_holdings,
+                final_cash=final_cash_val,
+                total_nav=total_nav,
             )
             trials.append(trial)
 

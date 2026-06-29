@@ -361,6 +361,7 @@ try:
         """
         T, N = buy_signals.shape
         shares = np.zeros(N, dtype=np.float64)
+        cost_basis = np.zeros(N, dtype=np.float64)
         cash = float(initial_cash)
         daily_values = np.zeros(T, dtype=np.float64)
         monthly_spent = 0.0
@@ -435,7 +436,11 @@ try:
                     total_cost = cost_real + fee
 
                     if total_cost <= cash:
+                        old_sh = shares[n]
+                        old_cb = cost_basis[n]
                         shares[n] += qty
+                        if shares[n] > 0:
+                            cost_basis[n] = (old_sh * old_cb + qty * price) / shares[n]
                         cash -= total_cost
                         monthly_spent += total_cost
                         total_trades += 1
@@ -466,7 +471,17 @@ try:
         if valid_days > 0:
             avg_pos_pct = avg_pos_pct / valid_days * 100.0
 
-        return daily_values, total_trades, avg_pos_pct
+        # 期末仓位率
+        final_pos_pct = 0.0
+        if T > 0 and daily_values[T - 1] > 0:
+            fpv = 0.0
+            for n2 in range(N):
+                px = float(prices[T - 1, n2])
+                if not np.isnan(px) and px > 0:
+                    fpv += shares[n2] * px
+            final_pos_pct = fpv / daily_values[T - 1] * 100.0
+
+        return daily_values, total_trades, avg_pos_pct, final_pos_pct, shares.copy(), cash, cost_basis.copy()
 
     HAS_NUMBA = True
     logger.info("numba JIT 已启用，FastEvaluator 将使用加速内核")
@@ -657,14 +672,14 @@ class FastEvaluator:
         sell_fracs_arr = np.array(sell_fracs if sell_fracs else [0.0], dtype=np.float32)
 
         if HAS_NUMBA:
-            daily_values, trade_count, avg_pos_pct = _simulate_portfolio_numba(
+            daily_values, trade_count, avg_pos_pct, final_pos_pct, final_shares, final_cash, cost_basis = _simulate_portfolio_numba(
                 buy_signals, sell_signals, price_matrix,
                 buy_fracs_arr, sell_fracs_arr,
                 float(self.initial_cash), float(self.monthly_buy_limit),
                 self.lot_size, float(self.commission_rate),
             )
         else:
-            daily_values, trade_count, avg_pos_pct = _simulate_portfolio_python(
+            daily_values, trade_count, avg_pos_pct, final_pos_pct, final_shares, final_cash, cost_basis = _simulate_portfolio_python(
                 buy_signals, sell_signals, price_matrix,
                 buy_fracs_arr, sell_fracs_arr,
                 self.initial_cash, self.monthly_buy_limit,
@@ -679,6 +694,10 @@ class FastEvaluator:
             daily_values, price_matrix, cash_baseline,
             trade_count, signal_count, avg_pos_pct=avg_pos_pct,
             benchmark_series=benchmark_series,
+            final_pos_pct=final_pos_pct,
+            final_shares=final_shares,
+            final_cash=final_cash,
+            cost_basis=cost_basis,
         )
 
     def _compute_stats(
@@ -690,6 +709,10 @@ class FastEvaluator:
         signal_count: int,
         avg_pos_pct: float | None = None,
         benchmark_series: dict[str, np.ndarray] | None = None,
+        final_pos_pct: float = 0.0,
+        final_shares: np.ndarray | None = None,
+        final_cash: float = 0.0,
+        cost_basis: np.ndarray | None = None,
     ) -> "WindowStats":
         """从日资产序列计算 WindowStats
 
@@ -763,6 +786,10 @@ class FastEvaluator:
             test_months=9,  # 窗口测试期月数，调用方应覆盖
             benchmark_returns=benchmark_returns,
             strategy_return=round(strategy_return, 2),
+            final_position_pct=round(final_pos_pct, 2),
+            final_shares=final_shares,
+            final_cash=final_cash,
+            cost_basis=cost_basis,
         )
 
     def evaluate_position_target(
@@ -850,7 +877,7 @@ class FastEvaluator:
         if price_open_matrix is None:
             price_open_matrix = price_matrix.copy()
 
-        daily_values, trade_count, avg_pos_pct = _simulate_position_target_python(
+        daily_values, trade_count, avg_pos_pct, final_pos_pct, final_shares, final_cash, cost_basis = _simulate_position_target_python(
             buy_signals, sell_signals,
             price_matrix, price_open_matrix,
             self.initial_cash, self.lot_size, self.commission_rate,
@@ -866,6 +893,10 @@ class FastEvaluator:
             daily_values, price_matrix, cash_baseline,
             trade_count, signal_count, avg_pos_pct=avg_pos_pct,
             benchmark_series=benchmark_series,
+            final_pos_pct=final_pos_pct,
+            final_shares=final_shares,
+            final_cash=final_cash,
+            cost_basis=cost_basis,
         )
 
     def evaluate_multiple(
@@ -921,6 +952,7 @@ def _simulate_portfolio_python(
     """
     T, N = buy_signals.shape
     shares = np.zeros(N, dtype=np.float64)
+    cost_basis = np.zeros(N, dtype=np.float64)  # 加权平均买入价
     cash = float(initial_cash)
     daily_values = np.zeros(T, dtype=np.float64)
     monthly_spent = 0.0
@@ -1001,7 +1033,11 @@ def _simulate_portfolio_python(
             total_cost = cost_real + fee
 
             if total_cost <= cash:
+                old_shares = shares[n]
+                old_cost = cost_basis[n]
                 shares[n] += qty
+                if shares[n] > 0:
+                    cost_basis[n] = (old_shares * old_cost + qty * exec_price) / shares[n]
                 cash -= total_cost
                 monthly_spent += total_cost
                 total_trades += 1
@@ -1030,7 +1066,16 @@ def _simulate_portfolio_python(
         valid += 1
     avg_pos_pct = (pos_pct_sum / valid * 100.0) if valid > 0 else 0.0
 
-    return daily_values, total_trades, avg_pos_pct
+    # 期末仓位率
+    final_nav = daily_values[-1] if T > 0 else initial_cash
+    final_pos_value = sum(
+        shares[n] * float(prices[-1, n])
+        for n in range(N)
+        if not np.isnan(prices[-1, n]) and prices[-1, n] > 0
+    )
+    final_pos_pct = (final_pos_value / final_nav * 100.0) if final_nav > 0 else 0.0
+
+    return daily_values, total_trades, avg_pos_pct, final_pos_pct, shares.copy(), cash, cost_basis.copy()
 
 
 def _simulate_position_target_python(
@@ -1068,6 +1113,7 @@ def _simulate_position_target_python(
     T, N = buy_signals.shape
 
     shares = np.zeros(N, dtype=np.float64)
+    cost_basis = np.zeros(N, dtype=np.float64)  # 加权平均买入价
     cash = float(initial_cash)
     daily_values = np.zeros(T, dtype=np.float64)
 
@@ -1150,7 +1196,11 @@ def _simulate_position_target_python(
                     total_cost = cost_real + fee
 
                     if total_cost <= cash:
+                        old_sh = shares[n]
+                        old_cb = cost_basis[n]
                         shares[n] += qty
+                        if shares[n] > 0:
+                            cost_basis[n] = (old_sh * old_cb + qty * exec_price) / shares[n]
                         cash -= total_cost
                         total_trades += 1
 
@@ -1231,4 +1281,13 @@ def _simulate_position_target_python(
         valid += 1
     avg_pos_pct = (pos_pct_sum / valid * 100.0) if valid > 0 else 0.0
 
-    return daily_values, total_trades, avg_pos_pct
+    # 期末仓位率
+    final_nav = daily_values[-1] if T > 0 else initial_cash
+    final_pv = 0.0
+    for n in range(N):
+        p = float(prices_close[-1, n])
+        if not np.isnan(p) and p > 0:
+            final_pv += shares[n] * p
+    final_pos_pct = (final_pv / final_nav * 100.0) if final_nav > 0 else 0.0
+
+    return daily_values, total_trades, avg_pos_pct, final_pos_pct, shares.copy(), cash, cost_basis.copy()
