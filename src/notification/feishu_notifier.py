@@ -85,26 +85,66 @@ class FeishuNotifier(BaseNotifier):
         label = report_config.get("label", "简报")
         stock_data = session.get_all_dataframe()
         today = datetime.now()
-        rows = self._build_brief_rows(stock_data, today)
+
+        from ..notification.email_notifier import build_brief_entries, build_strategy_suggestions
+
+        entries = build_brief_entries(stock_data, today)
         title = f"{label} - {today.strftime('%Y-%m-%d')}"
+        active_count = len(entries)
+
+        # 摘要行
+        summary = f"**{label}** | {today.strftime('%H:%M')} | 活跃: {active_count}"
 
         # 策略建议
-        from ..notification.email_notifier import build_strategy_suggestions
         sug = build_strategy_suggestions(stock_data, today)
-        strat_text = ""
-        if sug and sug["active_count"] > 0:
-            strat_text = (
-                f"\n\n**策略建议** ({sug['strategy_label']})\n"
-                f"活跃信号: {sug['active_count']}/{sug['total_count']}\n"
-                f"```\n代码     名称   现价    触发信号\n{sug['text_rows']}\n```"
-            )
 
-        body = (
-            f"**{label}** | {today.strftime('%H:%M')}\n\n{rows}{strat_text}"
-            if rows
-            else f"**{label}** | 无活跃标的{strat_text}"
-        )
-        self._send(title, body)
+        # 组装卡片 elements
+        extra = []
+        table = _build_brief_table_element(entries)
+        if table:
+            extra.append(table)
+        if sug and sug.get("active_count", 0) > 0:
+            extra.append({
+                "tag": "markdown",
+                "content": f"**策略建议** ({sug['strategy_label']}) | 活跃: {sug['active_count']}/{sug['total_count']}",
+            })
+            st = _build_brief_strategy_table(sug)
+            if st:
+                extra.append(st)
+
+        card = _build_interactive_card(title, summary, extra_elements=extra if extra else None)
+        payload = {"msg_type": "interactive", "card": card}
+        try:
+            self._send_card(payload)
+        except Exception:
+            pass  # _send_card logs internally
+
+    def _send_card(self, payload: dict) -> tuple:
+        """发送飞书卡片（不经过 _send 的 body 参数）"""
+        if not self.webhook_url:
+            return False, "飞书 webhook_url 未配置"
+        try:
+            resp = requests.post(
+                self.webhook_url,
+                json=payload,
+                timeout=10,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+            )
+            if resp.status_code != 200:
+                logger.error(f"飞书 HTTP {resp.status_code}: {resp.text[:200]}")
+                return False, f"飞书 HTTP {resp.status_code}"
+            result = resp.json()
+            code = result.get("code", -1)
+            if code != 0:
+                logger.error(f"飞书 API 错误 code={code}: {result.get('msg', '')}")
+                return False, f"飞书 code={code} {result.get('msg', '')}"
+            return True, "ok"
+        except requests.exceptions.Timeout:
+            logger.error("飞书请求超时")
+            return False, "飞书请求超时"
+        except Exception as e:
+            logger.error(f"飞书发送失败: {e}")
+            return False, str(e)
 
     def send_deployment_notification(
         self, status: str, version: str = "", summary: str = ""
@@ -382,17 +422,73 @@ def _escape_cell(text: str) -> str:
     return text.replace("|", "/").replace("\n", " ")
 
 
-def _build_interactive_card(title: str, body: str) -> dict:
+def _build_brief_table_element(entries: list[dict]) -> dict | None:
+    """构建飞书原生 table 组件（偏离率着色）。"""
+    if not entries:
+        return None
+    return {
+        "tag": "table",
+        "columns": [
+            {"data": {"text": "代码"}, "horizontal_align": "left"},
+            {"data": {"text": "名称"}, "horizontal_align": "left"},
+            {"data": {"text": "现价"}, "horizontal_align": "right"},
+            {"data": {"text": "偏离"}, "horizontal_align": "right"},
+        ],
+        "rows": [
+            [
+                {"text": e["code"], "horizontal_align": "left"},
+                {"text": e["name"], "horizontal_align": "left"},
+                {"text": f"{e['close']:.2f}", "horizontal_align": "right"},
+                {
+                    "text": e["dev_str"],
+                    "horizontal_align": "right",
+                    "color": "#c0392b" if (e.get("dev_pct") or 0) < 0 else "#27ae60",
+                },
+            ]
+            for e in entries
+        ],
+    }
+
+
+def _build_brief_strategy_table(sug: dict) -> dict | None:
+    """构建策略建议 table（有信号的标的前置）。"""
+    if not sug or sug.get("active_count", 0) == 0:
+        return None
+    active_entries = [e for e in sug["entries"] if e["signals"]]
+    if not active_entries:
+        return None
+    return {
+        "tag": "table",
+        "columns": [
+            {"data": {"text": "代码"}, "horizontal_align": "left"},
+            {"data": {"text": "名称"}, "horizontal_align": "left"},
+            {"data": {"text": "触发信号"}, "horizontal_align": "left"},
+            {"data": {"text": "现价"}, "horizontal_align": "right"},
+        ],
+        "rows": [
+            [
+                {"text": e["code"], "horizontal_align": "left"},
+                {"text": e["name"], "horizontal_align": "left"},
+                {"text": ", ".join(e["signals"]) or "—", "horizontal_align": "left",
+                 "color": "#27ae60"},
+                {"text": f"{e['close']:.2f}", "horizontal_align": "right"},
+            ]
+            for e in active_entries
+        ],
+    }
+
+
+def _build_interactive_card(title: str, body: str, extra_elements: list[dict] | None = None) -> dict:
     """构建飞书交互卡片 JSON"""
+    elements = []
+    if body:
+        elements.append({"tag": "markdown", "content": body})
+    if extra_elements:
+        elements.extend(extra_elements)
     return {
         "header": {
             "title": {"tag": "plain_text", "content": title[:100]},
             "template": "blue",
         },
-        "elements": [
-            {
-                "tag": "markdown",
-                "content": body,
-            }
-        ],
+        "elements": elements,
     }
