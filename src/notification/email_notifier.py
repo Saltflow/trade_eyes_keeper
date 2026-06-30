@@ -1894,15 +1894,23 @@ class EmailNotifier(BaseNotifier):
         # ── 策略建议 ──
         suggestions = build_strategy_suggestions(stock_data, today)
         strat_html = ""
-        if suggestions and suggestions["active_count"] > 0:
-            strat_html = (
-                "<h3>策略建议</h3>"
-                f"<p>最新策略: <b>{suggestions['strategy_label']}</b> | "
-                f"活跃信号: {suggestions['active_count']}/{suggestions['total_count']}</p>"
-                "<table><tr><th>代码</th><th>名称</th><th>现价</th><th>触发信号</th></tr>"
-                f"{suggestions['html_rows']}"
-                "</table><br>"
-            )
+        if suggestions:
+            s = suggestions
+            if s["active_count"] > 0:
+                strat_html = (
+                    "<h3>策略建议</h3>"
+                    f"<p>最新策略: <b>{s['strategy_label']}</b> | "
+                    f"活跃信号: {s['active_count']}/{s['total_count']}</p>"
+                    "<table><tr><th>代码</th><th>名称</th><th>现价</th><th>触发信号</th></tr>"
+                    f"{s['html_rows']}"
+                    "</table><br>"
+                )
+            else:
+                strat_html = (
+                    "<h3>策略建议</h3>"
+                    f"<p>最新策略: <b>{s['strategy_label']}</b> | "
+                    f"当前无活跃信号 ({s['total_count']} 只标的均未触发买入条件)</p><br>"
+                )
 
         # ── 渲染 HTML ──
         html_rows = []

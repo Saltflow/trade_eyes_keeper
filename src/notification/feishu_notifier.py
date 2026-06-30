@@ -439,11 +439,11 @@ def _build_brief_table_element(entries: list[dict]) -> dict | None:
         ],
         "rows": [
             [
-                {"text": e["code"], "horizontal_align": "left"},
-                {"text": e["name"], "horizontal_align": "left"},
-                {"text": f"{e['close']:.2f}", "horizontal_align": "right"},
+                {"data": {"text": e["code"]}, "horizontal_align": "left"},
+                {"data": {"text": e["name"]}, "horizontal_align": "left"},
+                {"data": {"text": f"{e['close']:.2f}"}, "horizontal_align": "right"},
                 {
-                    "text": e["dev_str"],
+                    "data": {"text": e["dev_str"]},
                     "horizontal_align": "right",
                     "color": "#c0392b" if (e.get("dev_pct") or 0) < 0 else "#27ae60",
                 },
@@ -470,11 +470,11 @@ def _build_brief_strategy_table(sug: dict) -> dict | None:
         ],
         "rows": [
             [
-                {"text": e["code"], "horizontal_align": "left"},
-                {"text": e["name"], "horizontal_align": "left"},
-                {"text": ", ".join(e["signals"]) or "—", "horizontal_align": "left",
+                {"data": {"text": e["code"]}, "horizontal_align": "left"},
+                {"data": {"text": e["name"]}, "horizontal_align": "left"},
+                {"data": {"text": ", ".join(e["signals"]) or "—"}, "horizontal_align": "left",
                  "color": "#27ae60"},
-                {"text": f"{e['close']:.2f}", "horizontal_align": "right"},
+                {"data": {"text": f"{e['close']:.2f}"}, "horizontal_align": "right"},
             ]
             for e in active_entries
         ],
