@@ -114,10 +114,9 @@ class FeishuNotifier(BaseNotifier):
 
         card = _build_interactive_card(title, summary, extra_elements=extra if extra else None)
         payload = {"msg_type": "interactive", "card": card}
-        try:
-            self._send_card(payload)
-        except Exception:
-            pass  # _send_card logs internally
+        ok, msg = self._send_card(payload)
+        if not ok:
+            logger.error(f"飞书简报发送失败: {msg}")
 
     def _send_card(self, payload: dict) -> tuple:
         """发送飞书卡片（不经过 _send 的 body 参数）"""
@@ -131,20 +130,24 @@ class FeishuNotifier(BaseNotifier):
                 headers={"Content-Type": "application/json; charset=utf-8"},
             )
             if resp.status_code != 200:
-                logger.error(f"飞书 HTTP {resp.status_code}: {resp.text[:200]}")
-                return False, f"飞书 HTTP {resp.status_code}"
+                msg = f"飞书 HTTP {resp.status_code}: {resp.text[:200]}"
+                logger.error(msg)
+                return False, msg
             result = resp.json()
             code = result.get("code", -1)
             if code != 0:
-                logger.error(f"飞书 API 错误 code={code}: {result.get('msg', '')}")
-                return False, f"飞书 code={code} {result.get('msg', '')}"
+                msg = f"飞书 API 错误 code={code}: {result.get('msg', '')}"
+                logger.error(msg)
+                return False, msg
             return True, "ok"
         except requests.exceptions.Timeout:
-            logger.error("飞书请求超时")
-            return False, "飞书请求超时"
+            msg = "飞书请求超时"
+            logger.error(msg)
+            return False, msg
         except Exception as e:
-            logger.error(f"飞书发送失败: {e}")
-            return False, str(e)
+            msg = f"飞书发送失败: {e}"
+            logger.error(msg)
+            return False, msg
 
     def send_deployment_notification(
         self, status: str, version: str = "", summary: str = ""
@@ -429,10 +432,10 @@ def _build_brief_table_element(entries: list[dict]) -> dict | None:
     return {
         "tag": "table",
         "columns": [
-            {"data": {"text": "代码"}, "horizontal_align": "left"},
-            {"data": {"text": "名称"}, "horizontal_align": "left"},
-            {"data": {"text": "现价"}, "horizontal_align": "right"},
-            {"data": {"text": "偏离"}, "horizontal_align": "right"},
+            {"name": "code", "data": {"text": "代码"}, "horizontal_align": "left"},
+            {"name": "name", "data": {"text": "名称"}, "horizontal_align": "left"},
+            {"name": "price", "data": {"text": "现价"}, "horizontal_align": "right"},
+            {"name": "deviation", "data": {"text": "偏离"}, "horizontal_align": "right"},
         ],
         "rows": [
             [
@@ -460,10 +463,10 @@ def _build_brief_strategy_table(sug: dict) -> dict | None:
     return {
         "tag": "table",
         "columns": [
-            {"data": {"text": "代码"}, "horizontal_align": "left"},
-            {"data": {"text": "名称"}, "horizontal_align": "left"},
-            {"data": {"text": "触发信号"}, "horizontal_align": "left"},
-            {"data": {"text": "现价"}, "horizontal_align": "right"},
+            {"name": "code", "data": {"text": "代码"}, "horizontal_align": "left"},
+            {"name": "name", "data": {"text": "名称"}, "horizontal_align": "left"},
+            {"name": "signal", "data": {"text": "触发信号"}, "horizontal_align": "left"},
+            {"name": "price", "data": {"text": "现价"}, "horizontal_align": "right"},
         ],
         "rows": [
             [
