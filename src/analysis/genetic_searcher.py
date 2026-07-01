@@ -127,6 +127,14 @@ class StrategyEncoding:
         frac_vals = [ds_cfg.sell_frac_levels[i] for i in self.sell_fracs]
         return builder_names, threshold_vals, frac_vals
 
+    def to_position_params(self, ds_cfg: DiscreteSearchConfig) -> tuple[float, float]:
+        """转换为 Position-Target 模式参数（slope, bias 浮点值）"""
+        slope_min, slope_max = 0.5, 10.0
+        bias_min, bias_max = -3.0, 3.0
+        slope = slope_min + (self.position_slope / max(ds_cfg.position_slope_levels - 1, 1)) * (slope_max - slope_min)
+        bias = bias_min + (self.position_bias / max(ds_cfg.position_bias_levels - 1, 1)) * (bias_max - bias_min)
+        return slope, bias
+
     def clone(self) -> "StrategyEncoding":
         return StrategyEncoding(
             buy_builders=list(self.buy_builders),
@@ -138,6 +146,89 @@ class StrategyEncoding:
             position_slope=self.position_slope,
             position_bias=self.position_bias,
         )
+
+
+# ════════════════════════════════════════════════════════════
+# 并行评估辅助（模块级，确保 Windows multiprocessing 可 pickle）
+# ════════════════════════════════════════════════════════════
+
+def _eval_encoding_worker(args: tuple) -> tuple[list, float] | None:
+    """Pickle-safe worker: 在子进程中评估单个 StrategyEncoding。
+
+    Args:
+        args: (encoding_flat, window_data, ds_cfg_raw, constraints_raw, eval_kwargs, mode)
+
+    Returns:
+        (window_stats_list, wf_score) or None if all windows empty
+    """
+    encoding_flat, window_data, ds_cfg_raw, c_raw, eval_kwargs, use_pt = args
+
+    # 重建 encoding（Worker 进程无共享内存，需新建）
+    encoding = StrategyEncoding.from_flat(encoding_flat, n_buy=ds_cfg_raw['num_buy_rules'], n_sell=ds_cfg_raw['num_sell_rules'])
+
+    # 重建 DiscreteSearchConfig
+    ds_cfg = DiscreteSearchConfig(ds_cfg_raw)
+
+    # 重建 StrategyConstraints
+    from .optimizer_constraints import StrategyConstraints
+    constraints = StrategyConstraints(c_raw)
+
+    # 重建 FastEvaluator
+    from .fast_evaluator import FastEvaluator
+    evaluator = FastEvaluator(**eval_kwargs)
+
+    all_stats: list = []
+    buy_names, buy_thresh, buy_fracs = encoding.to_buy_params(ds_cfg)
+    sell_names, sell_thresh, sell_fracs = encoding.to_sell_params(ds_cfg)
+    pos_slope, pos_bias = encoding.to_position_params(ds_cfg) if use_pt else (1.0, 0.0)
+
+    for test_ind, test_price, cash_baseline, benchmarks in window_data:
+        if test_ind.shape[0] == 0 or test_ind.shape[1] == 0:
+            continue
+
+        if use_pt and benchmarks:
+            stats = evaluator.evaluate_position_target(
+                test_ind, test_price, cash_baseline,
+                buy_names, buy_thresh,
+                sell_names, sell_thresh,
+                position_slope=pos_slope, position_bias=pos_bias,
+                benchmark_series=benchmarks,
+            )
+        elif use_pt:
+            stats = evaluator.evaluate_position_target(
+                test_ind, test_price, cash_baseline,
+                buy_names, buy_thresh,
+                sell_names, sell_thresh,
+                position_slope=pos_slope, position_bias=pos_bias,
+            )
+        elif benchmarks:
+            stats = evaluator.evaluate(
+                test_ind, test_price, cash_baseline,
+                buy_names, buy_thresh, buy_fracs,
+                sell_names, sell_thresh, sell_fracs,
+                benchmark_series=benchmarks,
+            )
+        else:
+            stats = evaluator.evaluate(
+                test_ind, test_price, cash_baseline,
+                buy_names, buy_thresh, buy_fracs,
+                sell_names, sell_thresh, sell_fracs,
+            )
+        all_stats.append(stats)
+
+    if not all_stats:
+        return None
+
+    # 计算 WF 得分
+    returns = [s.test_excess_return for s in all_stats]
+    weights = constraints.walk_forward.window_weights[:len(returns)]
+    total_w = sum(weights)
+    weights = [w / total_w for w in weights] if total_w > 0 else [1.0 / len(returns)] * len(returns)
+    mean_return = sum(r * w for r, w in zip(returns, weights))
+    std_return = float(np.std(returns)) if len(returns) >= 2 else 0.0
+    wf_score = mean_return - constraints.walk_forward.stability_penalty * std_return
+
+    return all_stats, wf_score
 
 
 # ════════════════════════════════════════════════════════════
@@ -164,6 +255,71 @@ class GeneticSearcher:
         self.evaluator = fast_evaluator
         self.constraints = constraints
         self._rng = random.Random(42)  # 可复现种子
+        self._window_data_cache: list | None = None  # 并行评估预提取
+
+    # ════════════════════════════════════════════════════════
+    # 并行评估辅助
+    # ════════════════════════════════════════════════════════
+
+    def _prepare_window_data(self, windows) -> list:
+        """预提取 Walk-Forward 矩阵为可 pickle 的数据包。
+
+        每个窗口打包: (test_indicator, test_price, cash_baseline, benchmark_series)
+        避免向子进程传递 WalkForwardManager（含大矩阵，pickle 开销大）。
+        """
+        from collections import OrderedDict
+
+        if self._window_data_cache is not None:
+            return self._window_data_cache
+
+        data = []
+        rf_rate = getattr(self.constraints, "risk_free_rate", 0.02)
+
+        for w in windows:
+            train_ind = self.wf_manager.build_matrices(w, "train")
+            test_ind = self.wf_manager.build_matrices(w, "test")
+            test_price = self.wf_manager.get_price_matrix(w, "test")
+            T_test = test_ind.shape[0]
+
+            if T_test == 0 or test_ind.shape[1] == 0:
+                data.append((test_ind, test_price, np.array([]), {}))
+                continue
+
+            # cash_baseline
+            rf_daily = rf_rate / 252.0
+            train_end_cash = self.evaluator.initial_cash * (1.0 + rf_daily) ** train_ind.shape[0]
+            cash_baseline = np.cumsum(np.ones(T_test) * train_end_cash * rf_daily) + train_end_cash
+
+            # benchmark_series
+            benchmarks = OrderedDict()
+            for bcode in self.constraints.benchmark_codes:
+                if bcode == "risk_free":
+                    rr_daily = rf_rate / 252.0
+                    rf_series = np.cumsum(np.ones(T_test) * train_end_cash * rr_daily) + train_end_cash
+                    benchmarks["risk_free"] = rf_series
+                else:
+                    b_close = self.wf_manager.get_benchmark_price(bcode, w, "test")
+                    if b_close is not None and len(b_close) == T_test and not np.isnan(b_close[0]):
+                        benchmarks[bcode] = b_close
+
+            data.append((test_ind, test_price, cash_baseline, benchmarks))
+
+        self._window_data_cache = data
+        return data
+
+    def _evaluate_batch_parallel(
+        self,
+        encodings: list["StrategyEncoding"],
+    ) -> list[tuple | None]:
+        """单线程直循环评估。"""
+        wins = getattr(self, "_active_windows", [])
+        results = []
+        for enc in encodings:
+            try:
+                results.append(self._evaluate_strategy_wf(enc, wins))
+            except Exception:
+                results.append(None)
+        return results
 
     # ════════════════════════════════════════════════════════
     # Phase 1: 粗筛
@@ -184,9 +340,14 @@ class GeneticSearcher:
         sell_thresholds = [self._rng.randint(0, self.ds_cfg.threshold_levels - 1) for _ in range(n_sell)]
         sell_fracs = [self._rng.randint(0, len(self.ds_cfg.sell_frac_levels) - 1) for _ in range(n_sell)]
 
+        # 仓位目标参数
+        pos_slope = self._rng.randint(0, self.ds_cfg.position_slope_levels - 1)
+        pos_bias = self._rng.randint(0, self.ds_cfg.position_bias_levels - 1)
+
         return StrategyEncoding(
             buy_builders=buy_builders, buy_thresholds=buy_thresholds, buy_fracs=buy_fracs,
             sell_builders=sell_builders, sell_thresholds=sell_thresholds, sell_fracs=sell_fracs,
+            position_slope=pos_slope, position_bias=pos_bias,
         )
 
     def _evaluate_strategy_wf(
@@ -202,6 +363,10 @@ class GeneticSearcher:
         buy_names, buy_thresh, buy_fracs = encoding.to_buy_params(self.ds_cfg)
         sell_names, sell_thresh, sell_fracs = encoding.to_sell_params(self.ds_cfg)
         all_stats: list[WindowStats] = []
+
+        use_pt = self.ds_cfg.use_position_target
+        if use_pt:
+            pos_slope, pos_bias = encoding.to_position_params(self.ds_cfg)
 
         for w in windows:
             train_ind = self.wf_manager.build_matrices(w, "train")
@@ -235,12 +400,21 @@ class GeneticSearcher:
                             and not np.isnan(b_close[0])):
                         benchmark_series[bcode] = b_close
 
-            stats = self.evaluator.evaluate(
-                test_ind, test_price, cash_baseline,
-                buy_names, buy_thresh, buy_fracs,
-                sell_names, sell_thresh, sell_fracs,
-                benchmark_series=benchmark_series if benchmark_series else None,
-            )
+            if use_pt:
+                stats = self.evaluator.evaluate_position_target(
+                    test_ind, test_price, cash_baseline,
+                    buy_names, buy_thresh,
+                    sell_names, sell_thresh,
+                    position_slope=pos_slope, position_bias=pos_bias,
+                    benchmark_series=benchmark_series if benchmark_series else None,
+                )
+            else:
+                stats = self.evaluator.evaluate(
+                    test_ind, test_price, cash_baseline,
+                    buy_names, buy_thresh, buy_fracs,
+                    sell_names, sell_thresh, sell_fracs,
+                    benchmark_series=benchmark_series if benchmark_series else None,
+                )
             all_stats.append(stats)
 
         wf_score = self._compute_wf_score(all_stats)
@@ -266,7 +440,7 @@ class GeneticSearcher:
         return score
 
     def run_phase1(self, windows) -> list["ScoredStrategy"]:
-        """Phase 1: 随机采样粗筛
+        """Phase 1: 随机采样粗筛（并行批次）。
 
         策略: 先只检查最大回撤（防止爆仓），让遗传算法有机会工作。
         如果前 2000 个策略全部阵亡，自动放宽为仅检查回撤。
@@ -275,70 +449,88 @@ class GeneticSearcher:
         Returns:
             得分最高的 Top-K 策略列表
         """
+        from math import ceil
+
         n_samples = self.cfg.phase1_random_samples
         n_keep = self.cfg.phase1_top_keep
+        BATCH_SIZE = 500
 
         logger.info(
-            "[Phase1] 随机采样 %d 个策略，保留 Top %d",
-            n_samples, n_keep,
+            "[Phase1] 随机采样 %d 个策略（批次 %d），保留 Top %d",
+            n_samples, BATCH_SIZE, n_keep,
         )
 
+        # 预提取窗口数据（并行 worker 共用）
+        self._prepare_window_data(windows)
+        self._active_windows = windows
+
         scored: list[ScoredStrategy] = []
-        # 自适应约束模式: strict → relaxed
         use_strict = True
         auto_switched = False
+        total_evaluated = 0
 
-        for i in range(n_samples):
-            encoding = self._random_strategy()
-            stats, wf_score = self._evaluate_strategy_wf(encoding, windows)
+        n_batches = ceil(n_samples / BATCH_SIZE)
 
-            # 自适应约束检查
-            if use_strict:
-                passes, violations = self.constraints.check_hard_constraints(stats, wf_score)
-            else:
-                # 放宽模式: 只检查最大回撤
-                passes = all(
-                    ws.max_drawdown_pct >= self.constraints.max_drawdown_pct
-                    for ws in stats
-                )
-                violations = []
+        for batch_idx in range(n_batches):
+            batch_sz = min(BATCH_SIZE, n_samples - total_evaluated)
+            if batch_sz <= 0:
+                break
 
-            if not passes:
-                # 前 2000 个全部阵亡 → 自动放宽
-                if use_strict and i >= 2000 and len(scored) == 0 and not auto_switched:
-                    logger.warning(
-                        "[Phase1] 前 %d 个策略全部未通过严格约束，"
-                        "自动放宽为仅检查最大回撤",
-                        i,
+            # 生成一批随机策略
+            batch_encodings = [self._random_strategy() for _ in range(batch_sz)]
+
+            # 并行评估
+            batch_results = self._evaluate_batch_parallel(batch_encodings)
+
+            # 约束检查 + 收集
+            for j, encoding in enumerate(batch_encodings):
+                total_evaluated += 1
+                i = total_evaluated
+                result = batch_results[j]
+                if result is None:
+                    if use_strict and i >= 2000 and len(scored) == 0 and not auto_switched:
+                        logger.warning("[Phase1] 前 %d 个策略全部未通过严格约束，自动放宽为仅检查最大回撤", i)
+                        use_strict = False
+                        auto_switched = True
+                    continue
+
+                stats, wf_score = result
+
+                if use_strict:
+                    passes, violations = self.constraints.check_hard_constraints(stats, wf_score)
+                else:
+                    passes = all(
+                        ws.max_drawdown_pct >= self.constraints.max_drawdown_pct
+                        for ws in stats
                     )
-                    use_strict = False
-                    auto_switched = True
-                elif i % 5000 == 0:
-                    logger.debug(
-                        "[Phase1] %d/%d: 未通过约束 (%s)",
-                        i + 1, n_samples,
-                        "; ".join(violations[:3]) if violations else "仅回撤",
-                    )
-                continue
+                    violations = []
 
-            # 软性约束惩罚
-            avg_sharpe = np.mean([s.sharpe_ratio for s in stats])
-            penalty = self.constraints.compute_soft_penalty(avg_sharpe)
-            adjusted_score = wf_score - penalty
+                if not passes:
+                    if use_strict and i >= 2000 and len(scored) == 0 and not auto_switched:
+                        logger.warning("[Phase1] 前 %d 个策略全部未通过严格约束，自动放宽为仅检查最大回撤", i)
+                        use_strict = False
+                        auto_switched = True
+                    elif i > 2000 and i % 5000 == 0:
+                        logger.debug("[Phase1] %d/%d: 未通过约束 (%s)", i, n_samples, "; ".join(violations[:3]) if violations else "仅回撤")
+                    continue
 
-            scored.append(ScoredStrategy(
-                encoding=encoding,
-                window_stats=stats,
-                wf_score=adjusted_score,
-                avg_excess_return=np.mean([s.test_excess_return for s in stats]),
-                avg_position=np.mean([s.avg_position_pct for s in stats]),
-                avg_sharpe=avg_sharpe,
-            ))
+                avg_sharpe = np.mean([s.sharpe_ratio for s in stats])
+                penalty = self.constraints.compute_soft_penalty(avg_sharpe)
+                adjusted_score = wf_score - penalty
 
-            if (i + 1) % 2000 == 0:
+                scored.append(ScoredStrategy(
+                    encoding=encoding,
+                    window_stats=stats,
+                    wf_score=adjusted_score,
+                    avg_excess_return=np.mean([s.test_excess_return for s in stats]),
+                    avg_position=np.mean([s.avg_position_pct for s in stats]),
+                    avg_sharpe=avg_sharpe,
+                ))
+
+            if (batch_idx + 1) % 4 == 0 or batch_idx == n_batches - 1:
                 logger.info(
-                    "[Phase1] %d/%d 完成, 有效策略 %d, 最佳得分 %.2f",
-                    i + 1, n_samples, len(scored), scored[0].wf_score if scored else 0,
+                    "[Phase1] 批次 %d/%d 完成, 已评估 %d, 有效策略 %d",
+                    batch_idx + 1, n_batches, total_evaluated, len(scored),
                 )
 
         # 按得分排序
@@ -371,6 +563,12 @@ class GeneticSearcher:
                 child.sell_builders[i] = parent2.sell_builders[i]
                 child.sell_thresholds[i] = parent2.sell_thresholds[i]
                 child.sell_fracs[i] = parent2.sell_fracs[i]
+
+        # 仓位参数交叉
+        if self._rng.random() < 0.5:
+            child.position_slope = parent2.position_slope
+        if self._rng.random() < 0.5:
+            child.position_bias = parent2.position_bias
 
         return child
 
@@ -422,6 +620,20 @@ class GeneticSearcher:
                     mutant.sell_fracs[i] + step,
                 ))
 
+        # 仓位参数变异
+        if self._rng.random() < self.cfg.mutation_rate:
+            step = self._rng.randint(-2, 2)
+            mutant.position_slope = max(0, min(
+                self.ds_cfg.position_slope_levels - 1,
+                mutant.position_slope + step,
+            ))
+        if self._rng.random() < self.cfg.mutation_rate:
+            step = self._rng.randint(-2, 2)
+            mutant.position_bias = max(0, min(
+                self.ds_cfg.position_bias_levels - 1,
+                mutant.position_bias + step,
+            ))
+
         return mutant
 
     def run_phase2(
@@ -454,56 +666,54 @@ class GeneticSearcher:
                 current_pop[0].wf_score if current_pop else -999,
             )
 
-            # 生成后代
-            offspring: list[ScoredStrategy] = []
-
+            # 生成后代编码（并行预生成）
+            child_encodings = []
             for _ in range(n_offspring):
-                # 锦标赛选择父代
                 t1 = self._rng.randint(0, len(current_pop) - 1)
                 t2 = self._rng.randint(0, len(current_pop) - 1)
                 parent1 = current_pop[min(t1, t2)].encoding
-
                 t3 = self._rng.randint(0, len(current_pop) - 1)
                 t4 = self._rng.randint(0, len(current_pop) - 1)
                 parent2 = current_pop[min(t3, t4)].encoding
-
-                # 交叉
                 if self._rng.random() < self.cfg.crossover_rate:
                     child_enc = self._crossover(parent1, parent2)
                 else:
                     child_enc = parent1.clone()
-
-                # 变异
                 child_enc = self._mutate(child_enc)
+                child_encodings.append(child_enc)
 
-                # 评估后代
-                stats, wf_score = self._evaluate_strategy_wf(child_enc, windows)
+            # 并行评估后代
+            offspring: list[ScoredStrategy] = []
+            BATCH_SZ = 500
+            for bi in range(0, len(child_encodings), BATCH_SZ):
+                batch = child_encodings[bi:bi + BATCH_SZ]
+                results = self._evaluate_batch_parallel(batch)
+                for j, child_enc in enumerate(batch):
+                    r = results[j]
+                    if r is None:
+                        continue
+                    stats, wf_score = r
+                    if strict_constraints:
+                        passes, _ = self.constraints.check_hard_constraints(stats, wf_score)
+                    else:
+                        passes = all(
+                            ws.max_drawdown_pct >= self.constraints.max_drawdown_pct
+                            for ws in stats
+                        )
+                    if not passes:
+                        continue
+                    avg_sharpe = np.mean([s.sharpe_ratio for s in stats])
+                    penalty = self.constraints.compute_soft_penalty(avg_sharpe)
+                    offspring.append(ScoredStrategy(
+                        encoding=child_enc,
+                        window_stats=stats,
+                        wf_score=wf_score - penalty,
+                        avg_excess_return=np.mean([s.test_excess_return for s in stats]),
+                        avg_position=np.mean([s.avg_position_pct for s in stats]),
+                        avg_sharpe=avg_sharpe,
+                    ))
 
-                # 约束检查（遗传阶段默认放宽，只检查回撤）
-                if strict_constraints:
-                    passes, _ = self.constraints.check_hard_constraints(stats, wf_score)
-                else:
-                    passes = all(
-                        ws.max_drawdown_pct >= self.constraints.max_drawdown_pct
-                        for ws in stats
-                    )
-                if not passes:
-                    continue
-
-                avg_sharpe = np.mean([s.sharpe_ratio for s in stats])
-                penalty = self.constraints.compute_soft_penalty(avg_sharpe)
-
-                offspring.append(ScoredStrategy(
-                    encoding=child_enc,
-                    window_stats=stats,
-                    wf_score=wf_score - penalty,
-                    avg_excess_return=np.mean([s.test_excess_return for s in stats]),
-                    avg_position=np.mean([s.avg_position_pct for s in stats]),
-                    avg_sharpe=avg_sharpe,
-                ))
-
-                if len(offspring) % 1000 == 0:
-                    logger.debug("[Phase2] 已生成 %d/%d 后代", len(offspring), n_offspring)
+            logger.debug("[Phase2] 后代评估完成: %d 个通过", len(offspring))
 
             # 合并并保留最优
             combined = current_pop + offspring

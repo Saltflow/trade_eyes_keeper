@@ -212,7 +212,7 @@ class StrategyOptimizerV2:
         lot_size = 100 if self.group == "a_share" else 1
         evaluator = FastEvaluator(
             initial_cash=100000.0,
-            monthly_buy_limit=15000.0,
+            monthly_buy_limit=100000.0,
             lot_size=lot_size,
             commission_rate=0.002,
         )
@@ -417,6 +417,14 @@ class StrategyOptimizerV2:
                 params_summary[f"sell_{j+1}_signal"] = builder_name
                 params_summary[f"sell_{j+1}_t"] = f"{t / (self.ds_cfg.threshold_levels - 1):.3f}" if self.ds_cfg.threshold_levels > 1 else "0.000"
                 params_summary[f"sell_{j+1}_frac"] = f"{self.ds_cfg.sell_frac_levels[f]:.3f}"
+            # 仓位目标参数
+            if self.ds_cfg.use_position_target:
+                sl, bi = ss.encoding.to_position_params(self.ds_cfg)
+                params_summary["position_slope"] = f"{sl:.2f}"
+                params_summary["position_bias"] = f"{bi:.2f}"
+                params_summary["_mode"] = "position_target"
+            else:
+                params_summary["_mode"] = "frac"
             params_summary["_stocks"] = ",".join(wf_mgr.stock_codes[:5])
             if violations:
                 params_summary["_warnings"] = "; ".join(violations[:3])

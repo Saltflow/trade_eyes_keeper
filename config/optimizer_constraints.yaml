@@ -1,129 +1,93 @@
-# 优化器约束配置
-# 
-# 用于 Walk-Forward 遗传搜索优化器 (StrategyOptimizerV2)。
-# 所有约束均可随时调整，无需修改代码。
-# 
-# 约束分类:
-#   - hard: 不满足直接丢弃策略
-#   - soft: 不满足扣分惩罚
-
-# ── 业绩基准 ──
 benchmarks:
-  a_share: ["510880", "510300", "risk_free"]
-  non_a_share: ["VOO", "BRK.B", "risk_free"]
+  a_share:
+  - '510880'
+  - '510300'
+  - risk_free
+  non_a_share:
+  - VOO
+  - BRK.B
+  - risk_free
   risk_free_rates:
-    a_share: 0.02        # 中国 2%
-    non_a_share: 0.038   # 美国 10 年期 3.8%
-
-# ── 硬性约束（必须全部满足）──
+    a_share: 0.02
+    non_a_share: 0.038
 hard_constraints:
-
-  # 1. 测试期平均仓位下限
   min_avg_position_pct: 20.0
-
-  # 2. 任意窗口最大回撤上限
   max_drawdown_pct: -25.0
-
-  # 3. 训练-测试一致性
   max_return_std_pct: 15.0
-
-  # 4. 月度交易密度（整个组合）
   min_trades_per_month: 1
   max_trades_per_month: 100
-
-# ── 软性约束（不满足扣分，但仍保留）──
 soft_constraints:
-
-  # 夏普比率低于此值扣分
   min_sharpe: 0.5
   sharpe_penalty_weight: 0.3
-
-# ── Walk-Forward 配置 ──
 walk_forward:
-  # 窗口参数
-  train_months: 12    # 每个窗口训练期月数
-  test_months: 9      # 每个窗口测试期月数
-  step_months: 3      # 滑动步长月数
-  num_windows: 14     # 窗口数量 (12+9+13*3=60月≈5年)
-
-  # 窗口评分权重（等权重）
-  window_weights: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-
-  # 稳定性惩罚系数: score = mean_return - stability_penalty * std_return
+  train_months: 12
+  test_months: 9
+  step_months: 3
+  num_windows: 14
+  window_weights:
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
+  - 1.0
   stability_penalty: 0.5
-
-# ── 遗传搜索配置 ──
 genetic_search:
-  # Phase 1: 粗筛 (翻10倍算力)
-  phase1_random_samples: 100000  # 随机采样策略数 (原 10000)
-  phase1_top_keep: 10000          # 保留数 (原 1000)
-
-  # Phase 2: 遗传优化 (翻5倍)
-  num_generations: 5             # 遗传代数 (原 3)
-  population_size: 5000          # 每代种群大小 (原 1000)
-  offspring_size: 25000          # 每代生成子代数 (原 5000)
-   
-  # 遗传操作参数
-  crossover_rate: 0.70          # 交叉概率
-  mutation_rate: 0.30           # 变异概率
-  mutation_builder_rate: 0.20   # 变异时切换 builder 的概率
-  mutation_threshold_step: 2    # 变异时阈值档位偏移最大步数
-  mutation_frac_step: 1         # 变异时比例档位偏移最大步数
-
-# ── 离散搜索空间 ──
+  phase1_random_samples: 100000
+  phase1_top_keep: 10000
+  num_generations: 5
+  population_size: 5000
+  offspring_size: 25000
+  crossover_rate: 0.7
+  mutation_rate: 0.3
+  mutation_builder_rate: 0.2
+  mutation_threshold_step: 2
+  mutation_frac_step: 1
 discrete_search:
-  # 买入规则 builder（和当前 optimizer.yaml 一致）
   buy_builders:
-    - deviation_cross      # MA偏离穿越
-    - rsi_signal           # RSI超卖
-    - bollinger_signal      # 布林带下轨
-    - volume_spike          # 放量异动
-    - deviation_absolute    # MA绝对偏离
-    - trend_follow          # 趋势跟踪(ADX+MACD)
-    - absolute_discount     # 距2年高点跌幅 (v1.18)
-    - deep_value            # 长周期低估+趋势启稳 (v1.18)
-    - none                  # 禁用
-
-  # 阈值离散档位（归一化值，由 builder 内部映射到真实范围）
-  threshold_levels: 10     # 0.0, 0.1, ..., 0.9
-
-  # 买入仓位比例离散档位（现金比例，放宽到40%）
-  frac_levels: [0.10, 0.15, 0.20, 0.25, 0.30, 0.40]
-
-  # 买入规则数量
+  - deviation_cross
+  - rsi_signal
+  - bollinger_signal
+  - volume_spike
+  - deviation_absolute
+  - trend_follow
+  - absolute_discount
+  - deep_value
+  - none
+  threshold_levels: 10
+  frac_levels:
+  - 0.3
+  - 0.45
+  - 0.6
+  - 0.75
+  - 0.9
+  - 1.0
   num_buy_rules: 5
-
-  # ── 卖出规则（实验性）──
   sell_builders:
-    - deviation_cross      # MA偏离穿越（向上穿越卖出）
-    - rsi_signal           # RSI超买
-    - bollinger_signal      # 布林带上轨
-    - deviation_absolute    # MA绝对偏离（高位）
-    - trend_follow          # 趋势反转(ADX+MACD<0)
-    - sell_overextended     # 接近2年高点 (v1.18)
-    - none                  # 禁用
-
-  # 卖出比例离散档位（持仓比例）
-  sell_frac_levels: [0.10, 0.20, 0.30, 0.40, 0.50]
-
-  # 卖出规则数量
+  - deviation_cross
+  - rsi_signal
+  - bollinger_signal
+  - deviation_absolute
+  - trend_follow
+  - sell_overextended
+  - none
+  sell_frac_levels:
+  - 0.1
+  - 0.2
+  - 0.3
+  - 0.4
+  - 0.5
   num_sell_rules: 3
-
-  # ── 仓位目标模型（实验性）──
-  # 启用时，交易量由 bullish_score → sigmoid 仓位目标驱动，
-  # 而非固定的 buy_frac / sell_frac
+  mode: position_target
   position_model:
-    # sigmoid 斜率：控制仓位对信号的敏感度
-    # 值越高，信号一变仓位就大幅调整
-    slope_range: [0.5, 10.0]
+    slope_range:
+    - 0.5
+    - 10.0
     slope_step: 0.5
-    slope_levels: 20    # 0-19 → 映射到 0.5..10.0
-
-    # sigmoid 偏移：控制基准仓位偏保守/偏激进
-    # 负值 = 偏保守（更低仓位），正值 = 偏激进（更高仓位）
-    bias_range: [-3.0, 3.0]
+    slope_levels: 20
+    bias_range:
+    - -3.0
+    - 3.0
     bias_step: 0.3
-    bias_levels: 20     # 0-19 → 映射到 -3.0..3.0
-
-    # 每日最大调仓幅度（仓位率变化上限）
-    max_daily_adjust: 0.10
+    bias_levels: 20
+    max_daily_adjust: 0.4

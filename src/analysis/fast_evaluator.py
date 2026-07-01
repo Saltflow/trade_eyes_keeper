@@ -483,6 +483,214 @@ try:
 
         return daily_values, total_trades, avg_pos_pct, final_pos_pct, shares.copy(), cash, cost_basis.copy()
 
+    @jit(nopython=True, parallel=False, cache=True)
+    def _simulate_position_target_numba(
+        buy_signals,      # (T, N) bool
+        sell_signals,     # (T, N) bool
+        prices_close,     # (T, N) float32
+        prices_open,      # (T, N) float32
+        initial_cash,     # float
+        lot_size,         # int
+        commission_rate,  # float
+        position_slope,   # float
+        position_bias,    # float
+        max_daily_adjust, # float
+        buy_confirm_days, # int
+        sell_confirm_days,# int
+    ):
+        """numba 加速版 Position-Target 组合模拟。"""
+        T, N = buy_signals.shape
+        shares = np.zeros(N, dtype=np.float64)
+        cost_basis = np.zeros(N, dtype=np.float64)
+        cash = float(initial_cash)
+        daily_values = np.zeros(T, dtype=np.float64)
+
+        # buy_window 用 int 数组替代 Python list of tuples
+        buy_win_start = np.full(N, -1, dtype=np.int32)
+        buy_win_end = np.full(N, -1, dtype=np.int32)
+        total_trades = 0
+
+        for t in range(T):
+            # 更新买入窗口
+            for n in range(N):
+                if buy_signals[t, n] and buy_win_start[n] < 0:
+                    start = t - buy_confirm_days + 1
+                    if start < 0:
+                        start = 0
+                    buy_win_start[n] = start
+                    buy_win_end[n] = t
+
+            # 计算 NAV
+            position_value = 0.0
+            for n in range(N):
+                p = float(prices_close[t, n])
+                if not np.isnan(p) and p > 0:
+                    position_value += shares[n] * p
+            nav = cash + position_value
+            current_pct = position_value / nav if nav > 0 else 0.0
+
+            # 聚合信号 → bullish_score
+            n_buy = 0
+            n_sell = 0
+            for n in range(N):
+                if buy_signals[t, n]:
+                    n_buy += 1
+                if sell_signals[t, n]:
+                    n_sell += 1
+            total_sig = n_buy + n_sell
+            bullish = 0.5 if total_sig == 0 else (float(n_buy) / float(total_sig))
+
+            # sigmoid → target
+            centered = (bullish - 0.5) * 2.0
+            x = position_slope * centered + position_bias
+            if x >= 0:
+                target = 1.0 / (1.0 + np.exp(-x))
+            else:
+                ex = np.exp(x)
+                target = ex / (1.0 + ex)
+
+            # delta
+            delta = target - current_pct
+            if delta > max_daily_adjust:
+                delta = max_daily_adjust
+            elif delta < -max_daily_adjust:
+                delta = -max_daily_adjust
+
+            # ── 执行调仓 ──
+            if delta > 1e-6 and cash > 0:
+                buy_cash = delta * nav
+                if buy_cash > cash:
+                    buy_cash = cash
+
+                # 候选：有买入窗口的股票
+                n_active = 0
+                for n in range(N):
+                    if buy_win_start[n] >= 0:
+                        n_active += 1
+
+                if n_active > 0:
+                    per_stock = buy_cash / float(n_active)
+                    for n in range(N):
+                        if buy_win_start[n] < 0 or per_stock <= 0:
+                            continue
+                        sd = buy_win_start[n]
+                        ed = buy_win_end[n]
+                        buy_win_start[n] = -1
+
+                        # 均价
+                        price_sum = 0.0
+                        price_count = 0
+                        for d in range(sd, ed + 1):
+                            po = float(prices_open[d, n])
+                            pc = float(prices_close[d, n])
+                            if po > 0 and not np.isnan(po):
+                                price_sum += po
+                                price_count += 1
+                            if pc > 0 and not np.isnan(pc):
+                                price_sum += pc
+                                price_count += 1
+                        if price_count == 0:
+                            continue
+                        exec_price = price_sum / float(price_count)
+
+                        cost = per_stock * (1.0 - commission_rate)
+                        qty_raw = cost / exec_price
+                        if lot_size > 1:
+                            qty = float(np.int64(qty_raw / float(lot_size)) * lot_size)
+                        else:
+                            qty = qty_raw
+                        if qty <= 0:
+                            continue
+                        cost_real = qty * exec_price
+                        fee = cost_real * commission_rate
+                        total_cost = cost_real + fee
+
+                        if total_cost <= cash:
+                            old_sh = shares[n]
+                            old_cb = cost_basis[n]
+                            shares[n] += qty
+                            if shares[n] > 0:
+                                cost_basis[n] = (old_sh * old_cb + qty * exec_price) / shares[n]
+                            cash -= total_cost
+                            total_trades += 1
+
+            elif delta < -1e-6:
+                sell_needed = -delta * nav
+
+                # 持仓总市值
+                total_pos = 0.0
+                for n in range(N):
+                    if shares[n] > 0:
+                        p = float(prices_close[t, n])
+                        if not np.isnan(p) and p > 0:
+                            total_pos += shares[n] * p
+
+                if total_pos > 0:
+                    for n in range(N):
+                        if sell_needed <= 0 or shares[n] <= 0:
+                            continue
+                        p_o = float(prices_open[t, n])
+                        p_c = float(prices_close[t, n])
+                        if p_o <= 0 or p_c <= 0 or np.isnan(p_o) or np.isnan(p_c):
+                            continue
+                        exec_price = (p_o + p_c) / 2.0
+
+                        pos_val_n = shares[n] * p_c
+                        weight = pos_val_n / total_pos if total_pos > 0 else 0
+                        sell_amount = sell_needed * weight
+                        if sell_amount > pos_val_n:
+                            sell_amount = pos_val_n
+
+                        sell_qty_raw = sell_amount / exec_price
+                        if lot_size > 1:
+                            sell_qty = float(np.int64(sell_qty_raw / float(lot_size)) * lot_size)
+                        else:
+                            sell_qty = sell_qty_raw
+                        if sell_qty <= 0:
+                            continue
+
+                        sell_value = sell_qty * exec_price
+                        fee = sell_value * commission_rate
+                        cash += sell_value - fee
+                        shares[n] -= sell_qty
+                        sell_needed -= sell_value
+                        total_trades += 1
+
+            # 记录 NAV
+            pv = 0.0
+            for n in range(N):
+                p = float(prices_close[t, n])
+                if not np.isnan(p) and p > 0:
+                    pv += shares[n] * p
+            daily_values[t] = cash + pv
+
+        # avg_pos
+        pos_sum = 0.0
+        vld = 0
+        for t in range(T):
+            nv = daily_values[t]
+            if nv <= 0:
+                continue
+            pvt = 0.0
+            for n in range(N):
+                px = float(prices_close[t, n])
+                if not np.isnan(px) and px > 0:
+                    pvt += shares[n] * px
+            pos_sum += pvt / nv
+            vld += 1
+        avg_pos = (pos_sum / float(vld) * 100.0) if vld > 0 else 0.0
+
+        # final_pos
+        fin_nav = daily_values[T - 1] if T > 0 else initial_cash
+        fin_pv = 0.0
+        for n in range(N):
+            px = float(prices_close[T - 1, n])
+            if not np.isnan(px) and px > 0:
+                fin_pv += shares[n] * px
+        fin_pos = (fin_pv / fin_nav * 100.0) if fin_nav > 0 else 0.0
+
+        return daily_values, total_trades, avg_pos, fin_pos, shares.copy(), float(cash), cost_basis.copy()
+
     HAS_NUMBA = True
     logger.info("numba JIT 已启用，FastEvaluator 将使用加速内核")
 
@@ -877,15 +1085,26 @@ class FastEvaluator:
         if price_open_matrix is None:
             price_open_matrix = price_matrix.copy()
 
-        daily_values, trade_count, avg_pos_pct, final_pos_pct, final_shares, final_cash, cost_basis = _simulate_position_target_python(
-            buy_signals, sell_signals,
-            price_matrix, price_open_matrix,
-            self.initial_cash, self.lot_size, self.commission_rate,
-            position_slope, position_bias,
-            max_daily_adjust=0.10,
-            buy_confirm_days=self.buy_confirmation_days,
-            sell_confirm_days=self.sell_confirmation_days,
-        )
+        if HAS_NUMBA:
+            daily_values, trade_count, avg_pos_pct, final_pos_pct, final_shares, final_cash, cost_basis = _simulate_position_target_numba(
+                buy_signals, sell_signals,
+                price_matrix, price_open_matrix,
+                self.initial_cash, self.lot_size, self.commission_rate,
+                position_slope, position_bias,
+                max_daily_adjust=0.40,
+                buy_confirm_days=self.buy_confirmation_days,
+                sell_confirm_days=self.sell_confirmation_days,
+            )
+        else:
+            daily_values, trade_count, avg_pos_pct, final_pos_pct, final_shares, final_cash, cost_basis = _simulate_position_target_python(
+                buy_signals, sell_signals,
+                price_matrix, price_open_matrix,
+                self.initial_cash, self.lot_size, self.commission_rate,
+                position_slope, position_bias,
+                max_daily_adjust=0.40,
+                buy_confirm_days=self.buy_confirmation_days,
+                sell_confirm_days=self.sell_confirmation_days,
+            )
 
         # ── 6. 计算统计 ──
         signal_count = int(buy_signals.sum()) + int(sell_signals.sum())
@@ -1088,7 +1307,7 @@ def _simulate_position_target_python(
     commission_rate: float,
     position_slope: float,
     position_bias: float,
-    max_daily_adjust: float = 0.10,
+    max_daily_adjust: float = 0.40,
     buy_confirm_days: int = 3,
     sell_confirm_days: int = 1,
 ):

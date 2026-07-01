@@ -83,6 +83,17 @@ class DiscreteSearchConfig:
         )
         self.num_sell_rules: int = data.get("num_sell_rules", 3)
 
+        # 仓位目标模型
+        pm = data.get("position_model", {})
+        self.mode: str = data.get("mode", "frac")  # "frac" or "position_target"
+        self.position_slope_levels: int = pm.get("slope_levels", 20)
+        self.position_bias_levels: int = pm.get("bias_levels", 20)
+        self.max_daily_adjust: float = pm.get("max_daily_adjust", 0.10)
+
+    @property
+    def use_position_target(self) -> bool:
+        return self.mode == "position_target"
+
     @property
     def search_space_size(self) -> int:
         """估算搜索空间大小（总组合数）"""
