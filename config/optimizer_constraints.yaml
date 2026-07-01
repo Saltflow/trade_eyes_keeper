@@ -78,7 +78,7 @@ discrete_search:
   - 0.4
   - 0.5
   num_sell_rules: 3
-  mode: position_target
+  mode: frac
   position_model:
     slope_range:
     - 0.5

@@ -510,6 +510,15 @@ try:
         buy_win_end = np.full(N, -1, dtype=np.int32)
         total_trades = 0
 
+        # 季度检查点 (4 个等间隔快照)
+        N_QUARTERS = 4
+        q_interval = max(1, T // N_QUARTERS)
+        q_shares = np.zeros((N_QUARTERS, N), dtype=np.float64)
+        q_cash = np.zeros(N_QUARTERS, dtype=np.float64)
+        q_nav = np.zeros(N_QUARTERS, dtype=np.float64)
+        q_prices = np.zeros((N_QUARTERS, N), dtype=np.float64)
+        q_idx = 0
+
         for t in range(T):
             # 更新买入窗口
             for n in range(N):
@@ -664,6 +673,15 @@ try:
                     pv += shares[n] * p
             daily_values[t] = cash + pv
 
+            # 季度快照
+            if q_idx < N_QUARTERS and (t + 1) % q_interval == 0:
+                q_cash[q_idx] = cash
+                q_nav[q_idx] = daily_values[t]
+                for n2 in range(N):
+                    q_shares[q_idx, n2] = shares[n2]
+                    q_prices[q_idx, n2] = float(prices_close[t, n2])
+                q_idx += 1
+
         # avg_pos
         pos_sum = 0.0
         vld = 0
@@ -689,7 +707,7 @@ try:
                 fin_pv += shares[n] * px
         fin_pos = (fin_pv / fin_nav * 100.0) if fin_nav > 0 else 0.0
 
-        return daily_values, total_trades, avg_pos, fin_pos, shares.copy(), float(cash), cost_basis.copy()
+        return daily_values, total_trades, avg_pos, fin_pos, shares.copy(), float(cash), cost_basis.copy(), q_shares, q_cash, q_nav, q_prices
 
     HAS_NUMBA = True
     logger.info("numba JIT 已启用，FastEvaluator 将使用加速内核")
@@ -921,6 +939,10 @@ class FastEvaluator:
         final_shares: np.ndarray | None = None,
         final_cash: float = 0.0,
         cost_basis: np.ndarray | None = None,
+        quarter_shares: np.ndarray | None = None,
+        quarter_cash: np.ndarray | None = None,
+        quarter_nav: np.ndarray | None = None,
+        quarter_prices: np.ndarray | None = None,
     ) -> "WindowStats":
         """从日资产序列计算 WindowStats
 
@@ -998,6 +1020,10 @@ class FastEvaluator:
             final_shares=final_shares,
             final_cash=final_cash,
             cost_basis=cost_basis,
+            quarter_shares=quarter_shares,
+            quarter_cash=quarter_cash,
+            quarter_nav=quarter_nav,
+            quarter_prices=quarter_prices,
         )
 
     def evaluate_position_target(
@@ -1086,7 +1112,7 @@ class FastEvaluator:
             price_open_matrix = price_matrix.copy()
 
         if HAS_NUMBA:
-            daily_values, trade_count, avg_pos_pct, final_pos_pct, final_shares, final_cash, cost_basis = _simulate_position_target_numba(
+            daily_values, trade_count, avg_pos_pct, final_pos_pct, final_shares, final_cash, cost_basis, q_shares, q_cash, q_nav, q_prices = _simulate_position_target_numba(
                 buy_signals, sell_signals,
                 price_matrix, price_open_matrix,
                 self.initial_cash, self.lot_size, self.commission_rate,
@@ -1096,7 +1122,7 @@ class FastEvaluator:
                 sell_confirm_days=self.sell_confirmation_days,
             )
         else:
-            daily_values, trade_count, avg_pos_pct, final_pos_pct, final_shares, final_cash, cost_basis = _simulate_position_target_python(
+            daily_values, trade_count, avg_pos_pct, final_pos_pct, final_shares, final_cash, cost_basis, q_shares, q_cash, q_nav, q_prices = _simulate_position_target_python(
                 buy_signals, sell_signals,
                 price_matrix, price_open_matrix,
                 self.initial_cash, self.lot_size, self.commission_rate,
@@ -1116,6 +1142,7 @@ class FastEvaluator:
             final_shares=final_shares,
             final_cash=final_cash,
             cost_basis=cost_basis,
+            quarter_shares=q_shares, quarter_cash=q_cash, quarter_nav=q_nav, quarter_prices=q_prices,
         )
 
     def evaluate_multiple(
@@ -1334,6 +1361,16 @@ def _simulate_position_target_python(
     shares = np.zeros(N, dtype=np.float64)
     cost_basis = np.zeros(N, dtype=np.float64)  # 加权平均买入价
     cash = float(initial_cash)
+
+    # 季度检查点 (4 个等间隔快照)
+    N_Q = 4
+    q_interval = max(1, T // N_Q)
+    q_shares = np.zeros((N_Q, N), dtype=np.float64)
+    q_cash = np.zeros(N_Q, dtype=np.float64)
+    q_nav = np.zeros(N_Q, dtype=np.float64)
+    q_prices = np.zeros((N_Q, N), dtype=np.float64)
+    q_idx = 0
+
     daily_values = np.zeros(T, dtype=np.float64)
 
     # 记录各类交易的消费
@@ -1483,6 +1520,15 @@ def _simulate_position_target_python(
             if not np.isnan(p) and p > 0:
                 position_value += shares[n] * p
         daily_values[t] = cash + position_value
+
+        # 季度快照
+        if q_idx < N_Q and (t + 1) % q_interval == 0:
+            q_cash[q_idx] = cash
+            q_nav[q_idx] = daily_values[t]
+            for n2 in range(N):
+                q_shares[q_idx, n2] = shares[n2]
+                q_prices[q_idx, n2] = float(prices_close[t, n2])
+            q_idx += 1
 
     # 计算平均仓位率
     pos_pct_sum = 0.0

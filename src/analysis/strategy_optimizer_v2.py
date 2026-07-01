@@ -397,6 +397,61 @@ class StrategyOptimizerV2:
                             total_nav = round(total_pos_val + final_cash_val, 2)
                             final_pos = round(total_pos_val / total_nav * 100, 1) if total_nav > 0 else 0.0
 
+            # 季度持仓明细 (取最后一个窗口，持仓最充分)
+            quarterly: list[dict] = []
+            last_ws_q = ss.window_stats[-1] if ss.window_stats else None
+            if last_ws_q is not None and last_ws_q.quarter_shares is not None:
+                import numpy as np2
+                q_shares = last_ws_q.quarter_shares
+                q_cash = last_ws_q.quarter_cash
+                q_nav = last_ws_q.quarter_nav
+                q_prices = last_ws_q.quarter_prices
+                cost_arr_q = last_ws_q.cost_basis if last_ws_q.cost_basis is not None else np2.zeros(q_shares.shape[1])
+                codes = wf_mgr.stock_codes
+                N_Q = q_shares.shape[0] if q_shares.ndim >= 1 else 0
+
+                # 从第一个窗口拿价格矩阵算季度间隔天数
+                w_last = windows[-1] if windows else None
+                interval_days = 0
+                if w_last is not None:
+                    interval_days = max(1, (w_last.test_end_idx - w_last.test_start_idx) // max(N_Q, 1))
+
+                for qi in range(N_Q):
+                    q_positions = []
+                    pos_val = 0.0
+                    for i in range(min(len(codes), q_shares.shape[1])):
+                        qty = float(q_shares[qi, i]) if q_shares.ndim >= 2 else 0.0
+                        if qty <= 0.5:
+                            continue
+                        px = float(q_prices[qi, i]) if q_prices.ndim >= 2 else 0.0
+                        if px <= 0 or np.isnan(px):
+                            continue
+                        value = qty * px
+                        pos_val += value
+                        cb = float(cost_arr_q[i])
+                        q_positions.append({
+                            "code": codes[i],
+                            "shares": round(qty, 1),
+                            "cost": round(cb, 2),
+                            "price": round(px, 2),
+                            "value": round(value, 2),
+                            "pnl": round((px - cb) * qty, 2) if cb > 0 else 0.0,
+                            "pnl_pct": round((px / cb - 1) * 100, 1) if cb > 0 else 0.0,
+                        })
+                    nav_val = float(q_nav[qi]) if q_nav.ndim >= 1 else 0.0
+                    cash_val = float(q_cash[qi]) if q_cash.ndim >= 1 else 0.0
+                    pos_pct = round(pos_val / nav_val * 100, 1) if nav_val > 0 else 0.0
+                    quarterly.append({
+                        "quarter": qi + 1,
+                        "day": (qi + 1) * interval_days,
+                        "cash": round(cash_val, 2),
+                        "nav": round(nav_val, 2),
+                        "pos_pct": pos_pct,
+                        "positions": q_positions,
+                    })
+            else:
+                quarterly = []
+
             # 构建参数摘要
             params_summary: dict[str, str] = {}
             # 买入
@@ -444,6 +499,7 @@ class StrategyOptimizerV2:
                 final_holdings=final_holdings,
                 final_cash=final_cash_val,
                 total_nav=total_nav,
+                quarterly_holdings=quarterly,
             )
             trials.append(trial)
 

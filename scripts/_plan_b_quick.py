@@ -62,6 +62,18 @@ if report.top_strategies:
             val = h.get("value", 0)
             print(f"    {code} {sh:.0f}股 @{px:.2f} val={val:.0f}")
         print(f"    现金: {t.final_cash:.0f}")
+
+    # 季度持仓
+    qh = t.quarterly_holdings
+    if qh:
+        print(f"\n  逐季持仓明细:")
+        for q in qh[:4]:
+            print(f"    Q{q['quarter']}(d{q['day']}): 仓位={q['pos_pct']:.0f}%  nav={q['nav']:.0f}")
+            for pos in q["positions"]:
+                print(f"      {pos['code']} {pos['shares']:.0f}股 cost={pos['cost']:.2f} px={pos['price']:.2f} val={pos['value']:.0f} pnl={pos['pnl']:+.0f} ({pos['pnl_pct']:+.1f}%)")
+            if not q["positions"]:
+                print(f"      (空仓)")
+            print(f"      现金: {q['cash']:.0f}")
 else:
     print("  No strategies found")
 print("DONE")

@@ -228,6 +228,10 @@ class WindowStats:
         final_shares: "np.ndarray | None" = None,
         final_cash: float = 0.0,
         cost_basis: "np.ndarray | None" = None,
+        quarter_shares: "np.ndarray | None" = None,
+        quarter_cash: "np.ndarray | None" = None,
+        quarter_nav: "np.ndarray | None" = None,
+        quarter_prices: "np.ndarray | None" = None,
     ):
         self.test_excess_return = test_excess_return
         self.max_drawdown_pct = max_drawdown_pct
@@ -241,6 +245,10 @@ class WindowStats:
         self.final_shares = final_shares
         self.final_cash = final_cash
         self.cost_basis = cost_basis
+        self.quarter_shares = quarter_shares
+        self.quarter_cash = quarter_cash
+        self.quarter_nav = quarter_nav
+        self.quarter_prices = quarter_prices
 
     @property
     def trades_per_month(self) -> float:
