@@ -11,8 +11,8 @@ benchmarks:
     a_share: 0.02
     non_a_share: 0.038
 hard_constraints:
-  min_avg_position_pct: 20.0
-  max_drawdown_pct: -25.0
+  min_avg_position_pct: 20
+  max_drawdown_pct: -25
   max_return_std_pct: 15.0
   min_trades_per_month: 1
   max_trades_per_month: 100

@@ -317,7 +317,8 @@ class GeneticSearcher:
         for enc in encodings:
             try:
                 results.append(self._evaluate_strategy_wf(enc, wins))
-            except Exception:
+            except Exception as e:
+                logger.error(f"_evaluate_batch_parallel 异常: {e}", exc_info=True)
                 results.append(None)
         return results
 
