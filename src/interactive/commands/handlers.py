@@ -47,7 +47,10 @@ def handle_help() -> str:
         "<code>/schedule [任务 时间]</code> — 查看/修改调度时间\n"
         " 例: <code>/schedule daily 20:00</code>\n"
         "<code>/alerts</code> — 查看报警状态\n"
-        "<code>/reset_alerts [代码]</code> — 重置报警（不填代码=全部）"
+        "<code>/reset_alerts [代码]</code> — 重置报警\n"
+        "<code>/mode [frac|position]</code> — 查看/切换策略模式\n"
+        "<code>/config [show|set KEY VAL|reset]</code> — 查看/修改优化器配置\n"
+        " 例: <code>/config set max_dd -30</code>"
     )
 
 
@@ -387,3 +390,166 @@ def handle_reset_alerts(stock_code: str = "") -> str:
         data["alerts"] = {}
         state_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         return f"✅ 已重置所有报警状态（清除 {len(alerts)} 条）"
+
+
+# ── /mode 和 /config ────────────────────
+
+OPT_CONSTRAINTS_PATH = (
+    Path(__file__).parent.parent.parent.parent / "config" / "optimizer_constraints.yaml"
+)
+
+
+def _load_opt_config() -> dict:
+    try:
+        with open(OPT_CONSTRAINTS_PATH, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f)
+    except Exception as e:
+        logger.exception(f"读取优化器配置失败: {OPT_CONSTRAINTS_PATH}")
+        return {}
+
+
+def _save_opt_config(config: dict) -> None:
+    tmp = OPT_CONSTRAINTS_PATH.with_suffix(".yaml.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        tmp.replace(OPT_CONSTRAINTS_PATH)
+        logger.info(f"优化器配置已保存: {OPT_CONSTRAINTS_PATH}")
+    except Exception as e:
+        logger.exception(f"保存优化器配置失败: {e}")
+
+
+_MODE_LABELS = {"frac": "Fixed-Frac (固定比例买入)", "position_target": "Position-Target (仓位目标驱动)"}
+
+_CONFIG_HELP = {
+    "min_pos": ("min_avg_position_pct", "最低平均仓位%", "hard_constraints", 5, 50),
+    "max_dd": ("max_drawdown_pct", "最大回撤% (负数)", "hard_constraints", -50, -5),
+    "max_trades": ("max_trades_per_month", "月最大交易次数", "hard_constraints", 1, 200),
+    "daily_adjust": ("max_daily_adjust", "日调仓上限 (Position-Target)", "position_model", 0.1, 1.0),
+    "data_years": ("data_years", "回测数据年数", "walk_forward", 1, 10),
+    "confirm_days": ("buy_confirmation_days_ref", "买入确认天数", "position_model", 1, 5),
+    "frac_levels": ("frac_levels", "买入比例档位 (Fixed-Frac)", "discrete_search", None, None),
+    "num_buy": ("num_buy_rules", "买入规则槽位数", "discrete_search", 1, 10),
+    "num_sell": ("num_sell_rules", "卖出规则槽位数", "discrete_search", 1, 5),
+}
+
+
+def handle_mode(mode: str) -> str:
+    """切换或查看策略模式。"""
+    cfg = _load_opt_config()
+    if not mode:
+        current = cfg.get("discrete_search", {}).get("mode", "frac")
+        label = _MODE_LABELS.get(current, current)
+        lines = [
+            f"当前模式: <b>{label}</b>",
+            "",
+            "可用模式:",
+            "  <code>/mode frac</code> — Fixed-Frac (每信号固定比例买入)",
+            "  <code>/mode position</code> — Position-Target (仓位目标动态调整)",
+        ]
+        # Show current key params
+        ds = cfg.get("discrete_search", {})
+        pm = ds.get("position_model", {})
+        hc = cfg.get("hard_constraints", {})
+        wf = cfg.get("walk_forward", {})
+        if current == "position_target":
+            adj = pm.get("max_daily_adjust", 0.10)
+            lines.append(f"  日调仓上限: {adj:.0%}  数据年: {wf.get('data_years', 5)}")
+        else:
+            fl = ds.get("frac_levels", [])
+            lines.append(f"  买入比例档位: {fl}  月交易上限: {hc.get('max_trades_per_month', 100)}")
+        return "\n".join(lines)
+
+    cfg.setdefault("discrete_search", {})["mode"] = mode
+    _save_opt_config(cfg)
+    label = _MODE_LABELS.get(mode, mode)
+    return f"✅ 已切换为 <b>{label}</b>\n下次 /optimize 将使用此模式"
+
+
+def handle_config(action: str, key: str, value: str) -> str:
+    """查看或修改优化器配置。"""
+    cfg = _load_opt_config()
+
+    if action == "reset":
+        # Restore defaults
+        ds = cfg.setdefault("discrete_search", {})
+        ds["frac_levels"] = [0.30, 0.45, 0.60, 0.75, 0.90, 1.00]
+        ds["num_buy_rules"] = 5
+        ds["num_sell_rules"] = 3
+        hc = cfg.setdefault("hard_constraints", {})
+        hc["min_avg_position_pct"] = 5
+        hc["max_drawdown_pct"] = -40
+        hc["max_trades_per_month"] = 100
+        pm = ds.setdefault("position_model", {})
+        pm["max_daily_adjust"] = 0.40
+        wf = cfg.setdefault("walk_forward", {})
+        wf["data_years"] = 5
+        _save_opt_config(cfg)
+        return "✅ 已恢复默认优化器配置"
+
+    if action == "set" and key and value:
+        if key not in _CONFIG_HELP:
+            return f"❌ 未知配置项: <code>{key}</code>\n可用: {', '.join(_CONFIG_HELP.keys())}"
+        field, _, section, vmin, vmax = _CONFIG_HELP[key]
+        try:
+            if key in ("frac_levels",):
+                val = [float(x.strip()) for x in value.split(",")]
+            elif key in ("num_buy", "num_sell", "confirm_days"):
+                val = int(value)
+            else:
+                val = float(value)
+        except ValueError:
+            return f"❌ 值格式错误: {value}"
+
+        if section == "hard_constraints":
+            cfg.setdefault("hard_constraints", {})[field] = val
+        elif section == "position_model":
+            cfg.setdefault("discrete_search", {}).setdefault("position_model", {})[field] = val
+        elif section == "walk_forward":
+            cfg.setdefault("walk_forward", {})[field] = val
+        elif section == "discrete_search":
+            cfg.setdefault("discrete_search", {})[field] = val
+        _save_opt_config(cfg)
+        return f"✅ {_CONFIG_HELP[key][1]}: {value}"
+
+    # show
+    ds = cfg.get("discrete_search", {})
+    pm = ds.get("position_model", {})
+    hc = cfg.get("hard_constraints", {})
+    wf = cfg.get("walk_forward", {})
+    mode = ds.get("mode", "position_target")
+    label = _MODE_LABELS.get(mode, mode)
+
+    if key:
+        # show specific
+        if key not in _CONFIG_HELP:
+            return f"❌ 未知配置项: {key}"
+        field, label_f, section, _, _ = _CONFIG_HELP[key]
+        val = None
+        if section == "hard_constraints":
+            val = hc.get(field)
+        elif section == "position_model":
+            val = pm.get(field)
+        elif section == "walk_forward":
+            val = wf.get(field)
+        elif section == "discrete_search":
+            val = ds.get(field)
+        return f"<b>{label_f}</b>: {val}"
+
+    lines = [
+        f"<b>优化器配置</b> (模式: {label})",
+        f"  数据年: {wf.get('data_years', 5)}",
+        f"  最低仓位%: {hc.get('min_avg_position_pct', 5)}  最大回撤%: {hc.get('max_drawdown_pct', -40)}",
+        f"  月交易上限: {hc.get('max_trades_per_month', 100)}",
+    ]
+    if mode == "position_target":
+        lines.append(f"  日调仓上限: {pm.get('max_daily_adjust', 0.10):.0%}")
+    else:
+        lines.append(f"  买入比例档位: {ds.get('frac_levels', [])}")
+    lines.extend([
+        f"  买入槽位: {ds.get('num_buy_rules', 5)}  卖出槽位: {ds.get('num_sell_rules', 3)}",
+        "",
+        "修改: <code>/config set KEY VALUE</code>",
+        "可配置项: " + ", ".join(_CONFIG_HELP.keys()),
+    ])
+    return "\n".join(lines)

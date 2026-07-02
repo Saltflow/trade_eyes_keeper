@@ -47,6 +47,26 @@ from .backtest_config import (
 logger = logging.getLogger(__name__)
 
 
+# 策略参数人话映射
+_BUILDER_LABELS = {
+    "deviation_cross": lambda t, n=None: f"MA60偏离下穿 {-0.005 + t * (-0.295):.1%} 时买入",
+    "deviation_absolute": lambda t, n=None: f"MA60偏离 < {-t * 0.40:.0%} 时买入",
+    "rsi_signal": lambda t, n=None: f"RSI < {10 + (1 - t) * 30:.0f} 时买入",
+    "bollinger_signal": lambda t, n=None: f"布林%%B < {(1 - t) * 0.35:.2f} 时买入",
+    "volume_spike": lambda t, n=None: f"量比 > {1.2 + t * 2.8:.1f} 时买入",
+    "trend_follow": lambda t, n=None: f"ADX > {15 + t * 25:.0f} 且 MACD>0 时买入",
+    "absolute_discount": lambda t, n=None: f"距2年高点跌幅 > {-0.10 + t * (-0.60):.0%} 时买入",
+    "deep_value": lambda t, n=None: f"MA200偏离 < {-0.05 + t * (-0.35):.0%} 且趋势启稳时买入",
+    "none": lambda t, n=None: "(未使用)",
+    "sell_deviation_cross": lambda t, n=None: f"MA60偏离上穿 {0.005 + t * 0.30:.1%} 时卖出",
+    "sell_deviation_absolute": lambda t, n=None: f"MA60偏离 > {t * 0.50:.0%} 时卖出",
+    "sell_rsi_signal": lambda t, n=None: f"RSI > {60 + t * 30:.0f} 时卖出",
+    "sell_bollinger_signal": lambda t, n=None: f"布林%%B > {0.65 + t * 0.35:.2f} 时卖出",
+    "sell_trend_follow": lambda t, n=None: f"ADX > {15 + t * 25:.0f} 且 MACD<0 时卖出",
+    "sell_overextended": lambda t, n=None: f"接近2年高点(差距<{-0.05 + t * 0.05:.0%})时卖出",
+}
+
+
 class StrategyOptimizerV2:
     """策略搜索器 V2
 
@@ -500,6 +520,7 @@ class StrategyOptimizerV2:
                 final_cash=final_cash_val,
                 total_nav=total_nav,
                 quarterly_holdings=quarterly,
+                strategy_description=self._format_strategy_description(ss.encoding, self.ds_cfg),
             )
             trials.append(trial)
 
@@ -515,6 +536,40 @@ class StrategyOptimizerV2:
             elapsed_seconds=round(elapsed, 1),
             best_params=trials[0].params if trials else {},
         )
+
+    @staticmethod
+    def _format_strategy_description(encoding, ds_cfg) -> str:
+        """将策略编码转为人话描述。"""
+        lines = []
+        # 买入规则
+        lines.append("买入条件:")
+        for i in range(encoding.n_buy_rules):
+            bn = ds_cfg.buy_builders[encoding.buy_builders[i]]
+            tn = encoding.buy_thresholds[i] / max(ds_cfg.threshold_levels - 1, 1)
+            label = _BUILDER_LABELS.get(bn, lambda t, n=None: bn)(tn, bn)
+            lines.append(f"  {i+1}. {label}")
+        # 卖出规则
+        lines.append("卖出条件:")
+        has_sell = False
+        for i in range(encoding.n_sell_rules):
+            bn = ds_cfg.sell_builders[encoding.sell_builders[i]]
+            if bn == "none":
+                continue
+            tn = encoding.sell_thresholds[i] / max(ds_cfg.threshold_levels - 1, 1)
+            label = _BUILDER_LABELS.get(bn, lambda t, n=None: bn)(tn, bn)
+            lines.append(f"  {i+1}. {label}")
+            has_sell = True
+        if not has_sell:
+            lines.append("  (无卖出规则)")
+        # 仓位控制
+        if ds_cfg.use_position_target:
+            sl, bi = encoding.to_position_params(ds_cfg)
+            pm = ds_cfg.position_model if hasattr(ds_cfg, 'position_model') else {}
+            adj = getattr(ds_cfg, 'max_daily_adjust', 0.10)
+            sl_str = f"敏感度={sl:.1f}" if sl else ""
+            bi_str = f"倾向={'保守' if bi<0 else '激进'}" if bi else ""
+            lines.append(f"仓位控制: {sl_str} {bi_str} 日调仓上限={pm.get('max_daily_adjust', 0.10):.0%}".strip())
+        return "\n".join(lines)
 
     def _encoding_to_rules(self, encoding: StrategyEncoding) -> list[Rule]:
         """将遗传编码转换为 Rule 列表（V1 兼容格式，支持买入+卖出）"""

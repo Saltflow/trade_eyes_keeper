@@ -11,8 +11,8 @@ benchmarks:
     a_share: 0.02
     non_a_share: 0.038
 hard_constraints:
-  min_avg_position_pct: 20
-  max_drawdown_pct: -25
+  min_avg_position_pct: 5
+  max_drawdown_pct: -40
   max_return_std_pct: 15.0
   min_trades_per_month: 1
   max_trades_per_month: 100
@@ -32,6 +32,7 @@ walk_forward:
   - 1.0
   - 1.0
   stability_penalty: 0.5
+  data_years: 5
 genetic_search:
   phase1_random_samples: 100000
   phase1_top_keep: 10000
@@ -78,7 +79,7 @@ discrete_search:
   - 0.4
   - 0.5
   num_sell_rules: 3
-  mode: frac
+  mode: position_target
   position_model:
     slope_range:
     - 0.5

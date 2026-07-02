@@ -149,6 +149,10 @@ def build_strategy_suggestions(stock_data, today=None) -> dict | None:
 
     today_date = today.date() if hasattr(today, "date") else (today or datetime.now().date())
 
+    # 空数据直接返回
+    if stock_data is None or stock_data.empty or "close" not in stock_data.columns:
+        return None
+
     # 找最新 A 股优化结果
     opt_dir = Path("data/optimizer")
     yaml_files = sorted(

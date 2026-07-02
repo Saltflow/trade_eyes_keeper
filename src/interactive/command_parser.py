@@ -18,6 +18,8 @@ class CommandType(Enum):
     SCHEDULE = auto()
     ALERTS = auto()
     RESET_ALERTS = auto()
+    MODE = auto()
+    CONFIG = auto()
     ERROR = auto()
 
 
@@ -105,6 +107,20 @@ class ResetAlertsCommand:
 class ErrorCommand:
     message: str
     cmd_type: CommandType = CommandType.ERROR
+
+
+@dataclass
+class ModeCommand:
+    mode: str = ""  # "frac" / "position" / "" = view
+    cmd_type: CommandType = CommandType.MODE
+
+
+@dataclass
+class ConfigCommand:
+    action: str = "show"  # "show" / "set" / "reset"
+    key: str = ""
+    value: str = ""
+    cmd_type: CommandType = CommandType.CONFIG
 
 
 _STOCK_CODE_RE = re.compile(r"^[A-Za-z0-9]{1,8}(\.[A-Za-z]{1,4})?$")
@@ -254,6 +270,27 @@ def parse_command(text: str):
             if err:
                 return ErrorCommand(message=err)
         return BacktestCommand(stock_code=code, start_date=start, end_date=end)
+
+    if cmd_name == "mode":
+        mode = args.strip().lower()
+        if mode in ("frac", "fraction", "fixed"):
+            return ModeCommand(mode="frac")
+        if mode in ("position", "position_target", "pt"):
+            return ModeCommand(mode="position_target")
+        return ModeCommand(mode="")  # view current
+
+    if cmd_name == "config":
+        parts = args.strip().split(None, 2)
+        if not parts or not parts[0]:
+            return ConfigCommand(action="show")
+        if parts[0] == "reset":
+            return ConfigCommand(action="reset")
+        if parts[0] == "set" and len(parts) >= 3:
+            return ConfigCommand(action="set", key=parts[1], value=parts[2])
+        # view specific key
+        if len(parts) == 1 and parts[0] not in ("set", "reset", "show"):
+            return ConfigCommand(action="show", key=parts[0])
+        return ErrorCommand(message="格式: /config [show|set KEY VAL|reset]")
 
     return ErrorCommand(
         message=f"未知命令: /{cmd_name}。发送 /help 查看可用命令"

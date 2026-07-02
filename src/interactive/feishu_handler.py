@@ -9,10 +9,12 @@ from .command_parser import (
     AlertsCommand,
     BacktestCommand,
     BriefCommand,
+    ConfigCommand,
     DailyCommand,
     ErrorCommand,
     HelpCommand,
     ListCommand,
+    ModeCommand,
     OptimizeCommand,
     RemoveCommand,
     ResetAlertsCommand,
@@ -25,9 +27,11 @@ from .commands.handlers import (
     handle_alerts,
     handle_backtest,
     handle_brief,
+    handle_config,
     handle_daily,
     handle_help,
     handle_list,
+    handle_mode,
     handle_optimize,
     handle_remove,
     handle_reset_alerts,
@@ -160,6 +164,10 @@ def _dispatch(cmd) -> str:
         return handle_alerts()
     if isinstance(cmd, ResetAlertsCommand):
         return handle_reset_alerts(cmd.stock_code)
+    if isinstance(cmd, ModeCommand):
+        return handle_mode(cmd.mode)
+    if isinstance(cmd, ConfigCommand):
+        return handle_config(cmd.action, cmd.key, cmd.value)
     if isinstance(cmd, ErrorCommand):
         return f"❌ {cmd.message}"
     return "❌ 未知命令。发送 /help 查看可用命令。"

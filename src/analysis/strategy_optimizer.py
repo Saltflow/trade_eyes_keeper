@@ -213,7 +213,8 @@ class StrategyTrial(BaseModel):
     final_holdings: list[dict] = Field(default_factory=list)  # [{code, shares, price, value, pct, cost}]
     final_cash: float = 0.0  # 期末现金
     total_nav: float = 0.0  # 期末总资产
-    quarterly_holdings: list[dict] = Field(default_factory=list)  # [{quarter, day, cash, nav, positions: [{code,shares,cost,price,value,pnl}]}]
+    quarterly_holdings: list[dict] = Field(default_factory=list)
+    strategy_description: str = ""  # 人话策略描述  # [{quarter, day, cash, nav, positions: [{code,shares,cost,price,value,pnl}]}]
 
     @property
     def fitness(self) -> float:
