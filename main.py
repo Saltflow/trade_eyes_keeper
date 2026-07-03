@@ -262,9 +262,34 @@ def run_daily_task(force: bool = False):
         # 5. 投资组合策略分析
         try:
             from src.analysis.portfolio_strategy import PortfolioOptimizer
+            from src.analysis.rule_engine import Rule
 
             logger.info("开始投资组合策略分析")
-            optimizer = PortfolioOptimizer(config)
+
+            # 尝试从最新优化器 YAML 加载规则
+            custom_rules = None
+            try:
+                opt_dir = Path("data/optimizer")
+                yaml_files = sorted(
+                    opt_dir.glob("*_a_share_strategies.yaml"),
+                    key=lambda p: p.stat().st_mtime, reverse=True,
+                )
+                if yaml_files:
+                    with open(yaml_files[0], "r", encoding="utf-8") as f:
+                        opt_data = yaml.safe_load(f)
+                    top = (opt_data.get("strategies") or [{}])[0]
+                    opt_rules = top.get("rules", [])
+                    if opt_rules:
+                        custom_rules = [Rule.from_dict(r) for r in opt_rules]
+                        mode = top.get("params", {}).get("_mode", "?")
+                        logger.info(
+                            "每日报告使用优化器策略 (mode=%s, rules=%d 条)",
+                            mode, len(custom_rules),
+                        )
+            except Exception as e:
+                logger.warning(f"读取优化器策略失败，将使用config默认规则: {e}")
+
+            optimizer = PortfolioOptimizer(config, custom_rules=custom_rules)
             portfolio_results = optimizer.run()
             if portfolio_results:
                 session.portfolio_results = portfolio_results

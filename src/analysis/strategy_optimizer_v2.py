@@ -474,6 +474,7 @@ class StrategyOptimizerV2:
 
             # 构建参数摘要
             params_summary: dict[str, str] = {}
+            use_pt = self.ds_cfg.use_position_target
             # 买入
             for j in range(ss.encoding.n_buy_rules):
                 b = ss.encoding.buy_builders[j]
@@ -482,7 +483,8 @@ class StrategyOptimizerV2:
                 builder_name = self.ds_cfg.buy_builders[b]
                 params_summary[f"buy_{j+1}_signal"] = builder_name
                 params_summary[f"buy_{j+1}_t"] = f"{t / (self.ds_cfg.threshold_levels - 1):.3f}" if self.ds_cfg.threshold_levels > 1 else "0.000"
-                params_summary[f"buy_{j+1}_frac"] = f"{self.ds_cfg.frac_levels[f]:.3f}"
+                if not use_pt:
+                    params_summary[f"buy_{j+1}_frac"] = f"{self.ds_cfg.frac_levels[f]:.3f}"
             # 卖出
             for j in range(ss.encoding.n_sell_rules):
                 b = ss.encoding.sell_builders[j]
@@ -491,9 +493,10 @@ class StrategyOptimizerV2:
                 builder_name = self.ds_cfg.sell_builders[b]
                 params_summary[f"sell_{j+1}_signal"] = builder_name
                 params_summary[f"sell_{j+1}_t"] = f"{t / (self.ds_cfg.threshold_levels - 1):.3f}" if self.ds_cfg.threshold_levels > 1 else "0.000"
-                params_summary[f"sell_{j+1}_frac"] = f"{self.ds_cfg.sell_frac_levels[f]:.3f}"
+                if not use_pt:
+                    params_summary[f"sell_{j+1}_frac"] = f"{self.ds_cfg.sell_frac_levels[f]:.3f}"
             # 仓位目标参数
-            if self.ds_cfg.use_position_target:
+            if use_pt:
                 sl, bi = ss.encoding.to_position_params(self.ds_cfg)
                 params_summary["position_slope"] = f"{sl:.2f}"
                 params_summary["position_bias"] = f"{bi:.2f}"
@@ -574,6 +577,7 @@ class StrategyOptimizerV2:
     def _encoding_to_rules(self, encoding: StrategyEncoding) -> list[Rule]:
         """将遗传编码转换为 Rule 列表（V1 兼容格式，支持买入+卖出）"""
         rules = []
+        use_pt = self.ds_cfg.use_position_target
 
         # 买入规则
         for i in range(encoding.n_buy_rules):
@@ -583,6 +587,11 @@ class StrategyOptimizerV2:
 
             condition, reset_when = build_condition(builder_name, t_norm, "buy")
 
+            if use_pt:
+                action = "position_target"  # 仓位由 sigmoid 模型驱动
+            else:
+                action = f"cash * {frac}"
+
             rules.append(Rule(
                 id=f"buy_{i+1}",
                 label=f"买入规则{i+1}",
@@ -590,7 +599,7 @@ class StrategyOptimizerV2:
                 priority=i + 1,
                 condition=condition,
                 budget_pool="buy",
-                action_amount=f"cash * {frac}",
+                action_amount=action,
                 reset_when=reset_when,
             ))
 
@@ -609,9 +618,9 @@ class StrategyOptimizerV2:
                 priority=encoding.n_buy_rules + i + 1,
                 condition=condition,
                 budget_pool="sell",
-                action_fraction=frac,
-                action_min=2500.0,
-                action_max=10000.0,
+                action_fraction=frac if not use_pt else 0.0,
+                action_min=2500.0 if not use_pt else 0.0,
+                action_max=10000.0 if not use_pt else 0.0,
                 reset_when=reset_when,
             ))
 

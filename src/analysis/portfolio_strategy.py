@@ -917,8 +917,13 @@ class PortfolioOptimizer:
       3. 最佳夏普比 (max_sharpe)
     """
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, custom_rules: list | None = None):
+        """Args:
+        config: 系统配置
+        custom_rules: 自定义规则列表（如来自优化器 YAML），优先于 config 中的规则
+        """
         self.config = config
+        self.custom_rules = custom_rules
         self._data_source = None
 
     @property
@@ -963,12 +968,13 @@ class PortfolioOptimizer:
         ps_config = self.config.get("portfolio_strategy", {})
         lookback_days = ps_config.get("lookback_days", 730)
 
-        # 加载自定义规则（可选）
-        config_rules = ps_config.get("rules", None)
-        custom_rules = None
-        if config_rules:
-            custom_rules = [Rule.from_dict(r) for r in config_rules]
-            logger.info(f"投资组合使用自定义规则: {len(custom_rules)} 条")
+        # 加载自定义规则：构造参数优先 > config 配置
+        custom_rules = self.custom_rules
+        if custom_rules is None:
+            config_rules = ps_config.get("rules", None)
+            if config_rules:
+                custom_rules = [Rule.from_dict(r) for r in config_rules]
+                logger.info(f"投资组合使用配置规则: {len(custom_rules)} 条")
 
         # 获取数据并分组
         a_share_data: dict[str, pd.DataFrame] = {}
