@@ -34,7 +34,7 @@ walk_forward:
   stability_penalty: 0.5
   data_years: 5
 genetic_search:
-  phase1_random_samples: 100000
+  phase1_random_samples: 30000
   phase1_top_keep: 10000
   num_generations: 5
   population_size: 5000
