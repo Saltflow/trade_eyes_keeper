@@ -387,6 +387,48 @@ def build_optimizer_summary(report, group_name: str = "") -> str:
             lines.append(f"  买入: {'  '.join(buy_rules)}")
         if sell_rules:
             lines.append(f"  卖出: {'  '.join(sell_rules)}")
+
+        # 策略人话描述
+        desc = getattr(t, "strategy_description", "")
+        if desc:
+            lines.append(f"  <pre>{desc}</pre>")
+
+        # 季末持仓
+        qh = getattr(t, "quarterly_holdings", None) or []
+        if qh:
+            lines.append("  <b>季末持仓明细:</b>")
+            lines.append("  <table style='font-size:12px;border-collapse:collapse'>"
+                         "<tr><th>Q</th><th>代码</th><th>持股</th>"
+                         "<th>成本</th><th>现价</th><th>市值</th>"
+                         "<th>盈亏</th><th>盈亏%</th></tr>")
+            for q in qh:
+                qn = q["quarter"]
+                qd = q["day"]
+                qp = q["pos_pct"]
+                qnv = q["nav"]
+                qcs = q["cash"]
+                qpos = q.get("positions", [])
+                if not qpos:
+                    lines.append(f"<tr><td>Q{qn}</td><td colspan=7>空仓 (nav={qnv:.0f})</td></tr>")
+                for pos in qpos:
+                    code = pos["code"]
+                    sh = pos["shares"]
+                    cb = pos["cost"]
+                    px = pos["price"]
+                    vl = pos["value"]
+                    pn = pos["pnl"]
+                    pp = pos["pnl_pct"]
+                    color = "#27ae60" if pn >= 0 else "#c0392b"
+                    lines.append(
+                        f"<tr><td>Q{qn}</td><td>{code}</td><td>{sh:.0f}股</td>"
+                        f"<td>{cb:.2f}</td><td>{px:.2f}</td><td>{vl:.0f}</td>"
+                        f"<td style='color:{color}'>{pn:+.0f}</td><td style='color:{color}'>{pp:+.1f}%</td></tr>"
+                    )
+                if qpos:
+                    lines.append(f"<tr><td>Q{qn}</td><td colspan=4>现金: {qcs:.0f}</td>"
+                                 f"<td colspan=3>仓位: {qp:.0f}%</td></tr>")
+            lines.append("</table>")
+
         lines.append("")
 
     rid = getattr(report, "report_id", "")

@@ -500,7 +500,7 @@ class StrategyOptimizerV2:
                 params_summary["_mode"] = "position_target"
             else:
                 params_summary["_mode"] = "frac"
-            params_summary["_stocks"] = ",".join(wf_mgr.stock_codes[:5])
+            params_summary["_stocks"] = ",".join(wf_mgr.stock_codes[:12])
             if violations:
                 params_summary["_warnings"] = "; ".join(violations[:3])
 
