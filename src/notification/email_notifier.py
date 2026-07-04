@@ -570,6 +570,7 @@ class EmailNotifier(BaseNotifier):
                 signal_scan=signal_scan,
                 backtest=backtest,
                 opt_data=opt_data,
+                daily_mode=True,
             )
 
             # 发送邮件（PDF 作为附件）
@@ -657,6 +658,7 @@ class EmailNotifier(BaseNotifier):
                 signal_scan=signal_scan,
                 backtest=backtest,
                 opt_data=opt_data,
+                daily_mode=True,
             )
 
             # 发送邮件
@@ -1198,6 +1200,7 @@ class EmailNotifier(BaseNotifier):
         signal_scan=None,
         backtest=None,
         opt_data=None,
+        daily_mode=False,
     ):
         """
         构建邮件正文（完整版：表格 + 公告 + 图表）
@@ -1387,6 +1390,28 @@ class EmailNotifier(BaseNotifier):
         # 3. 构建所有监控股票行（拆分为价格技术指标和基本面指标）
         all_rows_price = ""
         all_rows_fundamental = ""
+
+        # 价格表表头（日报模式精简：去掉 MA60/偏离/状态 列）
+        if daily_mode:
+            price_table_header = (
+                '<th style="text-align:left;padding:8px">代码</th>\n'
+                '        <th style="text-align:right;padding:8px">开盘</th>\n'
+                '        <th style="text-align:right;padding:8px">收盘</th>\n'
+                '        <th style="text-align:right;padding:8px">最高</th>\n'
+                '        <th style="text-align:right;padding:8px">最低</th>'
+            )
+        else:
+            price_table_header = (
+                '<th style="text-align:left;padding:8px">代码</th>\n'
+                '        <th style="text-align:right;padding:8px">开盘</th>\n'
+                '        <th style="text-align:right;padding:8px">收盘</th>\n'
+                '        <th style="text-align:right;padding:8px">最高</th>\n'
+                '        <th style="text-align:right;padding:8px">最低</th>\n'
+                '        <th style="text-align:right;padding:8px">MA60</th>\n'
+                '        <th style="text-align:right;padding:8px">偏离</th>\n'
+                '        <th style="text-align:right;padding:8px">偏离%</th>\n'
+                '        <th style="text-align:left;padding:8px">状态</th>'
+            )
         for _, row in stock_data.iterrows():
             stock_code = row.get("stock_code", "")
             stock_name = row.get("stock_name", stock_code)
@@ -1489,19 +1514,31 @@ class EmailNotifier(BaseNotifier):
             neut = "text-align:right"
             diff_style = pos if close_ma60_diff is not None and close_ma60_diff >= 0 else neg if close_ma60_diff is not None else neut
             pct_style = pos if close_ma60_pct is not None and close_ma60_pct >= 0 else neg if close_ma60_pct is not None else neut
-            all_rows_price += (
-                f'<tr>'
-                f'<td>{stock_code}</td>'
-                f'<td style="{neut}">{open_price_str}</td>'
-                f'<td style="{neut}">{close_price_str}</td>'
-                f'<td style="{neut}">{high_price_str}</td>'
-                f'<td style="{neut}">{low_price_str}</td>'
-                f'<td style="{neut}">{ma60_str}</td>'
-                f'<td style="{diff_style}">{close_ma60_diff_str}</td>'
-                f'<td style="{pct_style}">{close_ma60_pct_str}</td>'
-                f'<td>{status}</td>'
-                f'</tr>'
-            )
+            if daily_mode:
+                # 日报模式：精简价格行（去掉 MA60/偏离/状态）
+                all_rows_price += (
+                    f'<tr>'
+                    f'<td>{stock_code}</td>'
+                    f'<td style="{neut}">{open_price_str}</td>'
+                    f'<td style="{neut}">{close_price_str}</td>'
+                    f'<td style="{neut}">{high_price_str}</td>'
+                    f'<td style="{neut}">{low_price_str}</td>'
+                    f'</tr>'
+                )
+            else:
+                all_rows_price += (
+                    f'<tr>'
+                    f'<td>{stock_code}</td>'
+                    f'<td style="{neut}">{open_price_str}</td>'
+                    f'<td style="{neut}">{close_price_str}</td>'
+                    f'<td style="{neut}">{high_price_str}</td>'
+                    f'<td style="{neut}">{low_price_str}</td>'
+                    f'<td style="{neut}">{ma60_str}</td>'
+                    f'<td style="{diff_style}">{close_ma60_diff_str}</td>'
+                    f'<td style="{pct_style}">{close_ma60_pct_str}</td>'
+                    f'<td>{status}</td>'
+                    f'</tr>'
+                )
 
             # 基本面指标行
             all_rows_fundamental += (
@@ -1618,9 +1655,9 @@ class EmailNotifier(BaseNotifier):
                 portfolio_results, opt_data,
             )
 
-        # 6c. 构建投资组合策略分析部分（保留旧版兼容）
+        # 6c. 构建投资组合策略分析部分（旧版，日报模式跳过避免与搜参段重复）
         portfolio_section = ""
-        if portfolio_results:
+        if portfolio_results and not daily_mode:
             portfolio_section = self._build_portfolio_section(portfolio_results, portfolio_chart_dict)
 
         # 7. 走势图表（由调用方生成，通过 chart_png_bytes 传入，使用 CID 内嵌）
@@ -1654,21 +1691,25 @@ class EmailNotifier(BaseNotifier):
             </div>
             """
 
-        # 7b. 策略信号报警（基于优化器共识）
-        strategy_alert_section = self._build_strategy_alert_section(
-            signal_scan, alert_stocks, stock_data
-        ) if signal_scan else ""
+        # 7b. 策略信号报警（基于优化器共识）— 日报模式跳过
+        strategy_alert_section = ""
+        if not daily_mode and signal_scan:
+            strategy_alert_section = self._build_strategy_alert_section(
+                signal_scan, alert_stocks, stock_data
+            )
 
-        # 7c. 回测分析
-        backtest_section = self._build_backtest_section(backtest) if backtest else ""
+        # 7c. 回测分析 — 日报模式跳过
+        backtest_section = ""
+        if not daily_mode and backtest:
+            backtest_section = self._build_backtest_section(backtest)
 
         # 8. 获取服务器信息
         server_info = self._get_server_info()
 
-        # 7. 构建报警股票部分
+        # 7. 构建报警股票部分 — 日报模式跳过
         alert_section = ""
         is_multi_format = False  # 保存格式标志供后续使用
-        if alert_stocks:
+        if alert_stocks and not daily_mode:
             # 确定警报格式（检查第一个警报）
             if alert_stocks and len(alert_stocks) > 0:
                 is_multi_format = self._is_multi_alert_format(alert_stocks[0])
@@ -1799,6 +1840,7 @@ class EmailNotifier(BaseNotifier):
             alert_section=alert_section,
             all_rows_price=all_rows_price,
             all_rows_fundamental=all_rows_fundamental,
+            price_table_header=price_table_header,
             announcements_section=announcements_section,
             chart_section=chart_section,
             portfolio_chart_section=portfolio_chart_section,
