@@ -933,93 +933,86 @@ class EmailNotifier(BaseNotifier):
                 '（未找到优化器策略，使用 confg 默认均线规则）</p>'
             )
 
-        # 组合结果 (PortfolioEvaluator 实盘评估)
+        # 组合结果 (PortfolioEvaluator 实盘评估) — 只展示 Top1 (max_return)
         group_labels = {"a_share": "A股组合", "non_a_share": "非A股组合"}
-        metric_labels = {
-            "max_return": "最高收益",
-            "min_drawdown": "最低回撤",
-            "max_sharpe": "最优夏普",
-        }
         for group_key, group_label in group_labels.items():
             group_data = portfolio_results.get(group_key)
             if not group_data:
+                continue
+            r = group_data.get("max_return")
+            if not r:
                 continue
             lines.append(
                 f'<h4 style="color:#333;border-left:4px solid #2196f3;'
                 f'padding-left:10px;margin:16px 0 8px">{group_label}</h4>'
             )
-            for mk, ml in metric_labels.items():
-                r = group_data.get(mk)
-                if not r:
-                    continue
-                tr = getattr(r, "total_return", 0)
-                dd = getattr(r, "max_drawdown", 0)
-                sr = getattr(r, "sharpe_ratio", 0)
-                tc = getattr(r, "trade_count", 0)
-                ep = getattr(r, "expected_position", 0)
-                comp = getattr(r, "composition", [])
-                qh = getattr(r, "quarterly_holdings", None) or []
+            tr = getattr(r, "total_return", 0)
+            dd = getattr(r, "max_drawdown", 0)
+            sr = getattr(r, "sharpe_ratio", 0)
+            tc = getattr(r, "trade_count", 0)
+            ep = getattr(r, "expected_position", 0)
+            comp = getattr(r, "composition", [])
+            qh = getattr(r, "quarterly_holdings", None) or []
 
-                rc = "#27ae60" if tr >= 0 else "#c0392b"
-                dc = "#c0392b" if dd < 0 else "#27ae60"
+            rc = "#27ae60" if tr >= 0 else "#c0392b"
+            dc = "#c0392b" if dd < 0 else "#27ae60"
+            lines.append(
+                '<div style="border:1px solid #ddd;padding:10px;'
+                'margin:6px 0;border-radius:5px;background:#fafafa">'
+                f'收益 <span style="color:{rc}">{tr:+.1f}%</span> &nbsp; '
+                f'回撤 <span style="color:{dc}">{dd:.1f}%</span> &nbsp; '
+                f'夏普 {sr:.2f} &nbsp; '
+                f'交易 {tc}笔 &nbsp; '
+                f'期末市值 ¥{ep:,.0f} &nbsp; '
+                f'成分: {", ".join(comp) if comp else "—"}'
+            )
+
+            # 季末持仓明细
+            if qh:
                 lines.append(
-                    '<div style="border:1px solid #ddd;padding:10px;'
-                    'margin:6px 0;border-radius:5px;background:#fafafa">'
-                    f'<b style="color:#1565c0">{ml}</b>&nbsp; '
-                    f'收益 <span style="color:{rc}">{tr:+.1f}%</span> &nbsp; '
-                    f'回撤 <span style="color:{dc}">{dd:.1f}%</span> &nbsp; '
-                    f'夏普 {sr:.2f} &nbsp; '
-                    f'交易 {tc}笔 &nbsp; '
-                    f'期末市值 ¥{ep:,.0f} &nbsp; '
-                    f'成分: {", ".join(comp) if comp else "—"}'
+                    '<table style="font-size:11px;border-collapse:collapse;'
+                    'width:100%;margin-top:6px">'
+                    '<tr style="background:#34495e;color:#fff">'
+                    '<th>Q</th><th>代码</th><th>持股</th>'
+                    '<th>成本</th><th>现价</th><th>市值</th>'
+                    '<th>盈亏</th><th>盈亏%</th></tr>'
                 )
-
-                # 季末持仓明细
-                if qh:
-                    lines.append(
-                        '<table style="font-size:11px;border-collapse:collapse;'
-                        'width:100%;margin-top:6px">'
-                        '<tr style="background:#34495e;color:#fff">'
-                        '<th>Q</th><th>代码</th><th>持股</th>'
-                        '<th>成本</th><th>现价</th><th>市值</th>'
-                        '<th>盈亏</th><th>盈亏%</th></tr>'
-                    )
-                    for q in qh:
-                        qn = q["quarter"]
-                        qcs = q["cash"]
-                        qp = q["pos_pct"]
-                        qnv = q["nav"]
-                        qpos = q.get("positions", [])
-                        if not qpos:
-                            lines.append(
-                                f'<tr><td>Q{qn}</td>'
-                                f'<td colspan=7>空仓 (nav={qnv:.0f})</td></tr>'
-                            )
-                        for pos in qpos:
-                            code = pos["code"]
-                            sh = pos["shares"]
-                            cb = pos["cost"]
-                            px = pos["price"]
-                            vl = pos["value"]
-                            pn = pos["pnl"]
-                            pp = pos["pnl_pct"]
-                            color = "#27ae60" if pn >= 0 else "#c0392b"
-                            lines.append(
-                                f'<tr><td>Q{qn}</td><td>{code}</td>'
-                                f'<td>{sh:.0f}股</td>'
-                                f'<td>{cb:.2f}</td><td>{px:.2f}</td>'
-                                f'<td>{vl:.0f}</td>'
-                                f'<td style="color:{color}">{pn:+.0f}</td>'
-                                f'<td style="color:{color}">{pp:+.1f}%</td></tr>'
-                            )
-                        if qpos:
-                            lines.append(
-                                f'<tr><td>Q{qn}</td>'
-                                f'<td colspan=4>现金: {qcs:.0f}</td>'
-                                f'<td colspan=3>仓位: {qp:.0f}%</td></tr>'
-                            )
-                    lines.append("</table>")
-                lines.append("</div>")  # close metric card
+                for q in qh:
+                    qn = q["quarter"]
+                    qcs = q["cash"]
+                    qp = q["pos_pct"]
+                    qnv = q["nav"]
+                    qpos = q.get("positions", [])
+                    if not qpos:
+                        lines.append(
+                            f'<tr><td>Q{qn}</td>'
+                            f'<td colspan=7>空仓 (nav={qnv:.0f})</td></tr>'
+                        )
+                    for pos in qpos:
+                        code = pos["code"]
+                        sh = pos["shares"]
+                        cb = pos["cost"]
+                        px = pos["price"]
+                        vl = pos["value"]
+                        pn = pos["pnl"]
+                        pp = pos["pnl_pct"]
+                        color = "#27ae60" if pn >= 0 else "#c0392b"
+                        lines.append(
+                            f'<tr><td>Q{qn}</td><td>{code}</td>'
+                            f'<td>{sh:.0f}股</td>'
+                            f'<td>{cb:.2f}</td><td>{px:.2f}</td>'
+                            f'<td>{vl:.0f}</td>'
+                            f'<td style="color:{color}">{pn:+.0f}</td>'
+                            f'<td style="color:{color}">{pp:+.1f}%</td></tr>'
+                        )
+                    if qpos:
+                        lines.append(
+                            f'<tr><td>Q{qn}</td>'
+                            f'<td colspan=4>现金: {qcs:.0f}</td>'
+                            f'<td colspan=3>仓位: {qp:.0f}%</td></tr>'
+                        )
+                lines.append("</table>")
+            lines.append("</div>")  # close card
 
         lines.append("</div>")  # close section
         return "\n".join(lines)
@@ -1665,7 +1658,7 @@ class EmailNotifier(BaseNotifier):
         if chart_png_bytes:
             chart_section = """
             <h3>价格走势图</h3>
-            <p>近2个月最低价与最长告警锚点移动平均线：</p>
+            <p>近2个月收盘价走势：</p>
             <div style="text-align: center; margin: 20px 0;">
                 <img src="cid:chart001"
                      alt="价格走势图"

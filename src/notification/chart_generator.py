@@ -160,7 +160,7 @@ def generate_combined_chart(
         df = full_df.tail(trading_days).copy()
 
         dates = pd.to_datetime(df["date"]).to_numpy()
-        low_values = df["low"].to_numpy()
+        close_values = df["close"].to_numpy()
 
         # 确定"最长"告警锚点
         anchor_names = stock_anchors[stock_code]
@@ -172,15 +172,15 @@ def generate_combined_chart(
         # 标题：代码 + 名称
         ax.set_title(f"{stock_code}\n{stock_name}", fontsize=8, fontweight="bold")
 
-        # 画最低价线（实线）
+        # 画收盘价线（实线）
         ax.plot(
             dates,
-            low_values,
+            close_values,
             color="#1f77b4",
             linestyle="-",
             linewidth=1.2,
             alpha=0.9,
-            label="最低价",
+            label="收盘价",
         )
 
         # 画锚点 MA 曲线（虚线）
