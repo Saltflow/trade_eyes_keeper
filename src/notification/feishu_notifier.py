@@ -15,6 +15,23 @@ from .base import BaseNotifier
 logger = logging.getLogger(__name__)
 
 
+def _load_latest_optimizer_yaml():
+    """读取最新优化器 YAML 文件中 Top1 策略的数据（非致命）。"""
+    try:
+        import yaml
+        opt_dir = Path("data/optimizer")
+        yaml_files = sorted(
+            opt_dir.glob("*_a_share_strategies.yaml"),
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
+        if yaml_files:
+            with open(yaml_files[0], "r", encoding="utf-8") as f:
+                return yaml.safe_load(f)
+    except Exception as e:
+        logger.debug(f"读取优化器 YAML 失败 (非致命): {e}")
+    return None
+
+
 class FeishuNotifier(BaseNotifier):
     """飞书 Bot 通知器，通过 webhook 发送交互卡片消息"""
 
@@ -83,8 +100,8 @@ class FeishuNotifier(BaseNotifier):
 
         # 搜参策略结果卡片
         portfolio_results = getattr(session, "portfolio_results", None)
-        opt_data = getattr(session, "_opt_data", None)
-        strat_body = self._build_strategy_section(portfolio_results, opt_data)
+        opt_data = _load_latest_optimizer_yaml()
+        strat_body = FeishuNotifier._build_strategy_section(portfolio_results, opt_data)
         if strat_body:
             self._send(f"{title} · 搜参策略", strat_body)
 

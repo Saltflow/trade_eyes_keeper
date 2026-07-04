@@ -585,7 +585,22 @@ class EmailNotifier(BaseNotifier):
 
             # 获取投资组合策略结果
             portfolio_results = getattr(session, "portfolio_results", None)
-            opt_data = getattr(session, "_opt_data", None)
+
+            # 读取最新优化器 YAML（搜参策略参数）
+            opt_data = None
+            try:
+                import yaml
+                from pathlib import Path
+                opt_dir = Path("data/optimizer")
+                yaml_files = sorted(
+                    opt_dir.glob("*_a_share_strategies.yaml"),
+                    key=lambda p: p.stat().st_mtime, reverse=True,
+                )
+                if yaml_files:
+                    with open(yaml_files[0], "r", encoding="utf-8") as f:
+                        opt_data = yaml.safe_load(f)
+            except Exception as e:
+                logger.debug(f"读取优化器 YAML 失败 (非致命): {e}")
 
             # 生成投资组合走势图（两张）
             portfolio_chart_dict = None

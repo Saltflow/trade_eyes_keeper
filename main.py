@@ -277,7 +277,6 @@ def run_daily_task(force: bool = False):
                 if yaml_files:
                     with open(yaml_files[0], "r", encoding="utf-8") as f:
                         opt_data = yaml.safe_load(f)
-                    session._opt_data = opt_data
                     top = (opt_data.get("strategies") or [{}])[0]
                     opt_rules = top.get("rules", [])
                     if opt_rules:
