@@ -613,6 +613,47 @@ class PortfolioEvaluator:
                 boll_range = upper - lower
                 df["boll_pct_b"] = ((df["close"] - lower) / boll_range.replace(0, float("nan"))).clip(0, 1)
 
+            # 兜底计算搜参策略需要的额外指标
+            if "adx" not in df.columns:
+                tr = pd.concat([
+                    df["high"] - df["low"],
+                    (df["high"] - df["close"].shift()).abs(),
+                    (df["low"] - df["close"].shift()).abs(),
+                ], axis=1).max(axis=1)
+                atr = tr.ewm(alpha=1/14, adjust=False).mean()
+                up = df["high"].diff()
+                dn = -df["low"].diff()
+                p_dm = up.where((up > 0) & (up > dn), 0.0)
+                n_dm = dn.where((dn > 0) & (dn > up), 0.0)
+                a_up = p_dm.ewm(alpha=1/14, adjust=False).mean()
+                a_dn = n_dm.ewm(alpha=1/14, adjust=False).mean()
+                di_p = (a_up / atr.replace(0, float("nan"))) * 100
+                di_n = (a_dn / atr.replace(0, float("nan"))) * 100
+                dx = ((di_p - di_n).abs() / (di_p + di_n).replace(0, float("nan"))) * 100
+                df["adx"] = dx.ewm(alpha=1/14, adjust=False).mean()
+
+            if "macd_hist" not in df.columns:
+                ema12 = df["close"].ewm(span=12, adjust=False).mean()
+                ema26 = df["close"].ewm(span=26, adjust=False).mean()
+                macd_line = ema12 - ema26
+                df["macd_hist"] = macd_line - macd_line.ewm(span=9, adjust=False).mean()
+
+            if "ma200_dev" not in df.columns:
+                ma200 = df["close"].rolling(window=200, min_periods=1).mean()
+                df["ma200_dev"] = (df["close"] - ma200) / ma200.replace(0, float("nan"))
+
+            if "ma60_slope" not in df.columns:
+                mv = df["ma60"] if "ma60" in df.columns else df["close"].rolling(60, min_periods=1).mean()
+                df["ma60_slope"] = mv / mv.shift(20).replace(0, float("nan")) - 1.0
+
+            if "pct_from_ath" not in df.columns:
+                ath = df["close"].rolling(window=504, min_periods=1).max()
+                df["pct_from_ath"] = df["close"] / ath.replace(0, float("nan")) - 1.0
+
+            if "vol_ratio" not in df.columns and "volume" in df.columns:
+                vol_ma5 = df["volume"].rolling(5, min_periods=1).mean()
+                df["vol_ratio"] = df["volume"] / vol_ma5.replace(0, float("nan"))
+
             dates = df["date"].dt.date.astype(str)
             for i in range(len(df)):
                 d = dates.iloc[i]
