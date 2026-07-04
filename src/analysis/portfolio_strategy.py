@@ -97,6 +97,7 @@ class PortfolioResult(BaseModel):
     nav_series: list[float] = Field(default_factory=list)    # 组合净值序列
     nav_dates: list[str] = Field(default_factory=list)       # 净值对应日期
     sub_periods: dict[str, SubPeriodMetrics] = Field(default_factory=dict)  # 子区间指标
+    quarterly_holdings: list[dict] = Field(default_factory=list)  # 季末持仓快照
 
 
 # ── 辅助函数 ──
@@ -533,6 +534,7 @@ class PortfolioEvaluator:
         # ── 共享状态 ──
         cash = effective_initial_capital
         positions: dict[str, int] = {c: 0 for c in active_codes}
+        cost_basis: dict[str, float] = {c: 0.0 for c in active_codes}
         last_prices: dict[str, float] = {c: 0.0 for c in active_codes}
         prev_deviations: dict[str, float | None] = {c: None for c in active_codes}
         trade_count = 0
@@ -558,6 +560,7 @@ class PortfolioEvaluator:
         phase_trade_count: dict[str, int] = {
             "observe": 0, "deploy": 0, "test": 0,
         }
+        quarterly_holdings: list[dict] = []
 
         # Rule engines per stock
         if self.rules is None:
@@ -767,6 +770,7 @@ class PortfolioEvaluator:
                                 if cost + fee <= buy_amount:
                                     positions[code] += qty
                                     cash -= cost + fee
+                                    cost_basis[code] += cost + fee
                                     month_buy_used += cost + fee
                                     trade_count += 1
                                     if day_phase:
@@ -809,6 +813,8 @@ class PortfolioEvaluator:
 
                         fee = sell_value * effective_commission
                         cash += sell_value - fee
+                        sold_fraction = sell_qty / positions[code]
+                        cost_basis[code] -= cost_basis[code] * sold_fraction
                         positions[code] -= sell_qty
                         month_sell_used += sell_value + fee
                         trade_count += 1
@@ -828,6 +834,45 @@ class PortfolioEvaluator:
             nav_dates.append(date_str)
             monthly_buys[month_key] = month_buy_used
             monthly_sells[month_key] = month_sell_used
+
+            # ── 季度持仓快照（每 63 交易日 ≈ 1 季度）──
+            day_idx = len(daily_navs) - 1
+            q_interval = 63
+            if day_idx > 0 and day_idx % q_interval == 0:
+                q_positions = []
+                for c in active_codes:
+                    if positions[c] > 0:
+                        px = day_prices.get(c) or last_prices.get(c, 0)
+                        avg_cost = (
+                            cost_basis[c] / positions[c]
+                            if positions[c] > 0 else 0.0
+                        )
+                        val = round(positions[c] * px, 2)
+                        pnl = round(val - cost_basis[c], 2)
+                        pnl_pct = round(
+                            pnl / cost_basis[c] * 100
+                            if cost_basis[c] > 0 else 0.0, 1
+                        )
+                        q_positions.append({
+                            "code": c,
+                            "shares": positions[c],
+                            "cost": round(avg_cost, 2),
+                            "price": round(px, 2),
+                            "value": val,
+                            "pnl": pnl,
+                            "pnl_pct": pnl_pct,
+                        })
+                q_pos_pct = round(
+                    (position_value / nav * 100) if nav > 0 else 0.0, 1
+                )
+                quarterly_holdings.append({
+                    "quarter": len(quarterly_holdings) + 1,
+                    "day": day_idx,
+                    "cash": round(cash, 2),
+                    "nav": round(nav, 2),
+                    "pos_pct": q_pos_pct,
+                    "positions": q_positions,
+                })
 
             # ── 现金基准线（含无风险复利）──
             cash_benchmark *= (1.0 + daily_rf)
@@ -941,6 +986,7 @@ class PortfolioEvaluator:
             nav_dates=nav_dates,
             stock_details=[],
             sub_periods=sub_periods,
+            quarterly_holdings=quarterly_holdings,
         )
 
 

@@ -585,6 +585,7 @@ class EmailNotifier(BaseNotifier):
 
             # 获取投资组合策略结果
             portfolio_results = getattr(session, "portfolio_results", None)
+            opt_data = getattr(session, "_opt_data", None)
 
             # 生成投资组合走势图（两张）
             portfolio_chart_dict = None
@@ -623,6 +624,7 @@ class EmailNotifier(BaseNotifier):
                 portfolio_chart_dict=portfolio_chart_dict,
                 signal_scan=signal_scan,
                 backtest=backtest,
+                opt_data=opt_data,
             )
 
             # 发送邮件
@@ -807,6 +809,187 @@ class EmailNotifier(BaseNotifier):
 
         return html
 
+    def _build_strategy_results_section(
+        self, portfolio_results, opt_data=None,
+    ) -> str:
+        """构建搜参策略结果段（策略规则 + 回测指标 + 季末持仓）。
+
+        Args:
+            portfolio_results: PortfolioOptimizer.run() 返回值
+            opt_data: 优化器 YAML 数据 (含 params/rules)
+        """
+        if not portfolio_results:
+            return ""
+
+        SIGNAL_NAMES = {
+            "deviation_cross": "偏离穿越",
+            "deviation_absolute": "偏离达标",
+            "rsi_signal": "RSI超卖",
+            "bollinger_signal": "布林低位",
+            "volume_spike": "放量异动",
+            "trend_follow": "趋势跟踪",
+            "deep_value": "深度价值",
+            "absolute_discount": "绝对折价",
+            "sell_deviation_cross": "偏离穿越(卖)",
+            "sell_deviation_absolute": "偏离达标(卖)",
+            "sell_rsi_signal": "RSI超买",
+            "sell_bollinger_signal": "布林高位",
+            "sell_trend_follow": "趋势反转",
+            "none": "无",
+        }
+
+        lines: list[str] = []
+        lines.append('<div style="margin-top:30px;border-top:2px solid #2c3e50;padding-top:16px">')
+        lines.append('<h3 style="color:#2c3e50">搜参策略结果</h3>')
+
+        # 策略参数摘要 (从 optimizer YAML)
+        top_strategy = None
+        if opt_data:
+            top_strategy = (opt_data.get("strategies") or [None])[0]
+        if top_strategy:
+            params = top_strategy.get("params", {})
+            buy_rules: list[str] = []
+            sell_rules: list[str] = []
+            for k, v in sorted(params.items()):
+                if k.startswith("_"):
+                    continue
+                if k.startswith("buy_"):
+                    idx = k.split("_")[1]
+                    if k.endswith("_signal"):
+                        name = SIGNAL_NAMES.get(str(v), str(v))
+                        buy_rules.append(f"买{idx}:{name}")
+                    elif k.endswith("_t"):
+                        buy_rules.append(f"阈值{float(v):.3f}")
+                    elif k.endswith("_frac"):
+                        buy_rules.append(f"仓位{float(v)*100:.0f}%")
+                elif k.startswith("sell_"):
+                    idx = k.split("_")[1]
+                    if k.endswith("_signal"):
+                        name = SIGNAL_NAMES.get(str(v), str(v))
+                        sell_rules.append(f"卖{idx}:{name}")
+                    elif k.endswith("_t"):
+                        sell_rules.append(f"阈值{float(v):.3f}")
+                    elif k.endswith("_frac"):
+                        sell_rules.append(f"仓位{float(v)*100:.0f}%")
+
+            strategy_label = top_strategy.get(
+                "strategy_description",
+                top_strategy.get("_mode", "搜索最优"),
+            )
+            lines.append('<div style="background:#f0f4ff;border:1px solid #c8d6ff;'
+                         'border-radius:6px;padding:12px;margin:10px 0">')
+            lines.append(
+                '<p style="margin:0;font-weight:600;color:#1565c0">'
+                f'Top1 策略 · '
+                f'测试收益 {top_strategy.get("test_return", 0):+.1f}% '
+                f'| 回撤 {top_strategy.get("test_drawdown", 0):.1f}% '
+                f'| 夏普 {top_strategy.get("sharpe", 0):.2f} '
+                f'| {top_strategy.get("trade_count", 0)}笔</p>'
+            )
+            if buy_rules:
+                lines.append('<p style="margin:6px 0 2px"><b>买入:</b> '
+                             f'{" | ".join(buy_rules)}</p>')
+            if sell_rules:
+                lines.append('<p style="margin:2px 0 0"><b>卖出:</b> '
+                             f'{" | ".join(sell_rules)}</p>')
+            lines.append("</div>")
+        else:
+            lines.append(
+                '<p style="color:#888;margin:10px 0">'
+                '（未找到优化器策略，使用 confg 默认均线规则）</p>'
+            )
+
+        # 组合结果 (PortfolioEvaluator 实盘评估)
+        group_labels = {"a_share": "A股组合", "non_a_share": "非A股组合"}
+        metric_labels = {
+            "max_return": "最高收益",
+            "min_drawdown": "最低回撤",
+            "max_sharpe": "最优夏普",
+        }
+        for group_key, group_label in group_labels.items():
+            group_data = portfolio_results.get(group_key)
+            if not group_data:
+                continue
+            lines.append(
+                f'<h4 style="color:#333;border-left:4px solid #2196f3;'
+                f'padding-left:10px;margin:16px 0 8px">{group_label}</h4>'
+            )
+            for mk, ml in metric_labels.items():
+                r = group_data.get(mk)
+                if not r:
+                    continue
+                tr = getattr(r, "total_return", 0)
+                dd = getattr(r, "max_drawdown", 0)
+                sr = getattr(r, "sharpe_ratio", 0)
+                tc = getattr(r, "trade_count", 0)
+                ep = getattr(r, "expected_position", 0)
+                comp = getattr(r, "composition", [])
+                qh = getattr(r, "quarterly_holdings", None) or []
+
+                rc = "#27ae60" if tr >= 0 else "#c0392b"
+                dc = "#c0392b" if dd < 0 else "#27ae60"
+                lines.append(
+                    '<div style="border:1px solid #ddd;padding:10px;'
+                    'margin:6px 0;border-radius:5px;background:#fafafa">'
+                    f'<b style="color:#1565c0">{ml}</b>&nbsp; '
+                    f'收益 <span style="color:{rc}">{tr:+.1f}%</span> &nbsp; '
+                    f'回撤 <span style="color:{dc}">{dd:.1f}%</span> &nbsp; '
+                    f'夏普 {sr:.2f} &nbsp; '
+                    f'交易 {tc}笔 &nbsp; '
+                    f'期末市值 ¥{ep:,.0f} &nbsp; '
+                    f'成分: {", ".join(comp) if comp else "—"}'
+                )
+
+                # 季末持仓明细
+                if qh:
+                    lines.append(
+                        '<table style="font-size:11px;border-collapse:collapse;'
+                        'width:100%;margin-top:6px">'
+                        '<tr style="background:#34495e;color:#fff">'
+                        '<th>Q</th><th>代码</th><th>持股</th>'
+                        '<th>成本</th><th>现价</th><th>市值</th>'
+                        '<th>盈亏</th><th>盈亏%</th></tr>'
+                    )
+                    for q in qh:
+                        qn = q["quarter"]
+                        qcs = q["cash"]
+                        qp = q["pos_pct"]
+                        qnv = q["nav"]
+                        qpos = q.get("positions", [])
+                        if not qpos:
+                            lines.append(
+                                f'<tr><td>Q{qn}</td>'
+                                f'<td colspan=7>空仓 (nav={qnv:.0f})</td></tr>'
+                            )
+                        for pos in qpos:
+                            code = pos["code"]
+                            sh = pos["shares"]
+                            cb = pos["cost"]
+                            px = pos["price"]
+                            vl = pos["value"]
+                            pn = pos["pnl"]
+                            pp = pos["pnl_pct"]
+                            color = "#27ae60" if pn >= 0 else "#c0392b"
+                            lines.append(
+                                f'<tr><td>Q{qn}</td><td>{code}</td>'
+                                f'<td>{sh:.0f}股</td>'
+                                f'<td>{cb:.2f}</td><td>{px:.2f}</td>'
+                                f'<td>{vl:.0f}</td>'
+                                f'<td style="color:{color}">{pn:+.0f}</td>'
+                                f'<td style="color:{color}">{pp:+.1f}%</td></tr>'
+                            )
+                        if qpos:
+                            lines.append(
+                                f'<tr><td>Q{qn}</td>'
+                                f'<td colspan=4>现金: {qcs:.0f}</td>'
+                                f'<td colspan=3>仓位: {qp:.0f}%</td></tr>'
+                            )
+                    lines.append("</table>")
+                lines.append("</div>")  # close metric card
+
+        lines.append("</div>")  # close section
+        return "\n".join(lines)
+
     def _build_portfolio_section(self, portfolio_results, portfolio_chart_dict=None):
         """
         构建投资组合策略分析部分HTML
@@ -982,6 +1165,7 @@ class EmailNotifier(BaseNotifier):
         portfolio_chart_dict=None,
         signal_scan=None,
         backtest=None,
+        opt_data=None,
     ):
         """
         构建邮件正文（完整版：表格 + 公告 + 图表）
@@ -1395,7 +1579,14 @@ class EmailNotifier(BaseNotifier):
              <p><em>注：公告信息仅供参考，请以交易所官方公告为准。</em></p>
             """
 
-        # 6b. 构建投资组合策略分析部分
+        # 6b. 构建搜参策略结果段
+        strategy_results_section = ""
+        if portfolio_results:
+            strategy_results_section = self._build_strategy_results_section(
+                portfolio_results, opt_data,
+            )
+
+        # 6c. 构建投资组合策略分析部分（保留旧版兼容）
         portfolio_section = ""
         if portfolio_results:
             portfolio_section = self._build_portfolio_section(portfolio_results, portfolio_chart_dict)
@@ -1583,6 +1774,7 @@ class EmailNotifier(BaseNotifier):
             backtest_section=backtest_section,
             report_link=report_link,
             portfolio_section=portfolio_section,
+            strategy_results_section=strategy_results_section,
             server_hostname=server_info["hostname"],
             server_ip=server_info["ip_address"],
         )

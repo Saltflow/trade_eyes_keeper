@@ -81,6 +81,13 @@ class FeishuNotifier(BaseNotifier):
         for label, body in self._build_report_sections(stock_data):
             self._send(f"{title} · {label}", body)
 
+        # 搜参策略结果卡片
+        portfolio_results = getattr(session, "portfolio_results", None)
+        opt_data = getattr(session, "_opt_data", None)
+        strat_body = self._build_strategy_section(portfolio_results, opt_data)
+        if strat_body:
+            self._send(f"{title} · 搜参策略", strat_body)
+
     def send_brief_report(self, session, report_config: dict) -> None:
         label = report_config.get("label", "简报")
         stock_data = session.get_all_dataframe()
@@ -163,6 +170,85 @@ class FeishuNotifier(BaseNotifier):
         title = f"策略优化完成 · {group_name}" if group_name else "策略优化完成"
         body = build_optimizer_summary(report, group_name)
         self._send(title, body)
+
+    @staticmethod
+    def _build_strategy_section(portfolio_results, opt_data=None) -> str:
+        """构建搜参策略结果（飞书纯文本格式）。"""
+        if not portfolio_results:
+            return ""
+
+        lines = ["**搜参策略结果**", ""]
+
+        # 策略参数
+        top = None
+        if opt_data:
+            top = (opt_data.get("strategies") or [None])[0]
+        if top:
+            tr_test = top.get("test_return", 0)
+            dd_test = top.get("test_drawdown", 0)
+            sh = top.get("sharpe", 0)
+            tc = top.get("trade_count", 0)
+            lines.append(
+                f"**Top1策略** 测试: 收益 {tr_test:+.1f}%  "
+                f"回撤 {dd_test:.1f}%  夏普 {sh:.2f}  {tc}笔"
+            )
+            # 买入卖出规则简述
+            params = top.get("params", {})
+            buy_keys = [k for k in params if k.startswith("buy_") and k.endswith("_signal")]
+            sell_keys = [k for k in params if k.startswith("sell_") and k.endswith("_signal")]
+            if buy_keys:
+                buy_str = ", ".join(
+                    str(params[k]).replace("_", " ") for k in buy_keys[:3]
+                )
+                lines.append(f"买入: {buy_str}")
+            if sell_keys:
+                sell_str = ", ".join(
+                    str(params[k]).replace("_", " ") for k in sell_keys[:3]
+                )
+                lines.append(f"卖出: {sell_str}")
+            lines.append("")
+
+        # 组合实盘评估
+        group_labels = {"a_share": "A股", "non_a_share": "非A股"}
+        for gk, gl in group_labels.items():
+            gd = portfolio_results.get(gk)
+            if not gd:
+                continue
+            r = gd.get("max_return")
+            if not r:
+                continue
+            tr = getattr(r, "total_return", 0)
+            dd = getattr(r, "max_drawdown", 0)
+            sr = getattr(r, "sharpe_ratio", 0)
+            tc2 = getattr(r, "trade_count", 0)
+            ep = getattr(r, "expected_position", 0)
+            comp = getattr(r, "composition", [])
+            qh = getattr(r, "quarterly_holdings", None) or []
+            lines.append(
+                f"**{gl}组合** "
+                f"收益 {tr:+.1f}%  回撤 {dd:.1f}%  夏普 {sr:.2f}  {tc2}笔"
+            )
+            lines.append(f"期末市值 ¥{ep:,.0f}  成分: {', '.join(comp[:5])}")
+
+            # 季末持仓摘要
+            if qh:
+                for q in qh:
+                    qn = q["quarter"]
+                    qp = q["pos_pct"]
+                    qpos = q.get("positions", [])
+                    if qpos:
+                        pos_str = " | ".join(
+                            f"{p['code']} {p['shares']:.0f}股 "
+                            f"@{p['price']:.2f} (¥{p['value']:.0f})"
+                            for p in qpos[:5]
+                        )
+                        lines.append(
+                            f"  Q{qn} 仓位{qp:.0f}% → {pos_str}"
+                        )
+                    else:
+                        lines.append(f"  Q{qn} 空仓")
+
+        return "\n".join(lines)
 
     # ── 辅助 ──────────────────────────────────
 
