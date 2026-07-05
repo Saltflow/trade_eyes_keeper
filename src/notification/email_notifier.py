@@ -1680,9 +1680,9 @@ class EmailNotifier(BaseNotifier):
             </div>
             """
 
-        # 7b. 策略信号报警（基于优化器共识）— 日报模式跳过
+        # 7b. 策略信号报警（基于搜参策略，日报模式也显示）
         strategy_alert_section = ""
-        if not daily_mode and signal_scan:
+        if signal_scan:
             strategy_alert_section = self._build_strategy_alert_section(
                 signal_scan, alert_stocks, stock_data
             )
