@@ -1270,27 +1270,27 @@ def generate_portfolio_chart(
         ax.plot(dt_arr, nav_arr, color="#2e7d32", linewidth=2.5,
                 alpha=0.9, label="Top1 策略", zorder=5)
 
-        # 布林带（SMA ± 2σ 半透明填充）
+        # 布林带（30日 SMA ± 2σ 半透明填充）
         if len(nav_arr) >= 30:
-            window = min(90, len(nav_arr) // 3)
+            window = 30
             sma = pd.Series(nav_arr).rolling(window=window, min_periods=1).mean()
             std = pd.Series(nav_arr).rolling(window=window, min_periods=1).std()
             upper = (sma + 2 * std).bfill().values
             lower = (sma - 2 * std).bfill().values
             ax.fill_between(dt_arr, lower, upper,
-                            alpha=0.12, color="#2e7d32", linewidth=0, zorder=1)
+                            alpha=0.15, color="#2e7d32", linewidth=0, zorder=1)
             ax.plot(dt_arr, upper, color="#2e7d32",
-                    linewidth=0.8, alpha=0.3, linestyle="--", zorder=2)
+                    linewidth=1.0, alpha=0.4, linestyle="--", zorder=2)
             ax.plot(dt_arr, lower, color="#2e7d32",
-                    linewidth=0.8, alpha=0.3, linestyle="--", zorder=2)
+                    linewidth=1.0, alpha=0.4, linestyle="--", zorder=2)
 
         # 基准 ETF 曲线
         benchmark_map = {
             "a_share": ["510300", "510880"],
             "non_a_share": ["VOO", "BRK.B"],
         }
-        bench_colors = ["#666666", "#999999"]
-        bench_styles = ["--", ":"]
+        bench_colors = ["#e74c3c", "#c0392b"]
+        bench_styles = ["--", "-."]
         for bi, bcode in enumerate(benchmark_map.get(group_key, [])):
             if not benchmark_data or bcode not in benchmark_data:
                 continue
