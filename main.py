@@ -279,9 +279,24 @@ def run_daily_task(force: bool = False):
                         opt_data = yaml.safe_load(f)
                     top = (opt_data.get("strategies") or [{}])[0]
                     opt_rules = top.get("rules", [])
+                    params = top.get("params", {})
+                    mode = params.get("_mode", "?")
                     if opt_rules:
+                        # position_target 模式下 action_amount="position_target" 无法
+                        # 被 RuleEngine 求值，需转换为 cash*frac 表达式
+                        if mode == "position_target":
+                            for r in opt_rules:
+                                rid = r.get("id", "")
+                                idx = rid.split("_")[-1] if "_" in rid else "1"
+                                if r.get("type") == "buy" and r.get("action_amount") == "position_target":
+                                    frac = params.get(f"buy_{idx}_frac", 0.1)
+                                    r["action_amount"] = f"cash * {frac}"
+                                elif r.get("type") == "sell" and r.get("action_fraction", 0.25) == 0.0:
+                                    frac = params.get(f"sell_{idx}_frac", 0.25)
+                                    r["action_fraction"] = frac
+                                    r["action_min"] = 2500.0
+                                    r["action_max"] = 10000.0
                         custom_rules = [Rule.from_dict(r) for r in opt_rules]
-                        mode = top.get("params", {}).get("_mode", "?")
                         logger.info(
                             "每日报告使用优化器策略 (mode=%s, rules=%d 条)",
                             mode, len(custom_rules),

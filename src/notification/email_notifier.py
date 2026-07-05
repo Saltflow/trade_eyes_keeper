@@ -532,11 +532,9 @@ class EmailNotifier(BaseNotifier):
             if portfolio_results:
                 try:
                     from src.analysis.portfolio_strategy import generate_portfolio_chart
-                    bw = self.config.get("portfolio_strategy", {}).get(
-                        "bollinger_window", 90
-                    )
                     portfolio_chart_dict = generate_portfolio_chart(
-                        portfolio_results, bollinger_window=bw
+                        portfolio_results,
+                        benchmark_data=historical_data,
                     )
                     n_charts = len(portfolio_chart_dict) if portfolio_chart_dict else 0
                     logger.info(f"投资组合图表生成: {n_charts}张" if n_charts else "投资组合图表跳过")
@@ -625,11 +623,9 @@ class EmailNotifier(BaseNotifier):
             if portfolio_results:
                 try:
                     from src.analysis.portfolio_strategy import generate_portfolio_chart
-                    bw = self.config.get("portfolio_strategy", {}).get(
-                        "bollinger_window", 90
-                    )
                     portfolio_chart_dict = generate_portfolio_chart(
-                        portfolio_results, bollinger_window=bw
+                        portfolio_results,
+                        benchmark_data=historical_data,
                     )
                 except Exception as e:
                     logger.error(f"投资组合图表生成失败: {e}")

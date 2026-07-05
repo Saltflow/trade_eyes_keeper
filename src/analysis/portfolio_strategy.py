@@ -1212,15 +1212,17 @@ class PortfolioOptimizer:
 def generate_portfolio_chart(
     portfolio_results: dict,
     bollinger_window: int = 90,
+    benchmark_data: dict[str, pd.DataFrame] | None = None,
 ) -> dict[str, bytes] | None:
     """
     生成投资组合NAV走势图（每组一张独立PNG）
 
-    只画 Top1 搜参策略 (max_return) 的净值曲线，不画布林带。
+    画 Top1 搜参策略 (max_return) 的净值曲线 + 基准 ETF 曲线。
 
     Args:
         portfolio_results: PortfolioOptimizer.run() 返回的字典
         bollinger_window: 已弃用，保留签名向后兼容
+        benchmark_data: {stock_code: DataFrame} 基准价格数据，需含 date/close 列
     """
 
     import matplotlib
@@ -1267,6 +1269,35 @@ def generate_portfolio_chart(
         # 单条净值曲线
         ax.plot(dt_arr, nav_arr, color="#2e7d32", linewidth=2.0,
                 alpha=0.85, label="Top1 策略", zorder=5)
+
+        # 基准 ETF 曲线
+        benchmark_map = {
+            "a_share": ["510300", "510880"],
+            "non_a_share": ["VOO", "BRK.B"],
+        }
+        bench_colors = ["#888888", "#aaaaaa"]
+        bench_styles = ["--", ":"]
+        for bi, bcode in enumerate(benchmark_map.get(group_key, [])):
+            if not benchmark_data or bcode not in benchmark_data:
+                continue
+            bdf = benchmark_data[bcode]
+            if bdf is None or len(bdf) < 20:
+                continue
+            bdf = bdf.copy()
+            bdf["date"] = pd.to_datetime(bdf["date"])
+            bdf = bdf.sort_values("date").reset_index(drop=True)
+            # 对齐到策略日期范围
+            mask = (bdf["date"] >= dt_arr[0]) & (bdf["date"] <= dt_arr[-1])
+            bdf = bdf[mask]
+            if len(bdf) < 2:
+                continue
+            b_close = bdf["close"].to_numpy()
+            b_base = b_close[0] if b_close[0] > 0 else 1.0
+            b_norm = b_close / b_base * 100
+            b_dates = bdf["date"].to_numpy()
+            ax.plot(b_dates, b_norm, color=bench_colors[bi],
+                    linewidth=1.2, alpha=0.6, linestyle=bench_styles[bi],
+                    label=bcode, zorder=3)
 
         # X轴
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
