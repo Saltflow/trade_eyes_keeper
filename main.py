@@ -235,6 +235,7 @@ def run_daily_task(force: bool = False):
                         df = StockDataFetcher(config).data_source.fetch_stock_data(bc, days=120)
                         if df is not None and not df.empty:
                             bench_data[bc] = df
+                            historical[bc] = df
                             logger.info(f"已单独获取基准 ETF {bc} 数据 ({len(df)} 行)")
                     except Exception:
                         logger.warning(f"无法获取基准 ETF {bc} 数据")
