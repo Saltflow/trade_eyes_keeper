@@ -995,6 +995,7 @@ class StrategyOptimizer:
                         "type": r.type,
                         "priority": r.priority,
                         "condition": r.condition,
+                        "budget_pool": r.budget_pool,
                         "action_amount": r.action_amount,
                         "action_fraction": r.action_fraction,
                         "reset_when": r.reset_when,

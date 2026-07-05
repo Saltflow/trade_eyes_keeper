@@ -659,7 +659,8 @@ class StrategyOptimizerV2:
                 "rules": [
                     {
                         "id": r.id, "type": r.type, "priority": r.priority,
-                        "condition": r.condition, "action_amount": r.action_amount,
+                        "condition": r.condition, "budget_pool": r.budget_pool,
+                        "action_amount": r.action_amount,
                         "action_fraction": r.action_fraction,
                         "reset_when": r.reset_when,
                     }

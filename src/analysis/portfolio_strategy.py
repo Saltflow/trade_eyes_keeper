@@ -1216,13 +1216,11 @@ def generate_portfolio_chart(
     """
     生成投资组合NAV走势图（每组一张独立PNG）
 
-    - A股：3条投资组合净值曲线 + 布林带
-    - 非A股：3条曲线 + 布林带
-    - 每条曲线上叠加布林带（SMA ± 2×标准差，半透明填充）
+    只画 Top1 搜参策略 (max_return) 的净值曲线，不画布林带。
 
     Args:
         portfolio_results: PortfolioOptimizer.run() 返回的字典
-        bollinger_window: 布林带窗口天数，默认 90
+        bollinger_window: 已弃用，保留签名向后兼容
     """
 
     import matplotlib
@@ -1236,97 +1234,39 @@ def generate_portfolio_chart(
     from ..utils.font_setup import setup_cjk_font
     setup_cjk_font()
 
-    # ── 图表配置 ──
-    metric_labels = {
-        "max_return": "最高收益",
-        "min_drawdown": "最小回撤",
-        "max_sharpe": "最优夏普",
-    }
-    metric_colors = {
-        "max_return": "#2e7d32",
-        "min_drawdown": "#1565c0",
-        "max_sharpe": "#e65100",
-    }
     group_labels = {"a_share": "A股投资组合", "non_a_share": "非A股投资组合"}
     output: dict[str, bytes] = {}
 
     for group_key in ("a_share", "non_a_share"):
         gd = portfolio_results.get(group_key, {})
-        if not gd:
+        result = gd.get("max_return")
+        if not result or not result.nav_series or len(result.nav_series) < 20:
             continue
 
-        # 收集该组所有指标数据
-        subplots_data = {}
-        for metric_key in ("max_return", "min_drawdown", "max_sharpe"):
-            result = gd.get(metric_key)
-            if result and result.nav_series and len(result.nav_series) >= 20:
-                subplots_data[metric_key] = (result.nav_series, result.nav_dates)
+        navs = result.nav_series
+        dates = result.nav_dates
 
-        if not subplots_data:
-            continue
-
-        # ── 为该组创建独立画布 ──
+        # ── 创建画布 ──
         fig, ax = plt.subplots(figsize=(14, 5))
-        title = f"{group_labels.get(group_key, group_key)} — 净值走势与布林带（近2年）"
+        title = f"{group_labels.get(group_key, group_key)} — Top1 搜参策略净值走势（近2年）"
         ax.set_title(title, fontsize=14, fontweight="bold")
         ax.set_ylabel("组合净值 (基准100)", fontsize=11)
         ax.grid(True, alpha=0.25, linestyle="--")
 
-        for metric_key in ("max_return", "min_drawdown", "max_sharpe"):
-            if metric_key not in subplots_data:
-                continue
-            navs, dates = subplots_data[metric_key]
-            color = metric_colors[metric_key]
-            label = metric_labels[metric_key]
+        nav_arr = np.array(navs)
+        # 归一化到起点100
+        base = nav_arr[0] if nav_arr[0] > 0 else 1.0
+        nav_arr = nav_arr / base * 100
 
-            nav_arr = np.array(navs)
-            # 归一化到起点100
-            base = nav_arr[0] if nav_arr[0] > 0 else 1.0
-            nav_arr = nav_arr / base * 100
+        try:
+            dt_arr = pd.to_datetime(dates)
+        except Exception as e:
+            logger.debug(f"图表日期转换失败: {e} (dates={len(dates)}条)")
+            dt_arr = pd.date_range(end=pd.Timestamp.now(), periods=len(navs), freq="B")
 
-            # 判断曲线波动幅度
-            data_range = nav_arr.max() - nav_arr.min()
-            if data_range < 2.0:
-                # 几乎平的线 → 虚线 + 图例注明"(近似水平)"
-                linestyle = "--"
-                label_with_note = f"{label} (≈水平, 波动<2%)"
-                alpha = 0.55
-            else:
-                linestyle = "-"
-                label_with_note = label
-                alpha = 0.85
-            try:
-                dt_arr = pd.to_datetime(dates)
-            except Exception as e:
-                logger.debug(f"图表日期转换失败: {e} (dates={len(dates)}条)")
-                dt_arr = pd.date_range(end=pd.Timestamp.now(), periods=len(navs), freq="B")
-
-            # 主曲线（zorder=5 确保画在最上层）
-            ax.plot(dt_arr, nav_arr, color=color, linewidth=2.0,
-                    alpha=alpha, linestyle=linestyle, label=label_with_note,
-                    zorder=5)
-
-            # 布林带 — 填充 + 上下界（平线不画带）
-            if len(nav_arr) >= bollinger_window and data_range >= 2.0:
-                window = bollinger_window
-                sma = pd.Series(nav_arr).rolling(window=window, min_periods=1).mean()
-                std = pd.Series(nav_arr).rolling(window=window, min_periods=1).std()
-                upper = sma + 2 * std
-                lower = sma - 2 * std
-                upper = upper.bfill().values
-                lower = lower.bfill().values
-
-                # 填充区 zorder=1（最底层）
-                ax.fill_between(dt_arr, lower, upper,
-                                alpha=0.10, color=color, linewidth=0,
-                                zorder=1)
-                # 上下边界线 zorder=2
-                ax.plot(dt_arr, upper, color=color,
-                        linewidth=0.6, alpha=0.25, linestyle="--",
-                        zorder=2)
-                ax.plot(dt_arr, lower, color=color,
-                        linewidth=0.6, alpha=0.25, linestyle="--",
-                        zorder=2)
+        # 单条净值曲线
+        ax.plot(dt_arr, nav_arr, color="#2e7d32", linewidth=2.0,
+                alpha=0.85, label="Top1 策略", zorder=5)
 
         # X轴
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
@@ -1334,12 +1274,10 @@ def generate_portfolio_chart(
         ax.tick_params(axis="x", labelsize=9, rotation=30)
         ax.tick_params(axis="y", labelsize=9)
 
-        # 强制 Y 轴贴合数据范围（避免平线被超大 margin 吃没）
         ax.relim()
         ax.autoscale_view(scalex=False, scaley=True)
 
-        # Legend
-        ax.legend(loc="upper left", fontsize=10, framealpha=0.85, edgecolor="#ccc", ncol=3)
+        ax.legend(loc="upper left", fontsize=10, framealpha=0.85, edgecolor="#ccc")
 
         fig.tight_layout(rect=[0, 0, 1, 0.93])
 

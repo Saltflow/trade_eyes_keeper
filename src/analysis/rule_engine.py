@@ -128,9 +128,10 @@ class Rule(BaseModel):
         """
         从字典构造 Rule（用于 YAML 反序列化）。
 
-        必须字段: id, type, condition, budget_pool
+        必须字段: id, type, condition
+        可选字段: budget_pool (默认=type), priority, reset_when, ...
         """
-        required = ["id", "type", "condition", "budget_pool"]
+        required = ["id", "type", "condition"]
         for key in required:
             if key not in d:
                 raise ValueError(f"Rule 缺少必须字段: {key}")
@@ -145,7 +146,7 @@ class Rule(BaseModel):
             type=rule_type,
             priority=d.get("priority", 0),
             condition=d["condition"],
-            budget_pool=d["budget_pool"],
+            budget_pool=d.get("budget_pool", rule_type),
             reset_when=d.get("reset_when"),
         )
 
