@@ -111,7 +111,7 @@ class FeishuNotifier(BaseNotifier):
         stock_data = session.get_all_dataframe()
         today = datetime.now()
 
-        from ..notification.email_notifier import build_brief_entries, build_strategy_suggestions
+        from ..notification.email_notifier import build_brief_entries
 
         entries = build_brief_entries(stock_data, today)
         title = f"{label} - {today.strftime('%Y-%m-%d')}"
@@ -120,22 +120,25 @@ class FeishuNotifier(BaseNotifier):
         # 摘要行
         summary = f"**{label}** | {today.strftime('%H:%M')} | 活跃: {active_count}"
 
-        # 策略建议
-        sug = build_strategy_suggestions(stock_data, today)
+        # 策略信号（直接用 SignalScanner 结果，和日报一致）
+        signal_scan = getattr(session, "signal_scan", None)
 
         # 组装卡片 elements
         extra = []
         table = _build_brief_table_element(entries)
         if table:
             extra.append(table)
-        if sug and sug.get("active_count", 0) > 0:
+        if signal_scan and signal_scan.alerts:
+            alert_lines = []
+            for a in signal_scan.alerts[:8]:
+                code = getattr(a, "stock_code", "?")
+                label_a = getattr(a, "rule_label", "?")
+                alert_lines.append(f"  {code} {label_a}")
             extra.append({
                 "tag": "markdown",
-                "content": f"**策略建议** ({sug['strategy_label']}) | 活跃: {sug['active_count']}/{sug['total_count']}",
+                "content": f"**策略信号** ({len(signal_scan.alerts)} 条)\n"
+                           + "\n".join(alert_lines),
             })
-            st = _build_brief_strategy_table(sug)
-            if st:
-                extra.append(st)
 
         card = _build_interactive_card(title, summary, extra_elements=extra if extra else None)
         payload = {"msg_type": "interactive", "card": card}

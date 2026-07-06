@@ -910,11 +910,7 @@ class EmailNotifier(BaseNotifier):
                          'border-radius:6px;padding:12px;margin:10px 0">')
             lines.append(
                 '<p style="margin:0;font-weight:600;color:#1565c0">'
-                f'Top1 策略 · '
-                f'测试收益 {top_strategy.get("test_return", 0):+.1f}% '
-                f'| 回撤 {top_strategy.get("test_drawdown", 0):.1f}% '
-                f'| 夏普 {top_strategy.get("sharpe", 0):.2f} '
-                f'| {top_strategy.get("trade_count", 0)}笔</p>'
+                f'Top1 策略 ({mode} 模式)</p>'
             )
             if buy_rules:
                 lines.append('<p style="margin:6px 0 2px"><b>买入:</b> '
@@ -2192,26 +2188,29 @@ class EmailNotifier(BaseNotifier):
         # ── 构建每只股票的行 ──
         rows_data = build_brief_entries(stock_data, today)
 
-        # ── 策略建议 ──
-        suggestions = build_strategy_suggestions(stock_data, today)
+        # ── 策略信号（直接用 SignalScanner 结果，和日报一致）──
+        signal_scan = getattr(session, "signal_scan", None)
         strat_html = ""
-        if suggestions:
-            s = suggestions
-            if s["active_count"] > 0:
-                strat_html = (
-                    "<h3>策略建议</h3>"
-                    f"<p>最新策略: <b>{s['strategy_label']}</b> | "
-                    f"活跃信号: {s['active_count']}/{s['total_count']}</p>"
-                    "<table><tr><th>代码</th><th>名称</th><th>现价</th><th>触发信号</th></tr>"
-                    f"{s['html_rows']}"
-                    "</table><br>"
+        if signal_scan and signal_scan.alerts:
+            alerts = signal_scan.alerts
+            strat_html = (
+                "<h3>策略信号</h3>"
+                f"<p>共 {len(alerts)} 条策略告警</p>"
+                "<table><tr><th>代码</th><th>规则</th><th>条件</th><th>当前值</th><th>排名</th></tr>"
+            )
+            for a in alerts[:12]:
+                code = getattr(a, "stock_code", "?")
+                label = getattr(a, "rule_label", "?")
+                cond = getattr(a, "condition_str", "?")
+                cv = getattr(a, "current_value", "-")
+                rank = getattr(a, "strategy_rank", "?")
+                strat_html += (
+                    f"<tr><td>{code}</td><td>{label}</td>"
+                    f"<td>{cond}</td><td>{cv}</td><td>{rank}</td></tr>"
                 )
-            else:
-                strat_html = (
-                    "<h3>策略建议</h3>"
-                    f"<p>最新策略: <b>{s['strategy_label']}</b> | "
-                    f"当前无活跃信号 ({s['total_count']} 只标的均未触发买入条件)</p><br>"
-                )
+            strat_html += "</table><br>"
+        elif signal_scan:
+            strat_html = "<h3>策略信号</h3><p>当前无活跃信号</p><br>"
 
         # ── 渲染 HTML ──
         html_rows = []

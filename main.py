@@ -376,6 +376,21 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
 
         logger.info(f"简报：获取到 {len(session.stocks_data)} 只股票数据")
 
+        # 策略信号扫描（和日报同一套 SignalScanner，保证信号一致）
+        try:
+            from src.analysis.signal_scanner import SignalScanner
+            scanner = SignalScanner()
+            scan_result = scanner.scan(session, "a_share", top_n=5)
+            nona_result = scanner.scan(session, "non_a_share", top_n=5)
+            merged_snapshot = dict(scan_result.indicator_snapshot or {})
+            merged_snapshot.update(nona_result.indicator_snapshot or {})
+            scan_result.indicator_snapshot = merged_snapshot
+            scan_result.alerts = list(scan_result.alerts) + list(nona_result.alerts)
+            session.signal_scan = scan_result
+            logger.info(f"简报策略信号扫描完成: {len(scan_result.alerts)} 个策略告警")
+        except Exception as e:
+            logger.warning(f"简报策略信号扫描失败 (非致命): {e}")
+
         # 休市检测：数据指纹比较（仅定时，按简报类型区分文件）
         if not force:
             from src.utils.market_status import is_market_closed, mark_pushed

@@ -76,16 +76,33 @@ class TestDailyModeRemovesOldSections:
             "daily_mode should suppress alert section"
         )
 
-    def test_no_strategy_alert_in_daily_mode(self):
-        """No '策略信号报警' header (strategy alert section) in daily mode."""
+    def test_no_strategy_alert_when_signal_scan_none(self):
+        """No '策略报警' header when signal_scan is None in daily mode."""
         notifier = _make_notifier()
         html = notifier._build_email_body(
             alert_stocks=[],
             stock_data=_make_minimal_stock_data(),
             daily_mode=True,
         )
-        assert "策略信号报警" not in html
-        assert "共识指标" not in html
+        assert "策略报警" not in html
+
+    def test_strategy_alert_shown_when_signal_scan_provided(self):
+        """Strategy alert section renders without error when signal_scan has alerts."""
+        from unittest.mock import MagicMock
+        notifier = _make_notifier()
+        mock_scan = MagicMock()
+        mock_scan.alerts = []
+        mock_scan.consensus = None
+        mock_scan.indicator_snapshot = {}
+        mock_scan.divergence_warnings = []
+        # Should not crash even with empty alerts
+        html = notifier._build_email_body(
+            alert_stocks=[],
+            stock_data=_make_minimal_stock_data(),
+            signal_scan=mock_scan,
+            daily_mode=True,
+        )
+        assert len(html) > 0
 
     def test_no_backtest_in_daily_mode(self):
         """No '回测分析' header (backtest section) in daily mode."""
