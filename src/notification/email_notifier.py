@@ -906,6 +906,7 @@ class EmailNotifier(BaseNotifier):
                 "strategy_description",
                 top_strategy.get("_mode", "搜索最优"),
             )
+            mode = params.get("_mode", "?")
             lines.append('<div style="background:#f0f4ff;border:1px solid #c8d6ff;'
                          'border-radius:6px;padding:12px;margin:10px 0">')
             lines.append(
