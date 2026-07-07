@@ -320,6 +320,57 @@ def build_strategy_suggestions(stock_data, today=None) -> dict | None:
     }
 
 
+SIGNAL_NAMES = {
+    "deviation_cross": "偏离穿越",
+    "deviation_absolute": "偏离达标",
+    "rsi_signal": "RSI超卖",
+    "bollinger_signal": "布林低位",
+    "volume_spike": "放量异动",
+    "trend_follow": "趋势跟踪",
+    "deep_value": "深度价值",
+    "absolute_discount": "绝对折价",
+    "sell_deviation_cross": "偏离穿越(卖)",
+    "sell_deviation_absolute": "偏离达标(卖)",
+    "sell_rsi_signal": "RSI超买",
+    "sell_bollinger_signal": "布林高位",
+    "sell_trend_follow": "趋势反转",
+    "sell_overextended": "超涨卖出",
+    "none": "无",
+}
+
+
+def _build_signal_label_map() -> dict[str, str]:
+    """读最新优化器 YAML，返回 {buy_1: 偏离穿越, buy_2: RSI超卖, ...}"""
+    try:
+        import yaml
+        opt_dir = Path("data/optimizer")
+        yaml_files = sorted(
+            opt_dir.glob("*_a_share_strategies.yaml"),
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
+        if not yaml_files:
+            return {}
+        with open(yaml_files[0], "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        strategies = data.get("strategies", [])
+        if not strategies:
+            return {}
+        params = strategies[0].get("params", {})
+        label_map: dict[str, str] = {}
+        for k, v in params.items():
+            if not k.endswith("_signal"):
+                continue
+            idx = k.split("_")[1]  # "buy_1_signal" → "1"
+            rule_id = (
+                f"buy_{idx}" if k.startswith("buy")
+                else f"sell_{idx}"
+            )
+            label_map[rule_id] = SIGNAL_NAMES.get(v, v)
+        return label_map
+    except Exception:
+        return {}
+
+
 def build_optimizer_summary(report, group_name: str = "") -> str:
     """将 OptimizationReport 格式化为人话摘要。"""
     lines = ["<b>策略优化完成</b>"]
@@ -949,18 +1000,20 @@ class EmailNotifier(BaseNotifier):
                 '<tr style="background:#2c3e50;color:#fff">'
                 '<th>标的</th><th>规则</th><th>当前值</th></tr>'
             )
+            signal_map = _build_signal_label_map()
             for a in alerts[:12]:
                 code = getattr(a, "stock_code", None) or (
                     a.get("stock_code", "?") if isinstance(a, dict) else "?"
                 )
-                label = getattr(a, "rule_label", None) or (
+                raw = getattr(a, "rule_label", None) or (
                     a.get("rule_label", "?") if isinstance(a, dict) else "?"
                 )
+                readable = signal_map.get(raw, raw)
                 cv = getattr(a, "current_value", None) or (
                     a.get("current_value", "-") if isinstance(a, dict) else "-"
                 )
                 lines.append(
-                    f'<tr><td>{code}</td><td>{label}</td><td>{cv}</td></tr>'
+                    f'<tr><td>{code}</td><td>{readable}</td><td>{cv}</td></tr>'
                 )
             lines.append("</table></div>")
         else:
@@ -2236,20 +2289,19 @@ class EmailNotifier(BaseNotifier):
         strat_html = ""
         if signal_scan and signal_scan.alerts:
             alerts = signal_scan.alerts
+            signal_map = _build_signal_label_map()
             strat_html = (
                 "<h3>策略信号</h3>"
                 f"<p>共 {len(alerts)} 条策略告警</p>"
-                "<table><tr><th>代码</th><th>规则</th><th>条件</th><th>当前值</th><th>排名</th></tr>"
+                "<table><tr><th>代码</th><th>信号</th><th>当前值</th></tr>"
             )
             for a in alerts[:12]:
                 code = getattr(a, "stock_code", "?")
-                label = getattr(a, "rule_label", "?")
-                cond = getattr(a, "condition_str", "?")
+                raw = getattr(a, "rule_label", "?")
+                readable = signal_map.get(raw, raw)
                 cv = getattr(a, "current_value", "-")
-                rank = getattr(a, "strategy_rank", "?")
                 strat_html += (
-                    f"<tr><td>{code}</td><td>{label}</td>"
-                    f"<td>{cond}</td><td>{cv}</td><td>{rank}</td></tr>"
+                    f"<tr><td>{code}</td><td>{readable}</td><td>{cv}</td></tr>"
                 )
             strat_html += "</table><br>"
         elif signal_scan:

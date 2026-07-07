@@ -129,11 +129,14 @@ class FeishuNotifier(BaseNotifier):
         if table:
             extra.append(table)
         if signal_scan and signal_scan.alerts:
+            from ..notification.email_notifier import _build_signal_label_map
+            signal_map = _build_signal_label_map()
             alert_lines = []
             for a in signal_scan.alerts[:8]:
                 code = getattr(a, "stock_code", "?")
-                label_a = getattr(a, "rule_label", "?")
-                alert_lines.append(f"  {code} {label_a}")
+                raw = getattr(a, "rule_label", "?")
+                readable = signal_map.get(raw, raw)
+                alert_lines.append(f"  {code} {readable}")
             extra.append({
                 "tag": "markdown",
                 "content": f"**策略信号** ({len(signal_scan.alerts)} 条)\n"
