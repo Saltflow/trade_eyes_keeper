@@ -1,7 +1,7 @@
 # 股票量化系统 - 关键设计决策文档
 
-**文档版本**: v1.17.1
-**最后更新**: 2026-06-04
+**文档版本**: v1.18
+**最后更新**: 2026-07-07
 **压缩目标**: ~800行，保留关键设计决策
 
 ---
@@ -125,129 +125,139 @@
 
 ---
 
-## 🎯 策略搜索优化器 (v1.14 → v1.17)
+## 🎯 策略搜索优化器 (v1.18 — 权威设计)
 
-### V2 优化器 (v1.17-beta, 2026-06-03)
+> **本节为搜参的唯一权威描述。V1 贝叶斯优化器已弃用，仅保留在 `--optimize-v1` 供历史对照。生产链路（日报/简报/日常搜参）一律以 V2 为准。**
 
-**设计哲学**:
-1. 模糊的正确好过精确的错误 — 不用贝叶斯精确拟合历史噪音
-2. 永远正确的判断是废话 — 单维度信号（如纯量比）不区分方向，无信息增量
-3. 好的机会不稍纵即逝 — 状态型信号替代穿越型，给足够判断时间
+### 设计三原则
 
-**V1 vs V2 架构对比**:
+1. **模糊的正确好过精确的错误** — 不用贝叶斯精确拟合历史噪音，用离散网格+遗传搜索
+2. **多窗口验证防过拟合** — 单窗口 = 抽奖；14 窗口滑动验证，测试集排名，看跨窗口一致性
+3. **约束下最高收益** — 不是无脑追收益，先过硬约束（回撤/仓位/交易密度/一致性），再在合格池里挑最高收益
 
-| 维度 | V1 (贝叶斯) | V2 (遗传搜索 + Walk-Forward) |
-|------|------------|-------------------------------|
-| 搜索方式 | 贝叶斯连续优化 | 离散网格 + 遗传算法 |
-| 评估方式 | 单测试期排名 | Walk-Forward 6窗口评分 |
-| 回测引擎 | PortfolioEvaluator 逐日Python | FastEvaluator numpy+numba 向量化 |
-| 规则模板 | 2买3卖, 独立OR | 5买0卖, 离散选择 |
-| 约束 | 仅回撤软惩罚 | 硬约束过滤：仓位/回撤/交易密度/一致性 |
-| 性能 | 150次 × 2.9s = 7min | 25000次 × 10ms = 4min |
-| 速度提升 | — | **约 290x** |
+### 核心流程 (`strategy_optimizer_v2.py`)
 
-**V2 新增文件**:
+```
+config/optimizer_constraints.yaml  →  StrategyOptimizerV2
+     约束/窗口/网格/基准                     │
+                                            ▼
+Phase 1 (粗筛): 30000 随机策略 → FastEvaluator 向量化评估 14 窗口 → 过滤硬约束 → Top 10000
+Phase 2 (遗传): 5000 种群 × 5 代 × 交叉/变异 → 25000 后代 → Top N
+Phase 3 (验证): 精确评估 → Top 10 → YAML + HTML
+```
+
+### 多窗口 Walk-Forward 设计（需求1：多窗口验证）
+
+**配置** (`optimizer_constraints.yaml` → `walk_forward`)：
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| `data_years` | 5 | 用近 5 年数据 |
+| `train_months` | 12 | 每窗口训练期 12 个月 |
+| `test_months` | 9 | 每窗口测试期 **≥9 个月** |
+| `step_months` | 3 | 窗口滑动步长 3 个月 |
+| `num_windows` | 14 | **14 个滑动窗口**（旧版仅 1 窗口） |
+
+```
+W1:  [Train 0-12 ][Test 12-21]
+W2:     [Train 3-15 ][Test 15-24]
+...滑动步长3月...
+W14:                          [Train 39-51][Test 51-60]
+```
+
+**评分公式**（测试集排名 + 一致性惩罚）：
+```
+wf_score = mean(14 窗口测试期超额收益) − stability_penalty × std(14 窗口测试期超额收益)
+         （stability_penalty = 0.5）
+```
+- **排名依据**：测试集（验证集）超额收益，不是训练集
+- **std 惩罚**：跨窗口收益波动大 → 扣分，防止单窗口运气
+
+### 收益评估：约束下最高收益（需求2）
+
+**硬约束**（`hard_constraints`，不满足直接丢弃）：
+
+| 约束 | 值 | 目的 |
+|------|-----|------|
+| `min_avg_position_pct` | 5% | 防止长期空仓躲回撤 |
+| `max_drawdown_pct` | -40% | 回撤上限 |
+| `max_return_std_pct` | 15% | 跨窗口一致性 |
+| `min_trades_per_month` | 1 | 不能太保守 |
+| `max_trades_per_month` | 100 | 不能过度交易 |
+
+**收益基准**（`benchmarks`，超额收益 = 策略收益 − 基准收益）：
+
+| 分组 | 基准 |
+|------|------|
+| A 股 | `510880`（红利ETF）、`510300`（沪深300）、`risk_free`(2%) |
+| 非 A 股 | `VOO`、`BRK.B`、`risk_free`(3.8%) |
+
+> **权威声明**：基准配置以 `config/optimizer_constraints.yaml` 的 `benchmarks` 段为准。多处代码若与此对不上，一律以该配置为准。基准数据由 `_load_benchmarks()` 加载，对齐到统一日期轴后计算超额收益。
+
+### 交易执行：仓位目标模型（position_target）
+
+搜参默认 `mode: position_target`（`discrete_search.mode`）：
+- 聚合买卖信号 → `bullish_score` ∈ [0,1]
+- sigmoid(`slope`, `bias`) → 目标仓位占 NAV 比例
+- 每日渐进调仓（`max_daily_adjust: 0.4`），朝目标收敛
+- 无月度上限，每标每日最多操盘 1 次
+
+### YAML 产出结构 (`data/optimizer/{id}_{group}_strategies.yaml`)
+
+每个策略保存：
+- `rank` / `test_return` / `test_drawdown` / `sharpe` / `trade_count`
+- `params`：`buy_N_signal/t`、`sell_N_signal/t`、`position_slope/bias`、`_mode`、`_stocks`（选股）、`_warnings`
+- `rules[]`：完整条件字符串（`condition` / `budget_pool` / `action_amount` / `reset_when`）
+- `benchmark_returns`：各基准超额收益
+
+### 日报/简报消费策略（需求3：不再重新搜参）
+
+> **权威声明**：日报和简报**直接读取 YAML 策略的预估收益（近 9 个月测试期）**，不再运行 `PortfolioOptimizer` 贪心搜索重新选股/评估。
+
+- **收益来源**：YAML `strategies[0].test_return`（Top1 策略的测试期超额收益）
+- **持仓来源**：YAML `strategies[0].quarterly_holdings` / `final_holdings`
+- **选股来源**：YAML `params._stocks`（优化器已选好，不再重选）
+- **信号扫描**：`SignalScanner` 读 `rules` 的完整条件字符串，评估当日是否触发（Top1 策略，与预估收益同源）
+
+**已弃用**：`main.py` 中每日重跑 `PortfolioOptimizer(config, custom_rules).run()` 贪心搜索的做法（每天重新选股导致结果剧烈波动、像抽奖）。日报改为直读 YAML 预估值。
+
+### V2 关键文件
 
 | 文件 | 职责 |
 |------|------|
-| `config/optimizer_constraints.yaml` | 可配置约束：仓位/回撤/交易密度/一致性 |
-| `src/analysis/optimizer_constraints.py` | 约束加载器 + WalkForward/Genetic/Discrete 配置模型 |
-| `src/analysis/walk_forward.py` | 数据切片 → 统一日期轴 → 6窗口矩阵 |
-| `src/analysis/fast_evaluator.py` | numba JIT 信号生成 + 组合模拟 + 指标计算 |
-| `src/analysis/genetic_searcher.py` | 三阶段：随机粗筛(10000) → 遗传3代 → 精确验证 |
-| `src/analysis/strategy_optimizer_v2.py` | V2 顶层入口，兼容 V1 OptimizationReport |
+| `config/optimizer_constraints.yaml` | 约束/窗口/网格/基准配置（唯一权威） |
+| `src/analysis/optimizer_constraints.py` | 约束加载 + 硬约束检查 |
+| `src/analysis/walk_forward.py` | 14 窗口切片 + 统一日期轴 + 基准对齐 |
+| `src/analysis/fast_evaluator.py` | numpy/numba 向量化评估 + position_target 仿真 |
+| `src/analysis/genetic_searcher.py` | 三阶段：随机粗筛 → 遗传 → 验证 |
+| `src/analysis/strategy_optimizer_v2.py` | V2 顶层入口，输出兼容 V1 的 OptimizationReport |
 
-**V2 三阶段搜索流程**:
-```
-Phase 1 (粗筛): 10000 随机策略 → 向量化评估6窗口 → 过滤约束 → Top 1000
-Phase 2 (遗传): 1000种 × 3代 × 交叉/变异 → 15000 新策略 → Top 100
-Phase 3 (验证): 精确 PortfolioEvaluator → Top 10 → YAML + HTML
-```
+### V1 优化器（已弃用，仅历史对照）
 
-**Walk-Forward 窗口设计**:
-```
-数据: 36个月 (3年)
-W1: [Train 0-12][Test 12-21]
-W2:    [Train 3-15][Test 15-24]
-W3:       [Train 6-18][Test 18-27]
-W4:          [Train 9-21][Test 21-30]
-W5:             [Train 12-24][Test 24-33]
-W6:                [Train 15-27][Test 27-36]
-评分 = mean(6窗口测试超额) - 0.5 × std(6窗口测试超额)
-```
+V1（贝叶斯 + 单 9 月窗口 + 观察/部署/延续/持仓 4 阶段）存在回看偏差、过拟合、只买不卖问题，已被 V2 多窗口验证取代。代码保留在 `strategy_optimizer.py`，入口 `--optimize-v1`。
 
-**约束系统** (`optimizer_constraints.yaml`):
-- **仓位下限**: 测试期平均持仓 ≥ 20%（防止空仓躲回撤）
-- **回撤上限**: 任意窗口最大回撤 ≤ -25%
-- **一致性**: 6窗口收益标准差 ≤ 15%（防止单窗口运气）
-- **交易密度**: 月交易 1-6 次（不能太保守也不能太频繁）
-- 全部硬性过滤，不满足直接丢弃
-
-### V1 优化器 (v1.14, 保留在 `--optimize`)
-
-### 架构
-
-```
-config/optimizer.yaml → StrategyOptimizer → PortfolioEvaluator
-        5条规则定义         贝叶斯优化(skopt)      24月模拟回测
-        6买+5卖构建器       13+N 维参数空间        BacktestConfig 约束
-              │
-        ┌─────┴──────┐
-    Phase A (训练)   Phase B (测试)
-    0-12月搜索        0-24月最终评估
-                     按12-24月外样本排名
-```
-
-### V1 回测时间线 (`BacktestConfig`)
-
-| 阶段 | 月 | 交易 | 资金注入 | 用途 |
-|------|-----|------|---------|------|
-| 观察 | 0-6 | 禁止 | 无 | 指标暖机 + pre-filter |
-| 部署 | 6-12 | 自由 | A/非A各+20k/月 | 训练目标 |
-| 延续 | 12-18 | 自由 | 无 | 外样本延续 |
-| 持仓 | 18-24 | 禁止 | 无 | 最终排名依据 |
-
-### V1 条件构建器池
-
-| 买入 | 卖出 | 描述 |
-|------|------|------|
-| deviation_cross | deviation_cross | MA60 偏离穿越 |
-| rsi_signal | rsi_signal | RSI 超卖/超买 |
-| bollinger_signal | bollinger_signal | 布林下轨/上轨 |
-| volume_spike | deviation_absolute | 放量异动 / MA 绝对偏离 |
-| deviation_absolute | trend_follow | MA 绝对偏离 / ADX 反转 |
-| trend_follow / none | none | ADX 趋势 / 规则禁用 |
-
-### V1 已知问题
-- 回看偏差：150个策略事后挑测试期最好的，类"开卷考试"
-- 过拟合：训练期-6.78%，测试期+18.25%，过度依赖回溯
-- OR 逻辑：buy_1 和 buy_2 独立触发，不放量也能买
-- 卖出无效：优化器频繁选出"只买不卖"
-
-### V1 超额收益
-
-真实收益 − 现金基准收益（A股 rf=2%, 非A rf=4.5%, 日复利 r_f/252）。消除注资虚胖，真实反映交易 Alpha。
-
-### V1 全量运行结果 (2026-04-29)
-
-- **A股 (18只, 150轮)**: Top-1 部署超额 -2.3%, 测试超额 +19.4%, 深跌抄底 + 永不卖出
-- **非A股 (8只, 80轮)**: Top-1 部署超额 -3.9%, 测试超额 +49.6%, 布林信号 + 只选中海油
-- 两个市场独立收敛到"买→持有→不卖"，主动禁用所有卖出规则
 
 ---
 
-## 📡 信号扫描器 + 日报集成 (v1.15)
+## 📡 信号扫描器 + 日报/简报集成 (v1.18)
 
-### 共识机制
+### 日报/简报 = 直读 YAML 预估收益（不重新搜参）
 
-加载最新优化结果 → 计算 Top-5 策略 → 对当日数据评估信号:
-- **纳入监控**: ≥2/5 策略在 Top-5 中出现的构建器
-- **纳入报警**: ≥3/5 策略在 Top-5 中出现的标的
-- 每日 `--once` 运行时自动加载，产出共识信号 + 指标快照
+> 见上文「日报/简报消费策略」。核心：日报和简报**直接展示 YAML Top1 策略的近 9 个月测试期预估收益**，不再每天重跑贪心搜索。
 
-### 回测嵌入
+- **预估收益/回撤/夏普**：`YAML strategies[0].test_return / test_drawdown / sharpe`
+- **季末持仓**：`YAML strategies[0].quarterly_holdings`
+- **选股**：`YAML params._stocks`（优化器已选好）
+- **搜参时间**：`YAML timestamp`；**回测周期**：近 9 个月测试期
 
-`run_backtest()` 用最新优化策略跑完整 24 月历史回测，3 阶段指标分拆，结果嵌入日报正文 + PDF。
+### 共识信号机制（今日信号扫描）
+
+`SignalScanner` 读最新优化 YAML → 计算 Top-5 策略 → 对当日数据评估信号：
+- **纳入监控**: ≥2/5 策略中出现的构建器
+- **纳入报警**: ≥3/5 策略中出现的标的（`consensus_stocks`，来源 `params._stocks`）
+- 读 `rules` 的完整条件字符串，用 `ExpressionEngine` 求值（含 `prev_deviation` 穿越判断）
+- 日报「今日信号」表 = Top1 策略（`strategy_rank==1`）当日触发的信号，与预估收益同源
+- 简报与日报共用同一份 `session.signal_scan`，信号永远一致
 
 ### HTML 交互报告
 
@@ -426,6 +436,7 @@ pytest tests/test_import_smoke.py         # 导入完整性
 | **v1.16** | **2026-05-03** | **xelatex PDF 日报 + 安全加固 + 开源准备** |
 | v1.17 | 2026-05-27 | 简报排序 + 收盘简报 14:30 + 日报 19:00 + debt_ratio 删除 + ROE PB/PE 推导 |
 | v1.17.1 | 2026-06-04 | QQ 实时行情 + Eastmoney 删除 + 数据源健康探针 + 优化器 P0 修复 + 布林带列名统一 |
+| **v1.18** | **2026-07-07** | **V2 多窗口(14窗)搜参权威化 + 日报/简报直读 YAML 预估收益(不再重搜) + 约束下最高收益 + 基准以 optimizer_constraints.yaml 为准** |
 
 ---
 
