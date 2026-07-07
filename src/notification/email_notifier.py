@@ -156,7 +156,8 @@ def build_strategy_suggestions(stock_data, today=None) -> dict | None:
     # 找最新 A 股优化结果
     opt_dir = Path("data/optimizer")
     yaml_files = sorted(
-        opt_dir.glob("*_a_share_strategies.yaml"),
+        [f for f in opt_dir.glob("*_a_share_strategies.yaml")
+         if "non_a_share" not in f.name],
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
@@ -345,7 +346,8 @@ def _build_signal_label_map() -> dict[str, str]:
         import yaml
         opt_dir = Path("data/optimizer")
         yaml_files = sorted(
-            opt_dir.glob("*_a_share_strategies.yaml"),
+            [f for f in opt_dir.glob("*_a_share_strategies.yaml")
+             if "non_a_share" not in f.name],
             key=lambda p: p.stat().st_mtime, reverse=True,
         )
         if not yaml_files:
@@ -366,8 +368,10 @@ def _build_signal_label_map() -> dict[str, str]:
                 else f"sell_{idx}"
             )
             label_map[rule_id] = SIGNAL_NAMES.get(v, v)
+        logger.debug(f"Signal label map: {label_map}")
         return label_map
-    except Exception:
+    except Exception as e:
+        logger.warning(f"读取信号标签映射失败: {e}")
         return {}
 
 
@@ -569,7 +573,8 @@ class EmailNotifier(BaseNotifier):
                 from pathlib import Path
                 opt_dir = Path("data/optimizer")
                 yaml_files = sorted(
-                    opt_dir.glob("*_a_share_strategies.yaml"),
+                    [f for f in opt_dir.glob("*_a_share_strategies.yaml")
+                     if "non_a_share" not in f.name],
                     key=lambda p: p.stat().st_mtime, reverse=True,
                 )
                 if yaml_files:
@@ -660,7 +665,8 @@ class EmailNotifier(BaseNotifier):
                 from pathlib import Path
                 opt_dir = Path("data/optimizer")
                 yaml_files = sorted(
-                    opt_dir.glob("*_a_share_strategies.yaml"),
+                    [f for f in opt_dir.glob("*_a_share_strategies.yaml")
+                     if "non_a_share" not in f.name],
                     key=lambda p: p.stat().st_mtime, reverse=True,
                 )
                 if yaml_files:
