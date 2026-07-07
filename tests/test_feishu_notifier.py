@@ -95,6 +95,7 @@ class TestFeishuContent:
         """简报数据 → _send 被调用且 body 非空（_send 内部将 body 包装为飞书交互卡片 JSON）"""
         session = Mock()
         session.get_all_dataframe.return_value = _make_brief_df()
+        session.signal_scan = None
         notifier = FeishuNotifier(
             {"notification": {"feishu": {"webhook_url": "https://hook/test", "msg_type": "interactive"}}}
         )
