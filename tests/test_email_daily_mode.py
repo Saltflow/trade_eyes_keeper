@@ -77,7 +77,7 @@ class TestDailyModeRemovesOldSections:
         )
 
     def test_no_strategy_alert_when_signal_scan_none(self):
-        """No '策略报警' header when signal_scan is None in daily mode."""
+        """No '策略报警' or '策略信号扫描' in daily mode (merged into strategy results)."""
         notifier = _make_notifier()
         html = notifier._build_email_body(
             alert_stocks=[],
@@ -85,24 +85,76 @@ class TestDailyModeRemovesOldSections:
             daily_mode=True,
         )
         assert "策略报警" not in html
+        assert "策略信号扫描" not in html
 
-    def test_strategy_alert_shown_when_signal_scan_provided(self):
-        """Strategy alert section renders without error when signal_scan has alerts."""
+    def test_today_signals_merged_into_strategy_results(self):
+        """Today's signals appear inside strategy_results_section, not as separate section."""
         from unittest.mock import MagicMock
+        from src.analysis.portfolio_strategy import PortfolioResult
         notifier = _make_notifier()
+
+        # Mock signal_scan with one alert
+        mock_alert = MagicMock()
+        mock_alert.stock_code = "601728"
+        mock_alert.rule_label = "偏离穿越"
+        mock_alert.current_value = "-9.1%"
+        mock_scan = MagicMock()
+        mock_scan.alerts = [mock_alert]
+        mock_scan.consensus = None
+        mock_scan.indicator_snapshot = {}
+        mock_scan.divergence_warnings = []
+
+        # Mock portfolio_results
+        pr = PortfolioResult(
+            name="max_return", group="a_share",
+            total_return=15.0, max_drawdown=-5.0, sharpe_ratio=0.8,
+            expected_position=50000, composition=["601728"], trade_count=10,
+        )
+        portfolio_results = {"a_share": {"max_return": pr}}
+
+        html = notifier._build_email_body(
+            alert_stocks=[],
+            stock_data=_make_minimal_stock_data(),
+            portfolio_results=portfolio_results,
+            signal_scan=mock_scan,
+            daily_mode=True,
+        )
+        # 今日信号 should be inside strategy_results_section
+        assert "今日信号" in html
+        assert "601728" in html
+        assert "偏离穿越" in html
+        # Separate strategy alert section should NOT appear
+        assert "策略报警" not in html
+        assert "策略信号扫描" not in html
+
+    def test_today_signals_shows_no_trigger_when_empty(self):
+        """When signal_scan has no alerts, show '今日信号: 无触发'."""
+        from unittest.mock import MagicMock
+        from src.analysis.portfolio_strategy import PortfolioResult
+        notifier = _make_notifier()
+
         mock_scan = MagicMock()
         mock_scan.alerts = []
         mock_scan.consensus = None
         mock_scan.indicator_snapshot = {}
         mock_scan.divergence_warnings = []
-        # Should not crash even with empty alerts
+
+        pr = PortfolioResult(
+            name="max_return", group="a_share",
+            total_return=15.0, max_drawdown=-5.0, sharpe_ratio=0.8,
+            expected_position=50000, composition=["601728"], trade_count=10,
+        )
+        portfolio_results = {"a_share": {"max_return": pr}}
+
         html = notifier._build_email_body(
             alert_stocks=[],
             stock_data=_make_minimal_stock_data(),
+            portfolio_results=portfolio_results,
             signal_scan=mock_scan,
             daily_mode=True,
         )
-        assert len(html) > 0
+        assert "今日信号" in html
+        assert "无触发" in html
 
     def test_no_backtest_in_daily_mode(self):
         """No '回测分析' header (backtest section) in daily mode."""

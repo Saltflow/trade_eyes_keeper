@@ -840,13 +840,14 @@ class EmailNotifier(BaseNotifier):
         return html
 
     def _build_strategy_results_section(
-        self, portfolio_results, opt_data=None,
+        self, portfolio_results, opt_data=None, signal_scan=None,
     ) -> str:
-        """构建搜参策略结果段（策略规则 + 回测指标 + 季末持仓）。
+        """构建搜参策略结果段（策略规则 + 今日信号 + 回测指标 + 季末持仓）。
 
         Args:
             portfolio_results: PortfolioOptimizer.run() 返回值
             opt_data: 优化器 YAML 数据 (含 params/rules)
+            signal_scan: SignalScanner.scan() 结果 (今日触发的策略信号)
         """
         if not portfolio_results:
             return ""
@@ -924,6 +925,47 @@ class EmailNotifier(BaseNotifier):
             lines.append(
                 '<p style="color:#888;margin:10px 0">'
                 '（未找到优化器策略，使用 confg 默认均线规则）</p>'
+            )
+
+        # 今日信号（从 SignalScanner 结果取，和日报/简报同一套数据）
+        alerts = getattr(signal_scan, "alerts", None) or [] if signal_scan else []
+        if alerts:
+            lines.append(
+                '<div style="margin:10px 0;padding:10px;'
+                'border:1px solid #d4e6f1;border-radius:5px;background:#ebf5fb">'
+            )
+            signal_codes = set()
+            for a in alerts:
+                code = getattr(a, "stock_code", None) or (
+                    a.get("stock_code", "?") if isinstance(a, dict) else "?"
+                )
+                signal_codes.add(code)
+            lines.append(
+                f'<p style="margin:0 0 6px;font-weight:600;color:#1a5276">'
+                f'今日信号 ({len(alerts)} 条 / {len(signal_codes)} 只标的)</p>'
+            )
+            lines.append(
+                '<table style="font-size:12px;border-collapse:collapse;width:100%">'
+                '<tr style="background:#2c3e50;color:#fff">'
+                '<th>标的</th><th>规则</th><th>当前值</th></tr>'
+            )
+            for a in alerts[:12]:
+                code = getattr(a, "stock_code", None) or (
+                    a.get("stock_code", "?") if isinstance(a, dict) else "?"
+                )
+                label = getattr(a, "rule_label", None) or (
+                    a.get("rule_label", "?") if isinstance(a, dict) else "?"
+                )
+                cv = getattr(a, "current_value", None) or (
+                    a.get("current_value", "-") if isinstance(a, dict) else "-"
+                )
+                lines.append(
+                    f'<tr><td>{code}</td><td>{label}</td><td>{cv}</td></tr>'
+                )
+            lines.append("</table></div>")
+        else:
+            lines.append(
+                '<p style="color:#888;margin:8px 0">今日信号: 无触发</p>'
             )
 
         # 组合结果 (PortfolioEvaluator 实盘评估) — 只展示 Top1 (max_return)
@@ -1634,11 +1676,11 @@ class EmailNotifier(BaseNotifier):
              <p><em>注：公告信息仅供参考，请以交易所官方公告为准。</em></p>
             """
 
-        # 6b. 构建搜参策略结果段
+        # 6b. 构建搜参策略结果段（含今日信号）
         strategy_results_section = ""
         if portfolio_results:
             strategy_results_section = self._build_strategy_results_section(
-                portfolio_results, opt_data,
+                portfolio_results, opt_data, signal_scan=signal_scan,
             )
 
         # 6c. 构建投资组合策略分析部分（旧版，日报模式跳过避免与搜参段重复）
@@ -1677,9 +1719,9 @@ class EmailNotifier(BaseNotifier):
             </div>
             """
 
-        # 7b. 策略信号报警（基于搜参策略，日报模式也显示）
+        # 7b. 策略信号报警 — 日报模式已合并到搜参策略结果段，不单独渲染
         strategy_alert_section = ""
-        if signal_scan:
+        if signal_scan and not daily_mode:
             strategy_alert_section = self._build_strategy_alert_section(
                 signal_scan, alert_stocks, stock_data
             )
