@@ -210,6 +210,58 @@ class TestDailyModeKeepsEssentialSections:
         )
         assert "基本面" in html or "股息率" in html or "ROE" in html
 
+    def test_top1_key_supported(self):
+        """run_fixed 返回 'top1' 键应被支持（不再依赖 max_return）。"""
+        from src.analysis.portfolio_strategy import PortfolioResult
+        notifier = _make_notifier()
+        pr = PortfolioResult(
+            name="top1", group="a_share",
+            total_return=15.0, max_drawdown=-5.0, sharpe_ratio=0.8,
+            expected_position=50000, composition=["601728"], trade_count=10,
+        )
+        portfolio_results = {"a_share": {"top1": pr}}
+        html = notifier._build_email_body(
+            alert_stocks=[],
+            stock_data=_make_minimal_stock_data(),
+            portfolio_results=portfolio_results,
+            daily_mode=True,
+        )
+        assert "搜参策略结果" in html
+        assert "A股组合" in html
+
+    def test_yaml_test_return_shown_as_authority(self):
+        """有 opt_data_map 时展示 YAML 测试期预估收益，而非评估 total_return。"""
+        from src.analysis.portfolio_strategy import PortfolioResult
+        notifier = _make_notifier()
+        pr = PortfolioResult(
+            name="top1", group="a_share",
+            total_return=99.9, max_drawdown=-5.0, sharpe_ratio=0.8,
+            expected_position=50000, composition=["601728"], trade_count=10,
+        )
+        portfolio_results = {"a_share": {"top1": pr}}
+        opt_data_map = {
+            "a_share": {
+                "timestamp": "2026-07-07T02:11:00",
+                "strategies": [{
+                    "test_return": 18.5, "test_drawdown": -8.0, "sharpe": 1.2,
+                    "params": {"_stocks": "601728", "_mode": "position_target"},
+                }],
+            },
+            "non_a_share": None,
+        }
+        html = notifier._build_email_body(
+            alert_stocks=[],
+            stock_data=_make_minimal_stock_data(),
+            portfolio_results=portfolio_results,
+            opt_data_map=opt_data_map,
+            daily_mode=True,
+        )
+        # 展示 YAML 权威预估收益 +18.5%，不是评估的 99.9%
+        assert "+18.5%" in html
+        assert "99.9%" not in html
+        assert "预估收益" in html
+        assert "平均现金仓位" in html or "搜参时间" in html
+
 
 class TestDailyModePriceTableSimplified:
     """daily_mode=True should remove MA60/deviation columns from price table."""

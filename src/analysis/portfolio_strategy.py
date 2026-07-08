@@ -1114,6 +1114,75 @@ class PortfolioOptimizer:
 
         return results
 
+    def run_fixed(self, stock_selection: dict[str, list[str]]) -> dict:
+        """按 YAML 指定的选股做确定性评估（不搜索，消除每日抽奖）。
+
+        日报/简报专用：直接对优化器搜出的 _stocks 选股跑一次 evaluate()，
+        产出 NAV 曲线 + 季末持仓。表现数字应以 YAML test_return 为准，
+        本方法产出的 total_return 仅供 NAV 图展示。
+
+        Args:
+            stock_selection: {"a_share": [codes], "non_a_share": [codes]}
+        Returns:
+            dict: {group: {"top1": PortfolioResult}}
+        """
+        stocks = self.config.get("stocks", [])
+        if not stocks:
+            logger.warning("配置中无股票")
+            return {}
+
+        ps_config = self.config.get("portfolio_strategy", {})
+        lookback_days = ps_config.get("lookback_days", 730)
+
+        custom_rules = self.custom_rules
+        if custom_rules is None:
+            config_rules = ps_config.get("rules", None)
+            if config_rules:
+                custom_rules = [Rule.from_dict(r) for r in config_rules]
+
+        # 拉取数据并分组
+        group_data_map: dict[str, dict[str, pd.DataFrame]] = {
+            "a_share": {}, "non_a_share": {},
+        }
+        config_codes = {str(c) for c in stocks}
+        # 并入 YAML 选股里可能不在 config 的标的
+        for codes in stock_selection.values():
+            config_codes.update(codes)
+
+        for code in config_codes:
+            code_str = str(code)
+            group = _detect_stock_group(code_str)
+            data = self.fetch_stock_data(code_str, lookback_days)
+            if data.empty or "close" not in data.columns:
+                continue
+            if len(data) < MIN_TRADING_DAYS:
+                logger.info(f"{code_str} 数据不足 {len(data)}<{MIN_TRADING_DAYS}，跳过")
+                continue
+            group_data_map[group][code_str] = data
+
+        results: dict = {}
+        for group_name in ("a_share", "non_a_share"):
+            group_data = group_data_map[group_name]
+            selected = [c for c in stock_selection.get(group_name, [])
+                        if c in group_data]
+            if not selected:
+                logger.info(f"{group_name} YAML 选股无可用数据，跳过")
+                results[group_name] = {}
+                continue
+
+            evaluator = PortfolioEvaluator(
+                group_data, group_name, rules=custom_rules
+            )
+            result = evaluator.evaluate(selected)
+            result.name = "top1"
+            results[group_name] = {"top1": result}
+            logger.info(
+                f"{group_name} 固定选股评估: {len(selected)}只 "
+                f"收益{result.total_return:.1f}% 回撤{result.max_drawdown:.1f}%"
+            )
+
+        return results
+
     def _greedy_search(
         self,
         candidates: list[str],

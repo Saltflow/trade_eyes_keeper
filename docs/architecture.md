@@ -30,10 +30,9 @@
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │  分析策略层 (src/analysis/)                                      │
-│  - strategy_optimizer_v2.py  遗传搜索 + 14窗口WalkForward验证  │
-│  - strategy_optimizer.py     贝叶斯优化(V1已弃用,--optimize-v1) │
-│  - signal_scanner.py         每日共识信号扫描 + 报警            │
-│  - portfolio_strategy.py     共享资金池模拟 + 贪心前向选择      │
+│  - strategy_optimizer_v2.py  Walk-Forward 14窗口 + 遗传搜索（02:00 cron）│
+│  - signal_scanner.py         每日共识信号扫描（读 YAML，不重搜参）      │
+│  - portfolio_strategy.py     共享资金池模拟 + PortfolioEvaluator        │
 │  - rule_engine.py             YAML 驱动规则引擎 + 表达式沙箱    │
 │  - indicator_library.py      RSI/MACD/ATR/布林/ADX/量比计算     │
 │  - backtest_config.py         回测时间线约束 (观察/部署/持仓)    │
@@ -74,12 +73,11 @@ main.py --once
         │      └── 公告/财报/股息数据填充
         ├── condition_checker.check_from_session() → session.alerts
         │      └── alert_engine / alert_processor
-        ├── signal_scanner.scan()                  → 共识信号 + 今日触发
-        │      ├── 加载最新优化 YAML (Top-5 策略)
-        │      ├── 读 rules 条件字符串评估当日信号 + 共识汇总
-        │      └── 与简报共用同一份 signal_scan
+        ├── signal_scanner.scan()                  → 共识信号（今日触发）
+        │      ├── 加载最新优化结果 (Top-5 策略, 02:00 cron 产出)
+        │      ├── 用 YAML rules 条件评估当日数据
+        │      └── 日报/简报直读 YAML 预估收益，不重新搜参
         └── email_notifier.send_from_session()
-               ├── 直读 YAML Top1 策略预估收益(近9月测试期,不重搜)
                ├── _generate_daily_pdf()
                │      ├── report_daily.tex 模板注入数据
                │      ├── xelatex 编译两次 (LaTeX 交叉引用)
@@ -102,8 +100,8 @@ main.py --once
 | `session_manager.py` | 维护 Session 生命周期、类型安全数据模型 | **不包含**业务规则 |
 | `condition_checker.py` | 基于 Session 数据判断警报条件 | **不修改** Session 中的原始数据 |
 | `email_notifier.py` | 构建并发送邮件、xelatex PDF 生成、图表生成 | **不抓取**外部数据 |
-| `signal_scanner.py` | 加载优化 YAML、计算共识信号、当日触发扫描 | **不修改**原始数据 |
-| `strategy_optimizer_v2.py` | 遗传搜索 + 14窗口WalkForward + 约束下最高收益 | **不直接**调用邮件 |
+| `signal_scanner.py` | 加载优化 YAML、用 rules 评估今日共识信号 | **不重新搜参**、**不修改**原始数据 |
+| `strategy_optimizer_v2.py` | Walk-Forward 14窗口搜参（02:00 cron）、写 YAML | **不直接**调用邮件、**日报不调用它** |
 | `cache_manager.py` | 读写本地缓存、过期清理、完整性校验 | **不发起**网络请求 |
 
 ---

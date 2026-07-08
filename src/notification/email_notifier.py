@@ -566,22 +566,12 @@ class EmailNotifier(BaseNotifier):
             # 获取投资组合策略结果
             portfolio_results = getattr(session, "portfolio_results", None)
 
-            # 读取最新优化器 YAML（搜参策略参数）
-            opt_data = None
-            try:
-                import yaml
-                from pathlib import Path
-                opt_dir = Path("data/optimizer")
-                yaml_files = sorted(
-                    [f for f in opt_dir.glob("*_a_share_strategies.yaml")
-                     if "non_a_share" not in f.name],
-                    key=lambda p: p.stat().st_mtime, reverse=True,
-                )
-                if yaml_files:
-                    with open(yaml_files[0], "r", encoding="utf-8") as f:
-                        opt_data = yaml.safe_load(f)
-            except Exception as e:
-                logger.debug(f"读取优化器 YAML 失败 (非致命): {e}")
+            # 优化器 YAML（main.py 已存入 session，A/非A 各一份）
+            opt_data = getattr(session, "opt_data_a", None)
+            opt_data_map = {
+                "a_share": getattr(session, "opt_data_a", None),
+                "non_a_share": getattr(session, "opt_data_non_a", None),
+            }
 
             # 生成投资组合走势图（两张: A股 / 非A股）
             portfolio_chart_dict = None
@@ -625,6 +615,7 @@ class EmailNotifier(BaseNotifier):
                 backtest=backtest,
                 opt_data=opt_data,
                 daily_mode=True,
+                opt_data_map=opt_data_map,
             )
 
             # 发送邮件（PDF 作为附件）
@@ -658,22 +649,12 @@ class EmailNotifier(BaseNotifier):
             # 获取投资组合策略结果
             portfolio_results = getattr(session, "portfolio_results", None)
 
-            # 读取最新优化器 YAML（搜参策略参数）
-            opt_data = None
-            try:
-                import yaml
-                from pathlib import Path
-                opt_dir = Path("data/optimizer")
-                yaml_files = sorted(
-                    [f for f in opt_dir.glob("*_a_share_strategies.yaml")
-                     if "non_a_share" not in f.name],
-                    key=lambda p: p.stat().st_mtime, reverse=True,
-                )
-                if yaml_files:
-                    with open(yaml_files[0], "r", encoding="utf-8") as f:
-                        opt_data = yaml.safe_load(f)
-            except Exception as e:
-                logger.debug(f"读取优化器 YAML 失败 (非致命): {e}")
+            # 优化器 YAML（main.py 已存入 session，A/非A 各一份）
+            opt_data = getattr(session, "opt_data_a", None)
+            opt_data_map = {
+                "a_share": getattr(session, "opt_data_a", None),
+                "non_a_share": getattr(session, "opt_data_non_a", None),
+            }
 
             # 生成投资组合走势图（两张）
             portfolio_chart_dict = None
@@ -712,6 +693,7 @@ class EmailNotifier(BaseNotifier):
                 backtest=backtest,
                 opt_data=opt_data,
                 daily_mode=True,
+                opt_data_map=opt_data_map,
             )
 
             # 发送邮件
@@ -898,16 +880,21 @@ class EmailNotifier(BaseNotifier):
 
     def _build_strategy_results_section(
         self, portfolio_results, opt_data=None, signal_scan=None,
+        opt_data_map=None,
     ) -> str:
         """构建搜参策略结果段（策略规则 + 今日信号 + 回测指标 + 季末持仓）。
 
         Args:
-            portfolio_results: PortfolioOptimizer.run() 返回值
-            opt_data: 优化器 YAML 数据 (含 params/rules)
+            portfolio_results: PortfolioOptimizer.run_fixed() 返回值
+            opt_data: A股优化器 YAML (含 params/rules)，向后兼容
             signal_scan: SignalScanner.scan() 结果 (今日触发的策略信号)
+            opt_data_map: {"a_share": yaml, "non_a_share": yaml} 各组 YAML
+                          用于展示 YAML 权威预估收益 (test_return)
         """
         if not portfolio_results:
             return ""
+        if opt_data_map is None:
+            opt_data_map = {"a_share": opt_data, "non_a_share": None}
 
         SIGNAL_NAMES = {
             "deviation_cross": "偏离穿越",
@@ -1033,33 +1020,60 @@ class EmailNotifier(BaseNotifier):
             group_data = portfolio_results.get(group_key)
             if not group_data:
                 continue
-            r = group_data.get("max_return")
+            # run_fixed 返回 "top1"，向后兼容旧 "max_return"
+            r = group_data.get("top1") or group_data.get("max_return")
             if not r:
                 continue
             lines.append(
                 f'<h4 style="color:#333;border-left:4px solid #2196f3;'
                 f'padding-left:10px;margin:16px 0 8px">{group_label}</h4>'
             )
-            tr = getattr(r, "total_return", 0)
-            dd = getattr(r, "max_drawdown", 0)
-            sr = getattr(r, "sharpe_ratio", 0)
-            tc = getattr(r, "trade_count", 0)
-            ep = getattr(r, "expected_position", 0)
+
+            # ── YAML 权威预估收益（Top1 测试期，近9个月样本外）──
+            g_yaml = opt_data_map.get(group_key) or {}
+            g_top = (g_yaml.get("strategies") or [{}])[0]
+            test_ret = g_top.get("test_return")
+            test_dd = g_top.get("test_drawdown")
+            g_sharpe = g_top.get("sharpe")
+            ts = g_yaml.get("timestamp", "")[:16].replace("T", " ")
             comp = getattr(r, "composition", [])
             qh = getattr(r, "quarterly_holdings", None) or []
+            # 平均现金仓位（从季末持仓算 avg(cash/nav)）
+            cash_pcts = [
+                (100 - q["pos_pct"]) for q in qh if q.get("nav", 0) > 0
+            ]
+            avg_cash = sum(cash_pcts) / len(cash_pcts) if cash_pcts else None
 
-            rc = "#27ae60" if tr >= 0 else "#c0392b"
-            dc = "#c0392b" if dd < 0 else "#27ae60"
-            lines.append(
-                '<div style="border:1px solid #ddd;padding:10px;'
-                'margin:6px 0;border-radius:5px;background:#fafafa">'
-                f'收益 <span style="color:{rc}">{tr:+.1f}%</span> &nbsp; '
-                f'回撤 <span style="color:{dc}">{dd:.1f}%</span> &nbsp; '
-                f'夏普 {sr:.2f} &nbsp; '
-                f'交易 {tc}笔 &nbsp; '
-                f'期末市值 ¥{ep:,.0f} &nbsp; '
-                f'成分: {", ".join(comp) if comp else "—"}'
-            )
+            if test_ret is not None:
+                rc = "#27ae60" if test_ret >= 0 else "#c0392b"
+                summary = (
+                    '<div style="border:1px solid #ddd;padding:10px;'
+                    'margin:6px 0;border-radius:5px;background:#f0f7ff">'
+                    f'<b>预估收益(测试期超额, 近9月)</b> '
+                    f'<span style="color:{rc}">{test_ret:+.1f}%</span> &nbsp; '
+                    f'回撤 {test_dd:.1f}% &nbsp; '
+                    f'夏普 {g_sharpe:.2f} &nbsp; '
+                )
+                if avg_cash is not None:
+                    summary += f'平均现金仓位 {avg_cash:.0f}% &nbsp; '
+                summary += f'<br><span style="color:#888;font-size:11px">'
+                bench_txt = ("无风险/沪深300/红利ETF" if group_key == "a_share"
+                             else "无风险/VOO/BRK.B")
+                summary += f'搜参时间 {ts} · 基准: {bench_txt} · 成分: '
+                summary += f'{", ".join(comp) if comp else "—"}</span>'
+                lines.append(summary)
+            else:
+                # YAML 无测试收益时回退展示评估值
+                tr = getattr(r, "total_return", 0)
+                dd = getattr(r, "max_drawdown", 0)
+                rc = "#27ae60" if tr >= 0 else "#c0392b"
+                lines.append(
+                    '<div style="border:1px solid #ddd;padding:10px;'
+                    'margin:6px 0;border-radius:5px;background:#fafafa">'
+                    f'收益 <span style="color:{rc}">{tr:+.1f}%</span> &nbsp; '
+                    f'回撤 {dd:.1f}% &nbsp; 成分: '
+                    f'{", ".join(comp) if comp else "—"}'
+                )
 
             # 季末持仓明细
             if qh:
@@ -1288,6 +1302,7 @@ class EmailNotifier(BaseNotifier):
         backtest=None,
         opt_data=None,
         daily_mode=False,
+        opt_data_map=None,
     ):
         """
         构建邮件正文（完整版：表格 + 公告 + 图表）
@@ -1740,6 +1755,7 @@ class EmailNotifier(BaseNotifier):
         if portfolio_results:
             strategy_results_section = self._build_strategy_results_section(
                 portfolio_results, opt_data, signal_scan=signal_scan,
+                opt_data_map=opt_data_map,
             )
 
         # 6c. 构建投资组合策略分析部分（旧版，日报模式跳过避免与搜参段重复）

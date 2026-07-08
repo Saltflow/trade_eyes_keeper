@@ -260,58 +260,74 @@ def run_daily_task(force: bool = False):
         # 4. 创建通知管理器（统一入口）
         notifier = NotifierManager(config)
 
-        # 5. 投资组合策略分析
+        # 5. 投资组合策略分析（直读 YAML 选股，不重新搜参 — 见 proj4llm 权威设计契约）
         try:
             from src.analysis.portfolio_strategy import PortfolioOptimizer
             from src.analysis.rule_engine import Rule
 
-            logger.info("开始投资组合策略分析")
+            logger.info("开始投资组合策略分析（固定选股模式）")
 
-            # 尝试从最新优化器 YAML 加载规则
-            custom_rules = None
-            try:
+            def _load_opt_yaml(group: str):
+                """读取指定分组最新 YAML，返回 (opt_data, custom_rules, stocks)。"""
                 opt_dir = Path("data/optimizer")
-                yaml_files = sorted(
-                    opt_dir.glob("*_a_share_strategies.yaml"),
+                files = sorted(
+                    [f for f in opt_dir.glob(f"*_{group}_strategies.yaml")
+                     if (group == "non_a_share") == ("non_a_share" in f.name)],
                     key=lambda p: p.stat().st_mtime, reverse=True,
                 )
-                if yaml_files:
-                    with open(yaml_files[0], "r", encoding="utf-8") as f:
-                        opt_data = yaml.safe_load(f)
-                    top = (opt_data.get("strategies") or [{}])[0]
-                    opt_rules = top.get("rules", [])
-                    params = top.get("params", {})
-                    mode = params.get("_mode", "?")
-                    if opt_rules:
-                        # position_target 模式下 action_amount="position_target" 无法
-                        # 被 RuleEngine 求值，需转换为 cash*frac 表达式
-                        if mode == "position_target":
-                            for r in opt_rules:
-                                rid = r.get("id", "")
-                                idx = rid.split("_")[-1] if "_" in rid else "1"
-                                if r.get("type") == "buy" and r.get("action_amount") == "position_target":
-                                    frac = params.get(f"buy_{idx}_frac", 0.1)
-                                    r["action_amount"] = f"cash * {frac}"
-                                elif r.get("type") == "sell" and r.get("action_fraction", 0.25) == 0.0:
-                                    frac = params.get(f"sell_{idx}_frac", 0.25)
-                                    r["action_fraction"] = frac
-                                    r["action_min"] = 2500.0
-                                    r["action_max"] = 10000.0
-                        custom_rules = [Rule.from_dict(r) for r in opt_rules]
-                        logger.info(
-                            "每日报告使用优化器策略 (mode=%s, rules=%d 条)",
-                            mode, len(custom_rules),
-                        )
-            except Exception as e:
-                logger.warning(f"读取优化器策略失败，将使用config默认规则: {e}")
+                if not files:
+                    return None, None, []
+                with open(files[0], "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                top = (data.get("strategies") or [{}])[0]
+                rules_raw = top.get("rules", [])
+                params = top.get("params", {})
+                mode = params.get("_mode", "?")
+                # position_target → cash*frac 转换（RuleEngine 无法求值 position_target）
+                if mode == "position_target":
+                    for r in rules_raw:
+                        rid = r.get("id", "")
+                        idx = rid.split("_")[-1] if "_" in rid else "1"
+                        if r.get("type") == "buy" and r.get("action_amount") == "position_target":
+                            r["action_amount"] = f"cash * {params.get(f'buy_{idx}_frac', 0.1)}"
+                        elif r.get("type") == "sell" and r.get("action_fraction", 0.25) == 0.0:
+                            r["action_fraction"] = params.get(f"sell_{idx}_frac", 0.25)
+                            r["action_min"] = 2500.0
+                            r["action_max"] = 10000.0
+                rules = [Rule.from_dict(r) for r in rules_raw] if rules_raw else None
+                # 解析 _stocks（"code1,code2,... +N" 格式，剔除 +N 短码）
+                stocks = []
+                for part in params.get("_stocks", "").replace("+", ",").split(","):
+                    c = part.strip()
+                    if c and not (c.isdigit() and len(c) <= 3):
+                        stocks.append(c)
+                return data, rules, stocks
 
-            optimizer = PortfolioOptimizer(config, custom_rules=custom_rules)
-            portfolio_results = optimizer.run()
-            if portfolio_results:
-                session.portfolio_results = portfolio_results
-                logger.info("投资组合策略分析完成")
+            a_data, a_rules, a_stocks = _load_opt_yaml("a_share")
+            n_data, n_rules, n_stocks = _load_opt_yaml("non_a_share")
+
+            # 存 opt_data 供邮件展示 YAML 预估收益（Top1 test_return）
+            session.opt_data_a = a_data
+            session.opt_data_non_a = n_data
+
+            # A股用 a_rules，非A用 n_rules（分组各自的策略规则）
+            stock_selection = {"a_share": a_stocks, "non_a_share": n_stocks}
+            if a_stocks or n_stocks:
+                optimizer = PortfolioOptimizer(config, custom_rules=a_rules)
+                portfolio_results = optimizer.run_fixed(stock_selection)
+                # 非A分组若有独立规则，单独重跑非A（run_fixed 内部用同一 rules）
+                if n_rules and n_stocks:
+                    opt_n = PortfolioOptimizer(config, custom_rules=n_rules)
+                    n_res = opt_n.run_fixed({"a_share": [], "non_a_share": n_stocks})
+                    if n_res.get("non_a_share"):
+                        portfolio_results["non_a_share"] = n_res["non_a_share"]
+                if portfolio_results:
+                    session.portfolio_results = portfolio_results
+                    logger.info("投资组合策略分析完成（固定选股）")
+                else:
+                    logger.warning("投资组合策略分析未返回结果")
             else:
-                logger.warning("投资组合策略分析未返回结果")
+                logger.warning("YAML 无选股数据，跳过投资组合分析")
         except Exception as e:
             logger.error(f"投资组合策略分析失败: {e}", exc_info=True)
 
