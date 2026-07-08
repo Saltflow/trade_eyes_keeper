@@ -228,11 +228,11 @@ def run_daily_task(force: bool = False):
             for bc in bench_codes:
                 if bc in historical:
                     bench_data[bc] = historical[bc]
-            # 如果 510300 不在股票列表, 单独抓取
+            # 如果 510300 不在股票列表, 单独抓取（730天以匹配净值图2年曲线）
             for bc in bench_codes:
                 if bc not in bench_data:
                     try:
-                        df = StockDataFetcher(config).data_source.fetch_stock_data(bc, days=120)
+                        df = StockDataFetcher(config).data_source.fetch_stock_data(bc, days=730)
                         if df is not None and not df.empty:
                             bench_data[bc] = df
                             historical[bc] = df
