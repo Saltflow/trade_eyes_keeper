@@ -994,7 +994,7 @@ class EmailNotifier(BaseNotifier):
                 '<th>标的</th><th>规则</th><th>当前值</th></tr>'
             )
             signal_map = _build_signal_label_map()
-            for a in alerts[:12]:
+            for a in alerts[:30]:
                 code = getattr(a, "stock_code", None) or (
                     a.get("stock_code", "?") if isinstance(a, dict) else "?"
                 )

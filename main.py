@@ -207,12 +207,16 @@ def run_daily_task(force: bool = False):
             # 合并共识报告
             merged_consensus = _merge_consensus(scan_result.consensus, nona_result.consensus)
             scan_result.consensus = merged_consensus
+            # 合并告警：A股 + 境外（否则邮件今日信号只显示A股）
+            n_a_alerts = len(scan_result.alerts)
+            n_nona_alerts = len(nona_result.alerts)
+            scan_result.alerts = list(scan_result.alerts) + list(nona_result.alerts)
 
             # 存入共识数据供邮件使用
             session.signal_scan = scan_result
             logger.info(
-                f"策略信号扫描完成: A股={len(scan_result.alerts)} + "
-                f"境外={len(nona_result.alerts)} 个策略告警"
+                f"策略信号扫描完成: A股={n_a_alerts} + "
+                f"境外={n_nona_alerts} 个策略告警"
             )
         except Exception as e:
             logger.warning(f"策略信号扫描失败 (非致命): {e}")
