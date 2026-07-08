@@ -1310,7 +1310,7 @@ def generate_portfolio_chart(
 
     for group_key in ("a_share", "non_a_share"):
         gd = portfolio_results.get(group_key, {})
-        result = gd.get("max_return")
+        result = gd.get("top1") or gd.get("max_return")
         if not result or not result.nav_series or len(result.nav_series) < 20:
             continue
 
