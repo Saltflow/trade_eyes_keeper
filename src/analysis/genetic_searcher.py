@@ -219,8 +219,10 @@ def _eval_encoding_worker(args: tuple) -> tuple[list, float] | None:
     if not all_stats:
         return None
 
-    # 计算 WF 得分
-    returns = [s.test_excess_return for s in all_stats]
+    # 计算 WF 得分（排除最后 validation_windows 个窗口，留作样本外验证）
+    v_win = getattr(constraints.walk_forward, "validation_windows", 0)
+    ranking_stats = all_stats[:-v_win] if v_win > 0 and len(all_stats) > v_win else all_stats
+    returns = [s.test_excess_return for s in ranking_stats]
     weights = constraints.walk_forward.window_weights[:len(returns)]
     total_w = sum(weights)
     weights = [w / total_w for w in weights] if total_w > 0 else [1.0 / len(returns)] * len(returns)
@@ -422,11 +424,14 @@ class GeneticSearcher:
         return all_stats, wf_score
 
     def _compute_wf_score(self, stats_list: list[WindowStats]) -> float:
-        """计算 Walk-Forward 加权得分"""
+        """计算 Walk-Forward 加权得分（排除验证窗口）"""
         if not stats_list:
             return -float("inf")
 
-        returns = [s.test_excess_return for s in stats_list]
+        # 排除最后 validation_windows 个窗口（样本外验证，不参与排序）
+        v_win = getattr(self.wf_cfg, "validation_windows", 0)
+        ranking = stats_list[:-v_win] if v_win > 0 and len(stats_list) > v_win else stats_list
+        returns = [s.test_excess_return for s in ranking]
         weights = self.wf_cfg.window_weights[:len(returns)]
 
         # 归一化权重

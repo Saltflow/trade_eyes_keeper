@@ -365,10 +365,14 @@ class StrategyOptimizerV2:
             rules = self._encoding_to_rules(ss.encoding)
 
             # 从窗口统计推算训练/测试期指标
-            avg_test_ret = np.mean([ws.test_excess_return for ws in ss.window_stats])
-            avg_dd = np.mean([ws.max_drawdown_pct for ws in ss.window_stats])
-            avg_sharpe = np.mean([s.sharpe_ratio for s in ss.window_stats])
-            total_trades = sum(ws.total_trades for ws in ss.window_stats)
+            # test_return = 排序窗口均值（排除验证窗口）
+            v_win = getattr(self.constraints.walk_forward, "validation_windows", 0)
+            all_ws = ss.window_stats
+            rank_ws = all_ws[:-v_win] if v_win > 0 and len(all_ws) > v_win else all_ws
+            avg_test_ret = np.mean([ws.test_excess_return for ws in rank_ws])
+            avg_dd = np.mean([ws.max_drawdown_pct for ws in rank_ws])
+            avg_sharpe = np.mean([s.sharpe_ratio for s in rank_ws])
+            total_trades = sum(ws.total_trades for ws in all_ws)
 
             # 收集基准收益 + 期末持仓（取最后窗口的数据）
             bench_info: dict[str, float] = {}

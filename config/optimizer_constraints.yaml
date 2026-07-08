@@ -33,6 +33,7 @@ walk_forward:
   - 1.0
   stability_penalty: 0.5
   data_years: 5
+  validation_windows: 1
 genetic_search:
   phase1_random_samples: 30000
   phase1_top_keep: 10000

@@ -28,6 +28,7 @@ class TestFileLoading:
         assert scanner._find_latest("a_share") is None
 
     def test_find_latest_matches_correct_group(self, scanner, tmp_path):
+        scanner.results_dir = tmp_path
         f = tmp_path / "20260430_000958_a_share_strategies.yaml"
         f.write_text("strategies: []")
         result = scanner._find_latest("a_share")

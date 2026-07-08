@@ -36,6 +36,8 @@ class WalkForwardConfig:
             "window_weights", [1.0] * self.num_windows,
         )
         self.stability_penalty: float = data.get("stability_penalty", 0.5)
+        # 验证窗口数：最后 N 个窗口不参与 wf_score 排序（留作样本外验证）
+        self.validation_windows: int = data.get("validation_windows", 0)
 
     @property
     def total_months_needed(self) -> int:

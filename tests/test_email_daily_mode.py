@@ -300,3 +300,52 @@ class TestSendFromSessionPassesDailyMode:
         assert "daily_mode" in sig.parameters, (
             "_build_email_body must have daily_mode parameter"
         )
+
+
+class TestValidationWinRate:
+    """验证期胜率计算（现场用 nav vs 基准算，不依赖 YAML）。"""
+
+    def _make_result(self, nav, dates):
+        from src.analysis.portfolio_strategy import PortfolioResult
+        return PortfolioResult(
+            name="top1", group="a_share",
+            total_return=0.0, max_drawdown=0.0, sharpe_ratio=0.0,
+            expected_position=0, composition=[], trade_count=0,
+            nav_series=nav, nav_dates=dates,
+        )
+
+    def _make_bench(self, dates, closes):
+        return pd.DataFrame({"date": dates, "close": closes})
+
+    def test_strategy_always_beats_benchmark_100pct(self):
+        """策略每天都跑赢基准 → 胜率100%。"""
+        from notification.email_notifier import EmailNotifier
+        dates = [f"2026-01-{i+1:02d}" for i in range(25)]
+        # 策略持续上涨 100→150，基准平 100→100
+        nav = [100 + i * 2 for i in range(25)]
+        bench = self._make_bench(dates, [100.0] * 25)
+        r = self._make_result(nav, dates)
+        wr, wins, total, vex = EmailNotifier._calc_validation_winrate(r, bench, months=9)
+        assert wr == 100.0
+        assert wins == total
+        assert vex > 0
+
+    def test_strategy_always_loses_0pct(self):
+        """策略持续跑输基准 → 胜率0%。"""
+        from notification.email_notifier import EmailNotifier
+        dates = [f"2026-01-{i+1:02d}" for i in range(25)]
+        nav = [100.0] * 25  # 策略平
+        bench = self._make_bench(dates, [100 + i * 2 for i in range(25)])  # 基准涨
+        r = self._make_result(nav, dates)
+        wr, wins, total, vex = EmailNotifier._calc_validation_winrate(r, bench, months=9)
+        assert wr == 0.0
+        assert wins == 0
+        assert vex < 0
+
+    def test_no_benchmark_returns_none(self):
+        """无基准数据 → 返回 None。"""
+        from notification.email_notifier import EmailNotifier
+        dates = [f"2026-01-{i+1:02d}" for i in range(25)]
+        r = self._make_result([100.0] * 25, dates)
+        wr, wins, total, vex = EmailNotifier._calc_validation_winrate(r, None, months=9)
+        assert wr is None

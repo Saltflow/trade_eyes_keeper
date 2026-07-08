@@ -878,9 +878,67 @@ class EmailNotifier(BaseNotifier):
 
         return html
 
+    @staticmethod
+    def _calc_validation_winrate(result, bench_df, months=9):
+        """验证期胜率：最近 N 月内任意一天买入持有到期，跑赢主基准的概率。
+
+        现场用策略 nav_series vs 基准价格逐日算 forward return，不依赖 YAML。
+
+        Returns:
+            (win_rate%, win_days, total_days, v_excess%) 或全 None
+        """
+        nav = getattr(result, "nav_series", None) or []
+        dates = getattr(result, "nav_dates", None) or []
+        if len(nav) < 20 or bench_df is None or len(dates) != len(nav):
+            return None, None, None, None
+        try:
+            import pandas as pd
+            # 验证期 = 最近 months 月 ≈ months*21 交易日
+            v_len = min(len(nav), months * 21)
+            cut = len(nav) - v_len
+            v_nav = nav[cut:]
+            v_dates = dates[cut:]
+
+            # 基准对齐到验证期日期
+            bdf = bench_df.copy()
+            bdf["date"] = pd.to_datetime(bdf["date"]).dt.strftime("%Y-%m-%d")
+            bmap = dict(zip(bdf["date"], bdf["close"]))
+            v_bench = [bmap.get(d) for d in v_dates]
+
+            # 剔除基准缺失日，保持对齐
+            pairs = [(n, b) for n, b in zip(v_nav, v_bench) if b is not None and b > 0]
+            if len(pairs) < 5:
+                return None, None, None, None
+            s_nav = [p[0] for p in pairs]
+            b_nav = [p[1] for p in pairs]
+
+            s_final = s_nav[-1]
+            b_final = b_nav[-1]
+            wins = 0
+            total = 0
+            for i in range(len(s_nav) - 1):
+                if s_nav[i] <= 0 or b_nav[i] <= 0:
+                    continue
+                s_fwd = s_final / s_nav[i] - 1
+                b_fwd = b_final / b_nav[i] - 1
+                if s_fwd > b_fwd:
+                    wins += 1
+                total += 1
+            if total == 0:
+                return None, None, None, None
+            win_rate = wins / total * 100
+            # 验证期整体超额
+            s_ret = (s_nav[-1] / s_nav[0] - 1) * 100 if s_nav[0] > 0 else 0
+            b_ret = (b_nav[-1] / b_nav[0] - 1) * 100 if b_nav[0] > 0 else 0
+            v_excess = s_ret - b_ret
+            return win_rate, wins, total, v_excess
+        except Exception as e:
+            logger.debug(f"验证期胜率计算失败: {e}")
+            return None, None, None, None
+
     def _build_strategy_results_section(
         self, portfolio_results, opt_data=None, signal_scan=None,
-        opt_data_map=None,
+        opt_data_map=None, benchmark_data=None,
     ) -> str:
         """构建搜参策略结果段（策略规则 + 今日信号 + 回测指标 + 季末持仓）。
 
@@ -890,11 +948,13 @@ class EmailNotifier(BaseNotifier):
             signal_scan: SignalScanner.scan() 结果 (今日触发的策略信号)
             opt_data_map: {"a_share": yaml, "non_a_share": yaml} 各组 YAML
                           用于展示 YAML 权威预估收益 (test_return)
+            benchmark_data: {code: DataFrame} 基准价格 (算验证期胜率)
         """
         if not portfolio_results:
             return ""
         if opt_data_map is None:
             opt_data_map = {"a_share": opt_data, "non_a_share": None}
+        benchmark_data = benchmark_data or {}
 
         SIGNAL_NAMES = {
             "deviation_cross": "偏离穿越",
@@ -1044,22 +1104,42 @@ class EmailNotifier(BaseNotifier):
             ]
             avg_cash = sum(cash_pcts) / len(cash_pcts) if cash_pcts else None
 
+            # ── 验证期胜率（现场用 nav_series vs 主基准算，不依赖 YAML）──
+            primary_bench = "510880" if group_key == "a_share" else "VOO"
+            bench_name = ("510880 红利ETF" if group_key == "a_share"
+                          else "VOO 标普500")
+            win_rate, win_days, total_days, v_excess = self._calc_validation_winrate(
+                r, benchmark_data.get(primary_bench), months=9,
+            )
+
             if test_ret is not None:
                 rc = "#27ae60" if test_ret >= 0 else "#c0392b"
                 summary = (
                     '<div style="border:1px solid #ddd;padding:10px;'
                     'margin:6px 0;border-radius:5px;background:#f0f7ff">'
-                    f'<b>预估收益(测试期超额, 近9月)</b> '
+                    f'<b>预估收益(测试期超额, 近9月, 不参与排序)</b> '
                     f'<span style="color:{rc}">{test_ret:+.1f}%</span> &nbsp; '
                     f'回撤 {test_dd:.1f}% &nbsp; '
                     f'夏普 {g_sharpe:.2f} &nbsp; '
                 )
                 if avg_cash is not None:
                     summary += f'平均现金仓位 {avg_cash:.0f}% &nbsp; '
+                # 验证期胜率
+                if win_rate is not None:
+                    wc = "#27ae60" if win_rate >= 50 else "#c0392b"
+                    summary += (
+                        f'<br><b>验证期胜率</b> '
+                        f'<span style="color:{wc}">{win_rate:.0f}%</span> '
+                        f'({win_days}/{total_days} 天, 任意一天买入持有到期跑赢 {bench_name} 的概率)'
+                    )
+                    if v_excess is not None:
+                        ec = "#27ae60" if v_excess >= 0 else "#c0392b"
+                        summary += (
+                            f' &nbsp; 验证期超额 '
+                            f'<span style="color:{ec}">{v_excess:+.1f}%</span>'
+                        )
                 summary += f'<br><span style="color:#888;font-size:11px">'
-                bench_txt = ("无风险/沪深300/红利ETF" if group_key == "a_share"
-                             else "无风险/VOO/BRK.B")
-                summary += f'搜参时间 {ts} · 基准: {bench_txt} · 成分: '
+                summary += f'搜参时间 {ts} · 主基准: {bench_name} · 成分: '
                 summary += f'{", ".join(comp) if comp else "—"}</span>'
                 lines.append(summary)
             else:
@@ -1755,7 +1835,7 @@ class EmailNotifier(BaseNotifier):
         if portfolio_results:
             strategy_results_section = self._build_strategy_results_section(
                 portfolio_results, opt_data, signal_scan=signal_scan,
-                opt_data_map=opt_data_map,
+                opt_data_map=opt_data_map, benchmark_data=historical_data,
             )
 
         # 6c. 构建投资组合策略分析部分（旧版，日报模式跳过避免与搜参段重复）
