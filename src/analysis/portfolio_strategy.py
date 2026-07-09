@@ -115,6 +115,21 @@ def _detect_stock_group(stock_code: str) -> str:
     return "non_a_share"
 
 
+def _detect_fine_group(stock_code: str) -> str:
+    """细分组：a_share / hk / us（用于日报独立资金池，不影响回测/优化器二分）。
+
+    - 6位纯数字 → a_share (601728, 000958)
+    - 5位纯数字 → hk (00883, 01816)
+    - 含字母 → us (VOO, BRK.B, GOOG)
+    """
+    code = str(stock_code).strip()
+    if code.isdigit() and len(code) == 6:
+        return "a_share"
+    if code.isdigit() and len(code) == 5:
+        return "hk"
+    return "us"
+
+
 def _get_lot_size(stock_code: str) -> int:
     """获取整手股数：A股100股，其余1股"""
     if _detect_stock_group(stock_code) == "a_share":
@@ -618,14 +633,17 @@ class PortfolioEvaluator:
 
             # 兜底计算搜参策略需要的额外指标
             if "adx" not in df.columns:
+                # high/low 缺失时用 close 代替（ADX 退化但不崩）
+                high = df["high"] if "high" in df.columns else df["close"]
+                low = df["low"] if "low" in df.columns else df["close"]
                 tr = pd.concat([
-                    df["high"] - df["low"],
-                    (df["high"] - df["close"].shift()).abs(),
-                    (df["low"] - df["close"].shift()).abs(),
+                    high - low,
+                    (high - df["close"].shift()).abs(),
+                    (low - df["close"].shift()).abs(),
                 ], axis=1).max(axis=1)
                 atr = tr.ewm(alpha=1/14, adjust=False).mean()
-                up = df["high"].diff()
-                dn = -df["low"].diff()
+                up = high.diff()
+                dn = -low.diff()
                 p_dm = up.where((up > 0) & (up > dn), 0.0)
                 n_dm = dn.where((dn > 0) & (dn > up), 0.0)
                 a_up = p_dm.ewm(alpha=1/14, adjust=False).mean()
@@ -1122,9 +1140,9 @@ class PortfolioOptimizer:
         本方法产出的 total_return 仅供 NAV 图展示。
 
         Args:
-            stock_selection: {"a_share": [codes], "non_a_share": [codes]}
+            stock_selection: {"a_share": [...], "hk": [...], "us": [...]}
         Returns:
-            dict: {group: {"top1": PortfolioResult}}
+            dict: {group: {"top1": PortfolioResult}}  group ∈ a_share/hk/us
         """
         stocks = self.config.get("stocks", [])
         if not stocks:
@@ -1140,9 +1158,9 @@ class PortfolioOptimizer:
             if config_rules:
                 custom_rules = [Rule.from_dict(r) for r in config_rules]
 
-        # 拉取数据并分组
+        # 拉取数据并按细分组（a_share/hk/us）独立资金池
         group_data_map: dict[str, dict[str, pd.DataFrame]] = {
-            "a_share": {}, "non_a_share": {},
+            "a_share": {}, "hk": {}, "us": {},
         }
         config_codes = {str(c) for c in stocks}
         # 并入 YAML 选股里可能不在 config 的标的
@@ -1151,7 +1169,7 @@ class PortfolioOptimizer:
 
         for code in config_codes:
             code_str = str(code)
-            group = _detect_stock_group(code_str)
+            group = _detect_fine_group(code_str)
             data = self.fetch_stock_data(code_str, lookback_days)
             if data.empty or "close" not in data.columns:
                 continue
@@ -1160,8 +1178,10 @@ class PortfolioOptimizer:
                 continue
             group_data_map[group][code_str] = data
 
+        # 评估器 group 参数（risk_free 二分）：a_share=2%, hk/us=非A 4.5%
+        eval_group = {"a_share": "a_share", "hk": "non_a_share", "us": "non_a_share"}
         results: dict = {}
-        for group_name in ("a_share", "non_a_share"):
+        for group_name in ("a_share", "hk", "us"):
             group_data = group_data_map[group_name]
             selected = [c for c in stock_selection.get(group_name, [])
                         if c in group_data]
@@ -1171,7 +1191,7 @@ class PortfolioOptimizer:
                 continue
 
             evaluator = PortfolioEvaluator(
-                group_data, group_name, rules=custom_rules
+                group_data, eval_group[group_name], rules=custom_rules
             )
             result = evaluator.evaluate(selected)
             result.name = "top1"
@@ -1305,10 +1325,13 @@ def generate_portfolio_chart(
     from ..utils.font_setup import setup_cjk_font
     setup_cjk_font()
 
-    group_labels = {"a_share": "A股投资组合", "non_a_share": "非A股投资组合"}
+    group_labels = {
+        "a_share": "A股投资组合", "hk": "港股投资组合", "us": "美股投资组合",
+        "non_a_share": "非A股投资组合",
+    }
     output: dict[str, bytes] = {}
 
-    for group_key in ("a_share", "non_a_share"):
+    for group_key in ("a_share", "hk", "us", "non_a_share"):
         gd = portfolio_results.get(group_key, {})
         result = gd.get("top1") or gd.get("max_return")
         if not result or not result.nav_series or len(result.nav_series) < 20:
@@ -1353,9 +1376,11 @@ def generate_portfolio_chart(
             ax.plot(dt_arr, lower, color="#2e7d32",
                     linewidth=1.0, alpha=0.4, linestyle="--", zorder=2)
 
-        # 基准 ETF 曲线
+        # 基准 ETF 曲线（港股/美股主基准都用 VOO，按需求不拆基准）
         benchmark_map = {
             "a_share": ["510300", "510880"],
+            "hk": ["VOO", "BRK.B"],
+            "us": ["VOO", "BRK.B"],
             "non_a_share": ["VOO", "BRK.B"],
         }
         bench_colors = ["#e74c3c", "#c0392b"]

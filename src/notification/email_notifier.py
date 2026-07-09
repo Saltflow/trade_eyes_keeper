@@ -1075,7 +1075,10 @@ class EmailNotifier(BaseNotifier):
             )
 
         # 组合结果 (PortfolioEvaluator 实盘评估) — 只展示 Top1 (max_return)
-        group_labels = {"a_share": "A股组合", "non_a_share": "非A股组合"}
+        group_labels = {
+            "a_share": "A股组合", "hk": "港股组合", "us": "美股组合",
+            "non_a_share": "非A股组合",
+        }
         for group_key, group_label in group_labels.items():
             group_data = portfolio_results.get(group_key)
             if not group_data:
@@ -1090,7 +1093,9 @@ class EmailNotifier(BaseNotifier):
             )
 
             # ── YAML 权威预估收益（Top1 测试期，近9个月样本外）──
-            g_yaml = opt_data_map.get(group_key) or {}
+            # hk/us 共用 non_a_share YAML（优化器未拆分组）
+            yaml_key = "a_share" if group_key == "a_share" else "non_a_share"
+            g_yaml = opt_data_map.get(yaml_key) or {}
             g_top = (g_yaml.get("strategies") or [{}])[0]
             test_ret = g_top.get("test_return")
             test_dd = g_top.get("test_drawdown")

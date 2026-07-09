@@ -314,22 +314,32 @@ def run_daily_task(force: bool = False):
             session.opt_data_a = a_data
             session.opt_data_non_a = n_data
 
-            # A股用 a_rules，非A用 n_rules（分组各自的策略规则）
-            stock_selection = {"a_share": a_stocks, "non_a_share": n_stocks}
-            if a_stocks or n_stocks:
-                optimizer = PortfolioOptimizer(config, custom_rules=a_rules)
-                portfolio_results = optimizer.run_fixed(stock_selection)
-                # 非A分组若有独立规则，单独重跑非A（run_fixed 内部用同一 rules）
-                if n_rules and n_stocks:
-                    opt_n = PortfolioOptimizer(config, custom_rules=n_rules)
-                    n_res = opt_n.run_fixed({"a_share": [], "non_a_share": n_stocks})
-                    if n_res.get("non_a_share"):
-                        portfolio_results["non_a_share"] = n_res["non_a_share"]
-                if portfolio_results:
-                    session.portfolio_results = portfolio_results
-                    logger.info("投资组合策略分析完成（固定选股）")
-                else:
-                    logger.warning("投资组合策略分析未返回结果")
+            # 非A选股按港股/美股拆成独立资金池
+            from src.analysis.portfolio_strategy import _detect_fine_group
+            hk_stocks = [c for c in n_stocks if _detect_fine_group(c) == "hk"]
+            us_stocks = [c for c in n_stocks if _detect_fine_group(c) == "us"]
+
+            portfolio_results = {}
+            # A股：用 a_rules
+            if a_stocks:
+                opt_a = PortfolioOptimizer(config, custom_rules=a_rules)
+                res_a = opt_a.run_fixed({"a_share": a_stocks, "hk": [], "us": []})
+                if res_a.get("a_share"):
+                    portfolio_results["a_share"] = res_a["a_share"]
+            # 港股 + 美股：各自独立资金池，共用 n_rules
+            if hk_stocks or us_stocks:
+                opt_n = PortfolioOptimizer(config, custom_rules=n_rules)
+                res_n = opt_n.run_fixed(
+                    {"a_share": [], "hk": hk_stocks, "us": us_stocks}
+                )
+                if res_n.get("hk"):
+                    portfolio_results["hk"] = res_n["hk"]
+                if res_n.get("us"):
+                    portfolio_results["us"] = res_n["us"]
+
+            if portfolio_results:
+                session.portfolio_results = portfolio_results
+                logger.info("投资组合策略分析完成（固定选股, A股/港股/美股独立资金池）")
             else:
                 logger.warning("YAML 无选股数据，跳过投资组合分析")
         except Exception as e:
