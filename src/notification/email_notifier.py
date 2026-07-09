@@ -1861,12 +1861,16 @@ class EmailNotifier(BaseNotifier):
             </div>
             """
 
-        # 7b. 投资组合走势图（紧贴报警图后面，chart002=A股, chart003=非A股）
+        # 7b. 投资组合走势图（chart002=A股, chart003=港股, chart004=美股, chart005=非A兼容）
         portfolio_chart_section = ""
         if portfolio_chart_dict:
-            cid_map = {"a_share": "chart002", "non_a_share": "chart003"}
-            group_titles = {"a_share": "A股投资组合净值走势", "non_a_share": "非A股投资组合净值走势"}
-            for group_key in ("a_share", "non_a_share"):
+            cid_map = {"a_share": "chart002", "hk": "chart003",
+                       "us": "chart004", "non_a_share": "chart005"}
+            group_titles = {
+                "a_share": "A股投资组合净值走势", "hk": "港股投资组合净值走势",
+                "us": "美股投资组合净值走势", "non_a_share": "非A股投资组合净值走势",
+            }
+            for group_key in ("a_share", "hk", "us", "non_a_share"):
                 if group_key in portfolio_chart_dict:
                     cid = cid_map[group_key]
                     title = group_titles.get(group_key, group_key)
@@ -2518,7 +2522,8 @@ class EmailNotifier(BaseNotifier):
 
                 # 添加投资组合走势图（CID: chart002=A股, chart003=非A股）
                 if portfolio_chart_dict:
-                    cid_map = {"a_share": "chart002", "non_a_share": "chart003"}
+                    cid_map = {"a_share": "chart002", "hk": "chart003",
+                               "us": "chart004", "non_a_share": "chart005"}
                     for group_key, png_bytes in portfolio_chart_dict.items():
                         if png_bytes and group_key in cid_map:
                             cid = cid_map[group_key]
