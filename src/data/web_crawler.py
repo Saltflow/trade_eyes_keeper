@@ -1661,5 +1661,143 @@ class StockWebCrawler:
             logger.warning(f"从东方财富获取分红数据失败: {e}")
             return None
 
+    def fetch_placement_data(self, stock_code):
+        """获取最近一次定向增发(定增)数据。
+
+        数据源：东方财富 RPT_SEO_DETAIL 报表。
+        仅对 A 股（6位纯数字）有效，其余返回 None。
+
+        Returns:
+            dict | None: {
+                "issue_num": 定增数量(股),
+                "issue_price": 定增价格(元),
+                "share_after": 发行后总股本(股),
+                "pct_of_total": 占发行后总股本(%),
+                "listing_date": 上市日期(YYYY-MM-DD),
+                "lockin_period": 锁定期文本(如 "3年"),
+                "unlock_date": 解禁日期(YYYY-MM-DD) 或 None,
+                "issue_object": 认购方,
+                "is_locked": 是否仍在锁定期,
+            }
+        """
+        code = str(stock_code).strip()
+        if not (code.isdigit() and len(code) == 6):
+            return None  # 仅 A 股
+
+        try:
+            url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+            params = {
+                "reportName": "RPT_SEO_DETAIL",
+                "columns": "ALL",
+                "filter": f'(SECURITY_CODE="{code}")',
+                "pageSize": "10",
+                "source": "WEB",
+                "client": "WEB",
+            }
+            headers = {
+                "User-Agent": self.user_agent,
+                "Referer": "https://data.eastmoney.com/",
+            }
+            resp = requests.get(
+                url, params=params, headers=headers, timeout=self.timeout
+            )
+            if resp.status_code != 200:
+                logger.warning(f"东方财富定增API请求失败: {resp.status_code}")
+                return None
+
+            data = resp.json()
+            if not data.get("success"):
+                logger.debug(f"东方财富定增API无数据 {code}: {data.get('message')}")
+                return None
+            result = data.get("result") or {}
+            rows = result.get("data") or []
+            if not rows:
+                logger.debug(f"股票 {code} 无定增记录")
+                return None
+
+            # 选最近一次：按上市日期(或发行日期)降序取第一条
+            def _row_date(r):
+                return (r.get("ISSUE_LISTING_DATE") or r.get("ISSUE_DATE") or "")
+
+            rows.sort(key=_row_date, reverse=True)
+            row = rows[0]
+
+            return self._parse_placement_row(row)
+
+        except Exception as e:
+            logger.warning(f"从东方财富获取定增数据失败 {code}: {e}")
+            return None
+
+    def _parse_placement_row(self, row: dict):
+        """解析东方财富定增记录行，计算占比 + 解禁日期。"""
+        from datetime import datetime as _dt
+
+        def _num(key):
+            v = row.get(key)
+            try:
+                return float(v) if v is not None else None
+            except (ValueError, TypeError):
+                return None
+
+        def _date(key):
+            v = row.get(key)
+            if not v:
+                return None
+            return str(v)[:10]  # "2026-03-16 00:00:00" -> "2026-03-16"
+
+        issue_num = _num("ISSUE_NUM")
+        issue_price = _num("ISSUE_PRICE")
+        share_after = _num("ISSUE_SHARE_AFTER")
+        listing_date = _date("ISSUE_LISTING_DATE") or _date("ISSUE_DATE")
+        lockin = row.get("LOCKIN_PERIOD")
+        issue_object = row.get("ISSUE_OBJECT")
+
+        # 占发行后总股本
+        pct_of_total = None
+        if issue_num and share_after and share_after > 0:
+            pct_of_total = round(issue_num / share_after * 100, 2)
+
+        # 解禁日期 = 上市日期 + 锁定期(年)
+        unlock_date = None
+        is_locked = None
+        if listing_date and lockin:
+            years = self._parse_lockin_years(lockin)
+            if years is not None:
+                try:
+                    d = _dt.strptime(listing_date, "%Y-%m-%d")
+                    # 解禁 = 上市日 + 年数（近似按 365 天/年）
+                    unlock = d.replace(year=d.year + int(years)) if years == int(years) \
+                        else d + timedelta(days=int(years * 365))
+                    unlock_date = unlock.strftime("%Y-%m-%d")
+                    is_locked = _dt.now() < unlock
+                except Exception:
+                    pass
+
+        return {
+            "issue_num": issue_num,
+            "issue_price": issue_price,
+            "share_after": share_after,
+            "pct_of_total": pct_of_total,
+            "listing_date": listing_date,
+            "lockin_period": lockin,
+            "unlock_date": unlock_date,
+            "issue_object": issue_object,
+            "is_locked": is_locked,
+        }
+
+    @staticmethod
+    def _parse_lockin_years(text):
+        """解析锁定期文本为年数。'3年'→3, '18个月'→1.5, '6个月'→0.5。"""
+        if not text:
+            return None
+        s = str(text)
+        m = re.search(r"([\d.]+)\s*年", s)
+        if m:
+            return float(m.group(1))
+        m = re.search(r"([\d.]+)\s*个?月", s)
+        if m:
+            return float(m.group(1)) / 12.0
+        return None
+
 
 # End of file

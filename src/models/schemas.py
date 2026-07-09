@@ -329,6 +329,7 @@ class SessionContext(BaseModel):
     backtest: Optional[dict] = None  # backtest results {group: dict}
     opt_data_a: Optional[dict] = None  # A股最新优化器 YAML (供邮件展示预估收益)
     opt_data_non_a: Optional[dict] = None  # 非A股最新优化器 YAML
+    placements: dict[str, dict] = Field(default_factory=dict)  # {code: 定增数据}
 
     def get_all_dataframe(self):
         """获取所有股票合并DataFrame（ALL列，无丢失）"""

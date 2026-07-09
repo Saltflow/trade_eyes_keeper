@@ -141,6 +141,26 @@ def run_daily_task(force: bool = False):
                 logger.error(f"获取公告信息失败: {e}")
                 session.errors.append(f"获取公告信息失败: {e}")
 
+        # 1b. 获取 A 股定增(定向增发)数据 — 展示未解禁定增
+        try:
+            from src.data.web_crawler import StockWebCrawler
+            crawler = StockWebCrawler(config)
+            placements = {}
+            for code in config["stocks"]:
+                code_str = str(code)
+                if not (code_str.isdigit() and len(code_str) == 6):
+                    continue  # 仅 A 股
+                try:
+                    p = crawler.fetch_placement_data(code_str)
+                    if p and p.get("is_locked"):
+                        placements[code_str] = p
+                except Exception as e:
+                    logger.debug(f"定增数据获取失败 {code_str}: {e}")
+            session.placements = placements
+            logger.info(f"定增数据获取完成，{len(placements)} 只标的有未解禁定增")
+        except Exception as e:
+            logger.warning(f"定增数据获取失败 (非致命): {e}")
+
         # 2. 获取股票数据并存入Session
         logger.info("开始获取股票数据")
         fetcher = StockDataFetcher(config)

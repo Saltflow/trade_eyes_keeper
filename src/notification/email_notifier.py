@@ -616,6 +616,7 @@ class EmailNotifier(BaseNotifier):
                 opt_data=opt_data,
                 daily_mode=True,
                 opt_data_map=opt_data_map,
+                placements=getattr(session, "placements", None),
             )
 
             # 发送邮件（PDF 作为附件）
@@ -694,6 +695,7 @@ class EmailNotifier(BaseNotifier):
                 opt_data=opt_data,
                 daily_mode=True,
                 opt_data_map=opt_data_map,
+                placements=getattr(session, "placements", None),
             )
 
             # 发送邮件
@@ -935,6 +937,70 @@ class EmailNotifier(BaseNotifier):
         except Exception as e:
             logger.debug(f"验证期胜率计算失败: {e}")
             return None, None, None, None
+
+    @staticmethod
+    def _build_placement_section(placements, stock_data):
+        """构建未解禁定增表 HTML。
+
+        列：标的编号 | 名称 | 未解禁定增数额 | 占总股本 | 定增价格 | 解禁时间
+        """
+        if not placements:
+            return ""
+
+        # 从 stock_data 取名称
+        name_map = {}
+        try:
+            if stock_data is not None and hasattr(stock_data, "iterrows"):
+                for _, row in stock_data.iterrows():
+                    name_map[str(row.get("stock_code", ""))] = row.get(
+                        "stock_name", ""
+                    )
+        except Exception:
+            pass
+
+        rows = ""
+        for code, p in sorted(placements.items()):
+            name = name_map.get(code, "")
+            issue_num = p.get("issue_num")
+            issue_price = p.get("issue_price")
+            pct = p.get("pct_of_total")
+            unlock = p.get("unlock_date") or "—"
+            # 数额格式化：亿股
+            if issue_num:
+                num_str = f"{issue_num / 1e8:.2f}亿股"
+            else:
+                num_str = "—"
+            price_str = f"{issue_price:.2f}元" if issue_price else "—"
+            pct_str = f"{pct:.2f}%" if pct is not None else "—"
+            rows += (
+                f'<tr>'
+                f'<td style="padding:8px">{code}</td>'
+                f'<td style="padding:8px">{name}</td>'
+                f'<td style="text-align:right;padding:8px">{num_str}</td>'
+                f'<td style="text-align:right;padding:8px">{pct_str}</td>'
+                f'<td style="text-align:right;padding:8px">{price_str}</td>'
+                f'<td style="text-align:right;padding:8px">{unlock}</td>'
+                f'</tr>\n'
+            )
+
+        return (
+            '<tr><td style="padding:16px 24px 4px;border-bottom:2px solid #ecf0f1">'
+            '<div style="font-size:15px;font-weight:600;color:#2c3e50">'
+            '未解禁定增</div></td></tr>\n'
+            '<tr><td style="padding:8px 24px 16px">'
+            '<table role="presentation" style="width:100%;border-collapse:collapse;'
+            'font-size:12px" cellpadding="6" cellspacing="0" border="0">\n'
+            '<thead><tr style="background:#34495e;color:#fff">'
+            '<th style="text-align:left;padding:8px">代码</th>'
+            '<th style="text-align:left;padding:8px">名称</th>'
+            '<th style="text-align:right;padding:8px">定增数额</th>'
+            '<th style="text-align:right;padding:8px">占总股本</th>'
+            '<th style="text-align:right;padding:8px">定增价格</th>'
+            '<th style="text-align:right;padding:8px">解禁时间</th>'
+            '</tr></thead>\n<tbody>\n'
+            f'{rows}'
+            '</tbody></table></td></tr>\n'
+        )
 
     def _build_strategy_results_section(
         self, portfolio_results, opt_data=None, signal_scan=None,
@@ -1388,6 +1454,7 @@ class EmailNotifier(BaseNotifier):
         opt_data=None,
         daily_mode=False,
         opt_data_map=None,
+        placements=None,
     ):
         """
         构建邮件正文（完整版：表格 + 公告 + 图表）
@@ -2027,6 +2094,7 @@ class EmailNotifier(BaseNotifier):
             logger.debug(f"交互报告链接生成失败: {e}")
 
         # 9. 替换主模板变量
+        placement_section = self._build_placement_section(placements, stock_data)
         html_content = email_template.format(
             current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             alert_section=alert_section,
@@ -2034,6 +2102,7 @@ class EmailNotifier(BaseNotifier):
             all_rows_fundamental=all_rows_fundamental,
             price_table_header=price_table_header,
             announcements_section=announcements_section,
+            placement_section=placement_section,
             chart_section=chart_section,
             portfolio_chart_section=portfolio_chart_section,
             strategy_alert_section=strategy_alert_section,
