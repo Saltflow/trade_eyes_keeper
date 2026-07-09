@@ -1,7 +1,7 @@
 # 股票量化系统 - 关键设计决策文档
 
 **文档版本**: v1.18
-**最后更新**: 2026-07-07
+**最后更新**: 2026-07-09
 **压缩目标**: ~800行，保留关键设计决策
 
 ---
@@ -131,15 +131,19 @@
 
 > 本节记录搜参 + 日报/简报的**最终设计契约**。历史章节（V1/V2 早期描述）若与本节冲突，一律以本节为准。实现细节见 `config/optimizer_constraints.yaml`（唯一真源）。
 
-#### 1. 搜参：多窗口验证 + 测试集排名
+#### 1. 搜参：多窗口验证 + 测试集排名 + 验证窗口留出
 
 - **Walk-Forward 多窗口**（取代早期"9个月单窗口 / 4阶段"设计）：
   - 训练 12 月 + **测试 9 月**，滑动步长 3 月，**14 窗口**，数据 5 年
   - 配置：`config/optimizer_constraints.yaml` → `walk_forward`
-- **排名依据**：`avg(各窗口测试期超额收益)`，即贴近验证集（≥9 个月）的样本外收益
-  - 代码：`strategy_optimizer_v2.py` → `avg_test_ret = mean([ws.test_excess_return ...])`
+- **验证窗口留出**（v1.18, 2026-07-07）：`validation_windows: 1`
+  - **最后 1 个窗口（最近 9 月）不参与 `wf_score` 排序**，作纯样本外验证
+  - 代码：`genetic_searcher._compute_wf_score` + 模块级 `compute_wf_score` 均排除 `all_stats[-N:]`
+  - 理由：最近数据若参与排序，选出的策略已隐含偷看验证期 → 胜率不置信
+- **排名依据**：`avg(排序窗口测试期超额收益)`（排除验证窗口后的均值）
+  - 代码：`strategy_optimizer_v2.py` → `rank_ws = all_ws[:-v_win]`；`avg_test_ret = mean([ws.test_excess_return for ws in rank_ws])`
   - 稳定性惩罚：`stability_penalty × std(窗口收益)`，防单窗口运气
-- **禁止**：用训练期收益排名、用全期收益排名、事后挑测试期最优（回看偏差）
+- **禁止**：用训练期收益排名、用全期收益排名、事后挑测试期最优（回看偏差）、最近9月参与排序
 
 #### 2. 收益评估：约束下最高收益，超额 vs 基准
 
@@ -161,6 +165,33 @@
 - **废弃**：日报中 `PortfolioOptimizer.run()` 每日重新贪心搜索（导致结果天天大幅波动、"抽奖"效应）
 - **展示数据**：Top1 策略的 `test_return`（测试期超额）、`test_drawdown`、`sharpe`、`_stocks`（选股）、`quarterly_holdings`（季末持仓）、平均现金仓位
 - **今日信号**：`SignalScanner` 用 YAML 的 `rules` 条件字符串评估当日数据，`strategy_rank==1` 与 Top1 展示对齐
+- **固定选股评估**：`PortfolioOptimizer.run_fixed(stock_selection)` — 对 YAML `_stocks` 跑一次确定性 `evaluate()`，产出 NAV 曲线 + 季末持仓，不搜索
+
+#### 4. 日报三组独立资金池 + 验证期胜率 (v1.18, 2026-07-09)
+
+- **三组拆分**（`_detect_fine_group`，仅日报展示层，不影响回测/优化器二分）：
+  | 细分组 | 判定 | 资金池 | 主基准 |
+  |--------|------|--------|--------|
+  | a_share | 6 位纯数字 | 独立 100k | 510880 红利ETF |
+  | hk | 5 位纯数字 | 独立 100k | VOO |
+  | us | 含字母 | 独立 100k | VOO |
+  - 港股/美股共用 non_a YAML 的规则（优化器未拆），但资金池独立评估
+  - **`_detect_stock_group`（二分）保持不变** — risk_free/回测/优化器仍用 a_share/non_a_share
+  - 动机：港股暴跌 + 美股盈利混一池互相抵消，拆开才看得清真实表现
+- **验证期胜率**（现场算，不信搜出来的窗口）：
+  - `email_notifier._calc_validation_winrate()`：用 `run_fixed` 产出的 `nav_series` vs 主基准价格
+  - 最近 9 月逐日算 forward return，"任意一天买入持有到期跑赢主基准的概率"
+  - 完全离线，不依赖 YAML 搜出的数字
+- **净值图**：每组一张（chart002=A股/chart003=港股/chart004=美股），Top1 绿线 + 30日布林带 + 红色基准线
+
+#### 5. 未解禁定增展示 (v1.18, 2026-07-09)
+
+- **数据源**：东方财富 `RPT_SEO_DETAIL` API（`web_crawler.fetch_placement_data`）
+- **仅 A 股**（6 位纯数字），19:00 全量任务抓取（简报不触发）
+- **只展示未解禁**：`is_locked=True`（当前 < 解禁日）；解禁日 = 上市日 + 锁定期
+- **展示字段**：代码 / 名称 / 未解禁定增数额(亿股) / 占发行后总股本% / 定增价格 / 解禁时间
+- **取最近一次**：多条按上市日期降序取第一条
+- 代码：`_parse_placement_row`（占比+解禁日）、`_parse_lockin_years`（"3年"→3, "18个月"→1.5）、`email_notifier._build_placement_section`
 
 ---
 
@@ -283,6 +314,15 @@ config/optimizer.yaml → StrategyOptimizer → PortfolioEvaluator
 ### 回测嵌入
 
 > ⚠️ **v1.18 变更**：日报不再每日重新贪心搜索/回测。改为直接读取最新 YAML（02:00 搜参任务产出）的 Top1 策略预估收益（近 9 个月测试期）。详见本文档「权威设计契约」章节。
+
+### 日报邮件版式 (daily_mode, v1.18)
+
+`_build_email_body(daily_mode=True)` 精简日报，去掉过时/冗余段：
+- **删除**：MA60 偏离报警段（`alert_section`）、回测分阶段表（`backtest_section`）、旧组合分析段（`portfolio_section`）、价格表的 MA60/偏离/状态列
+- **保留 + 重排**：走势图(收盘价) → 净值图(每组一张) → **搜参策略结果**（Top1规则+今日信号+组合卡片+季末持仓，一段讲完）→ 基本面表 → 公告 → **未解禁定增**
+- **今日信号合并**：`SignalScanner.alerts`（A股+港股+美股 merge）并入搜参段，信号名 `buy_1`→`偏离穿越`（`_build_signal_label_map` 读 YAML params 翻译）
+- **简报统一**：早/晚简报也走 `SignalScanner`（非 `build_strategy_suggestions` 旧逻辑），与日报信号一致
+- 邮件从 ~89k 字符精简到 ~28k
 
 ### HTML 交互报告
 
@@ -461,7 +501,7 @@ pytest tests/test_import_smoke.py         # 导入完整性
 | **v1.16** | **2026-05-03** | **xelatex PDF 日报 + 安全加固 + 开源准备** |
 | v1.17 | 2026-05-27 | 简报排序 + 收盘简报 14:30 + 日报 19:00 + debt_ratio 删除 + ROE PB/PE 推导 |
 | v1.17.1 | 2026-06-04 | QQ 实时行情 + Eastmoney 删除 + 数据源健康探针 + 优化器 P0 修复 + 布林带列名统一 |
-| **v1.18** | **2026-07-07** | **搜参多窗口验证契约确立 (14窗口/测试9月/超额基准) + 日报简报直读YAML不再重搜参 + budget_pool/position_target 修复** |
+| **v1.18** | **2026-07-09** | **搜参多窗口验证契约 (14窗口/测试9月/验证窗口留出) + 日报直读YAML不重搜参 + 港股/美股独立资金池 + 验证期胜率 + 未解禁定增展示 + daily_mode版式精简 + 简报统一SignalScanner** |
 
 ---
 

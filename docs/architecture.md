@@ -94,7 +94,7 @@ main.py --once
 
 | 模块 | 职责边界 | 不负责的领域 |
 |------|---------|------------|
-| `web_crawler.py` | 从公开网站获取原始日线数据、股息历史 | **不计算** MA60 等任何技术指标 |
+| `web_crawler.py` | 从公开网站获取原始日线数据、股息历史、定增数据(东方财富SEO) | **不计算** MA60 等任何技术指标 |
 | `data_fetcher.py` | 协调多数据源、缓存命中判断、调用指标计算层 | **不直接解析** HTML/JSON |
 | `technical_indicators.py` | 根据 `alerts.yaml` 配置计算所有技术指标 | **不读取**网络数据 |
 | `session_manager.py` | 维护 Session 生命周期、类型安全数据模型 | **不包含**业务规则 |
