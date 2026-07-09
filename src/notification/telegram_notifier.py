@@ -82,6 +82,7 @@ class TelegramNotifier(BaseNotifier):
         sections = self._build_daily_sections(df, alerts)
         for label, body in sections:
             self._send(title, f"{label}\n{body}")
+        self._send_strategy_summary(session, title)
 
     def send_daily_report_from_session(self, session) -> None:
         df = session.get_all_dataframe()
@@ -90,6 +91,17 @@ class TelegramNotifier(BaseNotifier):
         sections = self._build_daily_sections(df)
         for label, body in sections:
             self._send(title, f"{label}\n{body}")
+        self._send_strategy_summary(session, title)
+
+    def _send_strategy_summary(self, session, title: str) -> None:
+        """发送搜参策略+今日信号+定增摘要（与邮件对齐）。"""
+        try:
+            from .email_notifier import build_strategy_text_summary
+            summary = build_strategy_text_summary(session, markdown=False)
+            if summary:
+                self._send(title, f"策略与信号\n<pre>{_esc(summary)}</pre>")
+        except Exception as e:
+            logger.warning(f"Telegram 策略摘要发送失败 (非致命): {e}")
 
     def send_brief_report(self, session, report_config: dict) -> None:
         label = report_config.get("label", "简报")

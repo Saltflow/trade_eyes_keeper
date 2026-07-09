@@ -375,6 +375,123 @@ def _build_signal_label_map() -> dict[str, str]:
         return {}
 
 
+def build_strategy_text_summary(session, markdown: bool = False) -> str:
+    """构建搜参策略 + 今日信号 + 定增的纯文本摘要（Telegram/飞书共享）。
+
+    与邮件日报信息量对齐：搜参3组(A股/港股/美股) + 验证期胜率 + 平均现金仓位
+    + 今日信号(可读名) + 未解禁定增。
+
+    Args:
+        session: SessionContext（读 portfolio_results/signal_scan/placements/
+                 opt_data_a/opt_data_non_a）
+        markdown: True=飞书(**粗体**), False=Telegram(纯文本)
+    """
+    b = "**" if markdown else ""  # 粗体标记
+    portfolio_results = getattr(session, "portfolio_results", None)
+    signal_scan = getattr(session, "signal_scan", None)
+    placements = getattr(session, "placements", None)
+    opt_a = getattr(session, "opt_data_a", None)
+    opt_n = getattr(session, "opt_data_non_a", None)
+    benchmark = getattr(session, "_historical", {}) or {}
+
+    lines: list[str] = []
+
+    # ── 搜参策略结果（三组）──
+    if portfolio_results:
+        group_labels = {"a_share": "A股组合", "hk": "港股组合", "us": "美股组合"}
+        bench_names = {"a_share": "510880红利ETF", "hk": "VOO", "us": "VOO"}
+        bench_codes = {"a_share": "510880", "hk": "VOO", "us": "VOO"}
+        for gk, gl in group_labels.items():
+            gd = portfolio_results.get(gk)
+            if not gd:
+                continue
+            r = gd.get("top1") or gd.get("max_return")
+            if not r:
+                continue
+            # YAML 权威预估收益
+            g_yaml = opt_a if gk == "a_share" else opt_n
+            g_top = ((g_yaml or {}).get("strategies") or [{}])[0]
+            test_ret = g_top.get("test_return")
+            test_dd = g_top.get("test_drawdown")
+            g_sharpe = g_top.get("sharpe")
+            ts = (g_yaml or {}).get("timestamp", "")[:16].replace("T", " ")
+
+            qh = getattr(r, "quarterly_holdings", None) or []
+            cash_pcts = [(100 - q["pos_pct"]) for q in qh if q.get("nav", 0) > 0]
+            avg_cash = sum(cash_pcts) / len(cash_pcts) if cash_pcts else None
+            comp = getattr(r, "composition", [])
+
+            # 验证期胜率
+            wr, wd, td, vex = EmailNotifier._calc_validation_winrate(
+                r, benchmark.get(bench_codes[gk]), months=9,
+            )
+
+            if test_ret is not None:
+                head = (f"{b}{gl}{b} 预估收益(测试期超额,近9月) {test_ret:+.1f}%"
+                        f"  回撤 {test_dd:.1f}%  夏普 {g_sharpe:.2f}")
+            else:
+                tr = getattr(r, "total_return", 0)
+                head = f"{b}{gl}{b} 收益 {tr:+.1f}%"
+            if avg_cash is not None:
+                head += f"  平均现金仓位 {avg_cash:.0f}%"
+            lines.append(head)
+            if wr is not None:
+                lines.append(
+                    f"  验证期胜率 {wr:.0f}% ({wd}/{td}天跑赢{bench_names[gk]})"
+                    + (f"  验证期超额 {vex:+.1f}%" if vex is not None else "")
+                )
+            if comp:
+                lines.append(f"  成分: {', '.join(comp)}")
+            if ts:
+                lines.append(f"  搜参时间 {ts}")
+            lines.append("")
+
+    # ── 今日信号 ──
+    alerts = getattr(signal_scan, "alerts", None) or [] if signal_scan else []
+    if alerts:
+        signal_map = _build_signal_label_map()
+        codes = set()
+        for a in alerts:
+            codes.add(getattr(a, "stock_code", "?"))
+        lines.append(f"{b}今日信号{b} ({len(alerts)}条 / {len(codes)}只)")
+        for a in alerts[:30]:
+            code = getattr(a, "stock_code", "?")
+            raw = getattr(a, "rule_label", "?")
+            readable = signal_map.get(raw, raw)
+            cv = getattr(a, "current_value", "-")
+            lines.append(f"  {code} {readable}  {cv}")
+        lines.append("")
+    elif signal_scan is not None:
+        lines.append(f"{b}今日信号{b}: 无触发")
+        lines.append("")
+
+    # ── 未解禁定增 ──
+    if placements:
+        name_map = {}
+        try:
+            df = session.get_all_dataframe()
+            for _, row in df.iterrows():
+                name_map[str(row.get("stock_code", ""))] = row.get("stock_name", "")
+        except Exception:
+            pass
+        lines.append(f"{b}未解禁定增{b}")
+        for code, p in sorted(placements.items()):
+            name = name_map.get(code, "")
+            num = p.get("issue_num")
+            num_str = f"{num / 1e8:.2f}亿股" if num else "—"
+            price = p.get("issue_price")
+            price_str = f"{price:.2f}元" if price else "—"
+            pct = p.get("pct_of_total")
+            pct_str = f"{pct:.2f}%" if pct is not None else "—"
+            unlock = p.get("unlock_date") or "—"
+            lines.append(
+                f"  {code} {name}  {num_str}  占{pct_str}  {price_str}  解禁{unlock}"
+            )
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
+
+
 def build_optimizer_summary(report, group_name: str = "") -> str:
     """将 OptimizationReport 格式化为人话摘要。"""
     lines = ["<b>策略优化完成</b>"]
