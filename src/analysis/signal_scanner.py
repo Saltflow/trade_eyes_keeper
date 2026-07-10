@@ -222,8 +222,10 @@ class SignalScanner:
         # 获取历史数据和今日指标
         historical: dict[str, pd.DataFrame] = getattr(session, "_historical", {}) or {}
         stocks_data = session.stocks_data or []
-        stock_codes = self._get_stock_codes(stocks_data)
-
+        all_codes = self._get_stock_codes(stocks_data)
+        # 按 group 过滤（scan 的 group 是 a_share/non_a_share 二分）
+        from .portfolio_strategy import _detect_stock_group
+        stock_codes = [c for c in all_codes if _detect_stock_group(c) == group]
         if not historical or not stock_codes:
             return result
 
@@ -231,8 +233,9 @@ class SignalScanner:
         today_indicators = self._compute_today_indicators(historical, stock_codes)
         result.indicator_snapshot = today_indicators
 
-        # 评估告警: 对共识入选池内的标的，评估共识买入信号
-        for code in consensus.consensus_stocks:
+        # 评估告警: 对当前会话所有标的（来自 config，非 YAML _stocks 快照）
+        # 评估策略买入信号 — 删/加标的立刻生效
+        for code in stock_codes:
             if code not in today_indicators:
                 continue
             today = today_indicators[code]

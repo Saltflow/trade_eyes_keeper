@@ -284,15 +284,18 @@ def run_daily_task(force: bool = False):
         # 4. 创建通知管理器（统一入口）
         notifier = NotifierManager(config)
 
-        # 5. 投资组合策略分析（直读 YAML 选股，不重新搜参 — 见 proj4llm 权威设计契约）
+        # 5. 投资组合策略分析（标的池=config，策略规则=YAML，不选股不搜参）
         try:
             from src.analysis.portfolio_strategy import PortfolioOptimizer
             from src.analysis.rule_engine import Rule
 
-            logger.info("开始投资组合策略分析（固定选股模式）")
+            logger.info("开始投资组合策略分析（config标的 + YAML规则）")
 
             def _load_opt_yaml(group: str):
-                """读取指定分组最新 YAML，返回 (opt_data, custom_rules, stocks)。"""
+                """读取指定分组最新 YAML，返回 (opt_data, custom_rules)。
+
+                只取策略规则，不再读 _stocks — 标的池由 config 决定。
+                """
                 opt_dir = Path("data/optimizer")
                 files = sorted(
                     [f for f in opt_dir.glob(f"*_{group}_strategies.yaml")
@@ -300,7 +303,7 @@ def run_daily_task(force: bool = False):
                     key=lambda p: p.stat().st_mtime, reverse=True,
                 )
                 if not files:
-                    return None, None, []
+                    return None, None
                 with open(files[0], "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f)
                 top = (data.get("strategies") or [{}])[0]
@@ -319,49 +322,32 @@ def run_daily_task(force: bool = False):
                             r["action_min"] = 2500.0
                             r["action_max"] = 10000.0
                 rules = [Rule.from_dict(r) for r in rules_raw] if rules_raw else None
-                # 解析 _stocks（"code1,code2,... +N" 格式，剔除 +N 短码）
-                stocks = []
-                for part in params.get("_stocks", "").replace("+", ",").split(","):
-                    c = part.strip()
-                    if c and not (c.isdigit() and len(c) <= 3):
-                        stocks.append(c)
-                return data, rules, stocks
+                return data, rules
 
-            a_data, a_rules, a_stocks = _load_opt_yaml("a_share")
-            n_data, n_rules, n_stocks = _load_opt_yaml("non_a_share")
+            a_data, a_rules = _load_opt_yaml("a_share")
+            n_data, n_rules = _load_opt_yaml("non_a_share")
 
             # 存 opt_data 供邮件展示 YAML 预估收益（Top1 test_return）
             session.opt_data_a = a_data
             session.opt_data_non_a = n_data
 
-            # 非A选股按港股/美股拆成独立资金池
-            from src.analysis.portfolio_strategy import _detect_fine_group
-            hk_stocks = [c for c in n_stocks if _detect_fine_group(c) == "hk"]
-            us_stocks = [c for c in n_stocks if _detect_fine_group(c) == "us"]
-
+            # 标的池全部来自 config：A股用 a_rules，港股/美股用 n_rules
             portfolio_results = {}
-            # A股：用 a_rules
-            if a_stocks:
-                opt_a = PortfolioOptimizer(config, custom_rules=a_rules)
-                res_a = opt_a.run_fixed({"a_share": a_stocks, "hk": [], "us": []})
-                if res_a.get("a_share"):
-                    portfolio_results["a_share"] = res_a["a_share"]
-            # 港股 + 美股：各自独立资金池，共用 n_rules
-            if hk_stocks or us_stocks:
-                opt_n = PortfolioOptimizer(config, custom_rules=n_rules)
-                res_n = opt_n.run_fixed(
-                    {"a_share": [], "hk": hk_stocks, "us": us_stocks}
-                )
-                if res_n.get("hk"):
-                    portfolio_results["hk"] = res_n["hk"]
-                if res_n.get("us"):
-                    portfolio_results["us"] = res_n["us"]
+            opt_a = PortfolioOptimizer(config, custom_rules=a_rules)
+            res_a = opt_a.run_fixed(groups=["a_share"])
+            if res_a.get("a_share"):
+                portfolio_results["a_share"] = res_a["a_share"]
+            opt_n = PortfolioOptimizer(config, custom_rules=n_rules)
+            res_n = opt_n.run_fixed(groups=["hk", "us"])
+            for g in ("hk", "us"):
+                if res_n.get(g):
+                    portfolio_results[g] = res_n[g]
 
             if portfolio_results:
                 session.portfolio_results = portfolio_results
-                logger.info("投资组合策略分析完成（固定选股, A股/港股/美股独立资金池）")
+                logger.info("投资组合策略分析完成（config标的 / A股/港股/美股独立资金池）")
             else:
-                logger.warning("YAML 无选股数据，跳过投资组合分析")
+                logger.warning("无可用标的，跳过投资组合分析")
         except Exception as e:
             logger.error(f"投资组合策略分析失败: {e}", exc_info=True)
 

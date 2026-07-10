@@ -124,3 +124,32 @@ class TestStrategyTextSummary:
         plain = build_strategy_text_summary(s, markdown=False)
         assert "**今日信号**" in md
         assert "**" not in plain
+
+
+class TestReadableSignalByGroup:
+    """Bug2: 非A标的信号名应按非A YAML 映射，不能用A股映射。"""
+
+    def test_a_share_uses_a_map(self):
+        from notification.email_notifier import _readable_signal
+        map_a = {"buy_1": "偏离穿越"}
+        map_n = {"buy_1": "趋势跟踪"}
+        # 601728 是A股 → 用 map_a
+        assert _readable_signal("601728", "buy_1", map_a, map_n) == "偏离穿越"
+
+    def test_hk_uses_non_a_map(self):
+        from notification.email_notifier import _readable_signal
+        map_a = {"buy_1": "偏离穿越"}
+        map_n = {"buy_1": "趋势跟踪"}
+        # 00883 港股 → 用 map_n
+        assert _readable_signal("00883", "buy_1", map_a, map_n) == "趋势跟踪"
+
+    def test_us_uses_non_a_map(self):
+        from notification.email_notifier import _readable_signal
+        map_a = {"buy_4": "RSI超卖"}
+        map_n = {"buy_4": "深度价值"}
+        # VOO 美股 → 用 map_n
+        assert _readable_signal("VOO", "buy_4", map_a, map_n) == "深度价值"
+
+    def test_unknown_falls_back_to_raw(self):
+        from notification.email_notifier import _readable_signal
+        assert _readable_signal("601728", "buy_9", {}, {}) == "buy_9"

@@ -340,14 +340,19 @@ SIGNAL_NAMES = {
 }
 
 
-def _build_signal_label_map() -> dict[str, str]:
-    """读最新优化器 YAML，返回 {buy_1: 偏离穿越, buy_2: RSI超卖, ...}"""
+def _build_signal_label_map(group: str = "a_share") -> dict[str, str]:
+    """读指定分组最新优化器 YAML，返回 {buy_1: 偏离穿越, buy_2: RSI超卖, ...}
+
+    Args:
+        group: "a_share" 或 "non_a_share" — 不同组信号名不同，必须分开读
+    """
     try:
         import yaml
         opt_dir = Path("data/optimizer")
+        is_non_a = (group == "non_a_share")
         yaml_files = sorted(
-            [f for f in opt_dir.glob("*_a_share_strategies.yaml")
-             if "non_a_share" not in f.name],
+            [f for f in opt_dir.glob(f"*_{group}_strategies.yaml")
+             if ("non_a_share" in f.name) == is_non_a],
             key=lambda p: p.stat().st_mtime, reverse=True,
         )
         if not yaml_files:
@@ -373,6 +378,19 @@ def _build_signal_label_map() -> dict[str, str]:
     except Exception as e:
         logger.warning(f"读取信号标签映射失败: {e}")
         return {}
+
+
+def _readable_signal(code: str, rule_label: str, map_a: dict, map_n: dict) -> str:
+    """按标的所属组把 rule_id(如 buy_1) 翻译成信号名(如 趋势跟踪)。
+
+    A股用 A股 YAML 映射，港股/美股用非A YAML 映射 — 两组信号名不同。
+    """
+    try:
+        from ..analysis.portfolio_strategy import _detect_stock_group
+    except (ImportError, ValueError):
+        from analysis.portfolio_strategy import _detect_stock_group
+    m = map_a if _detect_stock_group(str(code)) == "a_share" else map_n
+    return m.get(rule_label, rule_label)
 
 
 def build_strategy_text_summary(session, markdown: bool = False) -> str:
@@ -449,7 +467,8 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
     # ── 今日信号 ──
     alerts = getattr(signal_scan, "alerts", None) or [] if signal_scan else []
     if alerts:
-        signal_map = _build_signal_label_map()
+        map_a = _build_signal_label_map("a_share")
+        map_n = _build_signal_label_map("non_a_share")
         codes = set()
         for a in alerts:
             codes.add(getattr(a, "stock_code", "?"))
@@ -457,7 +476,7 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
         for a in alerts[:30]:
             code = getattr(a, "stock_code", "?")
             raw = getattr(a, "rule_label", "?")
-            readable = signal_map.get(raw, raw)
+            readable = _readable_signal(code, raw, map_a, map_n)
             cv = getattr(a, "current_value", "-")
             lines.append(f"  {code} {readable}  {cv}")
         lines.append("")
@@ -1236,7 +1255,8 @@ class EmailNotifier(BaseNotifier):
                 '<tr style="background:#2c3e50;color:#fff">'
                 '<th>标的</th><th>规则</th><th>当前值</th></tr>'
             )
-            signal_map = _build_signal_label_map()
+            map_a = _build_signal_label_map("a_share")
+            map_n = _build_signal_label_map("non_a_share")
             for a in alerts[:30]:
                 code = getattr(a, "stock_code", None) or (
                     a.get("stock_code", "?") if isinstance(a, dict) else "?"
@@ -1244,7 +1264,7 @@ class EmailNotifier(BaseNotifier):
                 raw = getattr(a, "rule_label", None) or (
                     a.get("rule_label", "?") if isinstance(a, dict) else "?"
                 )
-                readable = signal_map.get(raw, raw)
+                readable = _readable_signal(code, raw, map_a, map_n)
                 cv = getattr(a, "current_value", None) or (
                     a.get("current_value", "-") if isinstance(a, dict) else "-"
                 )
@@ -2586,7 +2606,8 @@ class EmailNotifier(BaseNotifier):
         strat_html = ""
         if signal_scan and signal_scan.alerts:
             alerts = signal_scan.alerts
-            signal_map = _build_signal_label_map()
+            map_a = _build_signal_label_map("a_share")
+            map_n = _build_signal_label_map("non_a_share")
             strat_html = (
                 "<h3>策略信号</h3>"
                 f"<p>共 {len(alerts)} 条策略告警</p>"
@@ -2595,7 +2616,7 @@ class EmailNotifier(BaseNotifier):
             for a in alerts[:12]:
                 code = getattr(a, "stock_code", "?")
                 raw = getattr(a, "rule_label", "?")
-                readable = signal_map.get(raw, raw)
+                readable = _readable_signal(code, raw, map_a, map_n)
                 cv = getattr(a, "current_value", "-")
                 strat_html += (
                     f"<tr><td>{code}</td><td>{readable}</td><td>{cv}</td></tr>"

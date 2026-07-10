@@ -1132,15 +1132,17 @@ class PortfolioOptimizer:
 
         return results
 
-    def run_fixed(self, stock_selection: dict[str, list[str]]) -> dict:
-        """按 YAML 指定的选股做确定性评估（不搜索，消除每日抽奖）。
+    def run_fixed(self, groups: list[str] | None = None) -> dict:
+        """对 config 当前标的做确定性评估（不搜索，不选股）。
 
-        日报/简报专用：直接对优化器搜出的 _stocks 选股跑一次 evaluate()，
-        产出 NAV 曲线 + 季末持仓。表现数字应以 YAML test_return 为准，
+        日报/简报专用：标的池 = config.yaml 当前 stocks（按细分组分池），
+        策略规则 = self.custom_rules（来自 YAML）。删/加标的立刻生效，
+        不依赖 YAML 里的 _stocks 快照。表现数字以 YAML test_return 为准，
         本方法产出的 total_return 仅供 NAV 图展示。
 
         Args:
-            stock_selection: {"a_share": [...], "hk": [...], "us": [...]}
+            groups: 要评估的细分组子集，如 ["a_share"] 或 ["hk","us"]；
+                    None = 全部三组
         Returns:
             dict: {group: {"top1": PortfolioResult}}  group ∈ a_share/hk/us
         """
@@ -1149,6 +1151,7 @@ class PortfolioOptimizer:
             logger.warning("配置中无股票")
             return {}
 
+        target_groups = groups or ["a_share", "hk", "us"]
         ps_config = self.config.get("portfolio_strategy", {})
         lookback_days = ps_config.get("lookback_days", 730)
 
@@ -1158,18 +1161,15 @@ class PortfolioOptimizer:
             if config_rules:
                 custom_rules = [Rule.from_dict(r) for r in config_rules]
 
-        # 拉取数据并按细分组（a_share/hk/us）独立资金池
+        # 标的池 = config 当前 stocks，按细分组分池（只拉目标组）
         group_data_map: dict[str, dict[str, pd.DataFrame]] = {
             "a_share": {}, "hk": {}, "us": {},
         }
-        config_codes = {str(c) for c in stocks}
-        # 并入 YAML 选股里可能不在 config 的标的
-        for codes in stock_selection.values():
-            config_codes.update(codes)
-
-        for code in config_codes:
+        for code in stocks:
             code_str = str(code)
             group = _detect_fine_group(code_str)
+            if group not in target_groups:
+                continue
             data = self.fetch_stock_data(code_str, lookback_days)
             if data.empty or "close" not in data.columns:
                 continue
@@ -1181,12 +1181,11 @@ class PortfolioOptimizer:
         # 评估器 group 参数（risk_free 二分）：a_share=2%, hk/us=非A 4.5%
         eval_group = {"a_share": "a_share", "hk": "non_a_share", "us": "non_a_share"}
         results: dict = {}
-        for group_name in ("a_share", "hk", "us"):
-            group_data = group_data_map[group_name]
-            selected = [c for c in stock_selection.get(group_name, [])
-                        if c in group_data]
+        for group_name in target_groups:
+            group_data = group_data_map.get(group_name, {})
+            selected = list(group_data.keys())
             if not selected:
-                logger.info(f"{group_name} YAML 选股无可用数据，跳过")
+                logger.info(f"{group_name} config 无可用标的，跳过")
                 results[group_name] = {}
                 continue
 
@@ -1197,7 +1196,7 @@ class PortfolioOptimizer:
             result.name = "top1"
             results[group_name] = {"top1": result}
             logger.info(
-                f"{group_name} 固定选股评估: {len(selected)}只 "
+                f"{group_name} 固定评估: {len(selected)}只 "
                 f"收益{result.total_return:.1f}% 回撤{result.max_drawdown:.1f}%"
             )
 
