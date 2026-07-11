@@ -474,6 +474,44 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
                 lines.append(f"  成分: {', '.join(comp)}")
             if ts:
                 lines.append(f"  搜参时间 {ts}")
+
+            # 买卖规则明细（从 YAML params 翻译）
+            params = g_top.get("params", {})
+            buy_rules, sell_rules = [], []
+            for k, v in sorted(params.items()):
+                if not k.endswith("_signal"):
+                    continue
+                idx = k.split("_")[1]
+                name = SIGNAL_NAMES.get(str(v), str(v))
+                if str(v) == "none":
+                    continue
+                t = params.get(k.replace("_signal", "_t"))
+                frac = params.get(k.replace("_signal", "_frac"))
+                extra = ""
+                if t is not None:
+                    extra += f" 阈值{float(t):.2f}"
+                if frac is not None:
+                    extra += f" 仓位{float(frac)*100:.0f}%"
+                if k.startswith("buy"):
+                    buy_rules.append(f"买{idx}:{name}{extra}")
+                else:
+                    sell_rules.append(f"卖{idx}:{name}{extra}")
+            if buy_rules:
+                lines.append("  买入: " + " | ".join(buy_rules))
+            if sell_rules:
+                lines.append("  卖出: " + " | ".join(sell_rules))
+
+            # 季末持仓（最后一个季度快照）
+            if qh:
+                last_q = qh[-1]
+                qpos = last_q.get("positions", [])
+                if qpos:
+                    pos_str = ", ".join(
+                        f"{p['code']} {p['shares']:.0f}股@{p['price']:.2f}"
+                        f"({p.get('pnl_pct', 0):+.0f}%)"
+                        for p in qpos[:8]
+                    )
+                    lines.append(f"  期末持仓(Q{last_q.get('quarter','?')}): {pos_str}")
             lines.append("")
 
     # ── 今日信号 ──
@@ -519,6 +557,27 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
             lines.append(
                 f"  {code} {name}  {num_str}  占{pct_str}  {price_str}  解禁{unlock}"
             )
+        lines.append("")
+
+    # ── 公告 / 股息 ──
+    announcements = getattr(session, "announcements", None) or {}
+    ann_lines = []
+    for code, items in announcements.items():
+        if not items:
+            continue
+        for a in items[:2]:  # 每只最多2条
+            title = a.get("title", "")
+            date = str(a.get("date", ""))[:10]
+            # 优先展示 LLM 提取的分红
+            div = a.get("llm_extracted_dividend") or {}
+            cash = div.get("cash_dividend_per_share") or div.get("dividend_per_share")
+            if cash:
+                ann_lines.append(f"  {code} {date} 分红{cash:.3f}元/股")
+            elif title:
+                ann_lines.append(f"  {code} {date} {title[:24]}")
+    if ann_lines:
+        lines.append(f"{b}公告/股息{b}")
+        lines.extend(ann_lines[:15])
         lines.append("")
 
     return "\n".join(lines).rstrip()
