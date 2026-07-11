@@ -1438,13 +1438,30 @@ class EmailNotifier(BaseNotifier):
             ]
             avg_cash = sum(cash_pcts) / len(cash_pcts) if cash_pcts else None
 
-            # ── 验证期胜率（现场用 nav_series vs 主基准算，不依赖 YAML）──
-            primary_bench = "510880" if group_key == "a_share" else "VOO"
-            bench_name = ("510880 红利ETF" if group_key == "a_share"
-                          else "VOO 标普500")
-            win_rate, win_days, total_days, v_excess = self._calc_validation_winrate(
-                r, benchmark_data.get(primary_bench), months=9,
-            )
+            # ── 验证期胜率（现场用 nav_series vs 三基线算，不依赖 YAML）──
+            # 每组三基线：(展示名, 价格基准code 或 None=无风险, 无风险年化)
+            bench_sets = {
+                "a_share": [("510880", "510880", None), ("沪深300", "510300", None),
+                            ("无风险", None, 0.02)],
+                "hk": [("VOO", "VOO", None), ("BRK.B", "BRK.B", None),
+                       ("无风险", None, 0.038)],
+                "us": [("VOO", "VOO", None), ("BRK.B", "BRK.B", None),
+                       ("无风险", None, 0.038)],
+            }
+            wr_parts = []
+            for disp, bcode, rf in bench_sets.get(group_key, []):
+                if bcode is not None:
+                    wr, _, _, _ = self._calc_validation_winrate(
+                        r, benchmark_data.get(bcode), months=9,
+                    )
+                else:
+                    wr, _, _ = self._calc_winrate_vs_riskfree(
+                        r, annual_rate=rf, months=9,
+                    )
+                if wr is not None:
+                    wc = "#27ae60" if wr >= 50 else "#c0392b"
+                    wr_parts.append(
+                        f'{disp} <span style="color:{wc}">{wr:.0f}%</span>')
 
             if test_ret is not None:
                 rc = "#27ae60" if test_ret >= 0 else "#c0392b"
@@ -1458,22 +1475,14 @@ class EmailNotifier(BaseNotifier):
                 )
                 if avg_cash is not None:
                     summary += f'平均现金仓位 {avg_cash:.0f}% &nbsp; '
-                # 验证期胜率
-                if win_rate is not None:
-                    wc = "#27ae60" if win_rate >= 50 else "#c0392b"
+                # 验证期胜率（三基线）
+                if wr_parts:
                     summary += (
-                        f'<br><b>验证期胜率</b> '
-                        f'<span style="color:{wc}">{win_rate:.0f}%</span> '
-                        f'({win_days}/{total_days} 天, 任意一天买入持有到期跑赢 {bench_name} 的概率)'
+                        f'<br><b>验证期胜率</b>(任意一天买入持有到期跑赢): '
+                        + " | ".join(wr_parts)
                     )
-                    if v_excess is not None:
-                        ec = "#27ae60" if v_excess >= 0 else "#c0392b"
-                        summary += (
-                            f' &nbsp; 验证期超额 '
-                            f'<span style="color:{ec}">{v_excess:+.1f}%</span>'
-                        )
                 summary += f'<br><span style="color:#888;font-size:11px">'
-                summary += f'搜参时间 {ts} · 主基准: {bench_name} · 成分: '
+                summary += f'搜参时间 {ts} · 成分: '
                 summary += f'{", ".join(comp) if comp else "—"}</span>'
                 lines.append(summary)
             else:
