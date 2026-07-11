@@ -429,8 +429,15 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
     # ── 搜参策略结果（三组）──
     if portfolio_results:
         group_labels = {"a_share": "A股组合", "hk": "港股组合", "us": "美股组合"}
-        bench_names = {"a_share": "510880红利ETF", "hk": "VOO", "us": "VOO"}
-        bench_codes = {"a_share": "510880", "hk": "VOO", "us": "VOO"}
+        # 每组三基线：(展示名, 价格基准code 或 None=无风险, 无风险年化)
+        bench_sets = {
+            "a_share": [("510880", "510880", None), ("沪深300", "510300", None),
+                        ("无风险", None, 0.02)],
+            "hk": [("VOO", "VOO", None), ("BRK.B", "BRK.B", None),
+                   ("无风险", None, 0.038)],
+            "us": [("VOO", "VOO", None), ("BRK.B", "BRK.B", None),
+                   ("无风险", None, 0.038)],
+        }
         for gk, gl in group_labels.items():
             gd = portfolio_results.get(gk)
             if not gd:
@@ -451,10 +458,19 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
             avg_cash = sum(cash_pcts) / len(cash_pcts) if cash_pcts else None
             comp = getattr(r, "composition", [])
 
-            # 验证期胜率
-            wr, wd, td, vex = EmailNotifier._calc_validation_winrate(
-                r, benchmark.get(bench_codes[gk]), months=9,
-            )
+            # 验证期胜率（三基线各算一个）
+            wr_parts = []
+            for disp, bcode, rf in bench_sets.get(gk, []):
+                if bcode is not None:
+                    wr, wd, td, _ = EmailNotifier._calc_validation_winrate(
+                        r, benchmark.get(bcode), months=9,
+                    )
+                else:
+                    wr, wd, td = EmailNotifier._calc_winrate_vs_riskfree(
+                        r, annual_rate=rf, months=9,
+                    )
+                if wr is not None:
+                    wr_parts.append(f"{disp} {wr:.0f}%")
 
             if test_ret is not None:
                 head = (f"{b}{gl}{b} 预估收益(测试期超额,近9月) {test_ret:+.1f}%"
@@ -465,10 +481,10 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
             if avg_cash is not None:
                 head += f"  平均现金仓位 {avg_cash:.0f}%"
             lines.append(head)
-            if wr is not None:
+            if wr_parts:
                 lines.append(
-                    f"  验证期胜率 {wr:.0f}% ({wd}/{td}天跑赢{bench_names[gk]})"
-                    + (f"  验证期超额 {vex:+.1f}%" if vex is not None else "")
+                    "  验证期胜率(任意日买入持有到期跑赢): "
+                    + " | ".join(wr_parts)
                 )
             if comp:
                 lines.append(f"  成分: {', '.join(comp)}")
@@ -1150,6 +1166,38 @@ class EmailNotifier(BaseNotifier):
         except Exception as e:
             logger.debug(f"验证期胜率计算失败: {e}")
             return None, None, None, None
+
+    @staticmethod
+    def _calc_winrate_vs_riskfree(result, annual_rate=0.02, months=9):
+        """验证期胜率 vs 无风险基准（固定年化，日复利）。
+
+        Returns: (win_rate%, win_days, total_days) 或全 None
+        """
+        nav = getattr(result, "nav_series", None) or []
+        if len(nav) < 20:
+            return None, None, None
+        try:
+            v_len = min(len(nav), months * 21)
+            v_nav = nav[len(nav) - v_len:]
+            daily_rf = (1 + annual_rate) ** (1 / 252) - 1
+            s_final = v_nav[-1]
+            wins = total = 0
+            n = len(v_nav)
+            for i in range(n - 1):
+                if v_nav[i] <= 0:
+                    continue
+                s_fwd = s_final / v_nav[i] - 1
+                # 无风险从 i 持有到期末的收益（(n-1-i) 个交易日）
+                rf_fwd = (1 + daily_rf) ** (n - 1 - i) - 1
+                if s_fwd > rf_fwd:
+                    wins += 1
+                total += 1
+            if total == 0:
+                return None, None, None
+            return wins / total * 100, wins, total
+        except Exception as e:
+            logger.debug(f"无风险胜率计算失败: {e}")
+            return None, None, None
 
     @staticmethod
     def _build_placement_section(placements, stock_data):

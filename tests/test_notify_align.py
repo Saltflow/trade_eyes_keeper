@@ -78,8 +78,9 @@ class TestStrategyTextSummary:
         s = _make_session(portfolio_results=pr, opt_data_a=opt,
                           _historical={"510880": bench})
         out = build_strategy_text_summary(s)
-        assert "验证期胜率 100%" in out
-        assert "跑赢510880红利ETF" in out
+        assert "验证期胜率" in out
+        assert "510880 100%" in out       # vs 510880 基线
+        assert "无风险 100%" in out        # vs 无风险基线
 
     def test_signals_readable_names(self):
         from notification.email_notifier import build_strategy_text_summary
