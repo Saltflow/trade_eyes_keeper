@@ -140,7 +140,9 @@ class StrategyConstraints:
         """设置所属组别，从 benchmarks 配置中提取对应基准代码和利率。
 
         Args:
-            group: "a_share" 或 "non_a_share"
+            group: "a_share" / "hk" / "us" / "non_a_share"
+                   各组从 optimizer_constraints.yaml 的 benchmarks[group] 读取
+                   独立的基准 ETF 列表和无风险利率（缺失则回退 2%）。
         """
         self.benchmark_codes = list(self._raw_benchmarks.get(group, []))
         rates = self._raw_benchmarks.get("risk_free_rates", {})
