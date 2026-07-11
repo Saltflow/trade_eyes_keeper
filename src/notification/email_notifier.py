@@ -380,16 +380,24 @@ def _build_signal_label_map(group: str = "a_share") -> dict[str, str]:
         return {}
 
 
-def _readable_signal(code: str, rule_label: str, map_a: dict, map_n: dict) -> str:
-    """按标的所属组把 rule_id(如 buy_1) 翻译成信号名(如 趋势跟踪)。
+def _readable_signal(code: str, rule_label: str, map_a: dict, map_hk: dict,
+                     map_us: dict = None) -> str:
+    """按标的所属细分组把 rule_id(如 buy_1) 翻译成信号名(如 趋势跟踪)。
 
-    A股用 A股 YAML 映射，港股/美股用非A YAML 映射 — 两组信号名不同。
+    A股/港股/美股各用自己的 YAML 映射 — 三组信号名可能都不同。
+    map_us 缺省时港美股共用 map_hk（向后兼容非A单组）。
     """
     try:
-        from ..analysis.portfolio_strategy import _detect_stock_group
+        from ..analysis.portfolio_strategy import _detect_fine_group
     except (ImportError, ValueError):
-        from analysis.portfolio_strategy import _detect_stock_group
-    m = map_a if _detect_stock_group(str(code)) == "a_share" else map_n
+        from analysis.portfolio_strategy import _detect_fine_group
+    g = _detect_fine_group(str(code))
+    if g == "a_share":
+        m = map_a
+    elif g == "hk":
+        m = map_hk
+    else:  # us
+        m = map_us if map_us is not None else map_hk
     return m.get(rule_label, rule_label)
 
 
@@ -408,8 +416,12 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
     portfolio_results = getattr(session, "portfolio_results", None)
     signal_scan = getattr(session, "signal_scan", None)
     placements = getattr(session, "placements", None)
-    opt_a = getattr(session, "opt_data_a", None)
     opt_n = getattr(session, "opt_data_non_a", None)
+    yaml_by_group = {
+        "a_share": getattr(session, "opt_data_a", None),
+        "hk": getattr(session, "opt_data_hk", None) or opt_n,
+        "us": getattr(session, "opt_data_us", None) or opt_n,
+    }
     benchmark = getattr(session, "_historical", {}) or {}
 
     lines: list[str] = []
@@ -426,8 +438,8 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
             r = gd.get("top1") or gd.get("max_return")
             if not r:
                 continue
-            # YAML 权威预估收益
-            g_yaml = opt_a if gk == "a_share" else opt_n
+            # YAML 权威预估收益（各组用自己的 YAML）
+            g_yaml = yaml_by_group.get(gk)
             g_top = ((g_yaml or {}).get("strategies") or [{}])[0]
             test_ret = g_top.get("test_return")
             test_dd = g_top.get("test_drawdown")
@@ -468,7 +480,8 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
     alerts = getattr(signal_scan, "alerts", None) or [] if signal_scan else []
     if alerts:
         map_a = _build_signal_label_map("a_share")
-        map_n = _build_signal_label_map("non_a_share")
+        map_hk = _build_signal_label_map("hk") or _build_signal_label_map("non_a_share")
+        map_us = _build_signal_label_map("us") or _build_signal_label_map("non_a_share")
         codes = set()
         for a in alerts:
             codes.add(getattr(a, "stock_code", "?"))
@@ -476,7 +489,7 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
         for a in alerts[:30]:
             code = getattr(a, "stock_code", "?")
             raw = getattr(a, "rule_label", "?")
-            readable = _readable_signal(code, raw, map_a, map_n)
+            readable = _readable_signal(code, raw, map_a, map_hk, map_us)
             cv = getattr(a, "current_value", "-")
             lines.append(f"  {code} {readable}  {cv}")
         lines.append("")
@@ -515,7 +528,8 @@ def build_optimizer_summary(report, group_name: str = "") -> str:
     """将 OptimizationReport 格式化为人话摘要。"""
     lines = ["<b>策略优化完成</b>"]
     if group_name:
-        label = "A股" if group_name == "a_share" else "非A股"
+        label = {"a_share": "A股", "hk": "港股", "us": "美股",
+                 "non_a_share": "非A股"}.get(group_name, group_name)
         lines.append(f"分组: {label}")
     lines.append(
         f"耗时: {report.elapsed_seconds:.0f}s  |  "
@@ -706,6 +720,8 @@ class EmailNotifier(BaseNotifier):
             opt_data = getattr(session, "opt_data_a", None)
             opt_data_map = {
                 "a_share": getattr(session, "opt_data_a", None),
+                "hk": getattr(session, "opt_data_hk", None),
+                "us": getattr(session, "opt_data_us", None),
                 "non_a_share": getattr(session, "opt_data_non_a", None),
             }
 
@@ -790,6 +806,8 @@ class EmailNotifier(BaseNotifier):
             opt_data = getattr(session, "opt_data_a", None)
             opt_data_map = {
                 "a_share": getattr(session, "opt_data_a", None),
+                "hk": getattr(session, "opt_data_hk", None),
+                "us": getattr(session, "opt_data_us", None),
                 "non_a_share": getattr(session, "opt_data_non_a", None),
             }
 
@@ -1256,7 +1274,8 @@ class EmailNotifier(BaseNotifier):
                 '<th>标的</th><th>规则</th><th>当前值</th></tr>'
             )
             map_a = _build_signal_label_map("a_share")
-            map_n = _build_signal_label_map("non_a_share")
+            map_hk = _build_signal_label_map("hk") or _build_signal_label_map("non_a_share")
+            map_us = _build_signal_label_map("us") or _build_signal_label_map("non_a_share")
             for a in alerts[:30]:
                 code = getattr(a, "stock_code", None) or (
                     a.get("stock_code", "?") if isinstance(a, dict) else "?"
@@ -1264,7 +1283,7 @@ class EmailNotifier(BaseNotifier):
                 raw = getattr(a, "rule_label", None) or (
                     a.get("rule_label", "?") if isinstance(a, dict) else "?"
                 )
-                readable = _readable_signal(code, raw, map_a, map_n)
+                readable = _readable_signal(code, raw, map_a, map_hk, map_us)
                 cv = getattr(a, "current_value", None) or (
                     a.get("current_value", "-") if isinstance(a, dict) else "-"
                 )
@@ -1296,9 +1315,9 @@ class EmailNotifier(BaseNotifier):
             )
 
             # ── YAML 权威预估收益（Top1 测试期，近9个月样本外）──
-            # hk/us 共用 non_a_share YAML（优化器未拆分组）
-            yaml_key = "a_share" if group_key == "a_share" else "non_a_share"
-            g_yaml = opt_data_map.get(yaml_key) or {}
+            # 各组用自己的 YAML（hk/us 独立搜参），回退 non_a_share
+            g_yaml = (opt_data_map.get(group_key)
+                      or opt_data_map.get("non_a_share") or {})
             g_top = (g_yaml.get("strategies") or [{}])[0]
             test_ret = g_top.get("test_return")
             test_dd = g_top.get("test_drawdown")
@@ -2607,7 +2626,8 @@ class EmailNotifier(BaseNotifier):
         if signal_scan and signal_scan.alerts:
             alerts = signal_scan.alerts
             map_a = _build_signal_label_map("a_share")
-            map_n = _build_signal_label_map("non_a_share")
+            map_hk = _build_signal_label_map("hk") or _build_signal_label_map("non_a_share")
+            map_us = _build_signal_label_map("us") or _build_signal_label_map("non_a_share")
             strat_html = (
                 "<h3>策略信号</h3>"
                 f"<p>共 {len(alerts)} 条策略告警</p>"
@@ -2616,7 +2636,7 @@ class EmailNotifier(BaseNotifier):
             for a in alerts[:12]:
                 code = getattr(a, "stock_code", "?")
                 raw = getattr(a, "rule_label", "?")
-                readable = _readable_signal(code, raw, map_a, map_n)
+                readable = _readable_signal(code, raw, map_a, map_hk, map_us)
                 cv = getattr(a, "current_value", "-")
                 strat_html += (
                     f"<tr><td>{code}</td><td>{readable}</td><td>{cv}</td></tr>"

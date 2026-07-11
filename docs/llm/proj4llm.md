@@ -167,17 +167,23 @@
 - **今日信号**：`SignalScanner` 用 YAML 的 `rules` 条件字符串评估当日数据，`strategy_rank==1` 与 Top1 展示对齐
 - **固定选股评估**：`PortfolioOptimizer.run_fixed(stock_selection)` — 对 YAML `_stocks` 跑一次确定性 `evaluate()`，产出 NAV 曲线 + 季末持仓，不搜索
 
-#### 4. 日报三组独立资金池 + 验证期胜率 (v1.18, 2026-07-09)
+#### 4. 三组独立搜参 + 独立资金池 + 验证期胜率 (v1.18, 2026-07-11)
 
-- **三组拆分**（`_detect_fine_group`，仅日报展示层，不影响回测/优化器二分）：
-  | 细分组 | 判定 | 资金池 | 主基准 |
-  |--------|------|--------|--------|
-  | a_share | 6 位纯数字 | 独立 100k | 510880 红利ETF |
-  | hk | 5 位纯数字 | 独立 100k | VOO |
-  | us | 含字母 | 独立 100k | VOO |
-  - 港股/美股共用 non_a YAML 的规则（优化器未拆），但资金池独立评估
-  - **`_detect_stock_group`（二分）保持不变** — risk_free/回测/优化器仍用 a_share/non_a_share
-  - 动机：港股暴跌 + 美股盈利混一池互相抵消，拆开才看得清真实表现
+- **三组独立搜参**（v1.18 2026-07-11 起）：优化器 V2 按 A股/港股/美股**分别搜参**，产出三份 YAML：
+  - `*_a_share_strategies.yaml` / `*_hk_strategies.yaml` / `*_us_strategies.yaml`
+  - 动机：港美股走势差异大，混搜时港股趋势性主导搜索空间，美股被迫用不适配的规则（如全是 trend_follow）
+  - `run_optimization_v2` 用 `_detect_fine_group` 三分；`optimizer_constraints.yaml` benchmarks 加 hk/us（=VOO/BRK.B）
+  - 回退：hk/us YAML 未生成时用 non_a_share YAML
+- **三组独立资金池**（`_detect_fine_group`，日报展示层）：
+  | 细分组 | 判定 | 资金池 | 主基准 | 规则来源 |
+  |--------|------|--------|--------|----------|
+  | a_share | 6 位纯数字 | 独立 100k | 510880 红利ETF | a_share YAML |
+  | hk | 5 位纯数字 | 独立 100k | VOO | hk YAML |
+  | us | 含字母 | 独立 100k | VOO | us YAML |
+  - **`_detect_stock_group`（二分）保持不变** — risk_free/回测仍用 a_share/non_a_share
+  - **标的池来自 config**（非 YAML `_stocks`）：`run_fixed(groups=)` 遍历 config stocks 按细分组分池，删/加标的立刻生效
+  - `SignalScanner.scan(group)`：group∈a_share/hk/us，按细分组过滤标的 + 读对应 YAML
+- **信号名按组翻译**：`_readable_signal(code, ..., map_a, map_hk, map_us)` 按标的细分组选对应 YAML 的信号名映射（A股 buy_1≠港股 buy_1≠美股 buy_1）
 - **验证期胜率**（现场算，不信搜出来的窗口）：
   - `email_notifier._calc_validation_winrate()`：用 `run_fixed` 产出的 `nav_series` vs 主基准价格
   - 最近 9 月逐日算 forward return，"任意一天买入持有到期跑赢主基准的概率"

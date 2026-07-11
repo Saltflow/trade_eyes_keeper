@@ -223,9 +223,13 @@ class SignalScanner:
         historical: dict[str, pd.DataFrame] = getattr(session, "_historical", {}) or {}
         stocks_data = session.stocks_data or []
         all_codes = self._get_stock_codes(stocks_data)
-        # 按 group 过滤（scan 的 group 是 a_share/non_a_share 二分）
-        from .portfolio_strategy import _detect_stock_group
-        stock_codes = [c for c in all_codes if _detect_stock_group(c) == group]
+        # 按 group 过滤标的：a_share 用二分，hk/us 用细分组
+        from .portfolio_strategy import _detect_stock_group, _detect_fine_group
+        if group in ("hk", "us"):
+            stock_codes = [c for c in all_codes if _detect_fine_group(c) == group]
+        else:
+            stock_codes = [c for c in all_codes if _detect_stock_group(c) == group]
+
         if not historical or not stock_codes:
             return result
 

@@ -207,10 +207,12 @@ def run_daily_task(force: bool = False):
                     "strategy_rank": sa.strategy_rank,
                 })
 
-            # 境外标的也扫描
-            logger.info("开始境外策略信号扫描")
-            nona_result = scanner.scan(session, "non_a_share", top_n=5)
-            for sa in nona_result.alerts:
+            # 港股 + 美股各自扫描（独立 YAML 策略）
+            logger.info("开始港股/美股策略信号扫描")
+            hk_result = scanner.scan(session, "hk", top_n=5)
+            us_result = scanner.scan(session, "us", top_n=5)
+            nona_alerts = list(hk_result.alerts) + list(us_result.alerts)
+            for sa in nona_alerts:
                 session.alerts.append({
                     "type": "strategy",
                     "stock_code": sa.stock_code,
@@ -220,17 +222,21 @@ def run_daily_task(force: bool = False):
                     "current_value": sa.current_value,
                     "strategy_rank": sa.strategy_rank,
                 })
-            # 合并 indicator_snapshot: A 股 + 境外
+            # 合并 indicator_snapshot: A 股 + 港股 + 美股
             merged_snapshot = dict(scan_result.indicator_snapshot or {})
-            merged_snapshot.update(nona_result.indicator_snapshot or {})
+            merged_snapshot.update(hk_result.indicator_snapshot or {})
+            merged_snapshot.update(us_result.indicator_snapshot or {})
             scan_result.indicator_snapshot = merged_snapshot
             # 合并共识报告
-            merged_consensus = _merge_consensus(scan_result.consensus, nona_result.consensus)
+            merged_consensus = _merge_consensus(
+                _merge_consensus(scan_result.consensus, hk_result.consensus),
+                us_result.consensus,
+            )
             scan_result.consensus = merged_consensus
-            # 合并告警：A股 + 境外（否则邮件今日信号只显示A股）
+            # 合并告警：A股 + 港股 + 美股（否则邮件今日信号只显示A股）
             n_a_alerts = len(scan_result.alerts)
-            n_nona_alerts = len(nona_result.alerts)
-            scan_result.alerts = list(scan_result.alerts) + list(nona_result.alerts)
+            n_nona_alerts = len(nona_alerts)
+            scan_result.alerts = list(scan_result.alerts) + nona_alerts
 
             # 存入共识数据供邮件使用
             session.signal_scan = scan_result
@@ -325,23 +331,37 @@ def run_daily_task(force: bool = False):
                 return data, rules
 
             a_data, a_rules = _load_opt_yaml("a_share")
-            n_data, n_rules = _load_opt_yaml("non_a_share")
+            hk_data, hk_rules = _load_opt_yaml("hk")
+            us_data, us_rules = _load_opt_yaml("us")
+            # 回退：hk/us YAML 尚未生成时用 non_a_share（旧格式兼容）
+            if hk_rules is None or us_rules is None:
+                n_data, n_rules = _load_opt_yaml("non_a_share")
+                if hk_rules is None:
+                    hk_data, hk_rules = n_data, n_rules
+                if us_rules is None:
+                    us_data, us_rules = n_data, n_rules
 
             # 存 opt_data 供邮件展示 YAML 预估收益（Top1 test_return）
             session.opt_data_a = a_data
-            session.opt_data_non_a = n_data
+            session.opt_data_hk = hk_data
+            session.opt_data_us = us_data
+            # 向后兼容：opt_data_non_a 指向 us（邮件旧字段）
+            session.opt_data_non_a = us_data or hk_data
 
-            # 标的池全部来自 config：A股用 a_rules，港股/美股用 n_rules
+            # 标的池全部来自 config：各组用各自 rules
             portfolio_results = {}
             opt_a = PortfolioOptimizer(config, custom_rules=a_rules)
             res_a = opt_a.run_fixed(groups=["a_share"])
             if res_a.get("a_share"):
                 portfolio_results["a_share"] = res_a["a_share"]
-            opt_n = PortfolioOptimizer(config, custom_rules=n_rules)
-            res_n = opt_n.run_fixed(groups=["hk", "us"])
-            for g in ("hk", "us"):
-                if res_n.get(g):
-                    portfolio_results[g] = res_n[g]
+            opt_hk = PortfolioOptimizer(config, custom_rules=hk_rules)
+            res_hk = opt_hk.run_fixed(groups=["hk"])
+            if res_hk.get("hk"):
+                portfolio_results["hk"] = res_hk["hk"]
+            opt_us = PortfolioOptimizer(config, custom_rules=us_rules)
+            res_us = opt_us.run_fixed(groups=["us"])
+            if res_us.get("us"):
+                portfolio_results["us"] = res_us["us"]
 
             if portfolio_results:
                 session.portfolio_results = portfolio_results
@@ -572,7 +592,7 @@ def run_optimization_v2(config):
     import time
     from src.data.data_source import DataSource
     from src.analysis.strategy_optimizer_v2 import StrategyOptimizerV2
-    from src.analysis.portfolio_strategy import _detect_stock_group
+    from src.analysis.portfolio_strategy import _detect_fine_group
     from src.analysis.indicator_library import compute_all
 
     logger = logging.getLogger(__name__)
@@ -586,9 +606,10 @@ def run_optimization_v2(config):
         logger.error("配置中没有股票列表")
         return
 
-    # 分组
-    a_codes = []
-    non_a_codes = []
+    # 三组分开搜参：A股/港股/美股（港美股走势差异大，混搜会互相干扰）
+    a_codes: list[str] = []
+    hk_codes: list[str] = []
+    us_codes: list[str] = []
     for s in stocks:
         if isinstance(s, str):
             code = s
@@ -596,20 +617,22 @@ def run_optimization_v2(config):
             code = s.get("code", "")
         else:
             code = str(s)
-        group = _detect_stock_group(code)
-        if group == "a_share":
+        g = _detect_fine_group(code)
+        if g == "a_share":
             a_codes.append(code)
+        elif g == "hk":
+            hk_codes.append(code)
         else:
-            non_a_codes.append(code)
+            us_codes.append(code)
 
-    logger.info(f"A股: {len(a_codes)} 只 | 非A股: {len(non_a_codes)} 只")
+    logger.info(f"A股: {len(a_codes)} 只 | 港股: {len(hk_codes)} 只 | 美股: {len(us_codes)} 只")
 
     # 数据源
     data_source = DataSource(config)
     # V2 需要 3年数据 (36个月 Walk-Forward)
     lookback = config.get("portfolio_strategy", {}).get("lookback_days", 1095)
 
-    for group_name, codes in [("a_share", a_codes), ("non_a_share", non_a_codes)]:
+    for group_name, codes in [("a_share", a_codes), ("hk", hk_codes), ("us", us_codes)]:
         if not codes:
             logger.info("跳过 %s: 无标的", group_name)
             continue

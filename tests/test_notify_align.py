@@ -34,6 +34,8 @@ def _make_session(**kw):
         placements=kw.get("placements"),
         opt_data_a=kw.get("opt_data_a"),
         opt_data_non_a=kw.get("opt_data_non_a"),
+        opt_data_hk=kw.get("opt_data_hk", kw.get("opt_data_non_a")),
+        opt_data_us=kw.get("opt_data_us", kw.get("opt_data_non_a")),
         _historical=kw.get("_historical", {}),
     )
     s.get_all_dataframe = lambda: df
@@ -127,29 +129,38 @@ class TestStrategyTextSummary:
 
 
 class TestReadableSignalByGroup:
-    """Bug2: 非A标的信号名应按非A YAML 映射，不能用A股映射。"""
+    """Bug2 + 三组拆分: A股/港股/美股信号名各用自己的 YAML 映射。"""
 
     def test_a_share_uses_a_map(self):
         from notification.email_notifier import _readable_signal
         map_a = {"buy_1": "偏离穿越"}
-        map_n = {"buy_1": "趋势跟踪"}
-        # 601728 是A股 → 用 map_a
-        assert _readable_signal("601728", "buy_1", map_a, map_n) == "偏离穿越"
+        map_hk = {"buy_1": "趋势跟踪"}
+        map_us = {"buy_1": "放量异动"}
+        assert _readable_signal("601728", "buy_1", map_a, map_hk, map_us) == "偏离穿越"
 
-    def test_hk_uses_non_a_map(self):
+    def test_hk_uses_hk_map(self):
         from notification.email_notifier import _readable_signal
         map_a = {"buy_1": "偏离穿越"}
-        map_n = {"buy_1": "趋势跟踪"}
-        # 00883 港股 → 用 map_n
-        assert _readable_signal("00883", "buy_1", map_a, map_n) == "趋势跟踪"
+        map_hk = {"buy_1": "趋势跟踪"}
+        map_us = {"buy_1": "放量异动"}
+        # 00883 港股 → 用 map_hk
+        assert _readable_signal("00883", "buy_1", map_a, map_hk, map_us) == "趋势跟踪"
 
-    def test_us_uses_non_a_map(self):
+    def test_us_uses_us_map(self):
         from notification.email_notifier import _readable_signal
         map_a = {"buy_4": "RSI超卖"}
-        map_n = {"buy_4": "深度价值"}
-        # VOO 美股 → 用 map_n
-        assert _readable_signal("VOO", "buy_4", map_a, map_n) == "深度价值"
+        map_hk = {"buy_4": "深度价值"}
+        map_us = {"buy_4": "布林低位"}
+        # VOO 美股 → 用 map_us
+        assert _readable_signal("VOO", "buy_4", map_a, map_hk, map_us) == "布林低位"
+
+    def test_us_falls_back_to_hk_when_no_us_map(self):
+        from notification.email_notifier import _readable_signal
+        map_a = {"buy_1": "偏离穿越"}
+        map_hk = {"buy_1": "趋势跟踪"}
+        # 不传 map_us → 港美股共用 map_hk（向后兼容）
+        assert _readable_signal("VOO", "buy_1", map_a, map_hk) == "趋势跟踪"
 
     def test_unknown_falls_back_to_raw(self):
         from notification.email_notifier import _readable_signal
-        assert _readable_signal("601728", "buy_9", {}, {}) == "buy_9"
+        assert _readable_signal("601728", "buy_9", {}, {}, {}) == "buy_9"

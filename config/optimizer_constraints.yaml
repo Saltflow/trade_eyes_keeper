@@ -7,9 +7,19 @@ benchmarks:
   - VOO
   - BRK.B
   - risk_free
+  hk:
+  - VOO
+  - BRK.B
+  - risk_free
+  us:
+  - VOO
+  - BRK.B
+  - risk_free
   risk_free_rates:
     a_share: 0.02
     non_a_share: 0.038
+    hk: 0.038
+    us: 0.038
 hard_constraints:
   min_avg_position_pct: 5
   max_drawdown_pct: -40
