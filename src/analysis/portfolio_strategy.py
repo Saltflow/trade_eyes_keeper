@@ -37,6 +37,7 @@ TOTAL_CAPITAL = 100000.0  # 每组总资金池（A股10万 / 非A股10万）
 RISK_FREE_A = 0.02  # A股无风险利率
 RISK_FREE_NON_A = 0.045  # 非A股无风险利率
 MIN_TRADING_DAYS = 400  # 最少交易日数（≈2年）
+MIN_EVAL_DAYS = 60      # 日报/验证期评估最低门槛（够算MA60+指标+告警）
 
 
 # ── 数据模型 ──
@@ -1172,23 +1173,23 @@ class PortfolioOptimizer:
                 custom_rules = [Rule.from_dict(r) for r in config_rules]
 
         # 标的池 = config 当前 stocks，按细分组分池（只拉目标组）
-        # 跳过 skip_search 标的（仅盯盘，不进组合评估）
-        skip = get_skip_search(self.config)
+        # 注意：不过滤 skip_search — 那只作用于搜参阶段；日报/验证期照常评估
+        # （如上市不足搜参窗口的 ETF/REITs，验证期仍按策略规则交易）
         group_data_map: dict[str, dict[str, pd.DataFrame]] = {
             "a_share": {}, "hk": {}, "us": {},
         }
         for code in stocks:
             code_str = str(code)
-            if code_str in skip:
-                continue
             group = _detect_fine_group(code_str)
             if group not in target_groups:
                 continue
             data = self.fetch_stock_data(code_str, lookback_days)
             if data.empty or "close" not in data.columns:
                 continue
-            if len(data) < MIN_TRADING_DAYS:
-                logger.info(f"{code_str} 数据不足 {len(data)}<{MIN_TRADING_DAYS}，跳过")
+            # 日报评估门槛远低于搜参（60天即可算指标+告警），
+            # 让新上市标的（如 REITs）也能参与验证期交易
+            if len(data) < MIN_EVAL_DAYS:
+                logger.info(f"{code_str} 数据不足 {len(data)}<{MIN_EVAL_DAYS}，跳过日报评估")
                 continue
             group_data_map[group][code_str] = data
 
