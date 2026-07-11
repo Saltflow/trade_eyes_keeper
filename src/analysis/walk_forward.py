@@ -61,6 +61,9 @@ INDICATOR_NAMES = [
     "rsi", "macd_hist", "boll_pct_b",
     "adx", "vol_ratio",
     "pct_from_ath", "ma60_slope", "ma200_dev",
+    # 分位列（252天滑动窗口分位排名，新增引擎 PercentileScoringEngine 使用）
+    "adx_pct", "rsi_pct", "deviation_pct",
+    "vol_ratio_pct", "ma200_dev_pct",
 ]
 INDICATOR_TO_IDX = {name: idx for idx, name in enumerate(INDICATOR_NAMES)}
 NUM_INDICATORS = len(INDICATOR_NAMES)
@@ -445,7 +448,32 @@ class WalkForwardManager:
             logger.info("股票 %s 仅 %d 天数据(<%d)，跳过", code, valid_days, self.min_trading_days)
             return None
 
-        return matrix
+        # ── 累积分位计算（252天滑动窗口分位排名，新引擎使用）──
+        # 在已有 11 列的基础上追加 5 列分位值
+        pct_matrix = np.full((n_dates, NUM_INDICATORS), np.nan, dtype=np.float32)
+        pct_matrix[:, :11] = matrix  # 复制前 11 列
+        # 分位列定义: (目标列索引, 源列索引, 窗口大小)
+        pct_defs = [
+            (11, 6, 252),   # adx_pct  ← adx
+            (12, 3, 252),   # rsi_pct  ← rsi
+            (13, 2, 252),   # deviation_pct ← deviation
+            (14, 7, 252),   # vol_ratio_pct ← vol_ratio
+            (15, 10, 252),  # ma200_dev_pct ← ma200_dev
+        ]
+        WINDOW_PCT = 252
+        for dst_col, src_col, win in pct_defs:
+            src = matrix[:, src_col]
+            # 滑动窗口分位排名: pct[t] = (# values in [t-win+1, t] <= val[t]) / win
+            for t in range(win, n_dates):
+                window_vals = src[t - win + 1:t + 1]
+                valid = ~np.isnan(window_vals)
+                if not valid.any():
+                    continue
+                pct_matrix[t, dst_col] = (
+                    (window_vals[valid] <= src[t]) & valid
+                ).sum() / valid.sum()
+
+        return pct_matrix
 
     @staticmethod
     def _compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:

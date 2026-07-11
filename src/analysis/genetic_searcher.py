@@ -249,6 +249,7 @@ class GeneticSearcher:
         constraints: StrategyConstraints,
         wf_manager,  # WalkForwardManager
         fast_evaluator,  # FastEvaluator
+        engine=None,  # StrategyEngine（None=旧全局阈值模式）
     ):
         self.cfg = constraints.genetic_search
         self.ds_cfg = constraints.discrete_search
@@ -256,6 +257,7 @@ class GeneticSearcher:
         self.wf_manager = wf_manager
         self.evaluator = fast_evaluator
         self.constraints = constraints
+        self.engine = engine  # 插件引擎
         self._rng = random.Random(42)  # 可复现种子
         self._window_data_cache: list | None = None  # 并行评估预提取
 
@@ -330,6 +332,8 @@ class GeneticSearcher:
 
     def _random_strategy(self) -> StrategyEncoding:
         """生成随机策略（买入+卖出）"""
+        if self.engine is not None:
+            return self.engine.random_encoding(self.ds_cfg)
         n_buy = self.ds_cfg.num_buy_rules
         n_sell = self.ds_cfg.num_sell_rules
         n_buy_builders = len(self.ds_cfg.buy_builders)
@@ -363,6 +367,15 @@ class GeneticSearcher:
         Returns:
             (window_stats_list, wf_score)
         """
+        if self.engine is not None:
+            result = self.engine.evaluate_encoding(
+                encoding, windows, self.ds_cfg, self.constraints,
+                self.evaluator, self.wf_manager,
+            )
+            if result is not None:
+                return result
+            return [], -float("inf")
+
         buy_names, buy_thresh, buy_fracs = encoding.to_buy_params(self.ds_cfg)
         sell_names, sell_thresh, sell_fracs = encoding.to_sell_params(self.ds_cfg)
         all_stats: list[WindowStats] = []
@@ -554,6 +567,8 @@ class GeneticSearcher:
 
     def _crossover(self, parent1: StrategyEncoding, parent2: StrategyEncoding) -> StrategyEncoding:
         """均匀交叉：每条规则（买入+卖出）随机从父1或父2继承"""
+        if self.engine is not None:
+            return self.engine.crossover_encoding(parent1, parent2)
         child = parent1.clone()
 
         # 买入规则交叉
@@ -579,6 +594,8 @@ class GeneticSearcher:
         return child
 
     def _mutate(self, encoding: StrategyEncoding) -> StrategyEncoding:
+        if self.engine is not None:
+            return self.engine.mutate_encoding(encoding, self.ds_cfg)
         """变异：随机改变某条规则的某个维度"""
         mutant = encoding.clone()
         n_buy_builders = len(self.ds_cfg.buy_builders)

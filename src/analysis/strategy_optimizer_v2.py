@@ -83,6 +83,7 @@ class StrategyOptimizerV2:
         indicators_data: dict[str, "pd.DataFrame"] | None = None,
         n_samples: int | None = None,
         n_generations: int | None = None,
+        engine=None,  # StrategyEngine（None=旧全局阈值模式）
     ):
         """
         Args:
@@ -98,6 +99,7 @@ class StrategyOptimizerV2:
         self.constraints_path = Path(constraints_path)
         self.n_samples = n_samples
         self.n_generations = n_generations
+        self.engine = engine
 
         # 加载约束
         self.constraints = load_constraints(constraints_path)
@@ -238,7 +240,7 @@ class StrategyOptimizerV2:
         )
 
         # ── 4. 遗传搜索 ──
-        searcher = GeneticSearcher(self.constraints, wf_mgr, evaluator)
+        searcher = GeneticSearcher(self.constraints, wf_mgr, evaluator, engine=self.engine)
 
         logger.info(
             "[V2] Phase 1: 粗筛 %d 个随机策略",
@@ -527,7 +529,11 @@ class StrategyOptimizerV2:
                 final_cash=final_cash_val,
                 total_nav=total_nav,
                 quarterly_holdings=quarterly,
-                strategy_description=self._format_strategy_description(ss.encoding, self.ds_cfg),
+                strategy_description=(
+                    self.engine.to_human_readable(ss.encoding, self.ds_cfg)
+                    if self.engine is not None
+                    else self._format_strategy_description(ss.encoding, self.ds_cfg)
+                ),
             )
             trials.append(trial)
 

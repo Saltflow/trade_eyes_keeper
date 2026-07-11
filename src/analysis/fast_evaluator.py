@@ -42,6 +42,12 @@ IDX_VOL_RATIO = 7
 IDX_PCT_FROM_ATH = 8
 IDX_MA60_SLOPE = 9
 IDX_MA200_DEV = 10
+# 分位列（PercentileScoringEngine 使用）
+IDX_ADX_PCT = 11
+IDX_RSI_PCT = 12
+IDX_DEVIATION_PCT = 13
+IDX_VOL_RATIO_PCT = 14
+IDX_MA200_DEV_PCT = 15
 
 # ── 构建器 → 条件/重置矩阵生成函数 ──
 # 每个构建器返回 (condition_matrix, reset_matrix) 各为 (T, N) bool
@@ -1024,6 +1030,100 @@ class FastEvaluator:
             quarter_cash=quarter_cash,
             quarter_nav=quarter_nav,
             quarter_prices=quarter_prices,
+        )
+
+    def evaluate_percentile(
+        self,
+        indicator_matrix: np.ndarray,
+        price_matrix: np.ndarray,
+        cash_baseline: np.ndarray,
+        pct_columns: list[int],
+        pct_thresholds: list[float],
+        weights: list[float],
+        score_buy_threshold: float,
+        score_sell_threshold: float,
+        position_frac: float,
+        price_open_matrix: np.ndarray | None = None,
+        benchmark_series: dict[str, np.ndarray] | None = None,
+    ) -> "WindowStats":
+        """分位评分引擎评估（§8 新参数化）。
+
+        每只标的独立评估买入/卖出分数，分数够高则触发。
+        分数 = Σ w_j * 1[pct_j > τ_j] / Σ w_j ∈ [0, 1]。
+        """
+        T, N = indicator_matrix.shape[:2]
+        if N == 0 or T == 0:
+            return WindowStats()
+
+        # ── 1. 分位评分 → 条件矩阵 ──
+        total_w = sum(weights) if weights else 1.0
+        buy_conditions = np.zeros((1, T, N), dtype=bool)
+        sell_conditions = np.zeros((1, T, N), dtype=bool)
+
+        buy_scores = np.zeros((T, N), dtype=np.float32)
+        sell_scores = np.zeros((T, N), dtype=np.float32)
+        for col, tau, w in zip(pct_columns, pct_thresholds, weights):
+            if w <= 0:
+                continue
+            col_data = indicator_matrix[:, :, col]
+            valid = ~np.isnan(col_data)
+            buy_scores += w * (valid & (col_data > tau)).astype(np.float32)
+            sell_scores += w * (valid & (col_data < tau)).astype(np.float32)
+        buy_scores /= total_w
+        sell_scores /= total_w
+
+        buy_conditions[0] = buy_scores > score_buy_threshold
+        sell_conditions[0] = sell_scores > score_sell_threshold
+
+        # ── 2. 重置: 回中即重置 ──
+        buy_resets = np.full_like(buy_conditions, 0.5, dtype=float)
+        sell_resets = np.full_like(sell_conditions, 0.5, dtype=float)
+
+        # ── 3. 锁/重置 → 原始信号 ──
+        if HAS_NUMBA:
+            buy_signals_raw, _ = _apply_lock_reset_numba(buy_conditions, buy_resets)
+            sell_signals_raw, _ = _apply_lock_reset_numba(sell_conditions, sell_resets)
+        else:
+            buy_signals_raw, _ = _apply_lock_reset(buy_conditions, buy_resets)
+            sell_signals_raw, _ = _apply_lock_reset(sell_conditions, sell_resets)
+
+        # ── 4. 连续确认 ──
+        buy_cond_any = buy_conditions.any(axis=0)
+        sell_cond_any = sell_conditions.any(axis=0)
+        buy_signals = _apply_confirmation(buy_cond_any, self.buy_confirmation_days)
+        sell_signals = _apply_confirmation(sell_cond_any, self.sell_confirmation_days)
+
+        # ── 5. 仿真 ──
+        buy_fracs_arr = np.array([position_frac], dtype=np.float32)
+        sell_fracs_arr = np.array([position_frac], dtype=np.float32)
+
+        if HAS_NUMBA:
+            daily_values, trade_count, avg_pos_pct, final_pos_pct, final_shares, final_cash, cost_basis = _simulate_portfolio_numba(
+                buy_signals, sell_signals, price_matrix,
+                buy_fracs_arr, sell_fracs_arr,
+                float(self.initial_cash), float(self.monthly_buy_limit),
+                self.lot_size, float(self.commission_rate),
+            )
+        else:
+            daily_values, trade_count, avg_pos_pct, final_pos_pct, final_shares, final_cash, cost_basis = _simulate_portfolio_python(
+                buy_signals, sell_signals, price_matrix,
+                buy_fracs_arr, sell_fracs_arr,
+                self.initial_cash, self.monthly_buy_limit,
+                self.lot_size, self.commission_rate,
+                self.buy_confirmation_days, self.sell_confirmation_days,
+                price_open_matrix,
+            )
+
+        # ── 6. 统计 ──
+        signal_count = int(buy_signals.sum()) + int(sell_signals.sum())
+        return self._compute_stats(
+            daily_values, price_matrix, cash_baseline,
+            trade_count, signal_count, avg_pos_pct=avg_pos_pct,
+            benchmark_series=benchmark_series,
+            final_pos_pct=final_pos_pct,
+            final_shares=final_shares,
+            final_cash=final_cash,
+            cost_basis=cost_basis,
         )
 
     def evaluate_position_target(
