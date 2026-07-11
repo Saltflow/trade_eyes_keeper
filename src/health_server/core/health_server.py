@@ -44,6 +44,9 @@ class HealthServer:
                 return HealthHandler(*args, health_server=self, **kwargs)
 
             # ThreadingTCPServer: 每个请求独立线程，坏连接不阻塞其他请求
+            # allow_reuse_address: 进程重启时端口处于 TIME_WAIT 也能立即重新绑定
+            # （避免 systemd 崩溃重启后 Errno 98 Address already in use）
+            socketserver.ThreadingTCPServer.allow_reuse_address = True
             self.server = socketserver.ThreadingTCPServer(
                 (self.host, self.port), handler_factory
             )
