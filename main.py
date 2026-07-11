@@ -592,7 +592,7 @@ def run_optimization_v2(config):
     import time
     from src.data.data_source import DataSource
     from src.analysis.strategy_optimizer_v2 import StrategyOptimizerV2
-    from src.analysis.portfolio_strategy import _detect_fine_group
+    from src.analysis.portfolio_strategy import _detect_fine_group, get_skip_search
     from src.analysis.indicator_library import compute_all
 
     logger = logging.getLogger(__name__)
@@ -606,6 +606,11 @@ def run_optimization_v2(config):
         logger.error("配置中没有股票列表")
         return
 
+    # 跳过 skip_search 标的（仅盯盘，不参与搜参）
+    skip = get_skip_search(config)
+    if skip:
+        logger.info(f"跳过搜参标的: {sorted(skip)}")
+
     # 三组分开搜参：A股/港股/美股（港美股走势差异大，混搜会互相干扰）
     a_codes: list[str] = []
     hk_codes: list[str] = []
@@ -617,6 +622,8 @@ def run_optimization_v2(config):
             code = s.get("code", "")
         else:
             code = str(s)
+        if str(code) in skip:
+            continue
         g = _detect_fine_group(code)
         if g == "a_share":
             a_codes.append(code)

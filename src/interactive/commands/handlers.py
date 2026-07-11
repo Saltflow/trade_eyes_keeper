@@ -49,6 +49,9 @@ def handle_help() -> str:
         "<code>/alerts</code> — 查看报警状态\n"
         "<code>/reset_alerts [代码]</code> — 重置报警\n"
         "<code>/mode [frac|position]</code> — 查看/切换策略模式\n"
+        "<code>/skip search|signals 代码</code> — 关闭标的的搜参/信号\n"
+        " 例: <code>/skip search 601985</code> 仅盯盘不搜参\n"
+        "<code>/unskip search|signals 代码</code> — 恢复\n"
         "<code>/config [show|set KEY VAL|reset]</code> — 查看/修改优化器配置\n"
         " 例: <code>/config set max_dd -30</code>"
     )
@@ -60,10 +63,64 @@ def handle_list() -> str:
     if not stocks:
         return "监控列表为空。使用 <code>/add 代码</code> 添加。"
 
-    lines = [f"<b>监控列表</b>（共 {len(stocks)} 只）\n"]
+    skip_search = {str(c) for c in (config.get("skip_search") or [])}
+    skip_signals = {str(c) for c in (config.get("skip_signals") or [])}
+
+    lines = [f"<b>监控列表</b>（共 {len(stocks)} 只）"]
+    lines.append("标记: 🔍搜参 📊信号 (划掉=已关闭)\n")
     for code in stocks:
-        lines.append(f"<code>{code}</code>")
+        c = str(code)
+        s1 = "🔍" if c not in skip_search else "<s>🔍</s>"
+        s2 = "📊" if c not in skip_signals else "<s>📊</s>"
+        lines.append(f"<code>{code}</code> {s1}{s2}")
+    n_skip_s = len(skip_search)
+    n_skip_g = len(skip_signals)
+    if n_skip_s or n_skip_g:
+        lines.append(f"\n不搜参: {n_skip_s} 只 | 不显示信号: {n_skip_g} 只")
     return "\n".join(lines)
+
+
+def handle_skip(kind: str, codes: list[str], remove: bool = False) -> str:
+    """管理 skip_search / skip_signals 列表。
+
+    Args:
+        kind: "search" 或 "signals"
+        codes: 标的代码列表
+        remove: True=移出skip(恢复), False=加入skip
+    """
+    key = "skip_search" if kind == "search" else "skip_signals"
+    label = "搜参" if kind == "search" else "信号"
+    config = _load_config()
+    cur = [str(c) for c in (config.get(key) or [])]
+    cur_set = {c.upper() for c in cur}
+    stocks_upper = {str(s).upper() for s in config.get("stocks", [])}
+
+    changed = []
+    for code in codes:
+        cu = code.upper()
+        if remove:
+            match = next((c for c in cur if c.upper() == cu), None)
+            if match:
+                cur.remove(match)
+                cur_set.discard(cu)
+                changed.append(code)
+        else:
+            if cu not in stocks_upper:
+                continue  # 不在监控列表，忽略
+            if cu not in cur_set:
+                cur.append(code)
+                cur_set.add(cu)
+                changed.append(code)
+
+    if not changed:
+        return f"无变更（{label}）。"
+
+    config[key] = cur
+    _save_config(config)
+    action = "恢复" if remove else "关闭"
+    codes_str = " ".join(f"<code>{c}</code>" for c in changed)
+    return (f"✅ 已{action}{len(changed)} 只标的的{label}: {codes_str}\n"
+            f"当前不{label}: {len(cur)} 只")
 
 
 def handle_add(codes: list[str]) -> str:

@@ -20,6 +20,7 @@ class CommandType(Enum):
     RESET_ALERTS = auto()
     MODE = auto()
     CONFIG = auto()
+    SKIP = auto()
     ERROR = auto()
 
 
@@ -121,6 +122,19 @@ class ConfigCommand:
     key: str = ""
     value: str = ""
     cmd_type: CommandType = CommandType.CONFIG
+
+
+@dataclass
+class SkipCommand:
+    kind: str = "search"       # "search" / "signals"
+    codes: list[str] = None    # 标的列表
+    remove: bool = False       # True=恢复(移出skip), False=关闭(加入skip)
+    cmd_type: CommandType = CommandType.SKIP
+
+    def __post_init__(self):
+        if self.codes is None:
+            self.codes = []
+
 
 
 _STOCK_CODE_RE = re.compile(r"^[A-Za-z0-9]{1,8}(\.[A-Za-z]{1,4})?$")
@@ -291,6 +305,21 @@ def parse_command(text: str):
         if len(parts) == 1 and parts[0] not in ("set", "reset", "show"):
             return ConfigCommand(action="show", key=parts[0])
         return ErrorCommand(message="格式: /config [show|set KEY VAL|reset]")
+
+    if cmd_name in ("skip", "unskip"):
+        # /skip search 601985,000958   /skip signals 508091   /unskip search 601985
+        remove = (cmd_name == "unskip")
+        sub = args.strip().split(None, 1)
+        if not sub or sub[0].lower() not in ("search", "signals", "signal"):
+            return ErrorCommand(
+                message="格式: /skip search|signals 代码[,代码]  "
+                        "(/unskip 恢复)")
+        kind = "search" if sub[0].lower() == "search" else "signals"
+        code_str = sub[1] if len(sub) > 1 else ""
+        codes, err = _validate_codes(code_str)
+        if err:
+            return ErrorCommand(message=err)
+        return SkipCommand(kind=kind, codes=codes, remove=remove)
 
     return ErrorCommand(
         message=f"未知命令: /{cmd_name}。发送 /help 查看可用命令"

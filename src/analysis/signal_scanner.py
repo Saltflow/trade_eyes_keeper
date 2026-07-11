@@ -224,11 +224,17 @@ class SignalScanner:
         stocks_data = session.stocks_data or []
         all_codes = self._get_stock_codes(stocks_data)
         # 按 group 过滤标的：a_share 用二分，hk/us 用细分组
-        from .portfolio_strategy import _detect_stock_group, _detect_fine_group
+        from .portfolio_strategy import (
+            _detect_stock_group, _detect_fine_group, get_skip_signals,
+        )
+        # 跳过 skip_signals 标的（仅盯盘，不显示策略信号）
+        skip_sig = get_skip_signals(getattr(session, "config", {}) or {})
         if group in ("hk", "us"):
-            stock_codes = [c for c in all_codes if _detect_fine_group(c) == group]
+            stock_codes = [c for c in all_codes
+                           if _detect_fine_group(c) == group and c not in skip_sig]
         else:
-            stock_codes = [c for c in all_codes if _detect_stock_group(c) == group]
+            stock_codes = [c for c in all_codes
+                           if _detect_stock_group(c) == group and c not in skip_sig]
 
         if not historical or not stock_codes:
             return result

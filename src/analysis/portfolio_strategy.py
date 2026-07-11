@@ -130,6 +130,16 @@ def _detect_fine_group(stock_code: str) -> str:
     return "us"
 
 
+def get_skip_search(config: dict) -> set[str]:
+    """config.skip_search 标的集合（不参与搜参）。"""
+    return {str(c).strip() for c in (config.get("skip_search") or [])}
+
+
+def get_skip_signals(config: dict) -> set[str]:
+    """config.skip_signals 标的集合（不显示策略信号）。"""
+    return {str(c).strip() for c in (config.get("skip_signals") or [])}
+
+
 def _get_lot_size(stock_code: str) -> int:
     """获取整手股数：A股100股，其余1股"""
     if _detect_stock_group(stock_code) == "a_share":
@@ -1162,11 +1172,15 @@ class PortfolioOptimizer:
                 custom_rules = [Rule.from_dict(r) for r in config_rules]
 
         # 标的池 = config 当前 stocks，按细分组分池（只拉目标组）
+        # 跳过 skip_search 标的（仅盯盘，不进组合评估）
+        skip = get_skip_search(self.config)
         group_data_map: dict[str, dict[str, pd.DataFrame]] = {
             "a_share": {}, "hk": {}, "us": {},
         }
         for code in stocks:
             code_str = str(code)
+            if code_str in skip:
+                continue
             group = _detect_fine_group(code_str)
             if group not in target_groups:
                 continue
