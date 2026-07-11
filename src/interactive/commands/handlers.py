@@ -30,22 +30,43 @@ def _save_config(config: dict) -> None:
         logger.exception(f"保存配置失败: {tmp} -> {CONFIG_PATH}")
 
 
+def _git_info() -> str:
+    """返回当前部署的更新日期 + 最近3条 commit（供 /help 展示）。"""
+    import subprocess
+    root = CONFIG_PATH.parent.parent
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(root), "log", "-3",
+             "--pretty=format:%cd %h %s", "--date=format:%m-%d %H:%M"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode != 0 or not out.stdout.strip():
+            return ""
+        lines = ["\n\n<b>版本信息</b>"]
+        for ln in out.stdout.strip().split("\n"):
+            # 截断过长的 commit 描述
+            lines.append(f"<code>{ln[:70]}</code>")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def handle_help() -> str:
     return (
         "<b>可用命令</b>\n\n"
         "<code>/help</code> — 显示此帮助\n"
         "<code>/list</code> — 查看监控列表\n"
         "<code>/add 代码,代码,...</code> — 批量添加（逗号或空格分隔）\n"
-        " 例: <code>/add 601728,GOOG,00883</code>\n"
+        " 例: <code>/add 601728,GOOG,00883</code>\n"
         "<code>/remove 代码,代码,...</code> — 批量移除\n"
         "<code>/backtest 代码 开始 结束</code> — 回测\n"
-        " 例: <code>/backtest 601919 2024-01-01 2024-12-31</code>\n"
+        " 例: <code>/backtest 601919 2024-01-01 2024-12-31</code>\n"
         "<code>/save</code> — 保存监控列表到 git\n"
         "<code>/brief [afternoon]</code> — 触发简报（默认早盘）\n"
         "<code>/optimize [v1]</code> — 触发策略优化（默认 V2）\n"
         "<code>/daily</code> — 触发完整日报\n"
         "<code>/schedule [任务 时间]</code> — 查看/修改调度时间\n"
-        " 例: <code>/schedule daily 20:00</code>\n"
+        " 例: <code>/schedule daily 20:00</code>\n"
         "<code>/alerts</code> — 查看报警状态\n"
         "<code>/reset_alerts [代码]</code> — 重置报警\n"
         "<code>/mode [frac|position]</code> — 查看/切换策略模式\n"
@@ -53,7 +74,8 @@ def handle_help() -> str:
         " 例: <code>/skip search 601985</code> 仅盯盘不搜参\n"
         "<code>/unskip search|signals 代码</code> — 恢复\n"
         "<code>/config [show|set KEY VAL|reset]</code> — 查看/修改优化器配置\n"
-        " 例: <code>/config set max_dd -30</code>"
+        " 例: <code>/config set max_dd -30</code>"
+        + _git_info()
     )
 
 
