@@ -1313,26 +1313,23 @@ class EmailNotifier(BaseNotifier):
             buy_rules: list[str] = []
             sell_rules: list[str] = []
             for k, v in sorted(params.items()):
-                if k.startswith("_"):
+                if not k.endswith("_signal"):
                     continue
-                if k.startswith("buy_"):
-                    idx = k.split("_")[1]
-                    if k.endswith("_signal"):
-                        name = SIGNAL_NAMES.get(str(v), str(v))
-                        buy_rules.append(f"买{idx}:{name}")
-                    elif k.endswith("_t"):
-                        buy_rules.append(f"阈值{float(v):.3f}")
-                    elif k.endswith("_frac"):
-                        buy_rules.append(f"仓位{float(v)*100:.0f}%")
-                elif k.startswith("sell_"):
-                    idx = k.split("_")[1]
-                    if k.endswith("_signal"):
-                        name = SIGNAL_NAMES.get(str(v), str(v))
-                        sell_rules.append(f"卖{idx}:{name}")
-                    elif k.endswith("_t"):
-                        sell_rules.append(f"阈值{float(v):.3f}")
-                    elif k.endswith("_frac"):
-                        sell_rules.append(f"仓位{float(v)*100:.0f}%")
+                if str(v) == "none":
+                    continue
+                idx = k.split("_")[1]
+                name = SIGNAL_NAMES.get(str(v), str(v))
+                t = params.get(k.replace("_signal", "_t"))
+                frac = params.get(k.replace("_signal", "_frac"))
+                extra = ""
+                if t is not None:
+                    extra += f" 阈值{float(t):.2f}"
+                if frac is not None:
+                    extra += f" 仓位{float(frac)*100:.0f}%"
+                if k.startswith("buy"):
+                    buy_rules.append(f"买{idx}:{name}{extra}")
+                else:
+                    sell_rules.append(f"卖{idx}:{name}{extra}")
 
             strategy_label = top_strategy.get(
                 "strategy_description",
