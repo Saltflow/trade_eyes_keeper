@@ -196,3 +196,47 @@ class TestContextBuilding:
         today = {"rsi": 22.3, "deviation": -0.162}
         desc = scanner._describe_current(today, "rsi < 26.7")
         assert "22.3" in desc
+
+
+class TestScanDedup:
+    """scan() 按 (标的, 条件) 去重：Top5 多策略同条件只报一次。"""
+
+    def _session(self, code="00883"):
+        """构造带 _historical + stocks_data 的最小 session。"""
+        import pandas as pd
+        dates = pd.date_range("2025-01-01", periods=80, freq="D")
+        # 造一个 ADX 高、MACD 正的上涨序列
+        close = pd.Series(range(100, 180))
+        df = pd.DataFrame({
+            "date": dates.strftime("%Y-%m-%d"),
+            "open": close, "high": close + 1, "low": close - 1,
+            "close": close, "volume": [1e6] * 80,
+        })
+        sess = MagicMock()
+        sess._historical = {code: df}
+        sess.stocks_data = [{"stock_code": code}]
+        return sess
+
+    def test_same_condition_dedup(self, scanner, tmp_path):
+        """两个策略含相同 condition → 只产 1 条告警。"""
+        # 两个策略，buy_2 和 buy_4 完全相同条件
+        strategies = [
+            {"rules": [
+                {"id": "buy_2", "type": "buy", "label": None,
+                 "condition": "adx > 10 and macd_hist > -999"},
+            ]},
+            {"rules": [
+                {"id": "buy_4", "type": "buy", "label": None,
+                 "condition": "adx > 10 and macd_hist > -999"},
+            ]},
+        ]
+        sess = self._session("00883")
+        with patch.object(scanner, "_load_strategies", return_value=strategies), \
+             patch.object(scanner, "compute_consensus",
+                          return_value=ConsensusReport(consensus_stocks=["00883"])), \
+             patch.object(scanner, "_get_stock_codes", return_value=["00883"]):
+            result = scanner.scan(sess, "hk", top_n=5)
+        # 相同条件只报一次
+        codes = [(a.stock_code, a.condition_str) for a in result.alerts]
+        assert len(codes) == len(set(codes)), f"有重复告警: {codes}"
+

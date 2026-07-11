@@ -243,18 +243,19 @@ class SignalScanner:
             if code not in today_indicators:
                 continue
             today = today_indicators[code]
-            seen_rules: set[tuple[str, str]] = set()  # dedup by (code, rule_label)
+            # 去重按 (标的, 条件表达式)：相同条件只报一次，
+            # 不管来自哪个策略/rule_id（Top5 常有多策略同条件）
+            seen_conds: set[tuple[str, str]] = set()
             for s_idx, strat in enumerate(strategies):
                 rules = strat.get("rules", [])
                 for r in rules:
                     if r.get("type") != "buy" or r.get("condition", "False") == "False":
                         continue
-                    rule_label = r.get("label", r.get("id", "?"))
-                    dedup_key = (code, rule_label)
-                    if dedup_key in seen_rules:
-                        continue
-                    seen_rules.add(dedup_key)
                     cond = r.get("condition", "False")
+                    dedup_key = (code, cond)
+                    if dedup_key in seen_conds:
+                        continue
+                    seen_conds.add(dedup_key)
                     # 构建上下文
                     ctx = self._build_context(today, historical.get(code), code)
                     try:
@@ -271,7 +272,7 @@ class SignalScanner:
                                 )
                             )
                     except Exception as e:
-                        logger.debug(f"策略 {sid} 评估失败 (非致命): {e}")
+                        logger.debug(f"{code} 规则 {r.get('id','?')} 评估失败 (非致命): {e}")
 
         return result
 
