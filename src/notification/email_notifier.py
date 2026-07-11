@@ -1250,7 +1250,7 @@ class EmailNotifier(BaseNotifier):
             '未解禁定增</div></td></tr>\n'
             '<tr><td style="padding:8px 24px 16px">'
             '<table role="presentation" style="width:100%;border-collapse:collapse;'
-            'font-size:12px" cellpadding="6" cellspacing="0" border="0">\n'
+            'font-size:12px;table-layout:fixed;word-break:break-all" cellpadding="6" cellspacing="0" border="0">\n'
             '<thead><tr style="background:#34495e;color:#fff">'
             '<th style="text-align:left;padding:8px">代码</th>'
             '<th style="text-align:left;padding:8px">名称</th>'
@@ -1373,9 +1373,10 @@ class EmailNotifier(BaseNotifier):
                 f'今日信号 ({len(alerts)} 条 / {len(signal_codes)} 只标的)</p>'
             )
             lines.append(
-                '<table style="font-size:12px;border-collapse:collapse;width:100%">'
+                '<table style="font-size:12px;border-collapse:collapse;width:100%;table-layout:fixed;word-break:break-all">'
                 '<tr style="background:#2c3e50;color:#fff">'
-                '<th>标的</th><th>规则</th><th>当前值</th></tr>'
+                '<th style="width:22%">标的</th><th style="width:33%">规则</th>'
+                '<th style="width:45%">当前值</th></tr>'
             )
             map_a = _build_signal_label_map("a_share")
             map_hk = _build_signal_label_map("hk") or _build_signal_label_map("non_a_share")
@@ -1499,7 +1500,7 @@ class EmailNotifier(BaseNotifier):
             if qh:
                 lines.append(
                     '<table style="font-size:11px;border-collapse:collapse;'
-                    'width:100%;margin-top:6px">'
+                    'width:100%;margin-top:6px;table-layout:fixed;word-break:break-all">'
                     '<tr style="background:#34495e;color:#fff">'
                     '<th>Q</th><th>代码</th><th>持股</th>'
                     '<th>成本</th><th>现价</th><th>市值</th>'
