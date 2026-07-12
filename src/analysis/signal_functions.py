@@ -232,58 +232,63 @@ class SignalFn(ABC):
 # 共享流水线 — 所有 SignalFn 共用
 # ═══════════════════════════════════════════════════
 
-def score_to_decisions_numba(
-    buy_scores: np.ndarray,
-    sell_scores: np.ndarray,
-    price: np.ndarray,
-    positions: np.ndarray,
-    initial_cash: float,
-    buy_threshold: float,
-    sell_threshold: float,
-    position_frac: float,
-    lot_size: int,
-    monthly_limit: float,
-    commission_rate: float,
+try:
+    from numba import njit as _njit
+    _HAS_NUMBA = True
+except Exception:  # pragma: no cover
+    _HAS_NUMBA = False
+
+    def _njit(*args, **kwargs):
+        def _wrap(fn):
+            return fn
+        if args and callable(args[0]):
+            return args[0]
+        return _wrap
+
+
+@_njit(cache=True)
+def _score_sim_core(
+    buy_scores, sell_scores, price,
+    initial_cash, buy_threshold, sell_threshold,
+    position_frac, lot_size, monthly_limit, commission_rate,
+    q_interval,
 ):
-    """numba JIT 决策仿真。"""
+    """numba JIT 决策仿真核心（纯数值, 季度快照存 numpy 数组）。"""
     T, N = buy_scores.shape
     shares = np.zeros(N, dtype=np.float64)
     cb = np.zeros(N, dtype=np.float64)
     cash = float(initial_cash)
     daily_vals = np.zeros(T, dtype=np.float64)
     total_trades = 0
-    pos_pcts = np.zeros(T, dtype=np.float64)
-    q_shares_list = []
-    q_cash_list = []
-    q_nav_list = []
-    q_interval = 63
+    pos_sum = 0.0
+    pos_cnt = 0
+
+    n_q = T // q_interval + 1
+    q_shares = np.zeros((n_q, N), dtype=np.float64)
+    q_cash = np.zeros(n_q, dtype=np.float64)
+    q_nav = np.zeros(n_q, dtype=np.float64)
+    q_count = 0
+    month_spent = 0.0
 
     for t in range(T):
-        month_idx = t // 21
         if t % 21 == 0:
             month_spent = 0.0
 
-        pos_val = np.dot(shares, price[t])
+        pos_val = 0.0
+        for i in range(N):
+            pos_val += shares[i] * price[t, i]
         nav = cash + pos_val
         daily_vals[t] = nav
-        pos_pcts[t] = pos_val / max(nav, 1.0) * 100.0 if nav > 0 else 0.0
+        if nav > 0:
+            pos_sum += pos_val / nav * 100.0
+            pos_cnt += 1
 
-        if t > 0 and t % q_interval == 0:
-            q_pos = []
+        if t > 0 and t % q_interval == 0 and q_count < n_q:
             for i in range(N):
-                if shares[i] > 0:
-                    q_pos.append({
-                        "code": str(i), "shares": round(shares[i], 1),
-                        "cost": round(cb[i] / max(shares[i], 1e-9), 2) if cb[i] > 0 else 0.0,
-                        "price": round(float(price[t, i]), 2),
-                        "value": round(shares[i] * float(price[t, i]), 2),
-                        "pnl": round(shares[i] * float(price[t, i]) - cb[i], 2),
-                        "pnl_pct": round((shares[i] * float(price[t, i]) / max(cb[i], 1e-9) - 1) * 100, 1) if cb[i] > 0 else 0.0,
-                    })
-            qp = round(pos_val / max(nav, 1.0) * 100, 1) if nav > 0 else 0.0
-            q_shares_list.append(shares.copy())
-            q_cash_list.append(cash)
-            q_nav_list.append(nav)
+                q_shares[q_count, i] = shares[i]
+            q_cash[q_count] = cash
+            q_nav[q_count] = nav
+            q_count += 1
 
         # 买入
         for i in range(N):
@@ -291,7 +296,7 @@ def score_to_decisions_numba(
                 if month_spent >= monthly_limit:
                     break
                 amt = position_frac * cash
-                price_i = float(price[t, i])
+                price_i = price[t, i]
                 if price_i <= 0 or np.isnan(price_i):
                     continue
                 qty = int(amt / price_i / lot_size) * lot_size
@@ -309,22 +314,57 @@ def score_to_decisions_numba(
         # 卖出
         for i in range(N):
             if sell_scores[t, i] > sell_threshold and shares[i] > 0:
-                price_i = float(price[t, i])
+                price_i = price[t, i]
                 if price_i <= 0 or np.isnan(price_i):
                     continue
                 qty = int(shares[i] * position_frac / lot_size) * lot_size
-                qty = min(qty, int(shares[i]))
+                if qty > int(shares[i]):
+                    qty = int(shares[i])
                 if qty <= 0:
                     continue
                 val = qty * price_i
                 fee = val * commission_rate
                 cash += val - fee
-                sold_frac = qty / max(shares[i], 1.0)
+                sold_frac = qty / shares[i] if shares[i] > 0 else 0.0
                 cb[i] -= cb[i] * sold_frac
                 shares[i] -= qty
                 total_trades += 1
 
-    return daily_vals, total_trades, float(np.mean(pos_pcts)), shares, cash, cb, q_shares_list, q_cash_list, q_nav_list, q_interval
+    avg_pos = pos_sum / pos_cnt if pos_cnt > 0 else 0.0
+    return (daily_vals, total_trades, avg_pos, shares, cash, cb,
+            q_shares[:q_count], q_cash[:q_count], q_nav[:q_count])
+
+
+def score_to_decisions_numba(
+    buy_scores: np.ndarray,
+    sell_scores: np.ndarray,
+    price: np.ndarray,
+    positions: np.ndarray,
+    initial_cash: float,
+    buy_threshold: float,
+    sell_threshold: float,
+    position_frac: float,
+    lot_size: int,
+    monthly_limit: float,
+    commission_rate: float,
+):
+    """决策仿真（numba 核心 + Python 季度快照封装）。"""
+    q_interval = 63
+    (daily_vals, total_trades, avg_pos, shares, cash, cb,
+     q_sh, q_ca, q_nav) = _score_sim_core(
+        np.ascontiguousarray(buy_scores, dtype=np.float64),
+        np.ascontiguousarray(sell_scores, dtype=np.float64),
+        np.ascontiguousarray(price, dtype=np.float64),
+        float(initial_cash), float(buy_threshold), float(sell_threshold),
+        float(position_frac), int(lot_size), float(monthly_limit),
+        float(commission_rate), int(q_interval),
+    )
+    # numpy 季度数组 → list（保持原返回契约）
+    q_shares_list = [q_sh[i].copy() for i in range(q_sh.shape[0])]
+    q_cash_list = [float(q_ca[i]) for i in range(q_ca.shape[0])]
+    q_nav_list = [float(q_nav[i]) for i in range(q_nav.shape[0])]
+    return (daily_vals, total_trades, float(avg_pos), shares, cash, cb,
+            q_shares_list, q_cash_list, q_nav_list, q_interval)
 
 
 def simulate_portfolio(
