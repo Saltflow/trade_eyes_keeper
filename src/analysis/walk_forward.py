@@ -449,9 +449,9 @@ class WalkForwardManager:
             return None
 
         # ── 累积分位计算（252天滑动窗口分位排名，新引擎使用）──
-        # 在已有 11 列的基础上追加 5 列分位值
+        # matrix 是 (n_dates, NUM_INDICATORS) 其中前 11 列是原始指标
         pct_matrix = np.full((n_dates, NUM_INDICATORS), np.nan, dtype=np.float32)
-        pct_matrix[:, :11] = matrix  # 复制前 11 列
+        pct_matrix[:, :11] = matrix[:, :11]  # 复制前 11 列
         # 分位列定义: (目标列索引, 源列索引, 窗口大小)
         pct_defs = [
             (11, 6, 252),   # adx_pct  ← adx
