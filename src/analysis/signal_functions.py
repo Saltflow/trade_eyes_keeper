@@ -74,6 +74,9 @@ class Params:
     def decode(self, dim: ParamDim) -> float:
         return dim.decode(self.values.get(dim.name, 0))
 
+    def clone(self) -> "Params":
+        return Params(values=dict(self.values), _engine=self._engine)
+
 
 @dataclass
 class PortfolioTrace:
@@ -156,6 +159,73 @@ class SignalFn(ABC):
     def to_human_readable(self, params: Params) -> str:
         """参数 → 人话描述。"""
         ...
+
+    # ── genome 编解码（遗传搜索用；默认基于 param_space）──
+
+    def random_params(self, rng=None) -> Params:
+        """随机生成一组参数。"""
+        p = self.param_space.random(rng)
+        p._engine = self.name
+        return p
+
+    def crossover(self, p1: Params, p2: Params, rng=None) -> Params:
+        """均匀交叉两组参数。"""
+        r = rng or __import__("random")
+        child = {}
+        for d in self.param_space.dims:
+            child[d.name] = p1.values.get(d.name, 0) if r.random() < 0.5 \
+                else p2.values.get(d.name, 0)
+        return Params(values=child, _engine=self.name)
+
+    def mutate(self, params: Params, rate: float = 0.15, rng=None) -> Params:
+        """按位随机重采样变异。"""
+        r = rng or __import__("random")
+        new_vals = dict(params.values)
+        for d in self.param_space.dims:
+            if r.random() < rate:
+                new_vals[d.name] = r.randint(0, max(d.levels - 1, 0))
+        return Params(values=new_vals, _engine=self.name)
+
+    # ── 信号扫描 + 规则描述（显示层用）──
+
+    def scan_signals(
+        self,
+        params: Params,
+        today: dict[str, float],
+        history=None,  # pd.DataFrame | None，标的历史（用于分位/prev 值）
+    ) -> list[dict]:
+        """用引擎自身逻辑判断单只标的今日是否触发买/卖信号。
+
+        Args:
+            params: 该策略的参数（引擎自有格式）
+            today: 该标的今日指标 {rsi, adx, deviation, vol_ratio, ...}
+            history: 该标的历史 DataFrame（分位引擎计算滚动分位需要）
+
+        Returns:
+            [{"side": "buy"|"sell", "label": 引擎自定义信号名, "detail": 触发详情}]
+            默认实现返回空（引擎需覆盖）。
+        """
+        return []
+
+    def describe_rules(self, params: Params) -> dict:
+        """把参数翻译成买卖规则的人类可读名称（供报告/飞书展示）。
+
+        Returns:
+            {"buy": [规则名, ...], "sell": [规则名, ...]}
+        """
+        return {"buy": [], "sell": []}
+
+    def engine_brief(self) -> str:
+        """引擎简介（criterion 3：飞书交互 /switch_optimizer 展示买卖标准）。"""
+        return self.name
+
+    def execution_params(self, params: Params) -> dict:
+        """从参数解码执行层阈值（买/卖分数阈值 + 仓位比例）。
+
+        供 SignalFnSearchEngine + 共享流水线仿真使用。
+        默认: 买卖阈值 0（评分>0即触发）, 仓位 15%。引擎可覆盖。
+        """
+        return {"buy_threshold": 0.0, "sell_threshold": 0.0, "position_frac": 0.15}
 
 
 # ═══════════════════════════════════════════════════

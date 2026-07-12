@@ -640,8 +640,10 @@ def run_optimization_v2(config):
     signal_fn = None
     if engine_type in ("percentile", "pct", "new"):
         from src.analysis.percentile_engine import PercentileSignalFn
+        from src.analysis.signal_fn_engine import SignalFnSearchEngine
         signal_fn = PercentileSignalFn()
-        logger.info("使用分位评分引擎 (PercentileSignalFn)")
+        engine = SignalFnSearchEngine(signal_fn)
+        logger.info("使用分位评分引擎 (PercentileSignalFn, 真实接入遗传搜索)")
     else:
         from src.analysis.global_threshold_signal import GlobalThresholdSignalFn
         signal_fn = GlobalThresholdSignalFn()

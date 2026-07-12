@@ -26,6 +26,23 @@ PERCENTILE_LABELS = [
     "adx_pct", "rsi_pct", "deviation_pct",
     "vol_ratio_pct", "ma200_dev_pct",
 ]
+# 分位信号 → 原始指标源列名（scan_signals 计算滚动分位用）
+PERCENTILE_SOURCES = {
+    "adx_pct": "adx",
+    "rsi_pct": "rsi",
+    "deviation_pct": "deviation",
+    "vol_ratio_pct": "vol_ratio",
+    "ma200_dev_pct": "ma200_dev",
+}
+# 信号的人类可读名称
+PERCENTILE_HUMAN = {
+    "adx_pct": "趋势强度分位(ADX)",
+    "rsi_pct": "超买超卖分位(RSI)",
+    "deviation_pct": "均线偏离分位",
+    "vol_ratio_pct": "量能分位",
+    "ma200_dev_pct": "长期趋势分位(MA200)",
+}
+PCT_WINDOW = 252  # 与 walk_forward 分位窗口一致
 
 N_SIGNALS = len(PERCENTILE_COLUMNS)  # 5
 TAU_LEVELS = 10
@@ -39,6 +56,13 @@ def _decode_tau(level: int) -> float:
 def _decode_w(level: int) -> float:
     ws = [0.1, 0.3, 0.5, 0.7, 0.9]
     return ws[min(level, len(ws) - 1)]
+
+
+_POS_FRACS = [0.05, 0.15, 0.25, 0.35, 0.45]
+
+
+def _decode_pos_frac(level: int) -> float:
+    return _POS_FRACS[min(int(level), len(_POS_FRACS) - 1)]
 
 
 class PercentileSignalFn(SignalFn):
@@ -94,15 +118,147 @@ class PercentileSignalFn(SignalFn):
 
         return np.stack([buy_scores, sell_scores], axis=-1)
 
-    def to_human_readable(self, params: Params) -> str:
+    def to_human_readable(self, params) -> str:
+        vals = getattr(params, "values", params) if not isinstance(params, dict) else params
         lines = ["分位评分策略 (PercentileSignalFn)"]
         for ci, lbl in enumerate(PERCENTILE_LABELS):
-            tau = _decode_tau(params.values.get(f"{lbl}_tau", 5))
-            w = _decode_w(params.values.get(f"{lbl}_w", 2))
-            lines.append(f"  {lbl}: tau={tau:.2f}, w={w:.2f}")
-        buy_th = _decode_tau(params.values.get("buy_score_thresh", 5))
-        sell_th = _decode_tau(params.values.get("sell_score_thresh", 5))
-        pos_frac = [0.05, 0.15, 0.25, 0.35, 0.45][min(params.values.get("position_frac", 2), 4)]
+            tau = _decode_tau(vals.get(f"{lbl}_tau", 5))
+            w = _decode_w(vals.get(f"{lbl}_w", 2))
+            lines.append(f"  {PERCENTILE_HUMAN[lbl]}: tau={tau:.2f}, w={w:.2f}")
+        buy_th = _decode_tau(vals.get("buy_score_thresh", 5))
+        sell_th = _decode_tau(vals.get("sell_score_thresh", 5))
+        pos_frac = _decode_pos_frac(vals.get("position_frac", 2))
         lines.append(f"  买入阈值 τ_buy={buy_th:.2f}  卖出阈值 τ_sell={sell_th:.2f}")
         lines.append(f"  仓位比例 frac={pos_frac:.2f}")
         return "\n".join(lines)
+
+    # ── 信号扫描（显示层用；每只标的算自身滚动分位）──
+
+    def _rolling_percentile(self, series, window: int = PCT_WINDOW) -> float | None:
+        """最新值在过去 window 天内的分位排名 (0-1)。"""
+        import numpy as _np
+        vals = _np.asarray(series, dtype=float)
+        vals = vals[~_np.isnan(vals)]
+        if len(vals) < 20:
+            return None
+        win = vals[-window:]
+        cur = win[-1]
+        return float((win <= cur).sum()) / max(len(win), 1)
+
+    def scan_signals(self, params, today: dict, history=None) -> list[dict]:
+        """用分位评分逻辑判断今日买/卖信号。
+
+        对每个分位信号：算标的自身该指标的滚动分位排名，
+        分位 > tau 计入买入加权分，分位 < tau 计入卖出加权分；
+        加权归一后与 τ_buy / τ_sell 比较。
+        """
+        vals = getattr(params, "values", params) if not isinstance(params, dict) else params
+        import pandas as _pd
+
+        hist = self._ensure_source_columns(history)
+        if hist is None:
+            return []
+
+        buy_score = 0.0
+        sell_score = 0.0
+        total_w = 0.0
+        buy_hits: list[str] = []
+        sell_hits: list[str] = []
+
+        for lbl in PERCENTILE_LABELS:
+            w = _decode_w(vals.get(f"{lbl}_w", 2))
+            tau = _decode_tau(vals.get(f"{lbl}_tau", 5))
+            if w <= 0:
+                continue
+            total_w += w
+            src_col = PERCENTILE_SOURCES[lbl]
+
+            pct = None
+            if src_col in hist.columns:
+                pct = self._rolling_percentile(hist[src_col].values)
+            if pct is None:
+                continue
+
+            human = PERCENTILE_HUMAN[lbl]
+            if pct > tau:
+                buy_score += w
+                buy_hits.append(f"{human}分位{pct:.0%}>{tau:.0%}")
+            elif pct < tau:
+                sell_score += w
+                sell_hits.append(f"{human}分位{pct:.0%}<{tau:.0%}")
+
+        if total_w > 0:
+            buy_score /= total_w
+            sell_score /= total_w
+
+        buy_th = _decode_tau(vals.get("buy_score_thresh", 5))
+        sell_th = _decode_tau(vals.get("sell_score_thresh", 5))
+
+        out: list[dict] = []
+        if buy_score > buy_th and buy_hits:
+            out.append({
+                "side": "buy",
+                "label": f"分位评分买入 (score {buy_score:.2f}>{buy_th:.2f})",
+                "detail": " | ".join(buy_hits[:3]),
+            })
+        if sell_score > sell_th and sell_hits:
+            out.append({
+                "side": "sell",
+                "label": f"分位评分卖出 (score {sell_score:.2f}>{sell_th:.2f})",
+                "detail": " | ".join(sell_hits[:3]),
+            })
+        return out
+
+    @staticmethod
+    def _ensure_source_columns(history):
+        """确保 history DataFrame 含 scan 所需的源列（deviation/ma200_dev 兜底计算）。"""
+        import pandas as _pd
+        if history is None or not isinstance(history, _pd.DataFrame) or history.empty:
+            return None
+        if "close" not in history.columns:
+            return history
+        df = history
+        need_copy = not {"deviation", "ma200_dev"}.issubset(df.columns)
+        if need_copy:
+            df = df.copy()
+        close = df["close"].astype(float)
+        if "deviation" not in df.columns:
+            ma60 = close.rolling(60, min_periods=1).mean()
+            df["deviation"] = (close - ma60) / ma60.replace(0, float("nan"))
+        if "ma200_dev" not in df.columns:
+            ma200 = close.rolling(200, min_periods=1).mean()
+            df["ma200_dev"] = (close - ma200) / ma200.replace(0, float("nan"))
+        return df
+
+    def describe_rules(self, params) -> dict:
+        """把分位参数翻译成买卖规则名称（带权重的信号即为激活规则）。"""
+        vals = getattr(params, "values", params) if not isinstance(params, dict) else params
+        buy_th = _decode_tau(vals.get("buy_score_thresh", 5))
+        sell_th = _decode_tau(vals.get("sell_score_thresh", 5))
+        active = []
+        for lbl in PERCENTILE_LABELS:
+            w = _decode_w(vals.get(f"{lbl}_w", 2))
+            tau = _decode_tau(vals.get(f"{lbl}_tau", 5))
+            if w > 0:
+                active.append(f"{PERCENTILE_HUMAN[lbl]}(τ={tau:.2f} w={w:.1f})")
+        return {
+            "buy": [f"加权分位≥{buy_th:.2f}买入"] + active,
+            "sell": [f"加权分位≥{sell_th:.2f}卖出"] + active,
+        }
+
+    def engine_brief(self) -> str:
+        return (
+            "分位评分引擎 (percentile)\n"
+            "  原理: 每只标的对自身 252 日历史算各指标分位排名, 加权求和打分\n"
+            "  买入: 加权分位分 > τ_buy (看涨指标处于历史高位)\n"
+            "  卖出: 加权分位分 > τ_sell (看跌指标处于历史高位)\n"
+            f"  信号: {', '.join(PERCENTILE_HUMAN.values())}"
+        )
+
+    def execution_params(self, params) -> dict:
+        vals = getattr(params, "values", params) if not isinstance(params, dict) else params
+        return {
+            "buy_threshold": _decode_tau(vals.get("buy_score_thresh", 5)),
+            "sell_threshold": _decode_tau(vals.get("sell_score_thresh", 5)),
+            "position_frac": _decode_pos_frac(vals.get("position_frac", 2)),
+        }

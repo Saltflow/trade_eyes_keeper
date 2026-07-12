@@ -29,6 +29,43 @@ from .rule_engine import ExpressionEngine
 
 logger = logging.getLogger(__name__)
 
+
+def _make_signal_fn(engine_name: str):
+    """按引擎名构造 SignalFn（用于扫描分派）。返回 None 表示走 legacy 条件路径。"""
+    if not engine_name or engine_name == "global":
+        return None
+    if engine_name in ("percentile", "pct", "new"):
+        try:
+            from .percentile_engine import PercentileSignalFn
+            return PercentileSignalFn()
+        except Exception as e:
+            logger.warning(f"构造 PercentileSignalFn 失败: {e}")
+            return None
+    return None
+
+
+def _params_from_yaml(params: dict):
+    """YAML params dict → Params（仅取整数级别键，剔除 _mode/_engine/_stocks）。
+
+    优化器可能把级别值序列化为字符串（'4'），这里统一转 int。
+    """
+    from .signal_functions import Params
+    vals = {}
+    for k, v in params.items():
+        if k.startswith("_"):
+            continue
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, (int, float)):
+            vals[k] = int(v)
+        elif isinstance(v, str):
+            s = v.strip()
+            try:
+                vals[k] = int(float(s))  # '4' 或 '4.0' → 4
+            except (ValueError, TypeError):
+                pass  # 非数值字符串（如 builder 名），跳过
+    return Params(values=vals, _engine=params.get("_engine", ""))
+
 # 策略规则中可能引用的指标（用于解析）
 _KNOWN_INDICATORS = {
     "rsi", "vol_ratio", "boll_pct_b", "boll_upper", "boll_lower",
@@ -87,6 +124,7 @@ class SignalScanner:
     def __init__(self, results_dir: str | Path = "data/optimizer"):
         self.results_dir = Path(results_dir)
         self._expr_engine = ExpressionEngine()
+        self._computed_cache: dict = {}
 
     # ── 文件加载 ──
 
@@ -249,21 +287,61 @@ class SignalScanner:
             if code not in today_indicators:
                 continue
             today = today_indicators[code]
+            hist = getattr(self, "_computed_cache", {}).get(code)
+            if hist is None:
+                hist = historical.get(code)
             # 去重按 (标的, 条件表达式)：相同条件只报一次，
             # 不管来自哪个策略/rule_id（Top5 常有多策略同条件）
             seen_conds: set[tuple[str, str]] = set()
             for s_idx, strat in enumerate(strategies):
                 rules = strat.get("rules", [])
+                params = strat.get("params", {}) or {}
+                engine_name = params.get("_engine", "global")
+
+                # ── 分派 1: 引擎自定义扫描（condition=__signal_fn__）──
+                uses_signal_fn = any(
+                    r.get("condition") == "__signal_fn__" for r in rules
+                )
+                if uses_signal_fn:
+                    signal_fn = _make_signal_fn(engine_name)
+                    if signal_fn is not None:
+                        dk = (code, f"__engine__{engine_name}")
+                        if dk in seen_conds:
+                            continue
+                        seen_conds.add(dk)
+                        try:
+                            sig_params = _params_from_yaml(params)
+                            hits = signal_fn.scan_signals(sig_params, today, hist)
+                            for h in hits:
+                                if h.get("side") != "buy":
+                                    continue  # 仅报买入信号（与旧逻辑一致）
+                                result.alerts.append(
+                                    StrategyAlert(
+                                        stock_code=code,
+                                        rule_id=h.get("side", "buy"),
+                                        rule_label=h.get("label", "信号"),
+                                        condition_str=h.get("detail", ""),
+                                        current_value=h.get("detail", "—"),
+                                        strategy_rank=s_idx + 1,
+                                    )
+                                )
+                        except Exception as e:
+                            logger.debug(f"{code} 引擎扫描失败 (非致命): {e}")
+                        continue  # 该策略走引擎路径，跳过 legacy 条件评估
+
+                # ── 分派 2: legacy 条件评估（全局阈值引擎 / 旧 YAML）──
                 for r in rules:
                     if r.get("type") != "buy" or r.get("condition", "False") == "False":
                         continue
                     cond = r.get("condition", "False")
+                    if cond == "__signal_fn__":
+                        continue  # 引擎路径已处理
                     dedup_key = (code, cond)
                     if dedup_key in seen_conds:
                         continue
                     seen_conds.add(dedup_key)
                     # 构建上下文
-                    ctx = self._build_context(today, historical.get(code), code)
+                    ctx = self._build_context(today, hist, code)
                     try:
                         if self._expr_engine.evaluate(cond, ctx):
                             cur_val = self._describe_current(today, cond)
@@ -319,6 +397,8 @@ class SignalScanner:
             logger.warning(f"指标计算失败: {e}")
             return result
 
+        # 缓存完整计算后 DataFrame（供 signal_fn.scan_signals 计算滚动分位）
+        self._computed_cache = {}
         for code, df in computed.items():
             if df is None or df.empty:
                 continue
@@ -326,7 +406,7 @@ class SignalScanner:
             if "deviation" not in df.columns and "close" in df.columns:
                 df["ma60"] = df["close"].rolling(60, min_periods=1).mean()
                 df["deviation"] = (df["close"] - df["ma60"]) / df["ma60"]
-
+            self._computed_cache[code] = df
             row = df.iloc[-1]
             vals: dict[str, float] = {}
             for col in df.columns:

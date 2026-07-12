@@ -48,6 +48,17 @@ logger = logging.getLogger(__name__)
 
 
 # 策略参数人话映射
+# builder → 简短中文名（与 email_notifier.SIGNAL_NAMES 对齐, 供 rule.label 使用）
+_GLOBAL_SIGNAL_NAMES = {
+    "deviation_cross": "偏离穿越", "deviation_absolute": "偏离达标",
+    "rsi_signal": "RSI超卖", "bollinger_signal": "布林低位",
+    "volume_spike": "放量异动", "trend_follow": "趋势跟踪",
+    "deep_value": "深度价值", "absolute_discount": "绝对折价",
+    "sell_overextended": "超涨卖出", "sell_deviation_cross": "偏离穿越(卖)",
+    "sell_rsi_signal": "RSI超买", "sell_bollinger_signal": "布林高位",
+    "sell_trend_follow": "趋势反转", "none": "无",
+}
+
 _BUILDER_LABELS = {
     "deviation_cross": lambda t, n=None: f"MA60偏离下穿 {-0.005 + t * (-0.295):.1%} 时买入",
     "deviation_absolute": lambda t, n=None: f"MA60偏离 < {-t * 0.40:.0%} 时买入",
@@ -366,7 +377,13 @@ class StrategyOptimizerV2:
             )
 
             # 转换为 Rule 列表（沿用 V1 格式）
-            rules = self._encoding_to_rules(ss.encoding)
+            is_signal_fn = (
+                self.signal_fn is not None and hasattr(ss.encoding, "values")
+            )
+            if is_signal_fn:
+                rules = self._signal_fn_to_rules(ss.encoding)
+            else:
+                rules = self._encoding_to_rules(ss.encoding)
 
             # 从窗口统计推算训练/测试期指标
             # test_return = 排序窗口均值（排除验证窗口）
@@ -482,35 +499,41 @@ class StrategyOptimizerV2:
 
             # 构建参数摘要
             params_summary: dict[str, str] = {}
-            use_pt = self.ds_cfg.use_position_target
-            # 买入
-            for j in range(ss.encoding.n_buy_rules):
-                b = ss.encoding.buy_builders[j]
-                t = ss.encoding.buy_thresholds[j]
-                f = ss.encoding.buy_fracs[j]
-                builder_name = self.ds_cfg.buy_builders[b]
-                params_summary[f"buy_{j+1}_signal"] = builder_name
-                params_summary[f"buy_{j+1}_t"] = f"{t / (self.ds_cfg.threshold_levels - 1):.3f}" if self.ds_cfg.threshold_levels > 1 else "0.000"
-                if not use_pt:
-                    params_summary[f"buy_{j+1}_frac"] = f"{self.ds_cfg.frac_levels[f]:.3f}"
-            # 卖出
-            for j in range(ss.encoding.n_sell_rules):
-                b = ss.encoding.sell_builders[j]
-                t = ss.encoding.sell_thresholds[j]
-                f = ss.encoding.sell_fracs[j]
-                builder_name = self.ds_cfg.sell_builders[b]
-                params_summary[f"sell_{j+1}_signal"] = builder_name
-                params_summary[f"sell_{j+1}_t"] = f"{t / (self.ds_cfg.threshold_levels - 1):.3f}" if self.ds_cfg.threshold_levels > 1 else "0.000"
-                if not use_pt:
-                    params_summary[f"sell_{j+1}_frac"] = f"{self.ds_cfg.sell_frac_levels[f]:.3f}"
-            # 仓位目标参数
-            if use_pt:
-                sl, bi = ss.encoding.to_position_params(self.ds_cfg)
-                params_summary["position_slope"] = f"{sl:.2f}"
-                params_summary["position_bias"] = f"{bi:.2f}"
-                params_summary["_mode"] = "position_target"
+            if is_signal_fn:
+                # 分位/自定义引擎：写真实引擎参数（整数级别 → 原样存）
+                for k, v in ss.encoding.values.items():
+                    params_summary[k] = v
+                params_summary["_mode"] = "signal_score"
             else:
-                params_summary["_mode"] = "frac"
+                use_pt = self.ds_cfg.use_position_target
+                # 买入
+                for j in range(ss.encoding.n_buy_rules):
+                    b = ss.encoding.buy_builders[j]
+                    t = ss.encoding.buy_thresholds[j]
+                    f = ss.encoding.buy_fracs[j]
+                    builder_name = self.ds_cfg.buy_builders[b]
+                    params_summary[f"buy_{j+1}_signal"] = builder_name
+                    params_summary[f"buy_{j+1}_t"] = f"{t / (self.ds_cfg.threshold_levels - 1):.3f}" if self.ds_cfg.threshold_levels > 1 else "0.000"
+                    if not use_pt:
+                        params_summary[f"buy_{j+1}_frac"] = f"{self.ds_cfg.frac_levels[f]:.3f}"
+                # 卖出
+                for j in range(ss.encoding.n_sell_rules):
+                    b = ss.encoding.sell_builders[j]
+                    t = ss.encoding.sell_thresholds[j]
+                    f = ss.encoding.sell_fracs[j]
+                    builder_name = self.ds_cfg.sell_builders[b]
+                    params_summary[f"sell_{j+1}_signal"] = builder_name
+                    params_summary[f"sell_{j+1}_t"] = f"{t / (self.ds_cfg.threshold_levels - 1):.3f}" if self.ds_cfg.threshold_levels > 1 else "0.000"
+                    if not use_pt:
+                        params_summary[f"sell_{j+1}_frac"] = f"{self.ds_cfg.sell_frac_levels[f]:.3f}"
+                # 仓位目标参数
+                if use_pt:
+                    sl, bi = ss.encoding.to_position_params(self.ds_cfg)
+                    params_summary["position_slope"] = f"{sl:.2f}"
+                    params_summary["position_bias"] = f"{bi:.2f}"
+                    params_summary["_mode"] = "position_target"
+                else:
+                    params_summary["_mode"] = "frac"
             params_summary["_stocks"] = ",".join(wf_mgr.stock_codes[:12])
             if self.signal_fn is not None:
                 params_summary["_engine"] = self.signal_fn.name
@@ -610,7 +633,7 @@ class StrategyOptimizerV2:
 
             rules.append(Rule(
                 id=f"buy_{i+1}",
-                label=f"买入规则{i+1}",
+                label=_GLOBAL_SIGNAL_NAMES.get(builder_name, f"买入规则{i+1}"),
                 type="buy",
                 priority=i + 1,
                 condition=condition,
@@ -629,7 +652,8 @@ class StrategyOptimizerV2:
 
             rules.append(Rule(
                 id=f"sell_{i+1}",
-                label=f"卖出规则{i+1}",
+                label=_GLOBAL_SIGNAL_NAMES.get(builder_name,
+                      _GLOBAL_SIGNAL_NAMES.get(f"sell_{builder_name}", f"卖出规则{i+1}")),
                 type="sell",
                 priority=encoding.n_buy_rules + i + 1,
                 condition=condition,
@@ -640,6 +664,33 @@ class StrategyOptimizerV2:
                 reset_when=reset_when,
             ))
 
+        return rules
+
+    def _signal_fn_to_rules(self, params) -> list[Rule]:
+        """SignalFn 引擎 → Rule 列表（用引擎自定义规则名, condition 留空由引擎扫描）。"""
+        desc = self.signal_fn.describe_rules(params)
+        rules: list[Rule] = []
+        for i, name in enumerate(desc.get("buy", []), 1):
+            rules.append(Rule(
+                id=f"buy_{i}",
+                label=name,
+                type="buy",
+                priority=i,
+                condition="__signal_fn__",  # 标记：由 signal_fn.scan_signals 判断
+                budget_pool="buy",
+                action_amount="position_target",
+            ))
+        n_buy = len(rules)
+        for i, name in enumerate(desc.get("sell", []), 1):
+            rules.append(Rule(
+                id=f"sell_{i}",
+                label=name,
+                type="sell",
+                priority=n_buy + i,
+                condition="__signal_fn__",
+                budget_pool="sell",
+                action_fraction=0.0,
+            ))
         return rules
 
     def _save_results(self, report: OptimizationReport, save_dir: Path):
@@ -674,7 +725,8 @@ class StrategyOptimizerV2:
                 "params": t.params,
                 "rules": [
                     {
-                        "id": r.id, "type": r.type, "priority": r.priority,
+                        "id": r.id, "label": r.label, "type": r.type,
+                        "priority": r.priority,
                         "condition": r.condition, "budget_pool": r.budget_pool,
                         "action_amount": r.action_amount,
                         "action_fraction": r.action_fraction,

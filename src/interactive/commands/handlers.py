@@ -157,31 +157,46 @@ def handle_skip(kind: str, codes: list[str], remove: bool = False) -> str:
             f"当前不{label}: {len(cur)} 只")
 
 
+def _engine_brief(engine_key: str) -> str:
+    """获取引擎买卖标准简介（criterion 3）。"""
+    try:
+        if engine_key in ("percentile", "pct", "new"):
+            from src.analysis.percentile_engine import PercentileSignalFn
+            return PercentileSignalFn().engine_brief()
+        from src.analysis.global_threshold_signal import GlobalThresholdSignalFn
+        return GlobalThresholdSignalFn().engine_brief()
+    except Exception:
+        return ""
+
+
 def handle_switch_optimizer(kind: str | None = None) -> str:
     """切换搜参引擎。
 
-    kind=None → 列出可用引擎。
+    kind=None → 列出可用引擎 + 买卖标准简介。
     kind="global"|"percentile" → 写 config.yaml optimizer.engine。
     """
     engines = {
-        "global": "全局阈值引擎 (H1-H6 全旧, ADX/RSI/...绝对值阈值, 默认)",
-        "percentile": "分位评分引擎 (§8 新参数化, 松弛H1-H3, 标的自比较分位+权重, 推荐)",
+        "global": "全局阈值引擎 (固定绝对阈值, 默认)",
+        "percentile": "分位评分引擎 (标的自比较分位+权重, 推荐)",
     }
 
     if kind is None:
-        # 列出可用引擎
+        # 列出可用引擎 + 简介
         config = _load_config()
         cur = (config.get("optimizer", {}) or {}).get("engine", "global")
         lines = ["<b>可用搜参引擎</b>\n"]
         for eng, desc in engines.items():
-            marker = " ← 当前" if eng == cur else ""
-            example = ("<code>/switch_optimizer global</code>" if eng != cur
-                       else "")
-            lines.append(f"  <b>{eng}</b> — {desc}{marker}")
-            if example:
-                lines.append(f"      切换: {example}")
-        lines.append(f"\n使用 <code>/switch_optimizer 引擎名</code> 切换")
-        return "\n".join(lines)
+            marker = "  ← 当前" if eng == cur else ""
+            lines.append(f"<b>{eng}</b> — {desc}{marker}")
+            brief = _engine_brief(eng)
+            if brief:
+                # 缩进简介每行
+                for bl in brief.split("\n"):
+                    lines.append(f"  {bl}")
+            if eng != cur:
+                lines.append(f"  切换: <code>/switch_optimizer {eng}</code>")
+            lines.append("")
+        return "\n".join(lines).rstrip()
 
     if kind not in engines:
         return f"❌ 未知引擎: {kind}。可用: {', '.join(engines.keys())}"
@@ -191,8 +206,9 @@ def handle_switch_optimizer(kind: str | None = None) -> str:
     config.setdefault("optimizer", {})["engine"] = kind
     _save_config(config)
 
-    return (f"✅ 搜参引擎已切换: <b>{old} → {kind}</b>\n"
-            f"{engines[kind]}\n"
+    brief = _engine_brief(kind)
+    return (f"✅ 搜参引擎已切换: <b>{old} → {kind}</b>\n\n"
+            f"{brief}\n\n"
             f"下次 02:00 cron 自动生效。手动搜参: <code>/optimize</code>")
 
 

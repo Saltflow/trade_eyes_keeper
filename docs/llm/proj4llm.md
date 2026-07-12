@@ -1,8 +1,32 @@
 # 股票量化系统 - 关键设计决策文档
 
-**文档版本**: v1.18
-**最后更新**: 2026-07-09
+**文档版本**: v1.19
+**最后更新**: 2026-07-12
 **压缩目标**: ~800行，保留关键设计决策
+
+---
+
+## 🔌 双搜参引擎架构 (v1.19 新增)
+
+### 背景问题
+分位评分引擎 (PercentileSignalFn) 之前只是"空壳"：`signal_fn` 仅用于往 YAML 写 `_engine` 标签，其 `evaluate()` 从未被遗传搜索调用。YAML 里实际是全局阈值格式参数 (`buy_1_signal: deviation_absolute`)，导致"信号名与指标对不上"。
+
+### 解决方案：SignalFn 真正接入遗传搜索
+- **SignalFn ABC** (`signal_functions.py`)：唯一替换点。新增方法：
+  - `random_params/crossover/mutate` — genome 编解码（genome = `Params.values` 整数级别 dict）
+  - `scan_signals(params, today, history)` — 引擎自身逻辑判断今日买卖信号（显示层用）
+  - `describe_rules(params)` — 参数翻译成买卖规则名（报告用）
+  - `engine_brief()` — 引擎买卖标准简介（/switch_optimizer 展示）
+  - `execution_params(params)` — 解码执行阈值（买/卖分数阈值+仓位）
+- **SignalFnSearchEngine** (`signal_fn_engine.py`)：把 SignalFn 包成遗传搜索器的 `StrategyEngine` 插件。encoding=Params，`evaluate_encoding` 调 `signal_fn.evaluate()` → 共享流水线 `simulate_portfolio`/`compute_metrics` → `WindowStats`。**engine 分支单线程（无 pickle 问题）**。
+- **main.py**：`engine_type==percentile` → `engine=SignalFnSearchEngine(signal_fn)`；global → `engine=None`（100% 走旧向量化路径，criterion 1/2 逻辑零改动）。
+- **strategy_optimizer_v2._build_report**：`hasattr(ss.encoding,'values')` 判定引擎模式。分位模式写真实分位参数 (`adx_pct_tau` 等, `_mode: signal_score`) + `_signal_fn_to_rules`（引擎自定义规则名 + `condition: __signal_fn__` 标记）。`_save_results` 序列化 `label` 字段。
+- **SignalScanner.scan**：rules 含 `__signal_fn__` → 按 `_engine` 构造 SignalFn → `scan_signals()` 用引擎逻辑判断；否则走 legacy `condition` 评估（全局引擎/旧 YAML）。分位分派用 `_computed_cache`（compute_all 后的完整 DataFrame）算滚动分位。
+
+### 关键不变量
+- **全局引擎 = deprecated 但默认**，`engine=None`，走旧 FastEvaluator 向量化路径，日报版式与逻辑完全不变
+- 旧 YAML（无 `_engine` 或 `_engine: global`, 真实 condition）永远走 legacy 路径
+- 分位引擎信号名来自引擎自身：如 `分位评分买入 (score 0.29>0.19)` + detail `趋势强度分位(ADX)分位71%>46%`
 
 ---
 
