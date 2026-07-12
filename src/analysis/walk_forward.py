@@ -470,8 +470,8 @@ class WalkForwardManager:
                 if not valid.any():
                     continue
                 pct_matrix[t, dst_col] = (
-                    (window_vals[valid] <= src[t]) & valid
-                ).sum() / valid.sum()
+                    (window_vals[valid] <= src[t]).sum()
+                ) / max(valid.sum(), 1)
 
         return pct_matrix
 
