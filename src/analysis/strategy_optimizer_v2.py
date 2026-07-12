@@ -534,9 +534,11 @@ class StrategyOptimizerV2:
                 total_nav=total_nav,
                 quarterly_holdings=quarterly,
                 strategy_description=(
-                    self.signal_fn.to_human_readable(ss.encoding) if self.signal_fn is not None
-                    else self.engine.to_human_readable(ss.encoding, self.ds_cfg) if self.engine is not None
-                    else self._format_strategy_description(ss.encoding, self.ds_cfg)
+                    self.signal_fn.to_human_readable(ss.encoding)
+                    if self.signal_fn is not None and hasattr(ss.encoding, 'values')
+                    else (self.engine.to_human_readable(ss.encoding, self.ds_cfg)
+                          if self.engine is not None
+                          else self._format_strategy_description(ss.encoding, self.ds_cfg))
                 ),
             )
             trials.append(trial)
