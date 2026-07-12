@@ -52,33 +52,43 @@ def _git_info() -> str:
 
 
 def handle_help() -> str:
-    return (
-        "<b>可用命令</b>\n\n"
-        "<code>/help</code> — 显示此帮助\n"
-        "<code>/list</code> — 查看监控列表\n"
-        "<code>/add 代码,代码,...</code> — 批量添加（逗号或空格分隔）\n"
-        " 例: <code>/add 601728,GOOG,00883</code>\n"
-        "<code>/remove 代码,代码,...</code> — 批量移除\n"
-        "<code>/backtest 代码 开始 结束</code> — 回测\n"
-        " 例: <code>/backtest 601919 2024-01-01 2024-12-31</code>\n"
-        "<code>/save</code> — 保存监控列表到 git\n"
-        "<code>/brief [afternoon]</code> — 触发简报（默认早盘）\n"
-        "<code>/optimize [v1]</code> — 触发策略优化（默认 V2）\n"
-        "<code>/daily</code> — 触发完整日报\n"
-        "<code>/schedule [任务 时间]</code> — 查看/修改调度时间\n"
-        " 例: <code>/schedule daily 20:00</code>\n"
-        "<code>/alerts</code> — 查看报警状态\n"
-        "<code>/reset_alerts [代码]</code> — 重置报警\n"
-        "<code>/mode [frac|position]</code> — 查看/切换策略模式\n"
-        "<code>/skip search|signals 代码</code> — 关闭标的的搜参/信号\n"
-        " 例: <code>/skip search 601985</code> 仅盯盘不搜参\n"
-        "<code>/unskip search|signals 代码</code> — 恢复\n"
-        "<code>/switch_optimizer [引擎名]</code> — 查看/切换搜参引擎\n"
-        " 例: <code>/switch_optimizer percentile</code> 切换到分位评分引擎\n"
-        "<code>/config [show|set KEY VAL|reset]</code> — 查看/修改优化器配置\n"
-        " 例: <code>/config set max_dd -30</code>"
-        + _git_info()
-    )
+    sections = [
+        ("📋 监控列表", [
+            ("/list", "查看监控列表"),
+            ("/add 代码,...", "批量添加 例 <code>/add 601728,GOOG,00883</code>"),
+            ("/remove 代码,...", "批量移除"),
+            ("/save", "保存监控列表到 git"),
+        ]),
+        ("📊 报告触发", [
+            ("/daily", "触发完整日报"),
+            ("/brief [afternoon]", "触发简报（默认早盘）"),
+            ("/backtest 代码 起 止", "回测 例 <code>/backtest 601919 2024-01-01 2024-12-31</code>"),
+        ]),
+        ("🔬 策略与搜参", [
+            ("/optimize [v1]", "触发策略优化（默认 V2）"),
+            ("/switch_optimizer [引擎]", "查看/切换搜参引擎 例 <code>/switch_optimizer percentile</code>"),
+            ("/mode [frac|position]", "查看/切换策略模式"),
+            ("/config [show|set K V|reset]", "查看/修改优化器配置 例 <code>/config set max_dd -30</code>"),
+        ]),
+        ("🎯 标的开关", [
+            ("/skip search|signals 代码", "关闭标的搜参/信号 例 <code>/skip search 601985</code>"),
+            ("/unskip search|signals 代码", "恢复搜参/信号"),
+        ]),
+        ("🔔 报警与调度", [
+            ("/alerts", "查看报警状态"),
+            ("/reset_alerts [代码]", "重置报警"),
+            ("/schedule [任务 时间]", "查看/修改调度 例 <code>/schedule daily 20:00</code>"),
+        ]),
+        ("ℹ️ 其他", [
+            ("/help", "显示此帮助"),
+        ]),
+    ]
+    parts = ["<b>📖 可用命令</b>"]
+    for title, cmds in sections:
+        parts.append(f"\n<b>{title}</b>")
+        for cmd, desc in cmds:
+            parts.append(f"<code>{cmd}</code> — {desc}")
+    return "\n".join(parts) + _git_info()
 
 
 def handle_list() -> str:
