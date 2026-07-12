@@ -424,7 +424,10 @@ def simulate_portfolio(
     nav = daily_values
     total_return = float((nav[-1] - nav[0]) / nav[0] * 100) if nav[0] > 0 else 0.0
     peak = np.maximum.accumulate(nav)
-    dd = float(np.min((nav - peak) / peak * 100))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dd_series = np.where(peak > 0, (nav - peak) / peak * 100.0, 0.0)
+    dd_series = dd_series[np.isfinite(dd_series)]
+    dd = float(np.min(dd_series)) if len(dd_series) > 0 else 0.0
     sharpe = 0.0
     if len(nav) > 5:
         rets = np.diff(nav) / nav[:-1]
