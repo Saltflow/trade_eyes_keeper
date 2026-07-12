@@ -27,12 +27,13 @@ class FeishuNotifier(BaseNotifier):
 
     # ── 传输层 ──────────────────────────────────
 
-    def _send(self, title: str, body: str) -> tuple:
+    def _send(self, title: str, body: str, extra_elements: list | None = None) -> tuple:
         """发送飞书卡片消息
 
         Args:
             title: 卡片标题
             body: 卡片正文（markdown 或纯文本）
+            extra_elements: 追加的卡片 element（原生表格/分割线等）
 
         Returns:
             (bool, str): (是否成功, 消息)
@@ -40,7 +41,7 @@ class FeishuNotifier(BaseNotifier):
         if not self.webhook_url:
             return False, "飞书 webhook_url 未配置"
 
-        card = _build_interactive_card(title, body)
+        card = _build_interactive_card(title, body, extra_elements=extra_elements)
         payload = {"msg_type": "interactive", "card": card}
         try:
             resp = requests.post(
@@ -71,16 +72,16 @@ class FeishuNotifier(BaseNotifier):
         stock_data = session.get_all_dataframe()
         alerts = session.get_alerts_as_dicts()
         title = f"股票提醒 - {datetime.now().strftime('%Y-%m-%d')}"
-        for label, body in self._build_report_sections(
+        for label, body, extra in self._build_report_sections(
             stock_data, alerts=alerts, alert_only=True
         ):
-            self._send(f"{title} · {label}", body)
+            self._send(f"{title} · {label}", body, extra_elements=extra)
 
     def send_daily_report_from_session(self, session) -> None:
         stock_data = session.get_all_dataframe()
         title = f"股票日报 - {datetime.now().strftime('%Y-%m-%d')}"
-        for label, body in self._build_report_sections(stock_data):
-            self._send(f"{title} · {label}", body)
+        for label, body, extra in self._build_report_sections(stock_data):
+            self._send(f"{title} · {label}", body, extra_elements=extra)
 
         # 搜参策略 + 今日信号 + 定增摘要（与邮件对齐）
         try:
@@ -188,7 +189,11 @@ class FeishuNotifier(BaseNotifier):
 
     @staticmethod
     def _build_report_sections(stock_data, alerts=None, alert_only: bool = False) -> list:
-        """构建飞书日报分段，按价格/基本面/技术指标拆成多张卡片。"""
+        """构建飞书日报分段，按价格/基本面/技术指标拆成多张卡片。
+
+        每段返回 (label, markdown_body, extra_elements)，
+        表格使用飞书 schema 2.0 原生 table 组件。
+        """
         today = datetime.now()
         all_entries = _collect_report_entries(stock_data, today)
         alert_codes = _extract_alert_codes(alerts or [])
@@ -202,70 +207,78 @@ class FeishuNotifier(BaseNotifier):
             title = "**监控日报**"
             empty_text = "本次没有可展示的活跃标的。"
 
-        summary = [f"{title} | {today.strftime('%Y-%m-%d %H:%M')}", ""]
-        summary.append(f"活跃标的: **{len(entries)}**")
-        if alert_codes:
-            summary.append(f"告警标的: **{len(alert_codes)}**")
+        summary = [f"{title} · {today.strftime('%Y-%m-%d %H:%M')}", ""]
+        summary.append(f"活跃标的 **{len(entries)}**"
+                       + (f" · 告警 **{len(alert_codes)}**" if alert_codes else ""))
 
         if not entries:
             summary.extend(["", empty_text])
-            return [("摘要", "\n".join(summary))]
+            return [("摘要", "\n".join(summary), None)]
 
         worst = min(entries, key=lambda x: x["dev_sort"])
         best = max(entries, key=lambda x: x["dev_sort"])
         summary.append(
-            f"最大负偏离: `{worst['code']}` {worst['name']} {worst['dev']}"
+            f"最大跌 `{worst['code']}` {worst['name']} "
+            + _color_md(worst["dev"], False)
         )
         summary.append(
-            f"最大正偏离: `{best['code']}` {best['name']} {best['dev']}"
-        )
-        summary.extend(["", "**价格 / 锚点偏离**"])
-        summary.append(
-            _build_plain_table(
-                entries,
-                [
-                    ("code", "代码"),
-                    ("name", "名称"),
-                    ("close", "收盘"),
-                    ("anchor", "锚点"),
-                    ("dev", "偏离"),
-                ],
-            )
+            f"最大涨 `{best['code']}` {best['name']} "
+            + _color_md(best["dev"], True)
         )
 
-        sections = [("价格", "\n".join(summary))]
+        # ── 价格段：原生表格（偏离红绿着色）──
+        price_cols = [
+            ("code", "代码", "left", "text"),
+            ("name", "名称", "left", "text"),
+            ("close", "收盘", "right", "text"),
+            ("anchor", "锚点", "center", "text"),
+            ("dev", "偏离", "right", "lark_md"),
+        ]
+        price_rows = [
+            {
+                "code": e["code"], "name": e["name"], "close": e["close"],
+                "anchor": e["anchor"],
+                "dev": _color_md(e["dev"], (e.get("dev_sort") or 0) >= 0),
+            }
+            for e in entries
+        ]
+        price_extra = [{"tag": "markdown", "content": "**价格 / 锚点偏离**"},
+                       _build_native_table(price_cols, price_rows)]
+        sections = [("价格", "\n".join(summary), price_extra)]
 
-        fundamental = ["**基本面**", ""]
-        fundamental.append(
-            _build_plain_table(
-                entries,
-                [
-                    ("code", "代码"),
-                    ("div_y", "息%"),
-                    ("pe", "PE"),
-                    ("pb", "PB"),
-                    ("roe", "ROE%"),
-                ],
-            )
-        )
-        sections.append(("基本面", "\n".join(fundamental)))
+        # ── 基本面段 ──
+        fund_cols = [
+            ("code", "代码", "left", "text"),
+            ("div_y", "息%", "right", "text"),
+            ("pe", "PE", "right", "text"),
+            ("pb", "PB", "right", "text"),
+            ("roe", "ROE%", "right", "text"),
+        ]
+        fund_rows = [
+            {"code": e["code"], "div_y": e["div_y"], "pe": e["pe"],
+             "pb": e["pb"], "roe": e["roe"]}
+            for e in entries
+        ]
+        fund_extra = [_build_native_table(fund_cols, fund_rows)]
+        sections.append(("基本面", "**基本面**", fund_extra))
 
+        # ── 技术段 ──
         if _has_technical_data(entries):
-            technical = ["**技术指标**", ""]
-            technical.append(
-                _build_plain_table(
-                    entries,
-                    [
-                        ("code", "代码"),
-                        ("rsi", "RSI"),
-                        ("macd_h", "MACD_H"),
-                        ("vol_r", "VOL比"),
-                        ("adx", "ADX"),
-                        ("boll", "布林%"),
-                    ],
-                )
-            )
-            sections.append(("技术", "\n".join(technical)))
+            tech_cols = [
+                ("code", "代码", "left", "text"),
+                ("rsi", "RSI", "right", "text"),
+                ("macd_h", "MACD", "right", "text"),
+                ("vol_r", "量比", "right", "text"),
+                ("adx", "ADX", "right", "text"),
+                ("boll", "布林%", "right", "text"),
+            ]
+            tech_rows = [
+                {"code": e["code"], "rsi": e["rsi"], "macd_h": e["macd_h"],
+                 "vol_r": e["vol_r"], "adx": e["adx"], "boll": e["boll"]}
+                for e in entries
+            ]
+            tech_extra = [_build_native_table(tech_cols, tech_rows)]
+            sections.append(("技术", "**技术指标**", tech_extra))
 
         return sections
 
@@ -446,31 +459,25 @@ def _escape_cell(text: str) -> str:
 
 
 def _build_brief_table_element(entries: list[dict]) -> dict | None:
-    """构建飞书原生 table 组件（偏离率着色）。"""
+    """构建飞书原生 table 组件（偏离率红绿着色）。"""
     if not entries:
         return None
-    return {
-        "tag": "table",
-        "columns": [
-            {"name": "code", "data": {"text": "代码"}, "horizontal_align": "left"},
-            {"name": "name", "data": {"text": "名称"}, "horizontal_align": "left"},
-            {"name": "price", "data": {"text": "现价"}, "horizontal_align": "right"},
-            {"name": "deviation", "data": {"text": "偏离"}, "horizontal_align": "right"},
-        ],
-        "rows": [
-            [
-                {"data": {"text": e["code"]}, "horizontal_align": "left"},
-                {"data": {"text": e["name"]}, "horizontal_align": "left"},
-                {"data": {"text": f"{e['close']:.2f}"}, "horizontal_align": "right"},
-                {
-                    "data": {"text": e["dev_str"]},
-                    "horizontal_align": "right",
-                    "color": "#c0392b" if (e.get("dev_pct") or 0) < 0 else "#27ae60",
-                },
-            ]
-            for e in entries
-        ],
-    }
+    columns = [
+        ("code", "代码", "left", "text"),
+        ("name", "名称", "left", "text"),
+        ("price", "现价", "right", "text"),
+        ("dev", "偏离", "right", "lark_md"),
+    ]
+    rows = [
+        {
+            "code": str(e["code"]),
+            "name": str(e["name"]),
+            "price": f"{e['close']:.2f}" if e.get("close") is not None else "-",
+            "dev": _color_md(e["dev_str"], (e.get("dev_pct") or 0) >= 0),
+        }
+        for e in entries
+    ]
+    return _build_native_table(columns, rows)
 
 
 def _build_brief_strategy_table(sug: dict) -> dict | None:
@@ -480,38 +487,68 @@ def _build_brief_strategy_table(sug: dict) -> dict | None:
     active_entries = [e for e in sug["entries"] if e["signals"]]
     if not active_entries:
         return None
-    return {
-        "tag": "table",
-        "columns": [
-            {"name": "code", "data": {"text": "代码"}, "horizontal_align": "left"},
-            {"name": "name", "data": {"text": "名称"}, "horizontal_align": "left"},
-            {"name": "signal", "data": {"text": "触发信号"}, "horizontal_align": "left"},
-            {"name": "price", "data": {"text": "现价"}, "horizontal_align": "right"},
-        ],
-        "rows": [
-            [
-                {"data": {"text": e["code"]}, "horizontal_align": "left"},
-                {"data": {"text": e["name"]}, "horizontal_align": "left"},
-                {"data": {"text": ", ".join(e["signals"]) or "—"}, "horizontal_align": "left",
-                 "color": "#27ae60"},
-                {"data": {"text": f"{e['close']:.2f}"}, "horizontal_align": "right"},
-            ]
-            for e in active_entries
-        ],
-    }
+    columns = [
+        ("code", "代码", "left", "text"),
+        ("name", "名称", "left", "text"),
+        ("signal", "触发信号", "left", "lark_md"),
+        ("price", "现价", "right", "text"),
+    ]
+    rows = [
+        {
+            "code": str(e["code"]),
+            "name": str(e["name"]),
+            "signal": _color_md(", ".join(e["signals"]) or "—", True),
+            "price": f"{e['close']:.2f}" if e.get("close") is not None else "-",
+        }
+        for e in active_entries
+    ]
+    return _build_native_table(columns, rows)
 
 
 def _build_interactive_card(title: str, body: str, extra_elements: list[dict] | None = None) -> dict:
-    """构建飞书交互卡片 JSON"""
+    """构建飞书交互卡片 JSON（schema 2.0，支持原生 table 组件）。"""
     elements = []
     if body:
         elements.append({"tag": "markdown", "content": body})
     if extra_elements:
         elements.extend(extra_elements)
     return {
+        "schema": "2.0",
         "header": {
             "title": {"tag": "plain_text", "content": title[:100]},
             "template": "blue",
         },
-        "elements": elements,
+        "body": {"elements": elements},
     }
+
+
+def _build_native_table(columns: list[tuple], rows: list[dict]) -> dict:
+    """构建飞书 schema 2.0 原生 table 组件。
+
+    Args:
+        columns: [(name, display_name, align, data_type), ...]
+                 align: "left"|"right"|"center"; data_type: "text"|"lark_md"
+        rows: [{name: value, ...}, ...]，值均为字符串
+
+    飞书原生 table 要求 schema 2.0，rows 为按列名索引的字典（非数组）。
+    """
+    return {
+        "tag": "table",
+        "header_style": {"bold": True},
+        "columns": [
+            {
+                "name": name,
+                "display_name": disp,
+                "data_type": dtype,
+                "horizontal_align": align,
+            }
+            for name, disp, align, dtype in columns
+        ],
+        "rows": rows,
+    }
+
+
+def _color_md(text: str, positive: bool) -> str:
+    """偏离/涨跌着色：正=绿，负=红。"""
+    color = "green" if positive else "red"
+    return f"<font color='{color}'>{text}</font>"
