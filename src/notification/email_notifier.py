@@ -469,18 +469,22 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
             comp = getattr(r, "composition", [])
 
             # 验证期胜率（三基线各算一个）
+            # 空仓策略（平均现金≈100%）胜率无意义，不展示以免误导
+            trade_cnt = getattr(r, "trade_count", 0) or 0
+            near_empty = (avg_cash is not None and avg_cash >= 98.0) or trade_cnt == 0
             wr_parts = []
-            for disp, bcode, rf in bench_sets.get(gk, []):
-                if bcode is not None:
-                    wr, wd, td, _ = EmailNotifier._calc_validation_winrate(
-                        r, benchmark.get(bcode), months=9,
-                    )
-                else:
-                    wr, wd, td = EmailNotifier._calc_winrate_vs_riskfree(
-                        r, annual_rate=rf, months=9,
-                    )
-                if wr is not None:
-                    wr_parts.append(f"{disp} {wr:.0f}%")
+            if not near_empty:
+                for disp, bcode, rf in bench_sets.get(gk, []):
+                    if bcode is not None:
+                        wr, wd, td, _ = EmailNotifier._calc_validation_winrate(
+                            r, benchmark.get(bcode), months=9,
+                        )
+                    else:
+                        wr, wd, td = EmailNotifier._calc_winrate_vs_riskfree(
+                            r, annual_rate=rf, months=9,
+                        )
+                    if wr is not None:
+                        wr_parts.append(f"{disp} {wr:.0f}%")
 
             if test_ret is not None:
                 head = (f"{b}{gl}{b} 预估收益(测试期超额,近9月) {test_ret:+.1f}%"
@@ -496,6 +500,8 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
                     "  验证期胜率(任意日买入持有到期跑赢): "
                     + " | ".join(wr_parts)
                 )
+            elif near_empty:
+                lines.append("  验证期胜率: —（近乎空仓，无有效交易，胜率不适用）")
             if comp:
                 lines.append(f"  成分: {', '.join(comp)}")
             if ts:

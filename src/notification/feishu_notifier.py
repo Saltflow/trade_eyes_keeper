@@ -77,6 +77,15 @@ class FeishuNotifier(BaseNotifier):
         ):
             self._send(f"{title} · {label}", body, extra_elements=extra)
 
+        # 搜参策略 + 今日信号 + 定增摘要（与日报对齐，告警模式也需展示）
+        try:
+            from ..notification.email_notifier import build_strategy_text_summary
+            strat_body = build_strategy_text_summary(session, markdown=True)
+            if strat_body:
+                self._send(f"{title} · 策略与信号", strat_body)
+        except Exception as e:
+            logger.warning(f"飞书策略摘要发送失败 (非致命): {e}")
+
     def send_daily_report_from_session(self, session) -> None:
         stock_data = session.get_all_dataframe()
         title = f"股票日报 - {datetime.now().strftime('%Y-%m-%d')}"

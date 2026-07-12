@@ -298,7 +298,7 @@ def run_daily_task(force: bool = False):
             logger.info("开始投资组合策略分析（config标的 + YAML规则）")
 
             def _load_opt_yaml(group: str):
-                """读取指定分组最新 YAML，返回 (opt_data, custom_rules)。
+                """读取指定分组最新 YAML，返回 (opt_data, custom_rules, signal_fn, engine_params)。
 
                 只取策略规则，不再读 _stocks — 标的池由 config 决定。
                 """
@@ -309,13 +309,24 @@ def run_daily_task(force: bool = False):
                     key=lambda p: p.stat().st_mtime, reverse=True,
                 )
                 if not files:
-                    return None, None
+                    return None, None, None, None
                 with open(files[0], "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f)
                 top = (data.get("strategies") or [{}])[0]
                 rules_raw = top.get("rules", [])
                 params = top.get("params", {})
                 mode = params.get("_mode", "?")
+                engine_name = params.get("_engine", "global")
+
+                # 分位/评分引擎：用 SignalFn 评分流水线回测（rules 保持 __signal_fn__）
+                if engine_name in ("percentile", "pct", "new"):
+                    from src.analysis.percentile_engine import PercentileSignalFn
+                    from src.analysis.signal_scanner import _params_from_yaml
+                    sig_fn = PercentileSignalFn()
+                    eng_params = _params_from_yaml(params)
+                    rules = [Rule.from_dict(r) for r in rules_raw] if rules_raw else None
+                    return data, rules, sig_fn, eng_params
+
                 # position_target → cash*frac 转换（RuleEngine 无法求值 position_target）
                 if mode == "position_target":
                     for r in rules_raw:
@@ -328,18 +339,18 @@ def run_daily_task(force: bool = False):
                             r["action_min"] = 2500.0
                             r["action_max"] = 10000.0
                 rules = [Rule.from_dict(r) for r in rules_raw] if rules_raw else None
-                return data, rules
+                return data, rules, None, None
 
-            a_data, a_rules = _load_opt_yaml("a_share")
-            hk_data, hk_rules = _load_opt_yaml("hk")
-            us_data, us_rules = _load_opt_yaml("us")
+            a_data, a_rules, a_sfn, a_ep = _load_opt_yaml("a_share")
+            hk_data, hk_rules, hk_sfn, hk_ep = _load_opt_yaml("hk")
+            us_data, us_rules, us_sfn, us_ep = _load_opt_yaml("us")
             # 回退：hk/us YAML 尚未生成时用 non_a_share（旧格式兼容）
             if hk_rules is None or us_rules is None:
-                n_data, n_rules = _load_opt_yaml("non_a_share")
+                n_data, n_rules, n_sfn, n_ep = _load_opt_yaml("non_a_share")
                 if hk_rules is None:
-                    hk_data, hk_rules = n_data, n_rules
+                    hk_data, hk_rules, hk_sfn, hk_ep = n_data, n_rules, n_sfn, n_ep
                 if us_rules is None:
-                    us_data, us_rules = n_data, n_rules
+                    us_data, us_rules, us_sfn, us_ep = n_data, n_rules, n_sfn, n_ep
 
             # 存 opt_data 供邮件展示 YAML 预估收益（Top1 test_return）
             session.opt_data_a = a_data
@@ -350,15 +361,18 @@ def run_daily_task(force: bool = False):
 
             # 标的池全部来自 config：各组用各自 rules
             portfolio_results = {}
-            opt_a = PortfolioOptimizer(config, custom_rules=a_rules)
+            opt_a = PortfolioOptimizer(config, custom_rules=a_rules,
+                                       signal_fn=a_sfn, engine_params=a_ep)
             res_a = opt_a.run_fixed(groups=["a_share"])
             if res_a.get("a_share"):
                 portfolio_results["a_share"] = res_a["a_share"]
-            opt_hk = PortfolioOptimizer(config, custom_rules=hk_rules)
+            opt_hk = PortfolioOptimizer(config, custom_rules=hk_rules,
+                                        signal_fn=hk_sfn, engine_params=hk_ep)
             res_hk = opt_hk.run_fixed(groups=["hk"])
             if res_hk.get("hk"):
                 portfolio_results["hk"] = res_hk["hk"]
-            opt_us = PortfolioOptimizer(config, custom_rules=us_rules)
+            opt_us = PortfolioOptimizer(config, custom_rules=us_rules,
+                                        signal_fn=us_sfn, engine_params=us_ep)
             res_us = opt_us.run_fixed(groups=["us"])
             if res_us.get("us"):
                 portfolio_results["us"] = res_us["us"]

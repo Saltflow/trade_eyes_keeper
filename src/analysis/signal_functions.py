@@ -293,12 +293,18 @@ def _score_sim_core(
         # 买入
         for i in range(N):
             if buy_scores[t, i] > buy_threshold and shares[i] == 0:
-                if month_spent >= monthly_limit:
+                remaining = monthly_limit - month_spent
+                if remaining <= 0:
                     break
-                amt = position_frac * cash
                 price_i = price[t, i]
                 if price_i <= 0 or np.isnan(price_i):
                     continue
+                # 买入额 = min(仓位比例×现金, 剩余月度额度, 现金)
+                amt = position_frac * cash
+                if amt > remaining:
+                    amt = remaining
+                if amt > cash:
+                    amt = cash
                 qty = int(amt / price_i / lot_size) * lot_size
                 if qty <= 0:
                     continue

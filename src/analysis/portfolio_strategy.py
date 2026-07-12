@@ -503,16 +503,141 @@ class PortfolioEvaluator:
     """
 
     def __init__(self, stocks_data: dict[str, pd.DataFrame], group: str,
-                 rules: list[Rule] | None = None):
+                 rules: list[Rule] | None = None, signal_fn=None):
         """
         Args:
             stocks_data: {stock_code: DataFrame with date, close}
             group: "a_share" 或 "non_a_share"
             rules: 自定义规则，None 使用默认规则
+            signal_fn: SignalFn 引擎（非空且 rules 为 __signal_fn__ 时用评分流水线）
         """
         self.stocks_data = stocks_data
         self.group = group
         self.rules = rules
+        self.signal_fn = signal_fn
+
+    def _uses_signal_fn(self) -> bool:
+        """规则是否为 SignalFn 评分标记（condition=__signal_fn__）。"""
+        if self.signal_fn is None or not self.rules:
+            return False
+        return any(getattr(r, "condition", "") == "__signal_fn__" for r in self.rules)
+
+    def _params_from_rules(self):
+        """从当前 group 最新 YAML 读回引擎参数（Params）。"""
+        # rules 不含参数，需从 YAML params 还原；由 run_fixed 注入 self._engine_params
+        return getattr(self, "_engine_params", None)
+
+    def _evaluate_signal_fn(
+        self, active_codes, backtest_config, indicators_data,
+        initial_capital, commission,
+    ) -> "PortfolioResult":
+        """分位/评分引擎日报回测：与优化器同一评分流水线。
+
+        对每只标的算整段历史每日买/卖评分，对齐统一日期轴 → 评分矩阵
+        → simulate_portfolio（与搜参一致的决策仿真）。
+        """
+        import numpy as np
+        from .signal_functions import simulate_portfolio, compute_metrics
+
+        params = self._params_from_rules()
+        if params is None:
+            logger.warning("signal_fn 评估缺少 engine_params，回退空结果")
+            return PortfolioResult(
+                name="", group=self.group, total_return=0.0, max_drawdown=0.0,
+                sharpe_ratio=0.0, expected_position=0.0,
+                composition=active_codes, trade_count=0,
+            )
+
+        # 统一日期轴（并集，升序）
+        date_set: set[str] = set()
+        per_code_df: dict[str, pd.DataFrame] = {}
+
+        # 补齐分位源指标 (rsi/adx/vol_ratio)，deviation/ma200_dev 由引擎兜底
+        try:
+            from .indicator_library import compute_all
+            computed = compute_all({c: self.stocks_data[c] for c in active_codes})
+        except Exception as e:
+            logger.warning(f"signal_fn 指标计算失败，仅用兜底列: {e}")
+            computed = {}
+
+        for code in active_codes:
+            df = computed.get(code)
+            if df is None:
+                df = self.stocks_data[code].copy()
+            else:
+                df = df.copy()
+            df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+            df = df.sort_values("date").reset_index(drop=True)
+            per_code_df[code] = df
+            date_set.update(df["date"].tolist())
+
+        dates = sorted(date_set)
+        T = len(dates)
+        N = len(active_codes)
+        if T == 0 or N == 0:
+            return PortfolioResult(
+                name="", group=self.group, total_return=0.0, max_drawdown=0.0,
+                sharpe_ratio=0.0, expected_position=0.0,
+                composition=active_codes, trade_count=0,
+            )
+        date_idx = {d: i for i, d in enumerate(dates)}
+
+        buy_scores = np.zeros((T, N), dtype=np.float64)
+        sell_scores = np.zeros((T, N), dtype=np.float64)
+        price = np.full((T, N), np.nan, dtype=np.float64)
+
+        for j, code in enumerate(active_codes):
+            df = per_code_df[code]
+            b, s = self.signal_fn.score_timeseries(params, df)
+            closes = df["close"].astype(float).values
+            for k, d in enumerate(df["date"].tolist()):
+                ti = date_idx.get(d)
+                if ti is None:
+                    continue
+                price[ti, j] = closes[k]
+                if k < len(b):
+                    buy_scores[ti, j] = b[k]
+                    sell_scores[ti, j] = s[k]
+
+        # 前向填充价格（停牌/日期缺失）
+        for j in range(N):
+            last = np.nan
+            for ti in range(T):
+                if np.isnan(price[ti, j]):
+                    price[ti, j] = last
+                else:
+                    last = price[ti, j]
+        price = np.nan_to_num(price, nan=0.0)
+
+        exec_p = self.signal_fn.execution_params(params)
+        lot = 100 if self.group == "a_share" else 1
+        monthly = MONTHLY_BUY_LIMIT
+
+        trace = simulate_portfolio(
+            buy_scores, sell_scores, price,
+            float(initial_capital),
+            float(exec_p.get("buy_threshold", 0.0)),
+            float(exec_p.get("sell_threshold", 0.0)),
+            float(exec_p.get("position_frac", 0.15)),
+            lot, float(monthly), float(commission),
+            dates=dates, stock_codes=list(active_codes),
+        )
+
+        # 基准：本组价格基准（risk_free 兜底）用于超额收益
+        metrics = compute_metrics(trace, benchmark_series=None)
+
+        return PortfolioResult(
+            name="", group=self.group,
+            total_return=trace.total_return_pct,
+            max_drawdown=trace.max_drawdown_pct,
+            sharpe_ratio=trace.sharpe_ratio,
+            expected_position=trace.avg_position_pct,
+            composition=list(active_codes),
+            trade_count=trace.total_trades,
+            nav_series=trace.nav_series,
+            nav_dates=trace.nav_dates,
+            quarterly_holdings=trace.quarterly_holdings,
+        )
 
     def evaluate(
         self,
@@ -556,6 +681,13 @@ class PortfolioEvaluator:
                 expected_position=0.0, composition=stock_codes, trade_count=0,
             )
         n = len(active_codes)
+
+        # ── 分位/评分引擎路径：规则为 __signal_fn__ 时走评分流水线 ──
+        if self._uses_signal_fn():
+            return self._evaluate_signal_fn(
+                active_codes, backtest_config, indicators_data,
+                effective_initial_capital, effective_commission,
+            )
 
         # ── 共享状态 ──
         cash = effective_initial_capital
@@ -1033,13 +1165,18 @@ class PortfolioOptimizer:
       3. 最佳夏普比 (max_sharpe)
     """
 
-    def __init__(self, config: dict, custom_rules: list | None = None):
+    def __init__(self, config: dict, custom_rules: list | None = None,
+                 signal_fn=None, engine_params=None):
         """Args:
         config: 系统配置
         custom_rules: 自定义规则列表（如来自优化器 YAML），优先于 config 中的规则
+        signal_fn: SignalFn 引擎（规则为 __signal_fn__ 时用评分流水线回测）
+        engine_params: SignalFn 参数（Params），从 YAML params 还原
         """
         self.config = config
         self.custom_rules = custom_rules
+        self.signal_fn = signal_fn
+        self.engine_params = engine_params
         self._data_source = None
 
     @property
@@ -1205,8 +1342,11 @@ class PortfolioOptimizer:
                 continue
 
             evaluator = PortfolioEvaluator(
-                group_data, eval_group[group_name], rules=custom_rules
+                group_data, eval_group[group_name], rules=custom_rules,
+                signal_fn=self.signal_fn,
             )
+            if self.engine_params is not None:
+                evaluator._engine_params = self.engine_params
             result = evaluator.evaluate(selected)
             result.name = "top1"
             results[group_name] = {"top1": result}

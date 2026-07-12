@@ -145,6 +145,59 @@ class PercentileSignalFn(SignalFn):
         cur = win[-1]
         return float((win <= cur).sum()) / max(len(win), 1)
 
+    @staticmethod
+    def _rolling_rank_series(arr, window: int = PCT_WINDOW):
+        """对整条序列算滚动分位排名 (T,)：每个 t 用过去 window 天。
+
+        与 walk_forward 分位口径一致：pct[t] = (#[t-win+1..t] <= v[t]) / win。
+        """
+        import numpy as _np
+        a = _np.asarray(arr, dtype=float)
+        T = len(a)
+        out = _np.full(T, _np.nan, dtype=_np.float32)
+        for t in range(T):
+            lo = max(0, t - window + 1)
+            w = a[lo:t + 1]
+            valid = w[~_np.isnan(w)]
+            if len(valid) < 20 or _np.isnan(a[t]):
+                continue
+            out[t] = float((valid <= a[t]).sum()) / max(len(valid), 1)
+        return out
+
+    def score_timeseries(self, params, hist_df):
+        """整段历史的每日买/卖评分 (T,)，供日报组合回测用。
+
+        Returns: (buy_scores, sell_scores) 各 (T,) float，已按权重归一。
+        与 evaluate() 的分位打分逻辑一致，但用 DataFrame 逐指标算滚动分位。
+        """
+        import numpy as _np
+        vals = getattr(params, "values", params) if not isinstance(params, dict) else params
+        df = self._ensure_source_columns(hist_df)
+        if df is None or df.empty:
+            return _np.zeros(0), _np.zeros(0)
+        T = len(df)
+        buy = _np.zeros(T, dtype=_np.float64)
+        sell = _np.zeros(T, dtype=_np.float64)
+        total_w = 0.0
+        for lbl in PERCENTILE_LABELS:
+            w = _decode_w(vals.get(f"{lbl}_w", 2))
+            tau = _decode_tau(vals.get(f"{lbl}_tau", 5))
+            if w <= 0:
+                continue
+            src = PERCENTILE_SOURCES[lbl]
+            if src not in df.columns:
+                continue
+            total_w += w
+            pct = self._rolling_rank_series(df[src].values)
+            above = _np.nan_to_num((pct > tau).astype(_np.float64))
+            below = _np.nan_to_num((pct < tau).astype(_np.float64))
+            buy += w * above
+            sell += w * below
+        if total_w > 0:
+            buy /= total_w
+            sell /= total_w
+        return buy, sell
+
     def scan_signals(self, params, today: dict, history=None) -> list[dict]:
         """用分位评分逻辑判断今日买/卖信号。
 
