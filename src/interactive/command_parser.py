@@ -21,6 +21,7 @@ class CommandType(Enum):
     MODE = auto()
     CONFIG = auto()
     SKIP = auto()
+    SWITCH_OPTIMIZER = auto()
     ERROR = auto()
 
 
@@ -134,6 +135,12 @@ class SkipCommand:
     def __post_init__(self):
         if self.codes is None:
             self.codes = []
+
+
+@dataclass
+class SwitchOptimizerCommand:
+    kind: str | None = None    # None=列出可用引擎, str=切换到该引擎
+    cmd_type: CommandType = CommandType.SWITCH_OPTIMIZER
 
 
 
@@ -320,6 +327,14 @@ def parse_command(text: str):
         if err:
             return ErrorCommand(message=err)
         return SkipCommand(kind=kind, codes=codes, remove=remove)
+
+    if cmd_name == "switch_optimizer":
+        sub = args.strip()
+        if not sub:
+            return SwitchOptimizerCommand(kind=None)  # 列出可用引擎
+        if sub.lower() in ("global", "percentile"):
+            return SwitchOptimizerCommand(kind=sub.lower())
+        return ErrorCommand(message=f"未知引擎: {sub}。可用: global, percentile")
 
     return ErrorCommand(
         message=f"未知命令: /{cmd_name}。发送 /help 查看可用命令"

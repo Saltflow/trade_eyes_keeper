@@ -39,17 +39,16 @@ def test_evaluate_percentile_basic():
 
 
 def test_engine_creates_valid_encoding():
-    """PercentileScoringEngine 应产生有效编码。"""
-    from analysis.percentile_engine import PercentileScoringEngine
-    engine = PercentileScoringEngine()
-    enc = engine.random_encoding(None)
-    assert len(enc.buy_builders) == 5
-    assert len(enc.buy_thresholds) == 5
-    assert 0 <= enc.buy_builders[0] < 5  # 列索引
-    human = engine.to_human_readable(enc, None)
+    """PercentileSignalFn produces valid encoding."""
+    from analysis.percentile_engine import PercentileSignalFn
+    engine = PercentileSignalFn()
+    space = engine.param_space
+    params = space.random()
+    assert space.total_levels() > 100
+    human = engine.to_human_readable(params)
     assert "分位评分" in human
-    assert "τ=" in human
-    print("OK: param_count=%d, human=\"%s...\"" % (engine.param_count(), human[:50]))
+    assert "tau=" in human
+    print("OK: total_levels=%d, human=\"%s...\"" % (space.total_levels(), human[:60]))
 
 
 if __name__ == "__main__":

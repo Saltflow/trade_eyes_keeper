@@ -73,6 +73,8 @@ def handle_help() -> str:
         "<code>/skip search|signals 代码</code> — 关闭标的的搜参/信号\n"
         " 例: <code>/skip search 601985</code> 仅盯盘不搜参\n"
         "<code>/unskip search|signals 代码</code> — 恢复\n"
+        "<code>/switch_optimizer [引擎名]</code> — 查看/切换搜参引擎\n"
+        " 例: <code>/switch_optimizer percentile</code> 切换到分位评分引擎\n"
         "<code>/config [show|set KEY VAL|reset]</code> — 查看/修改优化器配置\n"
         " 例: <code>/config set max_dd -30</code>"
         + _git_info()
@@ -143,6 +145,45 @@ def handle_skip(kind: str, codes: list[str], remove: bool = False) -> str:
     codes_str = " ".join(f"<code>{c}</code>" for c in changed)
     return (f"✅ 已{action}{len(changed)} 只标的的{label}: {codes_str}\n"
             f"当前不{label}: {len(cur)} 只")
+
+
+def handle_switch_optimizer(kind: str | None = None) -> str:
+    """切换搜参引擎。
+
+    kind=None → 列出可用引擎。
+    kind="global"|"percentile" → 写 config.yaml optimizer.engine。
+    """
+    engines = {
+        "global": "全局阈值引擎 (H1-H6 全旧, ADX/RSI/...绝对值阈值, 默认)",
+        "percentile": "分位评分引擎 (§8 新参数化, 松弛H1-H3, 标的自比较分位+权重, 推荐)",
+    }
+
+    if kind is None:
+        # 列出可用引擎
+        config = _load_config()
+        cur = (config.get("optimizer", {}) or {}).get("engine", "global")
+        lines = ["<b>可用搜参引擎</b>\n"]
+        for eng, desc in engines.items():
+            marker = " ← 当前" if eng == cur else ""
+            example = ("<code>/switch_optimizer global</code>" if eng != cur
+                       else "")
+            lines.append(f"  <b>{eng}</b> — {desc}{marker}")
+            if example:
+                lines.append(f"      切换: {example}")
+        lines.append(f"\n使用 <code>/switch_optimizer 引擎名</code> 切换")
+        return "\n".join(lines)
+
+    if kind not in engines:
+        return f"❌ 未知引擎: {kind}。可用: {', '.join(engines.keys())}"
+
+    config = _load_config()
+    old = (config.get("optimizer", {}) or {}).get("engine", "global")
+    config.setdefault("optimizer", {})["engine"] = kind
+    _save_config(config)
+
+    return (f"✅ 搜参引擎已切换: <b>{old} → {kind}</b>\n"
+            f"{engines[kind]}\n"
+            f"下次 02:00 cron 自动生效。手动搜参: <code>/optimize</code>")
 
 
 def handle_add(codes: list[str]) -> str:

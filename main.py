@@ -634,15 +634,18 @@ def run_optimization_v2(config):
 
     logger.info(f"A股: {len(a_codes)} 只 | 港股: {len(hk_codes)} 只 | 美股: {len(us_codes)} 只")
 
-    # 策略引擎选择（env/CLI 可覆盖）
-    engine_type = os.getenv("OPTIMIZER_ENGINE") or "global"
+    # 策略引擎选择（config.yaml optimizer.engine → 默认 global）
+    engine_type = (config.get("optimizer", {}) or {}).get("engine", "global")
     engine = None
+    signal_fn = None
     if engine_type in ("percentile", "pct", "new"):
-        from src.analysis.percentile_engine import PercentileScoringEngine
-        engine = PercentileScoringEngine()
-        logger.info("使用分位评分引擎 (PercentileScoringEngine)")
+        from src.analysis.percentile_engine import PercentileSignalFn
+        signal_fn = PercentileSignalFn()
+        logger.info("使用分位评分引擎 (PercentileSignalFn)")
     else:
-        logger.info("使用全局阈值引擎 (GlobalThreshold)")
+        from src.analysis.global_threshold_signal import GlobalThresholdSignalFn
+        signal_fn = GlobalThresholdSignalFn()
+        logger.info("使用全局阈值引擎 (GlobalThresholdSignalFn [deprecated])")
 
     # 数据源
     data_source = DataSource(config)
@@ -689,6 +692,7 @@ def run_optimization_v2(config):
             stocks_data, group_name,
             indicators_data=indicators,
             engine=engine,
+            signal_fn=signal_fn,
         )
         report = optimizer.run(
             stock_codes=list(stocks_data.keys()),

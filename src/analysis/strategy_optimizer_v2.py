@@ -84,6 +84,7 @@ class StrategyOptimizerV2:
         n_samples: int | None = None,
         n_generations: int | None = None,
         engine=None,  # StrategyEngine（None=旧全局阈值模式）
+        signal_fn=None,  # SignalFn（新接口, 支持 global/percentile）
     ):
         """
         Args:
@@ -100,6 +101,7 @@ class StrategyOptimizerV2:
         self.n_samples = n_samples
         self.n_generations = n_generations
         self.engine = engine
+        self.signal_fn = signal_fn if signal_fn is not None else None
 
         # 加载约束
         self.constraints = load_constraints(constraints_path)
@@ -510,6 +512,8 @@ class StrategyOptimizerV2:
             else:
                 params_summary["_mode"] = "frac"
             params_summary["_stocks"] = ",".join(wf_mgr.stock_codes[:12])
+            if self.signal_fn is not None:
+                params_summary["_engine"] = self.signal_fn.name
             if violations:
                 params_summary["_warnings"] = "; ".join(violations[:3])
 
@@ -530,8 +534,8 @@ class StrategyOptimizerV2:
                 total_nav=total_nav,
                 quarterly_holdings=quarterly,
                 strategy_description=(
-                    self.engine.to_human_readable(ss.encoding, self.ds_cfg)
-                    if self.engine is not None
+                    self.signal_fn.to_human_readable(ss.encoding) if self.signal_fn is not None
+                    else self.engine.to_human_readable(ss.encoding, self.ds_cfg) if self.engine is not None
                     else self._format_strategy_description(ss.encoding, self.ds_cfg)
                 ),
             )

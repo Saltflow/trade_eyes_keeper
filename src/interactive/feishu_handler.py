@@ -21,6 +21,7 @@ from .command_parser import (
     ScheduleCommand,
     SaveCommand,
     SkipCommand,
+    SwitchOptimizerCommand,
     parse_command,
 )
 from .commands.handlers import (
@@ -39,6 +40,7 @@ from .commands.handlers import (
     handle_save,
     handle_schedule,
     handle_skip,
+    handle_switch_optimizer,
 )
 from .feishu_app import FeishuApp
 
@@ -172,6 +174,8 @@ def _dispatch(cmd) -> str:
         return handle_config(cmd.action, cmd.key, cmd.value)
     if isinstance(cmd, SkipCommand):
         return handle_skip(cmd.kind, cmd.codes, cmd.remove)
+    if isinstance(cmd, SwitchOptimizerCommand):
+        return handle_switch_optimizer(cmd.kind)
     if isinstance(cmd, ErrorCommand):
         return f"❌ {cmd.message}"
     return "❌ 未知命令。发送 /help 查看可用命令。"
