@@ -282,7 +282,9 @@ def _ensure_remote_repo():
         f"  echo '[OK] Working tree ready'; "
         f"else "
         f"  echo '[OK] Working tree clean'; "
-        f"fi"
+        f"fi; "
+        f"echo 'Restarting service to reload new code...'; "
+        f"systemctl restart trade-eyes 2>/dev/null && echo '[OK] Service restarted' || echo '[WARN] Service restart skipped (no systemd?)'"
     )
     _ssh_cmd(fix_cmd, "Ensure working tree is ready for push")
     return True
