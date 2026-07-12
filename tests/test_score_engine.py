@@ -192,6 +192,40 @@ class TestPortfolioTraceOutputs:
         assert tr.final_shares[1] == 0
 
 
+class TestQuarterlyCostBasisSnapshot:
+    """季度持仓成本快照：必须用【时点】成本/价格，不能用最终值（防 +16171% 假pnl）。"""
+
+    def test_quarterly_cost_matches_actual_buy_price(self):
+        # 单标的：t=0 以 ~10 买入并持有到底；季度成本应≈10，pnl 合理
+        T = 200
+        buy = np.zeros((T, 1))
+        sell = np.zeros((T, 1))
+        buy[0, 0] = 1.0
+        # 价格 10 起，缓慢上涨到 12
+        price = np.linspace(10.0, 12.0, T).reshape(T, 1)
+        tr = _sim(buy, sell, price, frac=1.0, lot=1, cash=100000.0)
+        assert len(tr.quarterly_holdings) > 0
+        for q in tr.quarterly_holdings:
+            for pos in q["positions"]:
+                # 成本必须接近真实买入价 ~10（含手续费略高），绝不能是 0 或离谱值
+                assert 9.5 <= pos["cost"] <= 10.6, f"季度成本异常: {pos}"
+                # pnl% 必须在合理范围（价格 10→12，最多 +20%）
+                assert -5 <= pos["pnl_pct"] <= 25, f"季度pnl%异常: {pos}"
+
+    def test_quarterly_cost_never_zero_when_holding(self):
+        # 持仓时成本单价不得为 0（旧 bug：最终cb/时点shares 错配导致 0.00）
+        T = 150
+        buy = np.zeros((T, 1))
+        sell = np.zeros((T, 1))
+        buy[0, 0] = 1.0
+        price = np.full((T, 1), 5.0)
+        tr = _sim(buy, sell, price, frac=1.0, lot=1)
+        for q in tr.quarterly_holdings:
+            for pos in q["positions"]:
+                if pos["shares"] > 0:
+                    assert pos["cost"] > 0, f"持仓成本为0: {pos}"
+
+
 if __name__ == "__main__":
     import pytest
     pytest.main([__file__, "-v"])

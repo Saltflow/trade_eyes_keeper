@@ -267,6 +267,8 @@ def _score_sim_core(
     q_shares = np.zeros((n_q, N), dtype=np.float64)
     q_cash = np.zeros(n_q, dtype=np.float64)
     q_nav = np.zeros(n_q, dtype=np.float64)
+    q_cb = np.zeros((n_q, N), dtype=np.float64)      # 季度时点成本基础快照
+    q_price = np.zeros((n_q, N), dtype=np.float64)   # 季度时点价格快照
     q_count = 0
     month_spent = 0.0
 
@@ -286,6 +288,8 @@ def _score_sim_core(
         if t > 0 and t % q_interval == 0 and q_count < n_q:
             for i in range(N):
                 q_shares[q_count, i] = shares[i]
+                q_cb[q_count, i] = cb[i]           # 该时点累计成本
+                q_price[q_count, i] = price[t, i]  # 该时点价格
             q_cash[q_count] = cash
             q_nav[q_count] = nav
             q_count += 1
@@ -351,7 +355,8 @@ def _score_sim_core(
 
     avg_pos = pos_sum / pos_cnt if pos_cnt > 0 else 0.0
     return (daily_vals, total_trades, avg_pos, shares, cash, cb,
-            q_shares[:q_count], q_cash[:q_count], q_nav[:q_count])
+            q_shares[:q_count], q_cash[:q_count], q_nav[:q_count],
+            q_cb[:q_count], q_price[:q_count])
 
 
 def score_to_decisions_numba(
@@ -370,7 +375,7 @@ def score_to_decisions_numba(
     """决策仿真（numba 核心 + Python 季度快照封装）。"""
     q_interval = 63
     (daily_vals, total_trades, avg_pos, shares, cash, cb,
-     q_sh, q_ca, q_nav) = _score_sim_core(
+     q_sh, q_ca, q_nav, q_cb, q_price) = _score_sim_core(
         np.ascontiguousarray(buy_scores, dtype=np.float64),
         np.ascontiguousarray(sell_scores, dtype=np.float64),
         np.ascontiguousarray(price, dtype=np.float64),
@@ -382,8 +387,11 @@ def score_to_decisions_numba(
     q_shares_list = [q_sh[i].copy() for i in range(q_sh.shape[0])]
     q_cash_list = [float(q_ca[i]) for i in range(q_ca.shape[0])]
     q_nav_list = [float(q_nav[i]) for i in range(q_nav.shape[0])]
+    q_cb_list = [q_cb[i].copy() for i in range(q_cb.shape[0])]
+    q_price_list = [q_price[i].copy() for i in range(q_price.shape[0])]
     return (daily_vals, total_trades, float(avg_pos), shares, cash, cb,
-            q_shares_list, q_cash_list, q_nav_list, q_interval)
+            q_shares_list, q_cash_list, q_nav_list, q_interval,
+            q_cb_list, q_price_list)
 
 
 def simulate_portfolio(
@@ -409,28 +417,35 @@ def simulate_portfolio(
     positions = np.zeros(N, dtype=np.float64)
 
     daily_values, total_trades, avg_pos_pct, final_shares, final_cash, cost_basis, \
-        q_shares_list, q_cash_list, q_nav_list, q_interval = score_to_decisions_numba(
+        q_shares_list, q_cash_list, q_nav_list, q_interval, \
+        q_cb_list, q_price_list = score_to_decisions_numba(
             buy_scores, sell_scores, price, positions, initial_cash,
             buy_threshold, sell_threshold, position_frac, lot_size,
             monthly_limit, commission_rate,
         )
 
-    # 构建季末持仓
+    # 构建季末持仓（用季度时点的成本/价格快照，避免时点错配）
     quarterly_holdings: list[dict] = []
     for qi in range(len(q_shares_list)):
         qpos = []
+        q_cb_arr = q_cb_list[qi]
+        q_px_arr = q_price_list[qi]
         for i, code in enumerate(stock_codes):
             sh = q_shares_list[qi][i]
             if sh > 0.5:
+                cbi = float(q_cb_arr[i])          # 该季度时点累计成本
+                px = float(q_px_arr[i])           # 该季度时点价格
+                unit_cost = cbi / sh if cbi > 0 and sh > 0 else 0.0
+                mkt_val = sh * px
                 qpos.append({
                     "code": code, "shares": round(float(sh), 1),
-                    "cost": round(cost_basis[i] / max(sh, 1e-9), 2) if cost_basis[i] > 0 else 0.0,
-                    "price": round(float(price[qi * q_interval, i]), 2) if qi * q_interval < T else 0.0,
-                    "value": round(float(sh * price[min(qi * q_interval, T-1), i]), 2),
-                    "pnl": round(float(sh * price[min(qi * q_interval, T-1), i]) - cost_basis[i], 2) if cost_basis[i] > 0 else 0.0,
-                    "pnl_pct": round((float(sh * price[min(qi * q_interval, T-1), i]) / max(cost_basis[i], 1e-9) - 1) * 100, 1) if cost_basis[i] > 0 else 0.0,
+                    "cost": round(unit_cost, 2),
+                    "price": round(px, 2),
+                    "value": round(mkt_val, 2),
+                    "pnl": round(mkt_val - cbi, 2) if cbi > 0 else 0.0,
+                    "pnl_pct": round((mkt_val / cbi - 1) * 100, 1) if cbi > 0 else 0.0,
                 })
-        qp = round(q_shares_list[qi].dot(price[qi * q_interval]) / max(q_nav_list[qi], 1.0) * 100, 1) if qi * q_interval < T and q_nav_list[qi] > 0 else 0.0
+        qp = round(q_shares_list[qi].dot(q_px_arr) / max(q_nav_list[qi], 1.0) * 100, 1) if q_nav_list[qi] > 0 else 0.0
         quarterly_holdings.append({
             "quarter": qi + 1, "day": qi * q_interval,
             "cash": round(float(q_cash_list[qi]), 2),
