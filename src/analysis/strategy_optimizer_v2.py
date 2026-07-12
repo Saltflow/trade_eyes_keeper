@@ -652,8 +652,8 @@ class StrategyOptimizerV2:
 
             rules.append(Rule(
                 id=f"sell_{i+1}",
-                label=_GLOBAL_SIGNAL_NAMES.get(builder_name,
-                      _GLOBAL_SIGNAL_NAMES.get(f"sell_{builder_name}", f"卖出规则{i+1}")),
+                label=_GLOBAL_SIGNAL_NAMES.get(f"sell_{builder_name}",
+                      _GLOBAL_SIGNAL_NAMES.get(builder_name, f"卖出规则{i+1}")),
                 type="sell",
                 priority=encoding.n_buy_rules + i + 1,
                 condition=condition,
