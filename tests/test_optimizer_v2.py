@@ -308,7 +308,8 @@ class TestGeneticSearcher:
             sell_fracs=[0, 1, 2],
         )
         flat = enc.to_flat()
-        assert len(flat) == 24  # 5 buy + 3 sell = 8 rules × 3 dims
+        # 5 buy + 3 sell = 8 规则 × 3 维 = 24，外加 position_slope/bias 2 维 = 26
+        assert len(flat) == 26
 
         decoded = StrategyEncoding.from_flat(flat, n_buy=5, n_sell=3)
         assert decoded.buy_builders == enc.buy_builders

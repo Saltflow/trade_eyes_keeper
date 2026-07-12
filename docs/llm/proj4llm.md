@@ -28,6 +28,23 @@
 - 旧 YAML（无 `_engine` 或 `_engine: global`, 真实 condition）永远走 legacy 路径
 - 分位引擎信号名来自引擎自身：如 `分位评分买入 (score 0.29>0.19)` + detail `趋势强度分位(ADX)分位71%>46%`
 
+### 评分引擎执行语义（`_score_sim_core`，主链路唯一决策仿真）
+锁定于 `tests/test_score_engine.py`（18 项）：
+1. **买入执行价 = 近 3 日收盘均价**（含当日；不足 3 日按现有天数）—— 源自 commit b01233f「3日确认+均价执行」，此前只在 Python 后备路径落地，numba/评分路径缺失，现已统一
+2. **卖出执行价 = 单日收盘价**（触发日，不平滑）
+3. **同日互斥**：同一标的同日既触发买又触发卖 → 双向跳过
+4. **月度买入额度默认 `inf`**（不人为限制；`signal_fn_engine`/`_evaluate_signal_fn` 均传 inf）
+5. **允许回补**：卖出后可再买入（无 `shares==0` 永久壁垒）
+6. 手数取整 / 手续费 / 现金约束 / 评分需严格 `> 阈值`
+
+### 测试矩阵（量化引擎，共 ~80 项）
+- `test_score_engine.py`（18）：决策仿真全部执行语义
+- `test_percentile_engine.py`（15）：scan_signals/score_timeseries/execution_params/describe_rules/engine_brief/genome
+- `test_signal_scanner.py`（20）：`__signal_fn__` 分派 + `_params_from_yaml` + `_make_signal_fn` + legacy 兼容
+- `test_signal_fn_engine.py`（5）：适配器编码操作 + evaluate_encoding + 端到端分位搜索
+- `test_portfolio_strategy.py`（+7）：`_evaluate_signal_fn` 真实交易回归（防 100% 空仓复发）
+- **测试目录结构**：`tests/__init__.py` + `tests/integration/__init__.py` 消除同名模块（`test_signal_scanner.py`）收集冲突；`conftest.py` autouse fixture 清理绑定到已关闭捕获流的 StreamHandler
+
 ---
 
 ## 📋 执行摘要

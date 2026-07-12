@@ -290,25 +290,36 @@ def _score_sim_core(
             q_nav[q_count] = nav
             q_count += 1
 
-        # 买入
+        # 买入：3日收盘均价执行；同日既触发买又触发卖 → 跳过（同日互斥）
         for i in range(N):
-            if buy_scores[t, i] > buy_threshold and shares[i] == 0:
+            buy_sig = buy_scores[t, i] > buy_threshold
+            sell_sig = sell_scores[t, i] > sell_threshold
+            if buy_sig and not sell_sig:
                 remaining = monthly_limit - month_spent
                 if remaining <= 0:
                     break
-                price_i = price[t, i]
-                if price_i <= 0 or np.isnan(price_i):
+                # 买入执行价 = 近3日收盘均价（含当日），窗口不足则用现有天数
+                lo = t - 2 if t >= 2 else 0
+                psum = 0.0
+                pcnt = 0
+                for tt in range(lo, t + 1):
+                    pv = price[tt, i]
+                    if pv > 0 and not np.isnan(pv):
+                        psum += pv
+                        pcnt += 1
+                if pcnt == 0:
                     continue
+                exec_price = psum / pcnt
                 # 买入额 = min(仓位比例×现金, 剩余月度额度, 现金)
                 amt = position_frac * cash
                 if amt > remaining:
                     amt = remaining
                 if amt > cash:
                     amt = cash
-                qty = int(amt / price_i / lot_size) * lot_size
+                qty = int(amt / exec_price / lot_size) * lot_size
                 if qty <= 0:
                     continue
-                cost = qty * price_i
+                cost = qty * exec_price
                 fee = cost * commission_rate
                 if cash >= cost + fee and month_spent + cost + fee <= monthly_limit:
                     shares[i] += qty
@@ -317,18 +328,20 @@ def _score_sim_core(
                     month_spent += cost + fee
                     total_trades += 1
 
-        # 卖出
+        # 卖出：单日收盘价执行；同日既买又卖 → 跳过（同日互斥）
         for i in range(N):
-            if sell_scores[t, i] > sell_threshold and shares[i] > 0:
-                price_i = price[t, i]
-                if price_i <= 0 or np.isnan(price_i):
+            buy_sig = buy_scores[t, i] > buy_threshold
+            sell_sig = sell_scores[t, i] > sell_threshold
+            if sell_sig and not buy_sig and shares[i] > 0:
+                exec_price = price[t, i]
+                if exec_price <= 0 or np.isnan(exec_price):
                     continue
                 qty = int(shares[i] * position_frac / lot_size) * lot_size
                 if qty > int(shares[i]):
                     qty = int(shares[i])
                 if qty <= 0:
                     continue
-                val = qty * price_i
+                val = qty * exec_price
                 fee = val * commission_rate
                 cash += val - fee
                 sold_frac = qty / shares[i] if shares[i] > 0 else 0.0

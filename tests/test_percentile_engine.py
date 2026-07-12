@@ -51,6 +51,163 @@ def test_engine_creates_valid_encoding():
     print("OK: total_levels=%d, human=\"%s...\"" % (space.total_levels(), human[:60]))
 
 
+def _pct_params(**overrides):
+    """构造完整分位参数 dict（整数级别）。"""
+    base = {
+        "adx_pct_tau": 5, "adx_pct_w": 2,
+        "rsi_pct_tau": 5, "rsi_pct_w": 2,
+        "deviation_pct_tau": 5, "deviation_pct_w": 2,
+        "vol_ratio_pct_tau": 5, "vol_ratio_pct_w": 2,
+        "ma200_dev_pct_tau": 5, "ma200_dev_pct_w": 2,
+        "buy_score_thresh": 3, "sell_score_thresh": 3, "position_frac": 2,
+    }
+    base.update(overrides)
+    return base
+
+
+def _mk_hist(n=300, seed=0, drift=0.4):
+    import pandas as pd
+    rng = np.random.RandomState(seed)
+    dates = pd.date_range("2023-01-01", periods=n, freq="B").strftime("%Y-%m-%d")
+    t = np.linspace(0, drift, n) + rng.randn(n).cumsum() * 0.012
+    close = 10 * np.exp(t)
+    return pd.DataFrame({
+        "date": dates, "stock_code": "600001",
+        "open": close, "high": close * 1.01, "low": close * 0.99,
+        "close": close, "volume": np.abs(rng.randn(n)) * 1e6 + 5e5,
+    })
+
+
+class TestExecutionParams:
+    def test_execution_params_decodes(self):
+        from analysis.percentile_engine import PercentileSignalFn
+        from analysis.signal_functions import Params
+        fn = PercentileSignalFn()
+        p = Params(values=_pct_params(buy_score_thresh=9, sell_score_thresh=0,
+                                      position_frac=4), _engine="percentile")
+        ex = fn.execution_params(p)
+        assert set(ex) == {"buy_threshold", "sell_threshold", "position_frac"}
+        assert 0.1 <= ex["buy_threshold"] <= 0.9
+        assert ex["buy_threshold"] > ex["sell_threshold"]  # 9 > 0
+        assert 0.05 <= ex["position_frac"] <= 0.45
+
+    def test_execution_params_accepts_plain_dict(self):
+        from analysis.percentile_engine import PercentileSignalFn
+        ex = PercentileSignalFn().execution_params(_pct_params())
+        assert "buy_threshold" in ex
+
+
+class TestScoreTimeseries:
+    def test_shape_and_range(self):
+        from analysis.percentile_engine import PercentileSignalFn
+        from analysis.signal_functions import Params
+        fn = PercentileSignalFn()
+        df = _mk_hist()
+        buy, sell = fn.score_timeseries(Params(values=_pct_params()), df)
+        assert len(buy) == len(df) == len(sell)
+        # 归一分数应落在 [0,1]
+        assert buy.max() <= 1.0 + 1e-9 and buy.min() >= -1e-9
+        assert sell.max() <= 1.0 + 1e-9
+
+    def test_empty_history(self):
+        import pandas as pd
+        from analysis.percentile_engine import PercentileSignalFn
+        from analysis.signal_functions import Params
+        b, s = PercentileSignalFn().score_timeseries(
+            Params(values=_pct_params()), pd.DataFrame())
+        assert len(b) == 0 and len(s) == 0
+
+    def test_all_min_weight_still_scores(self):
+        # 权重级别0 = 最小权重0.1（非零）→ 所有5信号恒参与
+        from analysis.percentile_engine import PercentileSignalFn, _decode_w
+        from analysis.signal_functions import Params
+        assert _decode_w(0) == 0.1  # 锁定：无真正零权重
+        p = _pct_params(adx_pct_w=0, rsi_pct_w=0, deviation_pct_w=0,
+                        vol_ratio_pct_w=0, ma200_dev_pct_w=0)
+        b, s = PercentileSignalFn().score_timeseries(
+            Params(values=p), _mk_hist())
+        # 全部最小权重 → 归一后分数仍在 [0,1] 有效
+        assert b.max() <= 1.0 + 1e-9 and b.min() >= -1e-9
+
+
+class TestScanSignals:
+    def test_scan_returns_side_label_detail(self):
+        from analysis.percentile_engine import PercentileSignalFn
+        from analysis.signal_functions import Params
+        fn = PercentileSignalFn()
+        df = _mk_hist(drift=0.8)  # 强上涨 → 高分位买入
+        p = Params(values=_pct_params(buy_score_thresh=0))  # 低阈值确保触发
+        hits = fn.scan_signals(p, {}, df)
+        for h in hits:
+            assert h["side"] in ("buy", "sell")
+            assert "分位评分" in h["label"]
+            assert isinstance(h["detail"], str)
+
+    def test_scan_empty_history_no_crash(self):
+        from analysis.percentile_engine import PercentileSignalFn
+        from analysis.signal_functions import Params
+        assert PercentileSignalFn().scan_signals(
+            Params(values=_pct_params()), {}, None) == []
+
+    def test_scan_computes_missing_source_columns(self):
+        # 仅有 OHLCV 的历史（无 rsi/adx/deviation/ma200_dev），
+        # _ensure_source_columns 应兜底 deviation/ma200_dev
+        from analysis.percentile_engine import PercentileSignalFn
+        from analysis.signal_functions import Params
+        fn = PercentileSignalFn()
+        df = _mk_hist()[["date", "close", "open", "high", "low", "volume"]]
+        hits = fn.scan_signals(Params(values=_pct_params(buy_score_thresh=0)), {}, df)
+        assert isinstance(hits, list)  # 不崩溃
+
+
+class TestDescribeRules:
+    def test_describe_rules_buy_sell_names(self):
+        from analysis.percentile_engine import PercentileSignalFn
+        from analysis.signal_functions import Params
+        d = PercentileSignalFn().describe_rules(Params(values=_pct_params()))
+        assert "buy" in d and "sell" in d
+        assert any("分位" in x for x in d["buy"])
+        assert any("买入" in x for x in d["buy"])
+        assert any("卖出" in x for x in d["sell"])
+
+    def test_all_five_signals_present(self):
+        # 权重恒 >0（最小0.1）→ 5 个分位信号全部列入激活规则
+        from analysis.percentile_engine import PercentileSignalFn, PERCENTILE_HUMAN
+        from analysis.signal_functions import Params
+        d = PercentileSignalFn().describe_rules(Params(values=_pct_params()))
+        for human in PERCENTILE_HUMAN.values():
+            assert any(human in x for x in d["buy"]), human
+
+
+class TestEngineBrief:
+    def test_brief_contains_buy_sell_standard(self):
+        from analysis.percentile_engine import PercentileSignalFn
+        brief = PercentileSignalFn().engine_brief()
+        assert "percentile" in brief
+        assert "买入" in brief and "卖出" in brief
+        assert "分位" in brief
+
+
+class TestGenomeOps:
+    def test_random_crossover_mutate_keep_shape(self):
+        from analysis.percentile_engine import PercentileSignalFn
+        fn = PercentileSignalFn()
+        p1 = fn.random_params()
+        p2 = fn.random_params()
+        assert p1._engine == "percentile"
+        child = fn.crossover(p1, p2)
+        assert set(child.values) == set(p1.values)
+        mut = fn.mutate(p1, rate=1.0)
+        assert set(mut.values) == set(p1.values)
+
+    def test_clone_independent(self):
+        from analysis.percentile_engine import PercentileSignalFn
+        p = PercentileSignalFn().random_params()
+        c = p.clone()
+        c.values[list(c.values)[0]] = 999
+        assert p.values != c.values
+
+
 if __name__ == "__main__":
     test_evaluate_percentile_basic()
     test_engine_creates_valid_encoding()

@@ -55,6 +55,8 @@ class TestSignalScannerWithIndicators:
         # scan() 需要 _historical 属性
         historical = {"601728": df}
         session._historical = historical
+        session.stocks_data = [{"stock_code": "601728"}]
+        session.config = {}
 
         scanner = SignalScanner()
         try:

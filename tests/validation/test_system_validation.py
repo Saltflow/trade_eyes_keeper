@@ -58,7 +58,7 @@ class TestPriceRelationshipValidation:
         # 存入session
         session_manager.update_stock_from_dataframe(session, random_stock_code, df)
 
-        with patch("condition_checker.logger") as mock_logger:
+        with patch("src.core.condition_checker.logger") as mock_logger:
             mock_logger.warning = MagicMock()
             checker.check_from_session(session, session_manager)
             assert mock_logger.warning.call_count == 0
@@ -109,7 +109,7 @@ class TestPriceRelationshipValidation:
         # 存入session
         session_manager.update_stock_from_dataframe(session, random_stock_code, df)
 
-        with patch("condition_checker.logger") as mock_logger:
+        with patch("src.core.condition_checker.logger") as mock_logger:
             mock_warning = MagicMock()
             mock_logger.warning = mock_warning
             checker.check_from_session(session, session_manager)

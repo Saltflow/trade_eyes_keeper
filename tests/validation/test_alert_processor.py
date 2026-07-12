@@ -17,6 +17,11 @@ class MockAlertsConfig:
     """模拟警报配置"""
     def __init__(self, thresholds=None):
         self.thresholds = thresholds or [-10, -5, 0, 5, 10, 15]
+        # alert_engine 遍历 self.config.anchors（{name, ...} 列表）
+        self.anchors = [
+            {"name": "ma60"},
+            {"name": "wma20"},
+        ]
     
     def get_intervals(self):
         """获取区间定义"""

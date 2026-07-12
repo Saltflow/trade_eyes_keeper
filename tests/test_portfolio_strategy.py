@@ -250,5 +250,87 @@ class TestPortfolioOptimizer:
         assert isinstance(best_result, PortfolioResult)
 
 
+class TestSignalFnEvaluation:
+    """PortfolioEvaluator 引擎感知路径：__signal_fn__ 规则走评分流水线。"""
+
+    def _pct_setup(self, drift=0.6, n=400):
+        from src.analysis.percentile_engine import PercentileSignalFn
+        from src.analysis.signal_functions import Params
+        from src.analysis.rule_engine import Rule
+
+        rng = np.random.RandomState(11)
+        dates = pd.date_range("2023-01-01", periods=n, freq="B")
+        t = np.linspace(0, drift, n) + rng.randn(n).cumsum() * 0.012
+        close = 10 * np.exp(t)
+        df = pd.DataFrame({
+            "date": dates.strftime("%Y-%m-%d"),
+            "open": close, "high": close * 1.01, "low": close * 0.99,
+            "close": close, "volume": np.abs(rng.randn(n)) * 1e6 + 5e5,
+        })
+        params = Params(values={
+            "adx_pct_tau": 5, "adx_pct_w": 3, "rsi_pct_tau": 4, "rsi_pct_w": 3,
+            "deviation_pct_tau": 6, "deviation_pct_w": 2, "vol_ratio_pct_tau": 5,
+            "vol_ratio_pct_w": 2, "ma200_dev_pct_tau": 3, "ma200_dev_pct_w": 3,
+            "buy_score_thresh": 1, "sell_score_thresh": 7, "position_frac": 2,
+        }, _engine="percentile")
+        rules = [Rule(id="buy_1", label="加权分位买入", type="buy", priority=1,
+                      condition="__signal_fn__", budget_pool="buy",
+                      action_amount="position_target")]
+        return {"600001": df}, PercentileSignalFn(), params, rules
+
+    def test_uses_signal_fn_detection(self):
+        data, sfn, params, rules = self._pct_setup()
+        ev = PortfolioEvaluator(data, "a_share", rules=rules, signal_fn=sfn)
+        assert ev._uses_signal_fn() is True
+
+    def test_no_signal_fn_when_rules_are_conditions(self):
+        from src.analysis.rule_engine import Rule
+        data, sfn, params, _ = self._pct_setup()
+        rules = [Rule(id="buy_1", label="x", type="buy", priority=1,
+                      condition="deviation <= -0.05", budget_pool="buy")]
+        ev = PortfolioEvaluator(data, "a_share", rules=rules, signal_fn=sfn)
+        assert ev._uses_signal_fn() is False
+
+    def test_signal_fn_path_actually_trades(self):
+        # 核心回归：percentile 日报回测必须真实交易（非 100% 现金）
+        data, sfn, params, rules = self._pct_setup(drift=0.6)
+        ev = PortfolioEvaluator(data, "a_share", rules=rules, signal_fn=sfn)
+        ev._engine_params = params
+        res = ev.evaluate(list(data.keys()))
+        assert isinstance(res, PortfolioResult)
+        assert res.trade_count > 0, "分位引擎日报回测应产生交易"
+        assert res.expected_position > 0, "应有实际持仓，而非 100% 空仓"
+
+    def test_signal_fn_no_params_returns_empty(self):
+        # 缺 engine_params → 安全返回空结果，不崩溃
+        data, sfn, _, rules = self._pct_setup()
+        ev = PortfolioEvaluator(data, "a_share", rules=rules, signal_fn=sfn)
+        res = ev.evaluate(list(data.keys()))
+        assert res.trade_count == 0
+
+    def test_nav_and_drawdown_valid(self):
+        data, sfn, params, rules = self._pct_setup(drift=0.6)
+        ev = PortfolioEvaluator(data, "a_share", rules=rules, signal_fn=sfn)
+        ev._engine_params = params
+        res = ev.evaluate(list(data.keys()))
+        assert len(res.nav_series) > 0
+        assert not np.isnan(res.max_drawdown)
+        assert res.max_drawdown <= 0.0
+
+
+class TestPortfolioOptimizerSignalFnWiring:
+    """PortfolioOptimizer 传递 signal_fn/engine_params 到 evaluator。"""
+
+    def test_optimizer_accepts_signal_fn(self):
+        from src.analysis.percentile_engine import PercentileSignalFn
+        from src.analysis.signal_functions import Params
+        cfg = {"stocks": [], "portfolio_strategy": {}}
+        p = Params(values={"adx_pct_w": 2}, _engine="percentile")
+        opt = PortfolioOptimizer(cfg, custom_rules=None,
+                                 signal_fn=PercentileSignalFn(), engine_params=p)
+        assert opt.signal_fn is not None
+        assert opt.engine_params is p
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

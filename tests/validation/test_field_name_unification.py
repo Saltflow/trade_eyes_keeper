@@ -88,7 +88,7 @@ class TestFieldNameUnification:
         if anchor_val is not None and low_price is not None:
             price_difference = anchor_val - low_price
 
-        assert price_difference == 0.26  # ✅ 计算正确
+        assert abs(price_difference - 0.26) < 1e-9  # ✅ 计算正确（浮点容差）
 
     def test_field_name_consistency_across_pipeline(self):
         """测试整个数据管道的字段名称一致性"""
@@ -128,7 +128,7 @@ class TestFieldNameUnification:
             if anchor_val is not None and low_price is not None:
                 price_difference = anchor_val - low_price
 
-            assert price_difference == 0.26
+            assert abs(price_difference - 0.26) < 1e-9
 
         # 4. 模拟email_notifier读取
         for eval in evaluations:

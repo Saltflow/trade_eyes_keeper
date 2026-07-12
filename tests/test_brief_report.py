@@ -147,6 +147,7 @@ class TestSendBriefReport:
         """构建模拟 Session（日期用今天，避免时间漂移导致过滤）"""
         today = datetime.now()
         session = Mock()
+        session.signal_scan = None  # 避免 Mock.alerts len() 报错
         session.get_all_dataframe.return_value = pd.DataFrame([
             {
                 "stock_code": "601728",
@@ -241,6 +242,7 @@ class TestSendBriefReport:
     def test_empty_session_no_error(self):
         """空 Session 不抛异常"""
         session = Mock()
+        session.signal_scan = None  # 避免 Mock.alerts len() 报错
         session.get_all_dataframe.return_value = pd.DataFrame()
         notifier = EmailNotifier({"email": {}})
         with patch.object(notifier, "_send_email") as mock_send:
@@ -252,6 +254,7 @@ class TestSendBriefReport:
     def test_rows_sorted_by_deviation_ascending(self):
         """按锚点偏离率升序排列：跌幅越大越靠前"""
         session = Mock()
+        session.signal_scan = None  # 避免 Mock.alerts len() 报错
         today = datetime.now()
         session.get_all_dataframe.return_value = pd.DataFrame([
             {
@@ -306,6 +309,7 @@ class TestSendBriefReport:
     def test_none_deviation_sorted_last(self):
         """无有效锚点的股票排在最后"""
         session = Mock()
+        session.signal_scan = None  # 避免 Mock.alerts len() 报错
         today = datetime.now()
         session.get_all_dataframe.return_value = pd.DataFrame([
             {
@@ -354,7 +358,11 @@ class TestRunBriefReportIntegration:
     def test_weekend_skip(self):
         """周末跳过整个简报"""
         from main import run_brief_report
-        with patch("main.load_config") as mock_config:
+        # 用 MagicMock 替换 main.logging，避免 run_brief_report 的 logger
+        # 调用写入 pytest 捕获流后被关闭引发 'I/O operation on closed file'
+        with patch("main.logging") as _mock_log, \
+                patch("main.load_config") as mock_config:
+            _mock_log.getLogger.return_value = MagicMock()
             mock_config.return_value = {
                 "scheduler": {
                     "brief_reports": [

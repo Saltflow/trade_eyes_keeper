@@ -92,62 +92,65 @@ class TestFeishuContent:
     """内容层：飞书交互卡片消息格式"""
 
     def test_brief_report_builds_card_json(self):
-        """简报数据 → _send 被调用且 body 非空（_send 内部将 body 包装为飞书交互卡片 JSON）"""
+        """简报数据 → _send_card 被调用（schema 2.0 原生表格卡片）"""
         session = Mock()
         session.get_all_dataframe.return_value = _make_brief_df()
         session.signal_scan = None
         notifier = FeishuNotifier(
             {"notification": {"feishu": {"webhook_url": "https://hook/test", "msg_type": "interactive"}}}
         )
-        with patch.object(notifier, "_send") as mock_send:
+        with patch.object(notifier, "_send_card") as mock_send:
             mock_send.return_value = (True, "ok")
             notifier.send_brief_report(session, {"id": "morning", "label": "早盘简报"})
             mock_send.assert_called_once()
-            title, body = mock_send.call_args[0]
-            assert "早盘简报" in title
-            assert body  # 正文非空
-            assert "代码" in body
-            assert "收盘" in body
-            assert "偏离" in body
-            assert "601728" in body
-            assert "```" not in body
-            assert "| --- |" not in body
+            payload = mock_send.call_args[0][0]
+            card = payload["card"]
+            assert card.get("schema") == "2.0"
+            # 卡片含原生 table 组件，且行数据含标的代码
+            import json
+            blob = json.dumps(card, ensure_ascii=False)
+            assert "table" in blob
+            assert "601728" in blob
+            assert "代码" in blob
+            assert "```" not in blob
+            assert "| --- |" not in blob
 
     def test_daily_report_builds_card_json(self):
-        """日报数据 → 飞书交互卡片结构"""
+        """日报数据 → 3 张 schema 2.0 卡片（价格/基本面/技术）"""
         session = Mock()
         session.get_all_dataframe.return_value = _make_daily_df()
         session.get_alerts_as_dicts.return_value = []
-        # 日报需要这些属性
         session.signal_scan = None
         session.backtest = None
         session.portfolio_results = None
-        # session 可能还需要 stock_data、announcements 等
-        # 让 send_daily_report_from_session 调用 _build_email_body
-        # 先确保不会因缺失字段而崩
         notifier = FeishuNotifier(
             {"notification": {"feishu": {"webhook_url": "https://hook/test", "msg_type": "interactive"}}}
         )
         with patch.object(notifier, "_send") as mock_send:
             mock_send.return_value = (True, "ok")
             notifier.send_daily_report_from_session(session)
-            assert mock_send.call_count == 3
-            sent = [(call.args[0], call.args[1]) for call in mock_send.call_args_list]
-            titles = [title for title, _ in sent]
-            bodies = "\n".join(body for _, body in sent)
-            assert any("价格" in title for title in titles)
-            assert any("基本面" in title for title in titles)
-            assert any("技术" in title for title in titles)
-            assert "监控日报" in bodies
-            assert "代码" in bodies
-            assert "收盘" in bodies
-            assert "RSI" in bodies
-            assert "MACD_H" in bodies
-            assert "601728" in bodies
-            assert "中国电信" in bodies
-            assert "```" not in bodies
-            assert "| --- |" not in bodies
-            assert "<table" not in bodies
+            # 3 段报告 + 策略摘要（signal_scan=None 时策略摘要可能为空但仍调用）
+            assert mock_send.call_count >= 3
+            calls = mock_send.call_args_list[:3]
+            titles = [c.args[0] for c in calls]
+            # extra_elements（原生表格）在 kwargs 或第3位参数
+            all_blobs = []
+            import json
+            for c in calls:
+                extra = c.kwargs.get("extra_elements")
+                if extra is None and len(c.args) >= 3:
+                    extra = c.args[2]
+                all_blobs.append(json.dumps(
+                    {"body": c.args[1], "extra": extra}, ensure_ascii=False, default=str))
+            blob = "\n".join(all_blobs)
+            assert any("价格" in t for t in titles)
+            assert any("基本面" in t for t in titles)
+            assert any("技术" in t for t in titles)
+            assert "601728" in blob
+            assert "中国电信" in blob
+            assert "table" in blob  # 原生表格组件
+            assert "```" not in blob
+            assert "| --- |" not in blob
 
     def test_deployment_notification_sends_card(self):
         """部署通知发送交互卡片"""
@@ -179,26 +182,35 @@ class TestFeishuSections:
     def test_build_sections_without_tech_sends_two_cards(self):
         sections = FeishuNotifier._build_report_sections(_make_daily_df(include_tech=False))
 
-        assert [label for label, _ in sections] == ["价格", "基本面"]
+        # 3-tuple: (label, body, extra_elements)
+        assert [s[0] for s in sections] == ["价格", "基本面"]
+        assert all(len(s) == 3 for s in sections)
 
     def test_build_sections_with_tech_sends_three_cards(self):
+        import json
         sections = FeishuNotifier._build_report_sections(_make_daily_df(include_tech=True))
 
-        assert [label for label, _ in sections] == ["价格", "基本面", "技术"]
-        assert "MACD_H" in sections[2][1]
+        assert [s[0] for s in sections] == ["价格", "基本面", "技术"]
+        # 技术段的原生表格含 MACD 列
+        tech_blob = json.dumps(sections[2][2], ensure_ascii=False)
+        assert "MACD" in tech_blob
+        assert "table" in tech_blob
 
     def test_build_sections_alert_mode_filters_entries(self):
+        import json
         sections = FeishuNotifier._build_report_sections(
             _make_two_stock_daily_df(),
             alerts=[{"stock_code": "00883"}],
             alert_only=True,
         )
 
-        bodies = "\n".join(body for _, body in sections)
-        assert "00883" in bodies
-        assert "中国海洋石油" in bodies
-        assert "601728" not in bodies
-        assert "中国电信" not in bodies
+        # 表格数据在 extra_elements（第3元素）
+        blob = json.dumps([(s[1], s[2]) for s in sections],
+                          ensure_ascii=False, default=str)
+        assert "00883" in blob
+        assert "中国海洋石油" in blob
+        assert "601728" not in blob
+        assert "中国电信" not in blob
 
 
 class TestFeishuEntries:

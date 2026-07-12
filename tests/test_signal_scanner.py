@@ -240,3 +240,114 @@ class TestScanDedup:
         codes = [(a.stock_code, a.condition_str) for a in result.alerts]
         assert len(codes) == len(set(codes)), f"有重复告警: {codes}"
 
+
+class TestParamsFromYaml:
+    """_params_from_yaml：YAML params → Params（字符串级别转 int，剔除 _ 前缀）。"""
+
+    def test_string_levels_coerced_to_int(self):
+        from src.analysis.signal_scanner import _params_from_yaml
+        p = _params_from_yaml({
+            "adx_pct_tau": "6", "adx_pct_w": "3", "buy_score_thresh": "9",
+            "_engine": "percentile", "_mode": "signal_score",
+            "_stocks": "600001,600002",
+        })
+        assert p.values["adx_pct_tau"] == 6
+        assert p.values["buy_score_thresh"] == 9
+        assert "_engine" not in p.values
+        assert "_stocks" not in p.values
+        assert p._engine == "percentile"
+
+    def test_float_string_truncated(self):
+        from src.analysis.signal_scanner import _params_from_yaml
+        p = _params_from_yaml({"position_frac": "4.0"})
+        assert p.values["position_frac"] == 4
+
+    def test_non_numeric_skipped(self):
+        from src.analysis.signal_scanner import _params_from_yaml
+        # 全局引擎的 builder 名（非数值）应被跳过
+        p = _params_from_yaml({"buy_1_signal": "deviation_cross", "adx_pct_w": "2"})
+        assert "buy_1_signal" not in p.values
+        assert p.values["adx_pct_w"] == 2
+
+
+class TestMakeSignalFn:
+    """_make_signal_fn：引擎名 → SignalFn（global→None 走 legacy）。"""
+
+    def test_global_returns_none(self):
+        from src.analysis.signal_scanner import _make_signal_fn
+        assert _make_signal_fn("global") is None
+        assert _make_signal_fn("") is None
+        assert _make_signal_fn(None) is None
+
+    def test_percentile_returns_fn(self):
+        from src.analysis.signal_scanner import _make_signal_fn
+        fn = _make_signal_fn("percentile")
+        assert fn is not None
+        assert fn.name == "percentile"
+
+
+class TestSignalFnDispatch:
+    """scan() 对 __signal_fn__ 规则分派到 signal_fn.scan_signals；
+    真实 condition 走 legacy ExpressionEngine。"""
+
+    def _session(self, code="600001", n=300, drift=0.8):
+        import pandas as pd
+        rng = np.random.RandomState(3)
+        dates = pd.date_range("2023-01-01", periods=n, freq="B")
+        t = np.linspace(0, drift, n) + rng.randn(n).cumsum() * 0.012
+        close = 10 * np.exp(t)
+        df = pd.DataFrame({
+            "date": dates.strftime("%Y-%m-%d"),
+            "open": close, "high": close * 1.01, "low": close * 0.99,
+            "close": close, "volume": np.abs(rng.randn(n)) * 1e6 + 5e5,
+        })
+        sess = MagicMock()
+        sess._historical = {code: df}
+        sess.stocks_data = [{"stock_code": code}]
+        sess.config = {}
+        return sess
+
+    def test_percentile_dispatch_produces_engine_named_alert(self, scanner):
+        strategies = [{
+            "params": {
+                "adx_pct_tau": "5", "adx_pct_w": "3", "rsi_pct_tau": "5",
+                "rsi_pct_w": "3", "deviation_pct_tau": "5", "deviation_pct_w": "2",
+                "vol_ratio_pct_tau": "5", "vol_ratio_pct_w": "2",
+                "ma200_dev_pct_tau": "5", "ma200_dev_pct_w": "2",
+                "buy_score_thresh": "0", "sell_score_thresh": "9",
+                "position_frac": "2", "_engine": "percentile",
+                "_mode": "signal_score",
+            },
+            "rules": [
+                {"id": "buy_1", "label": "加权分位≥0.10买入", "type": "buy",
+                 "condition": "__signal_fn__"},
+            ],
+        }]
+        sess = self._session("600001", drift=0.8)  # 强上涨→高分位
+        with patch.object(scanner, "_load_strategies", return_value=strategies), \
+             patch.object(scanner, "compute_consensus",
+                          return_value=ConsensusReport(consensus_stocks=["600001"])), \
+             patch.object(scanner, "_get_stock_codes", return_value=["600001"]):
+            result = scanner.scan(sess, "a_share", top_n=5)
+        # 分位引擎命中 → 告警名来自引擎（含"分位评分"），非 buy_1
+        assert any("分位评分" in a.rule_label for a in result.alerts), \
+            [a.rule_label for a in result.alerts]
+
+    def test_signal_fn_marker_not_evaluated_as_expression(self, scanner):
+        # __signal_fn__ 不应被 ExpressionEngine 当作表达式求值报错
+        strategies = [{
+            "params": {"_engine": "percentile", "adx_pct_w": "2",
+                       "buy_score_thresh": "9", "sell_score_thresh": "9",
+                       "position_frac": "2"},
+            "rules": [{"id": "buy_1", "label": "x", "type": "buy",
+                       "condition": "__signal_fn__"}],
+        }]
+        sess = self._session("600001", drift=0.0)
+        with patch.object(scanner, "_load_strategies", return_value=strategies), \
+             patch.object(scanner, "compute_consensus",
+                          return_value=ConsensusReport()), \
+             patch.object(scanner, "_get_stock_codes", return_value=["600001"]):
+            result = scanner.scan(sess, "a_share", top_n=5)
+        # 高阈值(9)→大概率不触发，但关键是不崩溃、无 buy_1 原始名泄漏
+        assert all(a.rule_label != "__signal_fn__" for a in result.alerts)
+
