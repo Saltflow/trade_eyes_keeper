@@ -426,6 +426,16 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
 
     lines: list[str] = []
 
+    # 策略引擎名（新/旧引擎一目了然）
+    first_yaml = yaml_by_group.get("a_share") or yaml_by_group.get("hk") or yaml_by_group.get("us")
+    if first_yaml:
+        engine_id = (first_yaml.get("strategies") or [{}])[0].get("params", {}).get("_engine", "global")
+        engine_names = {"percentile": "分位评分", "global": "全局阈值"}
+        engine_label = engine_names.get(engine_id, engine_id)
+        ts_raw = first_yaml.get("timestamp", "")[:16].replace("T", " ")
+        lines.append(f"{b}搜参引擎{b}: {engine_label} ({engine_id})  {ts_raw}")
+        lines.append("")
+
     # ── 搜参策略结果（三组）──
     if portfolio_results:
         group_labels = {"a_share": "A股组合", "hk": "港股组合", "us": "美股组合"}
@@ -1302,7 +1312,25 @@ class EmailNotifier(BaseNotifier):
 
         lines: list[str] = []
         lines.append('<div style="margin-top:30px;border-top:2px solid #2c3e50;padding-top:16px">')
-        lines.append('<h3 style="color:#2c3e50">搜参策略结果</h3>')
+
+        # 策略引擎名 + 搜参日期（新/旧引擎一目了然）
+        engine_label = ""
+        ts_display = ""
+        if opt_data:
+            top_engine = (opt_data.get("strategies") or [{}])[0]
+            engine_id = (top_engine.get("params") or {}).get("_engine", "global")
+            engine_names = {"percentile": "分位评分", "global": "全局阈值"}
+            engine_label = engine_names.get(engine_id, engine_id)
+            raw_ts = opt_data.get("timestamp", "")
+            if raw_ts:
+                ts_display = raw_ts[:16].replace("T", " ")
+
+        header = "搜参策略结果"
+        if engine_label:
+            header += f" — {engine_label} ({engine_id})"
+        if ts_display:
+            header += f"  {ts_display}"
+        lines.append(f'<h3 style="color:#2c3e50">{header}</h3>')
 
         # 策略参数摘要 (从 optimizer YAML)
         top_strategy = None
