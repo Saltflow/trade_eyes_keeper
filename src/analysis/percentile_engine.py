@@ -315,3 +315,76 @@ class PercentileSignalFn(SignalFn):
             "sell_threshold": _decode_tau(vals.get("sell_score_thresh", 5)),
             "position_frac": _decode_pos_frac(vals.get("position_frac", 2)),
         }
+
+    def sensitivity_check(
+        self, params, buy_scores, sell_scores, price,
+        initial_cash=100000.0, monthly_limit=15000.0,
+    ) -> list[dict]:
+        """参数敏感性验证：扰动买卖阈值 ±2 级别，看收益是否脆。
+
+        Returns:
+            [{"key": "buy_score_thresh -2", "orig_lvl": 5, "new_lvl": 3,
+              "ret": +10.2, "orig_ret": +10.2, "drop_pct": 0.0}, ...]
+        """
+        import numpy as _np
+        from .signal_functions import simulate_portfolio
+        vals = getattr(params, "values", params) if not isinstance(params, dict) else params
+        buy_lvl = int(vals.get("buy_score_thresh", 5))
+        sell_lvl = int(vals.get("sell_score_thresh", 5))
+        pos_lvl = int(vals.get("position_frac", 2))
+        max_buy = TAU_LEVELS - 1
+        max_sell = TAU_LEVELS - 1
+
+        # 基准收益
+        ex = self.execution_params(vals)
+        base_tr = simulate_portfolio(
+            buy_scores, sell_scores, price, initial_cash,
+            ex["buy_threshold"], ex["sell_threshold"], ex["position_frac"],
+            100, monthly_limit, 0.002, [""] * buy_scores.shape[0],
+            ["X"] * buy_scores.shape[1],
+        )
+        base_ret = base_tr.total_return_pct
+
+        # 单个日期太短无法算夏普→用收益差
+        results: list[dict] = []
+        # 扰动买入阈值
+        for delta in (-2, -1, 1, 2):
+            nl = max(0, min(buy_lvl + delta, max_buy))
+            if nl == buy_lvl:
+                continue
+            bt = _decode_tau(nl)
+            st = ex["sell_threshold"]
+            pf = ex["position_frac"]
+            tr = simulate_portfolio(
+                buy_scores, sell_scores, price, initial_cash,
+                bt, st, pf, 100, monthly_limit, 0.002,
+                [""] * buy_scores.shape[0], ["X"] * buy_scores.shape[1],
+            )
+            results.append({
+                "key": f"buy_score_thresh {delta:+d}",
+                "orig_lvl": buy_lvl, "new_lvl": nl,
+                "ret": round(tr.total_return_pct, 2),
+                "orig_ret": round(base_ret, 2),
+                "drop_pct": round(base_ret - tr.total_return_pct, 2),
+            })
+        # 扰动卖出阈值
+        for delta in (-2, -1, 1, 2):
+            nl = max(0, min(sell_lvl + delta, max_sell))
+            if nl == sell_lvl:
+                continue
+            bt = ex["buy_threshold"]
+            st = _decode_tau(nl)
+            pf = ex["position_frac"]
+            tr = simulate_portfolio(
+                buy_scores, sell_scores, price, initial_cash,
+                bt, st, pf, 100, monthly_limit, 0.002,
+                [""] * buy_scores.shape[0], ["X"] * buy_scores.shape[1],
+            )
+            results.append({
+                "key": f"sell_score_thresh {delta:+d}",
+                "orig_lvl": sell_lvl, "new_lvl": nl,
+                "ret": round(tr.total_return_pct, 2),
+                "orig_ret": round(base_ret, 2),
+                "drop_pct": round(base_ret - tr.total_return_pct, 2),
+            })
+        return results

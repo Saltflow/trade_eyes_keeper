@@ -718,7 +718,8 @@ class StrategyOptimizerV2:
             strat = {
                 "rank": i,
                 "train_return": _native(t.train_return),
-                "test_return": _native(t.test_return),
+                "total_return": _native(t.strategy_return),  # 验证期原始涨幅（非超额）
+                "test_return": _native(t.test_return),       # 验证期超额涨幅（vs 基准）
                 "test_drawdown": _native(t.test_drawdown),
                 "sharpe": _native(t.sharpe),
                 "trade_count": t.trade_count,

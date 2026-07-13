@@ -486,9 +486,15 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
                     if wr is not None:
                         wr_parts.append(f"{disp} {wr:.0f}%")
 
+            total_ret = g_top.get("total_return")
             if test_ret is not None:
-                head = (f"{b}{gl}{b} 预估收益(测试期超额,近9月) {test_ret:+.1f}%"
-                        f"  回撤 {test_dd:.1f}%  夏普 {g_sharpe:.2f}")
+                if total_ret is not None:
+                    head = (f"{b}{gl}{b} 验证期涨幅 {total_ret:+.1f}% "
+                            f"(超额{test_ret:+.1f}%)"
+                            f"  最大回撤 {test_dd:.1f}%  夏普 {g_sharpe:.2f}")
+                else:
+                    head = (f"{b}{gl}{b} 预估收益(测试期超额,近9月) {test_ret:+.1f}%"
+                            f"  回撤 {test_dd:.1f}%  夏普 {g_sharpe:.2f}")
             else:
                 tr = getattr(r, "total_return", 0)
                 head = f"{b}{gl}{b} 收益 {tr:+.1f}%"
@@ -507,27 +513,38 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
             if ts:
                 lines.append(f"  搜参时间 {ts}")
 
-            # 买卖规则明细（从 YAML params 翻译）
+            # 买卖规则明细（从 YAML params 翻译；分位引擎无 _signal 则读 rules）
             params = g_top.get("params", {})
+            engine = params.get("_engine", "global")
             buy_rules, sell_rules = [], []
-            for k, v in sorted(params.items()):
-                if not k.endswith("_signal"):
-                    continue
-                idx = k.split("_")[1]
-                name = SIGNAL_NAMES.get(str(v), str(v))
-                if str(v) == "none":
-                    continue
-                t = params.get(k.replace("_signal", "_t"))
-                frac = params.get(k.replace("_signal", "_frac"))
-                extra = ""
-                if t is not None:
-                    extra += f" 阈值{float(t):.2f}"
-                if frac is not None:
-                    extra += f" 仓位{float(frac)*100:.0f}%"
-                if k.startswith("buy"):
-                    buy_rules.append(f"买{idx}:{name}{extra}")
-                else:
-                    sell_rules.append(f"卖{idx}:{name}{extra}")
+            has_signal_params = any(k.endswith("_signal") for k in params)
+            if has_signal_params:
+                for k, v in sorted(params.items()):
+                    if not k.endswith("_signal"):
+                        continue
+                    idx = k.split("_")[1]
+                    name = SIGNAL_NAMES.get(str(v), str(v))
+                    if str(v) == "none":
+                        continue
+                    t = params.get(k.replace("_signal", "_t"))
+                    frac = params.get(k.replace("_signal", "_frac"))
+                    extra = ""
+                    if t is not None:
+                        extra += f" 阈值{float(t):.2f}"
+                    if frac is not None:
+                        extra += f" 仓位{float(frac)*100:.0f}%"
+                    if k.startswith("buy"):
+                        buy_rules.append(f"买{idx}:{name}{extra}")
+                    else:
+                        sell_rules.append(f"卖{idx}:{name}{extra}")
+            else:
+                # 分位/自定义引擎：读 YAML rules 列表（已含引擎自定义名和 type）
+                for r in g_top.get("rules") or []:
+                    label = r.get("label", r.get("id", ""))
+                    if r.get("type") == "buy":
+                        buy_rules.append(label)
+                    elif r.get("type") == "sell":
+                        sell_rules.append(label)
             if buy_rules:
                 lines.append("  买入: " + " | ".join(buy_rules))
             if sell_rules:

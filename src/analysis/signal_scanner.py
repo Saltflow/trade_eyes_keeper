@@ -313,16 +313,16 @@ class SignalScanner:
                             sig_params = _params_from_yaml(params)
                             hits = signal_fn.scan_signals(sig_params, today, hist)
                             for h in hits:
-                                if h.get("side") != "buy":
-                                    continue  # 仅报买入信号（与旧逻辑一致）
+                                side = h.get("side", "buy")
                                 result.alerts.append(
                                     StrategyAlert(
                                         stock_code=code,
-                                        rule_id=h.get("side", "buy"),
+                                        rule_id=side,
                                         rule_label=h.get("label", "信号"),
                                         condition_str=h.get("detail", ""),
                                         current_value=h.get("detail", "—"),
                                         strategy_rank=s_idx + 1,
+                                        type=f"strategy_{side}",
                                     )
                                 )
                         except Exception as e:

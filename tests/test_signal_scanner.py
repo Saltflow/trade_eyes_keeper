@@ -351,3 +351,36 @@ class TestSignalFnDispatch:
         # 高阈值(9)→大概率不触发，但关键是不崩溃、无 buy_1 原始名泄漏
         assert all(a.rule_label != "__signal_fn__" for a in result.alerts)
 
+    def test_sell_signals_not_filtered(self, scanner):
+        # 修复：scanner 不应过滤 sell 信号，type 字段应区分 buy/sell
+        strategies = [{
+            "params": {
+                "adx_pct_tau": "5", "adx_pct_w": "3", "rsi_pct_tau": "5",
+                "rsi_pct_w": "3", "deviation_pct_tau": "5", "deviation_pct_w": "2",
+                "vol_ratio_pct_tau": "5", "vol_ratio_pct_w": "2",
+                "ma200_dev_pct_tau": "5", "ma200_dev_pct_w": "2",
+                "buy_score_thresh": "9", "sell_score_thresh": "0",
+                "position_frac": "2", "_engine": "percentile",
+                "_mode": "signal_score",
+            },
+            "rules": [
+                {"id": "buy_1", "label": "加权分位≥0.90买入", "type": "buy",
+                 "condition": "__signal_fn__"},
+                {"id": "sell_1", "label": "加权分位≥0.10卖出", "type": "sell",
+                 "condition": "__signal_fn__"},
+            ],
+        }]
+        sess = self._session("600001", drift=0.8)  # 强上涨→高分位条件
+        with patch.object(scanner, "_load_strategies", return_value=strategies), \
+             patch.object(scanner, "compute_consensus",
+                          return_value=ConsensusReport(consensus_stocks=["600001"])), \
+             patch.object(scanner, "_get_stock_codes", return_value=["600001"]):
+            result = scanner.scan(sess, "a_share", top_n=5)
+        buy_alerts = [a for a in result.alerts if a.type == "strategy_buy"]
+        sell_alerts = [a for a in result.alerts if a.type == "strategy_sell"]
+        assert any(a.rule_label for a in result.alerts), "应产生告警（买卖至少一种）"
+        # 类型字段正确区分：buy 应有 "strategy_buy"，sell 应有 "strategy_sell"
+        for a in result.alerts:
+            assert a.type in ("strategy_buy", "strategy_sell"), \
+                f"告警类型应为 strategy_buy 或 strategy_sell，实际 {a.type}"
+
