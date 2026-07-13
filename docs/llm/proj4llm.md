@@ -30,13 +30,16 @@
 
 ### 评分引擎执行语义（`_score_sim_core`，主链路唯一决策仿真）
 锁定于 `tests/test_score_engine.py`（18 项）：
-1. **买入执行价 = 近 3 日收盘均价**（含当日；不足 3 日按现有天数）—— 源自 commit b01233f「3日确认+均价执行」，此前只在 Python 后备路径落地，numba/评分路径缺失，现已统一
+1. **买入执行价 = 近 3 日收盘最高价**（v1.20 改为含滑点的 pessimistic 估价；之前是均价）
 2. **卖出执行价 = 单日收盘价**（触发日，不平滑）
 3. **同日互斥**：同一标的同日既触发买又触发卖 → 双向跳过
 4. **月度买入额度（分批注入，勿设 inf）**：日报回测 `_evaluate_signal_fn` 用 `MONTHLY_BUY_LIMIT=15000`，搜参 `SignalFnSearchEngine` 用 `100000`，与旧 global 完全一致。⚠️ **教训**：曾误将限额改为 `inf` 修「100%空仓」bug，导致首日满仓、收益虚高 5000BP+（实验证实 inf=+97% vs 15000=+10%）。空仓 bug 的正解是「买入额截断到剩余月度额度」，而非取消限额。
 5. **允许回补**：卖出后可再买入（无 `shares==0` 永久壁垒）
 6. 手数取整 / 手续费 / 现金约束 / 评分需严格 `> 阈值`
 7. **季度持仓成本快照**：`_score_sim_core` 每季度边界快照 `q_cb`(成本基础)+`q_price`(价格)，显示层用时点值。⚠️ 勿用最终 `cost_basis[i] ÷ 季度时点 shares`（时点错配 → 假成本 0.00/295.87、假 pnl +16171%）
+8. **手续费 0.5% (v1.20)**：全系统 `COMMISSION_RATE=0.005`（0.5% 含滑点），所有路径统一（FastEvaluator/SignalFnSearchEngine/PortfolioEvaluator/RuleEngine）
+9. **港股手数 (v1.20)**：`_get_lot_size` 返回 100；日回报测路径按标的均价分界（<100→1000, ≥100→100）
+10. **汇率 (v1.20)**：固定汇率 1 USD=7 CNY，1 HKD=0.9 CNY。`_evaluate_signal_fn` 和 `SignalFnSearchEngine.evaluate_encoding` 均对价格矩阵乘以汇
 
 ### 测试矩阵（量化引擎，共 ~80 项）
 - `test_score_engine.py`（18）：决策仿真全部执行语义

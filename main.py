@@ -743,7 +743,87 @@ def run_optimization_v2(config):
         notifier = NotifierManager(config)
         notifier.send_optimizer_notification(report, group_name)
 
+        # ── 搜参完自动跑回测并打印 ──
+        try:
+            _print_daily_backtest(config, group_name, codes, signal_fn)
+        except Exception as e:
+            logger.warning(f"日回报测打印失败 (非致命): {e}")
+
     logger.info("策略搜索 V2 完成")
+
+
+def _print_daily_backtest(config, group_name, codes, signal_fn):
+    """搜参完成后跑一次日回报测并打印关键指标。"""
+    import numpy as np
+    from src.analysis.portfolio_strategy import (
+        PortfolioOptimizer, PortfolioEvaluator, MONTHLY_BUY_LIMIT,
+        _detect_fine_group,
+    )
+    from src.analysis.signal_scanner import _params_from_yaml
+    from src.analysis.indicator_library import compute_all
+    from src.analysis.rule_engine import Rule
+    from src.notification.email_notifier import _build_signal_label_map
+    import yaml
+    from pathlib import Path
+
+    # 读最新 YAML
+    opt_dir = Path("data/optimizer")
+    files = sorted(
+        [f for f in opt_dir.glob(f"*_{group_name}_strategies.yaml")],
+        key=lambda p: p.stat().st_mtime, reverse=True,
+    )
+    if not files:
+        print(f"\n  [{group_name}] 日回报测: 无 YAML")
+        return
+    with open(files[0], "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    top = (data.get("strategies") or [{}])[0]
+    params_dict = top.get("params", {})
+    engine_name = params_dict.get("_engine", "global")
+
+    # 获取数据
+    from src.data.data_source import DataSource
+    ds = DataSource(config)
+    stocks_data = {}
+    for code in codes:
+        df = ds.fetch_stock_data(code, days=730)
+        if df is not None and not df.empty:
+            stocks_data[str(code)] = df
+    if not stocks_data:
+        print(f"\n  [{group_name}] 日回报测: 无可用数据")
+        return
+
+    # 分位引擎: 走评分流水线
+    if engine_name in ("percentile", "pct", "new"):
+        from src.analysis.percentile_engine import PercentileSignalFn
+        sfn = PercentileSignalFn()
+        ep = _params_from_yaml(params_dict)
+        rules_raw = top.get("rules", [])
+        rules = [Rule.from_dict(r) for r in rules_raw] if rules_raw else None
+        fine_group = _detect_fine_group(str(codes[0]))
+        eval_group = {"a_share": "a_share", "hk": "non_a_share",
+                      "us": "non_a_share"}.get(fine_group, "non_a_share")
+        ev = PortfolioEvaluator(stocks_data, eval_group, rules=rules,
+                                signal_fn=sfn)
+        ev._engine_params = ep
+        res = ev.evaluate(list(stocks_data.keys()))
+        print(f"\n  [{group_name}] 日回报测 (分位引擎, 月限额{MONTHLY_BUY_LIMIT}):")
+        print(f"    收益 {res.total_return:+.1f}%  回撤 {res.max_drawdown:.1f}%  "
+              f"夏普 {res.sharpe_ratio:.2f}  交易 {res.trade_count}  仓位 {res.expected_position:.0f}%")
+    else:
+        # 全局引擎: 走 legacy run_fixed
+        from src.analysis.rule_engine import Rule
+        rules_raw = top.get("rules", [])
+        custom_rules = [Rule.from_dict(r) for r in rules_raw] if rules_raw else None
+        opt = PortfolioOptimizer(config, custom_rules=custom_rules)
+        res_map = opt.run_fixed(groups=[group_name])
+        if group_name in res_map:
+            r = (res_map[group_name].get("top1")
+                 or res_map[group_name].get("max_return"))
+            if r:
+                print(f"\n  [{group_name}] 日回报测 (全局引擎, 月限额{MONTHLY_BUY_LIMIT}):")
+                print(f"    收益 {r.total_return:+.1f}%  回撤 {r.max_drawdown:.1f}%  "
+                      f"夏普 {r.sharpe_ratio:.2f}  交易 {r.trade_count}  仓位 {r.expected_position:.0f}%")
 
 
 def _send_optimizer_report_telegram(config, report):

@@ -55,7 +55,7 @@ class TestStockGroupDetection:
     def test_lot_size(self):
         assert _get_lot_size("601728") == 100
         assert _get_lot_size("GOOG") == 1
-        assert _get_lot_size("00883") == 1
+        assert _get_lot_size("00883") == 100  # 港股默认100
         assert _get_lot_size("C38U.SI") == 1
 
 

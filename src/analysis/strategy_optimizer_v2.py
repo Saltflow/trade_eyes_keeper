@@ -249,10 +249,14 @@ class StrategyOptimizerV2:
             initial_cash=100000.0,
             monthly_buy_limit=100000.0,
             lot_size=lot_size,
-            commission_rate=0.002,
+            commission_rate=0.005,
         )
 
         # ── 4. 遗传搜索 ──
+        # 设定汇率乘数（搜索路径用，与日报回测一致）
+        fx_rates = {"a_share": 1.0, "hk": 0.9, "us": 7.0}
+        if self.engine is not None and hasattr(self.engine, "fx_rate"):
+            self.engine.fx_rate = fx_rates.get(self.group, 1.0)
         searcher = GeneticSearcher(self.constraints, wf_mgr, evaluator, engine=self.engine)
 
         logger.info(

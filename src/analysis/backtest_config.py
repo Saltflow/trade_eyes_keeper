@@ -36,7 +36,7 @@ class BacktestConfig(BaseModel):
     initial_capital: float = 100000.0
     monthly_buy_limit: float = float("inf")
     monthly_sell_limit: float = float("inf")
-    commission_rate: float = 0.002
+    commission_rate: float = 0.005  # 0.5% 含滑点
     lot_size_override: Optional[dict[str, int]] = None
 
     def get_phase(self, elapsed_months: float) -> str:

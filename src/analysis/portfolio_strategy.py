@@ -29,7 +29,7 @@ SELL_THRESHOLDS = [0.05, 0.10, 0.15]  # +5%, +10%, +15%
 MAX_BUY_PER_TRADE = 5000.0  # 每笔买入上限(元)
 MAX_SELL_PER_TRADE = 10000.0  # 每笔卖出上限(元)
 MIN_SELL_PER_TRADE = 2500.0  # 每笔卖出下限(元)
-COMMISSION_RATE = 0.002  # 手续费率
+COMMISSION_RATE = 0.005  # 手续费率 (0.5%, 含滑点)
 MONTHLY_BUY_LIMIT = 15000.0  # 组合月买入限额
 MONTHLY_SELL_LIMIT = 15000.0  # 组合月卖出限额
 INITIAL_CASH_PER_STOCK = 10000.0  # 每只股票初始资金（兼容旧调用）
@@ -142,10 +142,13 @@ def get_skip_signals(config: dict) -> set[str]:
 
 
 def _get_lot_size(stock_code: str) -> int:
-    """获取整手股数：A股100股，其余1股"""
-    if _detect_stock_group(stock_code) == "a_share":
-        return 100
-    return 1
+    """获取整手股数：A股100股，港股100股（单价分界在日回报测处判断），其余1股"""
+    code = str(stock_code).strip()
+    if code.isdigit() and len(code) == 6:
+        return 100  # A股
+    if code.isdigit() and len(code) == 5:
+        return 100  # 港股默认
+    return 1  # 美股/其他
 
 
 def _get_month_key(date_str: str) -> str:
@@ -610,8 +613,24 @@ class PortfolioEvaluator:
         price = np.nan_to_num(price, nan=0.0)
 
         exec_p = self.signal_fn.execution_params(params)
-        lot = 100 if self.group == "a_share" else 1
-        monthly = MONTHLY_BUY_LIMIT  # 与旧 global 日报一致（分批注入，防满仓虚高）
+        monthly = MONTHLY_BUY_LIMIT
+        # 手数 + 汇率：按标的细分组决定
+        from .portfolio_strategy import _detect_fine_group
+        fine_groups = {c: _detect_fine_group(str(c)) for c in active_codes}
+        # 汇率乘数（固定：1 USD=7 CNY, 1 HKD=0.9 CNY, A股=1）
+        fx_map = {"a_share": 1.0, "hk": 0.9, "us": 7.0}
+        # 取主力组别的汇率（各组标的池独立，同一 group 内汇率一致）
+        main_fg = max(set(fine_groups.values()), key=lambda g: sum(1 for v in fine_groups.values() if v == g))
+        fx = fx_map.get(main_fg, 1.0)
+        # 手数：A股100；港股按均价分界（<100→1000股，≥100→100股）；美股1
+        if main_fg == "a_share":
+            lot = 100
+        elif main_fg == "hk":
+            avg_close = float(np.mean(price[-1][price[-1] > 0])) if np.any(price[-1] > 0) else 100.0
+            lot = 1000 if avg_close < 100 else 100
+        else:
+            lot = 1
+        price = price * fx  # 汇率折算为 CNY 等价
 
         trace = simulate_portfolio(
             buy_scores, sell_scores, price,

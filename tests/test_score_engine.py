@@ -43,27 +43,27 @@ def _sim(buy, sell, price, *, cash=100000.0, buy_th=0.5, sell_th=0.5,
     )
 
 
-class TestBuyExecutionPrice3DayAverage:
-    """需求1：买入执行价 = 近3日收盘均价。"""
+class TestBuyExecutionPrice3DayMax:
+    """需求1（v1.20）：买入执行价 = 近3日收盘最高价（含滑点）。"""
 
-    def test_buy_uses_3day_close_average(self):
+    def test_buy_uses_3day_close_max(self):
         # close = [10, 20, 30], 第3天(t=2)触发买入
-        # 均价 = (10+20+30)/3 = 20，全仓 100000/20 = 5000 股
+        # 最高价 = max(10,20,30) = 30，全仓 100000/30 ≈ 3333 股
         tr = _sim([0, 0, 1], [0, 0, 0], [10.0, 20.0, 30.0])
         assert tr.total_trades == 1
-        assert tr.final_shares[0] == 5000  # 100000/20，不是 /30(=3333)
+        assert tr.final_shares[0] == 3333  # 100000/30
 
     def test_buy_window_shorter_when_insufficient_history(self):
-        # 第1天(t=0)触发，只有1天历史 → 均价=10 → 10000 股
+        # 第1天(t=0)触发，只有1天历史 → max=10 → 10000 股
         tr = _sim([1, 0, 0], [0, 0, 0], [10.0, 20.0, 30.0], cash=100000.0)
         assert tr.total_trades == 1
         assert tr.final_shares[0] == 10000  # 100000/10
 
     def test_buy_2day_window(self):
-        # 第2天(t=1)触发，2天历史 → 均价=(10+20)/2=15 → 100000/15=6666.67→6666股
+        # 第2天(t=1)触发，2天历史 → max(10,20)=20 → 100000/20=5000股
         tr = _sim([0, 1, 0], [0, 0, 0], [10.0, 20.0, 30.0], lot=1)
         assert tr.total_trades == 1
-        assert tr.final_shares[0] == int(100000 / 15)
+        assert tr.final_shares[0] == 5000  # 100000/20
 
 
 class TestSellExecutionPriceSingleDay:

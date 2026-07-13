@@ -302,18 +302,16 @@ def _score_sim_core(
                 remaining = monthly_limit - month_spent
                 if remaining <= 0:
                     break
-                # 买入执行价 = 近3日收盘均价（含当日），窗口不足则用现有天数
+                # 买入执行价 = 近3日收盘最高价（含滑点）
                 lo = t - 2 if t >= 2 else 0
-                psum = 0.0
-                pcnt = 0
+                pmax = 0.0
                 for tt in range(lo, t + 1):
                     pv = price[tt, i]
-                    if pv > 0 and not np.isnan(pv):
-                        psum += pv
-                        pcnt += 1
-                if pcnt == 0:
+                    if pv > 0 and not np.isnan(pv) and pv > pmax:
+                        pmax = pv
+                if pmax <= 0:
                     continue
-                exec_price = psum / pcnt
+                exec_price = pmax
                 # 买入额 = min(仓位比例×现金, 剩余月度额度, 现金)
                 amt = position_frac * cash
                 if amt > remaining:

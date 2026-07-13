@@ -31,13 +31,14 @@ class SignalFnSearchEngine(StrategyEngine):
 
     def __init__(self, signal_fn: SignalFn, initial_cash: float = 100000.0,
                  lot_size: int = 100, monthly_limit: float = 100000.0,
-                 commission_rate: float = 0.002):
+                 commission_rate: float = 0.005):  # 0.5% 含滑点
         self.signal_fn = signal_fn
         self.initial_cash = initial_cash
         self.lot_size = lot_size
         self.monthly_limit = monthly_limit
         self.commission_rate = commission_rate
         self._rng = __import__("random").Random(42)
+        self.fx_rate = 1.0  # 汇率乘数（优化器按组设定）
 
     # ── 编码操作 ──
 
@@ -87,7 +88,7 @@ class SignalFnSearchEngine(StrategyEngine):
             scores = self.signal_fn.evaluate(encoding, test_ind)
             buy_scores = np.ascontiguousarray(scores[:, :, 0], dtype=np.float64)
             sell_scores = np.ascontiguousarray(scores[:, :, 1], dtype=np.float64)
-            price = np.ascontiguousarray(test_price, dtype=np.float64)
+            price = np.ascontiguousarray(test_price, dtype=np.float64) * self.fx_rate
 
             trace = simulate_portfolio(
                 buy_scores, sell_scores, price,

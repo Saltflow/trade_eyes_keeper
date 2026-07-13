@@ -803,7 +803,7 @@ class FastEvaluator:
         initial_cash: float = 100000.0,
         monthly_buy_limit: float = 15000.0,
         lot_size: int = 100,  # A股默认100股/手，非A股改为1
-        commission_rate: float = 0.002,
+        commission_rate: float = 0.005,  # 0.5% 含滑点
         buy_confirmation_days: int = 3,
         sell_confirmation_days: int = 1,
     ):
