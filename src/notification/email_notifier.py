@@ -1363,24 +1363,35 @@ class EmailNotifier(BaseNotifier):
             params = top_strategy.get("params", {})
             buy_rules: list[str] = []
             sell_rules: list[str] = []
-            for k, v in sorted(params.items()):
-                if not k.endswith("_signal"):
-                    continue
-                if str(v) == "none":
-                    continue
-                idx = k.split("_")[1]
-                name = SIGNAL_NAMES.get(str(v), str(v))
-                t = params.get(k.replace("_signal", "_t"))
-                frac = params.get(k.replace("_signal", "_frac"))
-                extra = ""
-                if t is not None:
-                    extra += f" 阈值{float(t):.2f}"
-                if frac is not None:
-                    extra += f" 仓位{float(frac)*100:.0f}%"
-                if k.startswith("buy"):
-                    buy_rules.append(f"买{idx}:{name}{extra}")
-                else:
-                    sell_rules.append(f"卖{idx}:{name}{extra}")
+            has_signal_params = any(
+                k.endswith("_signal") for k in params)
+            if has_signal_params:
+                for k, v in sorted(params.items()):
+                    if not k.endswith("_signal"):
+                        continue
+                    if str(v) == "none":
+                        continue
+                    idx = k.split("_")[1]
+                    name = SIGNAL_NAMES.get(str(v), str(v))
+                    t = params.get(k.replace("_signal", "_t"))
+                    frac = params.get(k.replace("_signal", "_frac"))
+                    extra = ""
+                    if t is not None:
+                        extra += f" 阈值{float(t):.2f}"
+                    if frac is not None:
+                        extra += f" 仓位{float(frac)*100:.0f}%"
+                    if k.startswith("buy"):
+                        buy_rules.append(f"买{idx}:{name}{extra}")
+                    else:
+                        sell_rules.append(f"卖{idx}:{name}{extra}")
+            else:
+                # 分位/自定义引擎：读 YAML rules 列表
+                for r in top_strategy.get("rules") or []:
+                    label = r.get("label", r.get("id", ""))
+                    if r.get("type") == "buy":
+                        buy_rules.append(label)
+                    elif r.get("type") == "sell":
+                        sell_rules.append(label)
 
             strategy_label = top_strategy.get(
                 "strategy_description",
@@ -1512,16 +1523,29 @@ class EmailNotifier(BaseNotifier):
                     wr_parts.append(
                         f'{disp} <span style="color:{wc}">{wr:.0f}%</span>')
 
+            total_ret = g_top.get("total_return")
             if test_ret is not None:
                 rc = "#27ae60" if test_ret >= 0 else "#c0392b"
-                summary = (
-                    '<div style="border:1px solid #ddd;padding:10px;'
-                    'margin:6px 0;border-radius:5px;background:#f0f7ff">'
-                    f'<b>预估收益(测试期超额, 近9月, 不参与排序)</b> '
-                    f'<span style="color:{rc}">{test_ret:+.1f}%</span> &nbsp; '
-                    f'回撤 {test_dd:.1f}% &nbsp; '
-                    f'夏普 {g_sharpe:.2f} &nbsp; '
-                )
+                if total_ret is not None:
+                    trc = "#27ae60" if total_ret >= 0 else "#c0392b"
+                    summary = (
+                        '<div style="border:1px solid #ddd;padding:10px;'
+                        'margin:6px 0;border-radius:5px;background:#f0f7ff">'
+                        f'<b>验证期涨幅 '
+                        f'<span style="color:{trc}">{total_ret:+.1f}%</span>'
+                        f' (超额<span style="color:{rc}">{test_ret:+.1f}%</span>)</b> &nbsp; '
+                        f'最大回撤 {test_dd:.1f}% &nbsp; '
+                        f'夏普 {g_sharpe:.2f} &nbsp; '
+                    )
+                else:
+                    summary = (
+                        '<div style="border:1px solid #ddd;padding:10px;'
+                        'margin:6px 0;border-radius:5px;background:#f0f7ff">'
+                        f'<b>预估收益(测试期超额, 近9月, 不参与排序)</b> '
+                        f'<span style="color:{rc}">{test_ret:+.1f}%</span> &nbsp; '
+                        f'回撤 {test_dd:.1f}% &nbsp; '
+                        f'夏普 {g_sharpe:.2f} &nbsp; '
+                    )
                 if avg_cash is not None:
                     summary += f'平均现金仓位 {avg_cash:.0f}% &nbsp; '
                 # 验证期胜率（三基线）
