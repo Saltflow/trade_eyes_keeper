@@ -671,8 +671,14 @@ def run_optimization_v2(config):
     # ── 搜参心跳 ──
     from threading import Event
     heartbeat_stop = Event()
-    _start_heartbeat(config, heartbeat_stop)
+    heartbeat_state = {
+        "group": "", "group_n": 0, "total_groups": 3,
+        "phase": "starting", "elapsed": 0, "active": True,
+    }
+    _start_heartbeat(config, heartbeat_stop, heartbeat_state)
 
+    group_labels = {"a_share": "A股", "hk": "港股", "us": "美股"}
+    group_index = 0
     for group_name, codes in [("a_share", a_codes), ("hk", hk_codes), ("us", us_codes)]:
         if not codes:
             logger.info("跳过 %s: 无标的", group_name)
@@ -680,6 +686,8 @@ def run_optimization_v2(config):
 
         logger.info("-" * 40)
         logger.info("开始 %s 策略优化 V2 (%d 只标的)", group_name, len(codes))
+        heartbeat_state.update(group=group_labels.get(group_name, group_name),
+                               group_n=group_index + 1, phase="Phase1")
 
         # 获取数据
         stocks_data: dict[str, pd.DataFrame] = {}
@@ -755,6 +763,8 @@ def run_optimization_v2(config):
             logger.warning(f"回测报告生成失败 (非致命): {e}")
 
         notifier.send_optimizer_notification(report, group_name, full_report)
+        group_index += 1
+        heartbeat_state.update(phase="done", group_n=group_index)
 
     heartbeat_stop.set()
     logger.info("策略搜索 V2 完成")
@@ -1103,37 +1113,35 @@ if __name__ == "__main__":
     main()
 
 
-def _start_heartbeat(config, stop_event):
-    """搜参过程每5分钟飞书心跳通知。"""
-    import json
-    import os
-    import threading
-    import time
-
-    import requests
-
-    webhook = os.getenv("FEISHU_WEBHOOK_URL", "")
-    if not webhook:
-        fc = config.get("notification", {}).get("feishu", {})
-        webhook = fc.get("webhook_url", "")
-    if not webhook:
-        return
+def _start_heartbeat(config, stop_event, state: dict):
+    """搜参过程每5分钟飞书心跳通知，含相位/组合/耗时的实时进度。"""
 
     def _beat():
-        start = time.time()
+        import time as _time
+        start = _time.time()
         count = 0
+        phase_emoji = {"starting": "⏳", "Phase1": "🔍", "Phase2": "🧬", "done": "✅"}
         while not stop_event.is_set():
-            time.sleep(300)  # 5 分钟
+            _time.sleep(300)
             if stop_event.is_set():
                 break
             count += 1
-            elapsed = int(time.time() - start)
+            elapsed = int(_time.time() - start)
             mins = elapsed // 60
-            title = f"Trade Eyes · 搜参运行中 ({mins}min)"
+            sec = elapsed % 60
+            group = state.get("group", "—")
+            phase = state.get("phase", "—")
+            g_n = state.get("group_n", 0)
+            g_tot = state.get("total_groups", 3)
+            emoji = phase_emoji.get(phase, "⚙️")
+
+            progress = f"第 {g_n}/{g_tot} 组 · {emoji} {phase}"
+            title = f"Trade Eyes · 搜参运行中 ({mins}m{sec}s)"
             body_lines = [
                 f"**{title}**",
-                f"已连续运行 {mins} 分钟 · 第 {count} 次心跳",
-                "搜参完成后自动推送报告",
+                f"当前: **{group}** · {progress}",
+                f"已连续运行 {mins} 分 {sec} 秒",
+                "完成后自动推送完整报告",
             ]
             card = {
                 "schema": "2.0",
@@ -1143,14 +1151,17 @@ def _start_heartbeat(config, stop_event):
                 ]},
             }
             try:
-                requests.post(webhook, json={
-                    "msg_type": "interactive", "card": card,
-                }, timeout=10)
+                webhook = os.getenv("FEISHU_WEBHOOK_URL", "")
+                if not webhook:
+                    webhook = config.get("notification", {}).get("feishu", {}).get("webhook_url", "")
+                if webhook:
+                    requests.post(webhook, json={
+                        "msg_type": "interactive", "card": card,
+                    }, timeout=10)
             except Exception:
                 pass
 
-    t = threading.Thread(target=_beat, daemon=True, name="heartbeat")
-    t.start()
+    threading.Thread(target=_beat, daemon=True, name="heartbeat").start()
 
 
 def _send_restart_notification(config: dict):
