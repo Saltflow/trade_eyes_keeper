@@ -632,8 +632,12 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
     return "\n".join(lines).rstrip()
 
 
-def build_optimizer_summary(report, group_name: str = "") -> str:
-    """将 OptimizationReport 格式化为人话摘要。"""
+def build_optimizer_summary(report, group_name: str = "",
+                            full_report: dict | None = None) -> str:
+    """将 OptimizationReport + 完整回测报告格式化为 HTML 摘要。
+
+    full_report 非空时追加：日回报测指标 / 季末持仓 / 敏感性 / 波动率。
+    """
     lines = ["<b>策略优化完成</b>"]
     if group_name:
         label = {"a_share": "A股", "hk": "港股", "us": "美股",
@@ -644,10 +648,9 @@ def build_optimizer_summary(report, group_name: str = "") -> str:
         f"评估: {report.iterations} 策略"
     )
 
-    if not report.top_strategies:
+    if not report.top_strategies and not full_report:
         return "\n".join(lines) + "\n(无有效策略)"
 
-    # 买入卖出信号中文映射
     SIGNAL_NAMES = {
         "deviation_cross": "偏离穿越",
         "deviation_absolute": "偏离达标",
@@ -663,89 +666,109 @@ def build_optimizer_summary(report, group_name: str = "") -> str:
         "none": "无",
     }
 
-    lines.append("")
-    for i, t in enumerate(report.top_strategies[:3]):
-        lines.append(f"<b>策略 #{i+1}</b>")
+    if report.top_strategies:
+        lines.append("")
+        for i, t in enumerate(report.top_strategies[:3]):
+            lines.append(f"<b>策略 #{i+1}</b>")
+            lines.append(
+                f"  收益 {t.test_return:+.1f}%  回撤 {t.test_drawdown:.1f}%  "
+                f"夏普 {t.sharpe:.2f}  交易 {t.trade_count}笔"
+            )
+            lines.append(f"  <pre>{t.strategy_description}</pre>")
         lines.append(
-            f"  收益 {t.test_return:+.1f}%  回撤 {t.test_drawdown:.1f}%  "
-            f"夏普 {t.sharpe:.2f}  交易 {t.trade_count}笔"
+            f'完整结果: data/optimizer/{report.report_id}.yaml'
         )
 
-        # 翻译参数为人话
-        buy_rules = []
-        sell_rules = []
-        for k, v in t.params.items():
-            if k.startswith("_"):
-                continue
-            if k.startswith("buy_"):
-                idx = k.split("_")[1]
-                if k.endswith("_signal"):
-                    name = SIGNAL_NAMES.get(str(v), str(v))
-                    buy_rules.append(f"买{idx}: {name}")
-                elif k.endswith("_t"):
-                    buy_rules.append(f"买{idx}阈值: {float(v):.3f}")
-                elif k.endswith("_frac"):
-                    buy_rules.append(f"买{idx}仓位: {float(v)*100:.0f}%")
-            elif k.startswith("sell_"):
-                idx = k.split("_")[1]
-                if k.endswith("_signal"):
-                    name = SIGNAL_NAMES.get(str(v), str(v))
-                    sell_rules.append(f"卖{idx}: {name}")
-                elif k.endswith("_t"):
-                    sell_rules.append(f"卖{idx}阈值: {float(v):.3f}")
-                elif k.endswith("_frac"):
-                    sell_rules.append(f"卖{idx}仓位: {float(v)*100:.0f}%")
+    if full_report:
+        lines.append("")
+        lines.append("<b>━━━ 日回报测 (近9月验证期) ━━━</b>")
+        rc = "#27ae60" if full_report["total_return"] >= 0 else "#c0392b"
+        lines.append(
+            f'收益 <span style="color:{rc}">{full_report["total_return"]:+.1f}%</span>'
+            f' (超额 {full_report.get("excess_return") or full_report["total_return"]:+.1f}%)'
+            f'  回撤 {full_report["dd"]:.1f}%'
+            f'  夏普 {full_report["sharpe"]:.2f}'
+            f'  交易 {full_report["trades"]}笔'
+            f'  仓位 {full_report["position"]:.0f}%'
+        )
 
-        if buy_rules:
-            lines.append(f"  买入: {'  '.join(buy_rules)}")
-        if sell_rules:
-            lines.append(f"  卖出: {'  '.join(sell_rules)}")
-
-        # 策略人话描述
-        desc = getattr(t, "strategy_description", "")
-        if desc:
-            lines.append(f"  <pre>{desc}</pre>")
+        # 参数摘要
+        params = full_report.get("params", {})
+        if params:
+            pi = []
+            for lbl in ("adx_pct", "rsi_pct", "deviation_pct", "vol_ratio_pct", "ma200_dev_pct"):
+                tau = params.get(f"{lbl}_tau")
+                w = params.get(f"{lbl}_w")
+                if tau is not None and w is not None:
+                    pi.append(f"τ={tau:.2f} w={w:.2f}")
+            lines.append(f"  信号: {' | '.join(pi)}")
+            lines.append(
+                f"  买阈 τ_buy={params.get('tau_buy','?'):.2f}"
+                f"  卖阈 τ_sell={params.get('tau_sell','?'):.2f}"
+                f"  仓位比 {params.get('pos_frac','?'):.2f}"
+            )
 
         # 季末持仓
-        qh = getattr(t, "quarterly_holdings", None) or []
+        qh = full_report.get("quarterly", [])
         if qh:
-            lines.append("  <b>季末持仓明细:</b>")
-            lines.append("  <table style='font-size:12px;border-collapse:collapse'>"
-                         "<tr><th>Q</th><th>代码</th><th>持股</th>"
-                         "<th>成本</th><th>现价</th><th>市值</th>"
-                         "<th>盈亏</th><th>盈亏%</th></tr>")
-            for q in qh:
-                qn = q["quarter"]
-                qd = q["day"]
-                qp = q["pos_pct"]
-                qnv = q["nav"]
-                qcs = q["cash"]
-                qpos = q.get("positions", [])
-                if not qpos:
-                    lines.append(f"<tr><td>Q{qn}</td><td colspan=7>空仓 (nav={qnv:.0f})</td></tr>")
-                for pos in qpos:
-                    code = pos["code"]
-                    sh = pos["shares"]
-                    cb = pos["cost"]
-                    px = pos["price"]
-                    vl = pos["value"]
-                    pn = pos["pnl"]
-                    pp = pos["pnl_pct"]
-                    color = "#27ae60" if pn >= 0 else "#c0392b"
-                    lines.append(
-                        f"<tr><td>Q{qn}</td><td>{code}</td><td>{sh:.0f}股</td>"
-                        f"<td>{cb:.2f}</td><td>{px:.2f}</td><td>{vl:.0f}</td>"
-                        f"<td style='color:{color}'>{pn:+.0f}</td><td style='color:{color}'>{pp:+.1f}%</td></tr>"
-                    )
-                if qpos:
-                    lines.append(f"<tr><td>Q{qn}</td><td colspan=4>现金: {qcs:.0f}</td>"
-                                 f"<td colspan=3>仓位: {qp:.0f}%</td></tr>")
+            last_q = qh[-1]
+            qpos = last_q.get("positions", [])
+            if qpos:
+                pos_str = ", ".join(
+                    f"{p['code']} {p['shares']:.0f}股@{p['price']:.2f}"
+                    f"({p.get('pnl_pct', 0):+.0f}%)"
+                    for p in qpos[:8]
+                )
+                lines.append(
+                    f"  期末持仓(Q{last_q.get('quarter','?')} "
+                    f"仓位{last_q.get('pos_pct',0):.0f}%): {pos_str}"
+                )
+
+        # 参数敏感性
+        sens = full_report.get("sensitivity")
+        if sens:
+            lines.append("")
+            lines.append("<b>━━━ 参数敏感性 (10版随机扰动) ━━━</b>")
+            lines.append(
+                f'  最优版 {sens["base_ret"]:+.1f}%'
+                f' → 最差版 {sens["worst_ret"]:+.1f}%'
+                f' (降幅 {sens["drop_pct"]:.1f}pp)'
+            )
+            lines.append(
+                f'  10版范围 [{sens["ret_range"][0]:+.1f}%, '
+                f'{sens["ret_range"][1]:+.1f}%]'
+            )
+
+        # 跨天波动率
+        vol = full_report.get("volatility")
+        if vol:
+            lines.append("")
+            lines.append("<b>━━━ 跨天波动率 (近5交易日) ━━━</b>")
+            lines.append(
+                f'  最低 {vol["min"]:+.1f}% / 最高 {vol["max"]:+.1f}%'
+                f'  (波幅 {vol["range"]:.1f}pp)'
+            )
+
+        # 周K OHLC 表
+        ohlc = full_report.get("weekly_ohlc")
+        if ohlc:
+            lines.append("")
+            lines.append("<b>━━━ 周K OHLC (近12周) ━━━</b>")
+            lines.append(
+                '<table style="font-size:11px;border-collapse:collapse">'
+                '<tr style="background:#34495e;color:#fff">'
+                '<th>周</th><th>开</th><th>高</th><th>低</th><th>收</th></tr>'
+            )
+            for k in range(max(0, len(ohlc["labels"]) - 12), len(ohlc["labels"])):
+                lines.append(
+                    f'<tr><td>{ohlc["labels"][k]}</td>'
+                    f'<td>{ohlc["open"][k]:.0f}</td>'
+                    f'<td>{ohlc["high"][k]:.0f}</td>'
+                    f'<td>{ohlc["low"][k]:.0f}</td>'
+                    f'<td>{ohlc["close"][k]:.0f}</td></tr>'
+                )
             lines.append("</table>")
 
-        lines.append("")
-
-    rid = getattr(report, "report_id", "")
-    lines.append(f"完整结果: data/optimizer/{rid}_strategies.yaml")
     return "\n".join(lines)
 
 
@@ -3072,11 +3095,12 @@ class EmailNotifier(BaseNotifier):
             logger.error(f"发送部署通知邮件失败: {msg}")
             return False, msg
 
-    def send_optimizer_notification(self, report, group_name: str = "") -> None:
-        """发送优化结果邮件。"""
-        body = build_optimizer_summary(report, group_name)
+    def send_optimizer_notification(self, report, group_name: str = "",
+                                     full_report: dict | None = None) -> None:
+        """发送优化结果邮件。含完整回测报告（日回报测+敏感性+波动率）。"""
+        body = build_optimizer_summary(report, group_name, full_report)
         subject = f"策略优化完成 · {group_name}" if group_name else "策略优化完成"
-        self._send_email(subject, f"<pre>{body}</pre>")
+        self._send_email(subject, body)
 
     def _save_email_copy(self, subject, body):
         """

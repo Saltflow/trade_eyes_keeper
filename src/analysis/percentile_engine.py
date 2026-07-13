@@ -434,3 +434,65 @@ class PercentileSignalFn(SignalFn):
                 "drop_pct": round(base_ret - tr.total_return_pct, 2),
             })
         return results
+
+    def random_perturbations(
+        self, params, n: int = 10, rng=None,
+    ) -> list:
+        """生成 n 组随机扰动的参数副本（每维随机偏移 ±1~3 级别）。
+
+        用于参数敏感性评估：最差表现衡量过拟合风险。
+        """
+        import random as _random
+        r = rng or _random.Random()
+        vals = getattr(params, "values", params) if not isinstance(params, dict) else params
+        copies: list[dict] = []
+        max_levels = {d.name: d.levels - 1 for d in self.param_space.dims}
+        for _ in range(n):
+            c = dict(vals)
+            for name, max_lvl in max_levels.items():
+                delta = r.randint(-3, 3)
+                if delta == 0:
+                    continue
+                cur = c.get(name, 0)
+                c[name] = max(0, min(cur + delta, max_lvl))
+            copies.append(c)
+        return copies
+
+    def cross_day_volatility(
+        self, params, buy_scores, sell_scores, price,
+        lookback_days: int = 5,
+        initial_cash=100000.0, monthly_limit=15000.0,
+    ) -> dict:
+        """跨天波动率：过去 N 天每前移 1 天跑一遍回测，记录收益波动。
+
+        Returns:
+            {"returns": [r_N, r_{N-1}, ...], "min": -3.5, "max": 5.2, "range": 8.7}
+        """
+        import numpy as _np
+        from .signal_functions import simulate_portfolio
+        vals = getattr(params, "values", params) if not isinstance(params, dict) else params
+        ex = self.execution_params(vals)
+        T = buy_scores.shape[0]
+        returns = []
+        for offset in range(lookback_days):
+            cutoff = T - offset
+            if cutoff < 100:  # 数据不足
+                break
+            bs = buy_scores[:cutoff]
+            ss = sell_scores[:cutoff]
+            pr = price[:cutoff]
+            tr = simulate_portfolio(
+                bs, ss, pr, initial_cash,
+                ex["buy_threshold"], ex["sell_threshold"], ex["position_frac"],
+                100, monthly_limit, 0.005, [""] * cutoff,
+                [f"S{i}" for i in range(buy_scores.shape[1])],
+            )
+            returns.append(round(tr.total_return_pct, 2))
+        if not returns:
+            return {"returns": [], "min": 0.0, "max": 0.0, "range": 0.0}
+        return {
+            "returns": returns,
+            "min": round(min(returns), 2),
+            "max": round(max(returns), 2),
+            "range": round(max(returns) - min(returns), 2),
+        }

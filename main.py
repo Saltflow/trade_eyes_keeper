@@ -741,30 +741,48 @@ def run_optimization_v2(config):
 
         # ── 发送优化结果通知（飞书 + Telegram + 邮件）──
         notifier = NotifierManager(config)
-        notifier.send_optimizer_notification(report, group_name)
 
-        # ── 搜参完自动跑回测并打印 ──
+        # ── 搜参完自动跑完整回测报告（含敏感性和波动率）──
+        full_report = None
         try:
-            _print_daily_backtest(config, group_name, codes, signal_fn)
+            full_report = _build_optimizer_report(config, group_name, codes, signal_fn)
         except Exception as e:
-            logger.warning(f"日回报测打印失败 (非致命): {e}")
+            logger.warning(f"回测报告生成失败 (非致命): {e}")
+
+        notifier.send_optimizer_notification(report, group_name, full_report)
 
     logger.info("策略搜索 V2 完成")
 
 
-def _print_daily_backtest(config, group_name, codes, signal_fn):
-    """搜参完成后跑一次日回报测并打印关键指标。"""
+def _build_optimizer_report(config, group_name, codes, signal_fn):
+    """搜参完成后构建完整回测报告 dict。
+
+    包含：日回报测核心指标 | 季末持仓 | 参数敏感性(10版最差) | 跨天波动率。
+
+    Returns:
+        {
+            "group": "a_share", "label": "A股",
+            "yaml_name": "...", "engine": "percentile",
+            "total_return": 12.3, "excess_return": 4.6, "dd": -6.0,
+            "sharpe": 0.73, "trades": 68, "position": 33,
+            "sensitivity": { "worst_ret": 2.1, "drop_pct":", "ret_range": [1.2, 12.3] },
+            "volatility": { "range": 8.7, "ret_min": -3.5, "ret_max": 5.2 },
+            "quarterly": [...],
+            "nav_series": [...], "nav_dates": [...],
+            "params": {"tau_buy": 0.9, ...},
+        }
+        失败返回 None。
+    """
     import numpy as np
+    import yaml
+    from pathlib import Path
     from src.analysis.portfolio_strategy import (
-        PortfolioOptimizer, PortfolioEvaluator, MONTHLY_BUY_LIMIT,
+        PortfolioEvaluator, PERCENTILE_WARMUP,
         _detect_fine_group,
     )
     from src.analysis.signal_scanner import _params_from_yaml
-    from src.analysis.indicator_library import compute_all
     from src.analysis.rule_engine import Rule
-    from src.notification.email_notifier import _build_signal_label_map
-    import yaml
-    from pathlib import Path
+    from src.analysis.execution_config import get_execution_config
 
     # 读最新 YAML
     opt_dir = Path("data/optimizer")
@@ -773,57 +791,178 @@ def _print_daily_backtest(config, group_name, codes, signal_fn):
         key=lambda p: p.stat().st_mtime, reverse=True,
     )
     if not files:
-        print(f"\n  [{group_name}] 日回报测: 无 YAML")
-        return
+        return None
     with open(files[0], "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
     top = (data.get("strategies") or [{}])[0]
     params_dict = top.get("params", {})
     engine_name = params_dict.get("_engine", "global")
+    if engine_name not in ("percentile", "pct", "new"):
+        logger.info(f"[{group_name}] 非分位引擎，跳过完整报告")
+        return None
 
-    # 获取数据
+    # 获取数据（用 441 天 = 252 预热 + 189 交易 ≈ 9 个月）
     from src.data.data_source import DataSource
     ds = DataSource(config)
     stocks_data = {}
     for code in codes:
-        df = ds.fetch_stock_data(code, days=730)
+        df = ds.fetch_stock_data(code, days=441)
         if df is not None and not df.empty:
             stocks_data[str(code)] = df
     if not stocks_data:
-        print(f"\n  [{group_name}] 日回报测: 无可用数据")
-        return
+        return None
 
-    # 分位引擎: 走评分流水线
-    if engine_name in ("percentile", "pct", "new"):
-        from src.analysis.percentile_engine import PercentileSignalFn
-        sfn = PercentileSignalFn()
-        ep = _params_from_yaml(params_dict)
-        rules_raw = top.get("rules", [])
-        rules = [Rule.from_dict(r) for r in rules_raw] if rules_raw else None
-        fine_group = _detect_fine_group(str(codes[0]))
-        eval_group = {"a_share": "a_share", "hk": "non_a_share",
-                      "us": "non_a_share"}.get(fine_group, "non_a_share")
-        ev = PortfolioEvaluator(stocks_data, eval_group, rules=rules,
-                                signal_fn=sfn)
-        ev._engine_params = ep
-        res = ev.evaluate(list(stocks_data.keys()))
-        print(f"\n  [{group_name}] 日回报测 (分位引擎, 月限额{MONTHLY_BUY_LIMIT}):")
-        print(f"    收益 {res.total_return:+.1f}%  回撤 {res.max_drawdown:.1f}%  "
-              f"夏普 {res.sharpe_ratio:.2f}  交易 {res.trade_count}  仓位 {res.expected_position:.0f}%")
-    else:
-        # 全局引擎: 走 legacy run_fixed
-        from src.analysis.rule_engine import Rule
-        rules_raw = top.get("rules", [])
-        custom_rules = [Rule.from_dict(r) for r in rules_raw] if rules_raw else None
-        opt = PortfolioOptimizer(config, custom_rules=custom_rules)
-        res_map = opt.run_fixed(groups=[group_name])
-        if group_name in res_map:
-            r = (res_map[group_name].get("top1")
-                 or res_map[group_name].get("max_return"))
-            if r:
-                print(f"\n  [{group_name}] 日回报测 (全局引擎, 月限额{MONTHLY_BUY_LIMIT}):")
-                print(f"    收益 {r.total_return:+.1f}%  回撤 {r.max_drawdown:.1f}%  "
-                      f"夏普 {r.sharpe_ratio:.2f}  交易 {r.trade_count}  仓位 {r.expected_position:.0f}%")
+    from src.analysis.percentile_engine import PercentileSignalFn
+    sfn = PercentileSignalFn()
+    ep = _params_from_yaml(params_dict)
+    rules_raw = top.get("rules", [])
+    rules = [Rule.from_dict(r) for r in rules_raw] if rules_raw else None
+    fine_group = _detect_fine_group(str(codes[0]))
+    eval_group = {"a_share": "a_share", "hk": "non_a_share",
+                  "us": "non_a_share"}.get(fine_group, "non_a_share")
+    exec_cfg = get_execution_config()
+    ev = PortfolioEvaluator(stocks_data, eval_group, rules=rules,
+                            signal_fn=sfn)
+    ev._engine_params = ep
+    res = ev.evaluate(list(stocks_data.keys()))
+
+    # 日回报测核心指标
+    label_map = {"a_share": "A股", "hk": "港股", "us": "美股"}
+    report = {
+        "group": group_name,
+        "label": label_map.get(group_name, group_name),
+        "yaml_name": files[0].name,
+        "engine": engine_name,
+        "total_return": round(res.total_return, 2),
+        "dd": round(res.max_drawdown, 2),
+        "sharpe": round(res.sharpe_ratio, 2),
+        "trades": res.trade_count,
+        "position": round(res.expected_position, 0),
+        "quarterly": getattr(res, "quarterly_holdings", []) or [],
+        "nav_series": getattr(res, "nav_series", []) or [],
+        "nav_dates": getattr(res, "nav_dates", []) or [],
+        "params": {},
+    }
+    # 解码参数为人读值
+    from src.analysis.percentile_engine import _decode_tau, _decode_w, _decode_pos_frac
+    vals = getattr(ep, "values", ep)
+    for lbl in ("adx_pct", "rsi_pct", "deviation_pct", "vol_ratio_pct", "ma200_dev_pct"):
+        report["params"][f"{lbl}_tau"] = round(_decode_tau(vals.get(f"{lbl}_tau", 5)), 2)
+        report["params"][f"{lbl}_w"] = round(_decode_w(vals.get(f"{lbl}_w", 2)), 2)
+    report["params"]["tau_buy"] = round(_decode_tau(vals.get("buy_score_thresh", 5)), 2)
+    report["params"]["tau_sell"] = round(_decode_tau(vals.get("sell_score_thresh", 5)), 2)
+    report["params"]["pos_frac"] = round(_decode_pos_frac(vals.get("position_frac", 2)), 2)
+
+    # 超额：用 YAML test_return 作为搜参评估值
+    report["excess_return"] = top.get("test_return")
+
+    # ── 参数敏感性：随机扰动 10 版，限测试期数据 ──
+    try:
+        per_code_bs, per_code_ss, per_code_pr = {}, {}, {}
+        from src.analysis.indicator_library import compute_all
+        computed = compute_all(stocks_data)
+        all_dates = set()
+        for c in stocks_data:
+            df = computed.get(c, stocks_data[c]).copy()
+            df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+            df = df.sort_values("date").reset_index(drop=True)
+            nb, ns = sfn.score_timeseries(ep, df)
+            close = df["close"].astype(float).values
+            per_code_bs[c] = nb
+            per_code_ss[c] = ns
+            per_code_pr[c] = close
+            all_dates.update(df["date"])
+        dates_sorted = sorted(all_dates)
+        didx = {d: i for i, d in enumerate(dates_sorted)}
+        T = len(dates_sorted)
+        N = len(stocks_data)
+        buy_scores = np.zeros((T, N), dtype=np.float64)
+        sell_scores = np.zeros((T, N), dtype=np.float64)
+        price = np.full((T, N), np.nan)
+        for j, c in enumerate(stocks_data):
+            b_arr = per_code_bs.get(c, np.zeros(0))
+            s_arr = per_code_ss.get(c, np.zeros(0))
+            p_arr = per_code_pr.get(c, np.zeros(0))
+            for k, d in enumerate(dates_sorted[:len(b_arr)]):
+                if k < len(b_arr):
+                    ti = didx.get(d, -1)
+                    if ti >= 0 and ti < T:
+                        buy_scores[ti, j] = b_arr[k]
+                        sell_scores[ti, j] = s_arr[k]
+                        price[ti, j] = p_arr[k]
+        # 前向填充
+        for j in range(N):
+            last = np.nan
+            for ti in range(T):
+                if np.isnan(price[ti, j]):
+                    price[ti, j] = last
+                else:
+                    last = price[ti, j]
+        price = np.nan_to_num(price, nan=0.0)
+        # 限制测试期：只取预热期之后的数据
+        warmup = PERCENTILE_WARMUP
+        if T > warmup:
+            buy_scores = buy_scores[warmup:]
+            sell_scores = sell_scores[warmup:]
+            price = price[warmup:]
+        copies = sfn.random_perturbations(ep, n=10)
+        pert_rets = []
+        from src.analysis.signal_functions import simulate_portfolio
+        from src.analysis.signal_functions import Params as _Params
+        base_ex = sfn.execution_params(ep)
+        base_tr = simulate_portfolio(
+            buy_scores, sell_scores, price, exec_cfg.initial_capital,
+            base_ex["buy_threshold"], base_ex["sell_threshold"],
+            base_ex["position_frac"], 100, exec_cfg.monthly_buy_limit,
+            exec_cfg.commission_rate,
+            [""] * buy_scores.shape[0], [f"S{i}" for i in range(N)],
+        )
+        base_ret = base_tr.total_return_pct
+        for cp in copies:
+            cp_params = _Params(values=cp, _engine="percentile")
+            cp_ex = sfn.execution_params(cp_params)
+            tr = simulate_portfolio(
+                buy_scores, sell_scores, price, exec_cfg.initial_capital,
+                cp_ex["buy_threshold"], cp_ex["sell_threshold"],
+                cp_ex["position_frac"], 100, exec_cfg.monthly_buy_limit,
+                exec_cfg.commission_rate,
+                [""] * buy_scores.shape[0], [f"S{i}" for i in range(N)],
+            )
+            pert_rets.append(round(tr.total_return_pct, 2))
+        worst_ret = min(pert_rets) if pert_rets else base_ret
+        report["sensitivity"] = {
+            "worst_ret": worst_ret,
+            "drop_pct": round(base_ret - worst_ret, 2),
+            "base_ret": round(base_ret, 2),
+            "ret_range": [round(min(pert_rets), 2), round(max(pert_rets), 2)],
+        }
+    except Exception as e:
+        logger.warning(f"[{group_name}] 敏感性评估失败: {e}")
+        report["sensitivity"] = None
+
+    # ── 跨天波动率 ──
+    try:
+        vol_result = sfn.cross_day_volatility(
+            ep, buy_scores, sell_scores, price,
+            lookback_days=5,
+            initial_cash=exec_cfg.initial_capital,
+            monthly_limit=exec_cfg.monthly_buy_limit,
+        )
+        report["volatility"] = vol_result
+    except Exception as e:
+        logger.warning(f"[{group_name}] 跨天波动率失败: {e}")
+        report["volatility"] = None
+
+    # ── 周K蜡烛图 ──
+    try:
+        from src.notification.chart_generator import _build_weekly_ohlc
+        ohlc = _build_weekly_ohlc(report["nav_series"], report["nav_dates"])
+        report["weekly_ohlc"] = ohlc
+    except Exception as e:
+        logger.warning(f"[{group_name}] 周K图生成失败: {e}")
+        report["weekly_ohlc"] = None
+
+    return report
 
 
 def _send_optimizer_report_telegram(config, report):

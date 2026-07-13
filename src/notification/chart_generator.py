@@ -241,3 +241,43 @@ def generate_combined_chart(
         logger.error(f"图表生成失败: {e}")
         plt.close(fig)
         return (None, None)
+
+
+def _build_weekly_ohlc(
+    nav_series: list[float],
+    nav_dates: list[str],
+) -> dict | None:
+    """从日线 NAV 构建周K OHLC 数据（供报告展示）。
+
+    Args:
+        nav_series: 日净值序列
+        nav_dates: 对应日期字符串 (YYYY-MM-DD)
+
+    Returns:
+        {"labels": ["2026-W01",...], "open": [...], "high": [...],
+         "low": [...], "close": [...]}，数据不足时返回 None
+    """
+    if len(nav_series) < 5:
+        return None
+    try:
+        import pandas as pd
+        df = pd.DataFrame({"date": pd.to_datetime(nav_dates), "nav": nav_series})
+        df["week"] = df["date"].dt.isocalendar().apply(
+            lambda r: f"{int(r.year)}-W{int(r.week):02d}", axis=1)
+        grouped = df.groupby("week")["nav"]
+        ohlc = {
+            "labels": [],
+            "open": [], "high": [], "low": [], "close": [],
+        }
+        for week, group in grouped:
+            ohlc["labels"].append(week)
+            ohlc["open"].append(round(float(group.iloc[0]), 2))
+            ohlc["high"].append(round(float(group.max()), 2))
+            ohlc["low"].append(round(float(group.min()), 2))
+            ohlc["close"].append(round(float(group.iloc[-1]), 2))
+        if len(ohlc["labels"]) < 3:
+            return None
+        return ohlc
+    except Exception as e:
+        logger.warning(f"周K OHLC 构建失败: {e}")
+        return None
