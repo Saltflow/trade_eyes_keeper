@@ -1,7 +1,18 @@
 # 股票量化系统 - 关键设计决策文档
 
-**文档版本**: v1.19
-**最后更新**: 2026-07-12
+**文档版本**: v1.20
+**最后更新**: 2026-07-13
+
+---
+
+## 🔌 统一执行配置 (v1.20)
+
+执行参数（monthly_buy_limit / commission / lot / fx）统一从 `config/optimizer_constraints.yaml` → `execution_params` 段读取。
+禁止代码写死覆盖。
+
+- `src/analysis/execution_config.py`：`ExecutionConfig` dataclass + `get_execution_config()` 模块级单例
+- `/config set monthly_limit 20000` → 写 YAML → 自动 `reload_execution_config()` 刷新缓存
+- 搜参（`StrategyOptimizerV2`/`SignalFnSearchEngine`）和日回报测（`PortfolioEvaluator._evaluate_signal_fn`）统一读同一份配置
 **压缩目标**: ~800行，保留关键设计决策
 
 ---
