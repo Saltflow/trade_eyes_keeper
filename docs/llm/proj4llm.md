@@ -10,10 +10,48 @@
 执行参数（monthly_buy_limit / commission / lot / fx）统一从 `config/optimizer_constraints.yaml` → `execution_params` 段读取。
 禁止代码写死覆盖。
 
-- `src/analysis/execution_config.py`：`ExecutionConfig` dataclass + `get_execution_config()` 模块级单例
-- `/config set monthly_limit 20000` → 写 YAML → 自动 `reload_execution_config()` 刷新缓存
+**配置段** (`config/optimizer_constraints.yaml`):
+```yaml
+execution_params:
+  monthly_buy_limit: 15000
+  initial_capital: 100000
+  commission_rate: 0.005
+  lot_sizes: {a_share: 100, hk: 100, us: 1}
+  fx_rates: {a_share: 1.0, hk: 0.9, us: 7.0}
+```
+
+**读取模块** (`src/analysis/execution_config.py`):
+- `ExecutionConfig` dataclass
+- `get_execution_config()` 模块级单例（首次访问加载，避免重复 IO）
+- `reload_execution_config()` 强制刷新（`/config set` 后调用）
+
+**飞书交互**:
+- `/config show` 显示 `月买入额度/手续费/初始本金`
+- `/config set monthly_limit 20000` → 写 YAML → 自动刷新缓存
+- 新增可配键: `monthly_limit`, `commission`, `init_capital`
+
+**对齐范围**:
 - 搜参（`StrategyOptimizerV2`/`SignalFnSearchEngine`）和日回报测（`PortfolioEvaluator._evaluate_signal_fn`）统一读同一份配置
-**压缩目标**: ~800行，保留关键设计决策
+- 消除 `fx_rates` dict 在两处文件中的重复定义
+- 消除 `monthly_limit` 的三个不同硬编码值（15000/100000/inf）
+
+---
+
+## 📊 搜参报告升级 (v1.20)
+
+搜参完成后自动构建完整报告（替代旧版纯文字摘要），不再依赖单独 `/daily` 调用。
+
+**主函数**: `_build_optimizer_report()` 在 `main.py`，搜参后每组调用一次。
+
+**报告内容**（限近9月测试期数据）:
+1. **日回报测指标**: total_return, excess_return, max_drawdown, sharpe, avg_position
+2. **参数摘要**: 解码后的 tau/w/buy_thresh/sell_thresh/pos_frac
+3. **季末持仓**: 最后一个季度快照（代码/持股/成本/现价/盈亏）
+4. **参数敏感性**: `PercentileSignalFn.random_perturbations(n=10)` → 10版随机扰动（全参数各 ±1~3 级别），记录最差版收益和 10 版范围
+5. **跨天波动率**: `PercentileSignalFn.cross_day_volatility(lookback=5)` → 数据截止日前移 5 天各跑回测，记录收益波幅
+6. **周K OHLC 表**: `_build_weekly_ohlc()` 从日线 NAV 聚合周 OHLC
+
+**通知渠道**: `build_optimizer_summary(full_report=...)` 统一渲染为 HTML，邮件/飞书/TG 三端共用。
 
 ---
 
@@ -44,13 +82,14 @@
 1. **买入执行价 = 近 3 日收盘最高价**（v1.20 改为含滑点的 pessimistic 估价；之前是均价）
 2. **卖出执行价 = 单日收盘价**（触发日，不平滑）
 3. **同日互斥**：同一标的同日既触发买又触发卖 → 双向跳过
-4. **月度买入额度（分批注入，勿设 inf）**：日报回测 `_evaluate_signal_fn` 用 `MONTHLY_BUY_LIMIT=15000`，搜参 `SignalFnSearchEngine` 用 `100000`，与旧 global 完全一致。⚠️ **教训**：曾误将限额改为 `inf` 修「100%空仓」bug，导致首日满仓、收益虚高 5000BP+（实验证实 inf=+97% vs 15000=+10%）。空仓 bug 的正解是「买入额截断到剩余月度额度」，而非取消限额。
+4. **月度买入额度**：统一从 `execution_config.monthly_buy_limit` 读取（搜参和日回报测同一值，禁止硬编码）
 5. **允许回补**：卖出后可再买入（无 `shares==0` 永久壁垒）
-6. 手数取整 / 手续费 / 现金约束 / 评分需严格 `> 阈值`
-7. **季度持仓成本快照**：`_score_sim_core` 每季度边界快照 `q_cb`(成本基础)+`q_price`(价格)，显示层用时点值。⚠️ 勿用最终 `cost_basis[i] ÷ 季度时点 shares`（时点错配 → 假成本 0.00/295.87、假 pnl +16171%）
-8. **手续费 0.5% (v1.20)**：全系统 `COMMISSION_RATE=0.005`（0.5% 含滑点），所有路径统一（FastEvaluator/SignalFnSearchEngine/PortfolioEvaluator/RuleEngine）
-9. **港股手数 (v1.20)**：`_get_lot_size` 返回 100；日回报测路径按标的均价分界（<100→1000, ≥100→100）
-10. **汇率 (v1.20)**：固定汇率 1 USD=7 CNY，1 HKD=0.9 CNY。`_evaluate_signal_fn` 和 `SignalFnSearchEngine.evaluate_encoding` 均对价格矩阵乘以汇
+6. 手数取整 / 手续费（0.5% 含滑点）/ 现金约束 / 评分需严格 `> 阈值`
+7. **季度持仓成本快照**：`_score_sim_core` 每季度边界快照 `q_cb`(成本基础)+`q_price`(价格)
+8. **港股手数**：`_get_lot_size` 返回 100；日回报测路径按标的均价分界（<100→1000, ≥100→100）
+9. **汇率**：固定汇率从 `execution_config.fx_rates` 读取，搜参和验证路径均对价格矩阵乘汇率
+10. **分位预热**：日回报测前 `PERCENTILE_WARMUP=252` 天禁止交易
+11. **验证期限**：日回报测只用近 9 个月（`lookback_days` 默认 441 = 252 预热 + 189 交易）
 
 ### 测试矩阵（量化引擎，共 ~80 项）
 - `test_score_engine.py`（18）：决策仿真全部执行语义
