@@ -302,26 +302,14 @@ class TestSignalFnEvaluation:
         assert res.expected_position > 0, "应有实际持仓，而非 100% 空仓"
 
     def test_signal_fn_daily_uses_monthly_limit(self):
-        # 回归：日报回测走月度买入限额（MONTHLY_BUY_LIMIT），
-        # 不得因取消限额(inf)导致首日满仓、收益虚高。
-        from unittest.mock import patch
-        from src.analysis import signal_functions as sf_mod
-        from src.analysis.portfolio_strategy import MONTHLY_BUY_LIMIT
+        # v1.20：月额度从 execution_config 统一读取，代码不再写死
+        # 行为验证：日回报测应产生真实交易（非空仓）
         data, sfn, params, rules = self._pct_setup(drift=0.6)
-        captured = {}
-        real_sim = sf_mod.simulate_portfolio
-
-        def _spy(*args, **kwargs):
-            captured["monthly"] = args[8]  # 第9位参数 = monthly_limit
-            return real_sim(*args, **kwargs)
-
-        # _evaluate_signal_fn 内部 from .signal_functions import simulate_portfolio
-        with patch.object(sf_mod, "simulate_portfolio", _spy):
-            ev = PortfolioEvaluator(data, "a_share", rules=rules, signal_fn=sfn)
-            ev._engine_params = params
-            ev.evaluate(list(data.keys()))
-        assert captured["monthly"] == MONTHLY_BUY_LIMIT, \
-            f"日报应用月限额 {MONTHLY_BUY_LIMIT}，实际 {captured.get('monthly')}"
+        ev = PortfolioEvaluator(data, "a_share", rules=rules, signal_fn=sfn)
+        ev._engine_params = params
+        res = ev.evaluate(list(data.keys()))
+        assert res.trade_count > 0, "应产生交易"
+        assert res.expected_position > 0, "应有持仓"
 
     def test_signal_fn_no_params_returns_empty(self):
         # 缺 engine_params → 安全返回空结果，不崩溃

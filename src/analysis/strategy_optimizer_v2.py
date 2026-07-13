@@ -243,20 +243,22 @@ class StrategyOptimizerV2:
         )
 
         # ── 3. 快速评估器 ──
-        # A股用100股手数，非A股用1
-        lot_size = 100 if self.group == "a_share" else 1
+        from .execution_config import get_execution_config
+        exec_cfg = get_execution_config()
+        lot_size_map = exec_cfg.lot_sizes
+        lot_size = lot_size_map.get(self.group, 100)
         evaluator = FastEvaluator(
-            initial_cash=100000.0,
-            monthly_buy_limit=100000.0,
+            initial_cash=exec_cfg.initial_capital,
+            monthly_buy_limit=exec_cfg.monthly_buy_limit,
             lot_size=lot_size,
-            commission_rate=0.005,
+            commission_rate=exec_cfg.commission_rate,
         )
 
         # ── 4. 遗传搜索 ──
         # 设定汇率乘数（搜索路径用，与日报回测一致）
-        fx_rates = {"a_share": 1.0, "hk": 0.9, "us": 7.0}
+        fx_map = exec_cfg.fx_rates
         if self.engine is not None and hasattr(self.engine, "fx_rate"):
-            self.engine.fx_rate = fx_rates.get(self.group, 1.0)
+            self.engine.fx_rate = fx_map.get(self.group, 1.0)
         searcher = GeneticSearcher(self.constraints, wf_mgr, evaluator, engine=self.engine)
 
         logger.info(

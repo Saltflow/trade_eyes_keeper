@@ -103,3 +103,16 @@ discrete_search:
     bias_step: 0.3
     bias_levels: 20
     max_daily_adjust: 0.4
+# ── 执行参数（搜参/日回报测统一从此读取，禁止代码写死）──
+execution_params:
+  monthly_buy_limit: 15000
+  initial_capital: 100000
+  commission_rate: 0.005
+  lot_sizes:
+    a_share: 100
+    hk: 100
+    us: 1
+  fx_rates:
+    a_share: 1.0
+    hk: 0.9
+    us: 7.0

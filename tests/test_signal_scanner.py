@@ -359,7 +359,7 @@ class TestSignalFnDispatch:
                 "rsi_pct_w": "3", "deviation_pct_tau": "5", "deviation_pct_w": "2",
                 "vol_ratio_pct_tau": "5", "vol_ratio_pct_w": "2",
                 "ma200_dev_pct_tau": "5", "ma200_dev_pct_w": "2",
-                "buy_score_thresh": "9", "sell_score_thresh": "0",
+                "buy_score_thresh": "9", "sell_score_thresh": "0",  # 买阈高(9→0.9)不触发,卖阈低(0→0.1)
                 "position_frac": "2", "_engine": "percentile",
                 "_mode": "signal_score",
             },
@@ -370,7 +370,7 @@ class TestSignalFnDispatch:
                  "condition": "__signal_fn__"},
             ],
         }]
-        sess = self._session("600001", drift=0.8)  # 强上涨→高分位条件
+        sess = self._session("600001", drift=-2.0, n=500)  # 强跌，净分为负→触发卖
         with patch.object(scanner, "_load_strategies", return_value=strategies), \
              patch.object(scanner, "compute_consensus",
                           return_value=ConsensusReport(consensus_stocks=["600001"])), \

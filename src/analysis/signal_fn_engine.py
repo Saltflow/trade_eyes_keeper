@@ -30,13 +30,15 @@ class SignalFnSearchEngine(StrategyEngine):
     """
 
     def __init__(self, signal_fn: SignalFn, initial_cash: float = 100000.0,
-                 lot_size: int = 100, monthly_limit: float = 100000.0,
-                 commission_rate: float = 0.005):  # 0.5% 含滑点
+                 lot_size: int = 100, monthly_limit: float | None = None,
+                 commission_rate: float | None = None):
+        from .execution_config import get_execution_config
+        cfg = get_execution_config()
         self.signal_fn = signal_fn
         self.initial_cash = initial_cash
         self.lot_size = lot_size
-        self.monthly_limit = monthly_limit
-        self.commission_rate = commission_rate
+        self.monthly_limit = monthly_limit if monthly_limit is not None else cfg.monthly_buy_limit
+        self.commission_rate = commission_rate if commission_rate is not None else cfg.commission_rate
         self._rng = __import__("random").Random(42)
         self.fx_rate = 1.0  # 汇率乘数（优化器按组设定）
 

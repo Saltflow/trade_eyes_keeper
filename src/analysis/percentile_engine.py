@@ -116,7 +116,7 @@ class PercentileSignalFn(SignalFn):
             buy_scores /= total_w
             sell_scores /= total_w
 
-        return np.stack([buy_scores, sell_scores], axis=-1)
+        return np.stack([buy_scores, sell_scores], axis=-1).astype(np.float32)
 
     def to_human_readable(self, params) -> str:
         vals = getattr(params, "values", params) if not isinstance(params, dict) else params
@@ -165,10 +165,10 @@ class PercentileSignalFn(SignalFn):
         return out
 
     def score_timeseries(self, params, hist_df):
-        """整段历史的每日买/卖评分 (T,)，供日报组合回测用。
+        """整段历史的每日净买/卖评分 (T,)，供日报组合回测用。
 
-        Returns: (buy_scores, sell_scores) 各 (T,) float，已按权重归一。
-        与 evaluate() 的分位打分逻辑一致，但用 DataFrame 逐指标算滚动分位。
+        Returns: (net, -net) 各 (T,) float，已按权重归一。
+        净分 = 买分 - 卖分（[-1,1]），使买卖天然互斥。
         """
         import numpy as _np
         vals = getattr(params, "values", params) if not isinstance(params, dict) else params
@@ -196,7 +196,8 @@ class PercentileSignalFn(SignalFn):
         if total_w > 0:
             buy /= total_w
             sell /= total_w
-        return buy, sell
+        net = buy - sell  # [-1, 1]
+        return net, -net
 
     def scan_signals(self, params, today: dict, history=None) -> list[dict]:
         """用分位评分逻辑判断今日买/卖信号。
@@ -246,41 +247,86 @@ class PercentileSignalFn(SignalFn):
 
         buy_th = _decode_tau(vals.get("buy_score_thresh", 5))
         sell_th = _decode_tau(vals.get("sell_score_thresh", 5))
+        net = buy_score - sell_score  # [-1, 1]，买卖天然互斥
 
         out: list[dict] = []
-        if buy_score > buy_th and buy_hits:
+        if net > buy_th:
             out.append({
                 "side": "buy",
-                "label": f"分位评分买入 (score {buy_score:.2f}>{buy_th:.2f})",
-                "detail": " | ".join(buy_hits[:3]),
+                "label": f"分位评分买入 (net {net:.2f}>{buy_th:.2f})",
+                "detail": " | ".join(buy_hits[:3]) if buy_hits else "强看涨信号",
             })
-        if sell_score > sell_th and sell_hits:
+        elif net < -sell_th:
             out.append({
                 "side": "sell",
-                "label": f"分位评分卖出 (score {sell_score:.2f}>{sell_th:.2f})",
-                "detail": " | ".join(sell_hits[:3]),
+                "label": f"分位评分卖出 (net {net:.2f}<-{sell_th:.2f})",
+                "detail": " | ".join(sell_hits[:3]) if sell_hits else "强看跌信号",
             })
         return out
 
     @staticmethod
     def _ensure_source_columns(history):
-        """确保 history DataFrame 含 scan 所需的源列（deviation/ma200_dev 兜底计算）。"""
+        """确保 history DataFrame 含 scan/score 所需全部 5 个源列。
+
+        扫描器/日报可能传原始 OHLCV 数据，缺少 adx/rsi/vol_ratio；
+        这里兜底计算所有分位源指标。
+        """
         import pandas as _pd
         if history is None or not isinstance(history, _pd.DataFrame) or history.empty:
             return None
         if "close" not in history.columns:
             return history
-        df = history
-        need_copy = not {"deviation", "ma200_dev"}.issubset(df.columns)
-        if need_copy:
-            df = df.copy()
+        need = {"adx", "rsi", "vol_ratio", "deviation", "ma200_dev"}
+        if need.issubset(history.columns):
+            return history
+        df = history.copy()
         close = df["close"].astype(float)
+        # deviation
         if "deviation" not in df.columns:
             ma60 = close.rolling(60, min_periods=1).mean()
             df["deviation"] = (close - ma60) / ma60.replace(0, float("nan"))
+        # ma200_dev
         if "ma200_dev" not in df.columns:
             ma200 = close.rolling(200, min_periods=1).mean()
             df["ma200_dev"] = (close - ma200) / ma200.replace(0, float("nan"))
+        # rsi (14-period Wilder)
+        if "rsi" not in df.columns:
+            import numpy as _np
+            delta = close.diff()
+            gain = delta.clip(lower=0)
+            loss = (-delta).clip(lower=0)
+            avg_gain = gain.ewm(alpha=1 / 14, adjust=False).mean()
+            avg_loss = loss.ewm(alpha=1 / 14, adjust=False).mean()
+            rs = avg_gain / avg_loss.replace(0, _np.nan)
+            df["rsi"] = 100.0 - 100.0 / (1.0 + rs)
+        # adx (14-period)
+        if "adx" not in df.columns:
+            import numpy as _np
+            high = df.get("high", close).astype(float)
+            low = df.get("low", close).astype(float)
+            prev_close = close.shift(1)
+            tr1 = high - low
+            tr2 = abs(high - prev_close)
+            tr3 = abs(low - prev_close)
+            tr = _np.maximum(_np.maximum(tr1, tr2), tr3)
+            up = high.diff()
+            down = (-low).diff()
+            atr = tr.ewm(alpha=1 / 14, adjust=False).mean()
+            plus_di = 100 * (up.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean() / atr.replace(0, _np.nan))
+            minus_di = 100 * (down.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean() / atr.replace(0, _np.nan))
+            dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, _np.nan)
+            adx_series = _pd.Series(dx, index=df.index)
+            def _wilder_smooth(s, period):
+                result = s.copy()
+                for i in range(period, len(result)):
+                    result.iloc[i] = (result.iloc[i - 1] * (period - 1) + result.iloc[i]) / period
+                return result
+            df["adx"] = _wilder_smooth(adx_series, 14)
+        # vol_ratio (20-day)
+        if "vol_ratio" not in df.columns:
+            vol = df.get("volume", _pd.Series(1, index=df.index)).astype(float)
+            vol_ma = vol.rolling(20, min_periods=1).mean()
+            df["vol_ratio"] = vol / vol_ma.replace(0, float("nan"))
         return df
 
     def describe_rules(self, params) -> dict:

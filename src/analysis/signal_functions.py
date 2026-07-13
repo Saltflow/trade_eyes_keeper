@@ -294,11 +294,11 @@ def _score_sim_core(
             q_nav[q_count] = nav
             q_count += 1
 
-        # 买入：3日收盘均价执行；同日既触发买又触发卖 → 跳过（同日互斥）
+        # 买入：3日收盘最高价执行
         for i in range(N):
             buy_sig = buy_scores[t, i] > buy_threshold
             sell_sig = sell_scores[t, i] > sell_threshold
-            if buy_sig and not sell_sig:
+            if buy_sig and not sell_sig:  # 安全网：净分天然互斥，防御非净分输入
                 remaining = monthly_limit - month_spent
                 if remaining <= 0:
                     break
@@ -330,7 +330,7 @@ def _score_sim_core(
                     month_spent += cost + fee
                     total_trades += 1
 
-        # 卖出：单日收盘价执行；同日既买又卖 → 跳过（同日互斥）
+        # 卖出：单日收盘价执行
         for i in range(N):
             buy_sig = buy_scores[t, i] > buy_threshold
             sell_sig = sell_scores[t, i] > sell_threshold

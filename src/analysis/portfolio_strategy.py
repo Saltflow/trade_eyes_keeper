@@ -26,18 +26,20 @@ logger = logging.getLogger(__name__)
 # ── 策略参数 ──
 BUY_THRESHOLDS = [-0.05, -0.10]  # -5%, -10%
 SELL_THRESHOLDS = [0.05, 0.10, 0.15]  # +5%, +10%, +15%
-MAX_BUY_PER_TRADE = 5000.0  # 每笔买入上限(元)
-MAX_SELL_PER_TRADE = 10000.0  # 每笔卖出上限(元)
-MIN_SELL_PER_TRADE = 2500.0  # 每笔卖出下限(元)
-COMMISSION_RATE = 0.005  # 手续费率 (0.5%, 含滑点)
-MONTHLY_BUY_LIMIT = 15000.0  # 组合月买入限额
-MONTHLY_SELL_LIMIT = 15000.0  # 组合月卖出限额
-INITIAL_CASH_PER_STOCK = 10000.0  # 每只股票初始资金（兼容旧调用）
-TOTAL_CAPITAL = 100000.0  # 每组总资金池（A股10万 / 非A股10万）
-RISK_FREE_A = 0.02  # A股无风险利率
-RISK_FREE_NON_A = 0.045  # 非A股无风险利率
-MIN_TRADING_DAYS = 400  # 最少交易日数（≈2年）
-MIN_EVAL_DAYS = 60      # 日报/验证期评估最低门槛（够算MA60+指标+告警）
+MAX_BUY_PER_TRADE = 5000.0
+MAX_SELL_PER_TRADE = 10000.0
+MIN_SELL_PER_TRADE = 2500.0
+# ── 以下常量改为从 execution_config 模块读取；此处保留为模块级回退默认值 ──
+COMMISSION_RATE = 0.005
+MONTHLY_BUY_LIMIT = 15000.0
+MONTHLY_SELL_LIMIT = 15000.0
+INITIAL_CASH_PER_STOCK = 10000.0
+TOTAL_CAPITAL = 100000.0
+RISK_FREE_A = 0.02
+RISK_FREE_NON_A = 0.045
+MIN_TRADING_DAYS = 400
+MIN_EVAL_DAYS = 60
+PERCENTILE_WARMUP = 252
 
 
 # ── 数据模型 ──
@@ -612,24 +614,27 @@ class PortfolioEvaluator:
                     last = price[ti, j]
         price = np.nan_to_num(price, nan=0.0)
 
+        # 预热期：前 PERCENTILE_WARMUP 天禁止交易（分位排名需要252日历史）
+        warmup = PERCENTILE_WARMUP
+        if T > warmup:
+            buy_scores[:warmup, :] = 0.0
+            sell_scores[:warmup, :] = 0.0
+
         exec_p = self.signal_fn.execution_params(params)
-        monthly = MONTHLY_BUY_LIMIT
+        # 读取统一执行配置
+        from .execution_config import get_execution_config
+        exec_cfg = get_execution_config()
+        monthly = exec_cfg.monthly_buy_limit
+        fx_map = exec_cfg.fx_rates
+        lot_map = exec_cfg.lot_sizes
+        commission = exec_cfg.commission_rate
+
         # 手数 + 汇率：按标的细分组决定
         from .portfolio_strategy import _detect_fine_group
         fine_groups = {c: _detect_fine_group(str(c)) for c in active_codes}
-        # 汇率乘数（固定：1 USD=7 CNY, 1 HKD=0.9 CNY, A股=1）
-        fx_map = {"a_share": 1.0, "hk": 0.9, "us": 7.0}
-        # 取主力组别的汇率（各组标的池独立，同一 group 内汇率一致）
         main_fg = max(set(fine_groups.values()), key=lambda g: sum(1 for v in fine_groups.values() if v == g))
         fx = fx_map.get(main_fg, 1.0)
-        # 手数：A股100；港股按均价分界（<100→1000股，≥100→100股）；美股1
-        if main_fg == "a_share":
-            lot = 100
-        elif main_fg == "hk":
-            avg_close = float(np.mean(price[-1][price[-1] > 0])) if np.any(price[-1] > 0) else 100.0
-            lot = 1000 if avg_close < 100 else 100
-        else:
-            lot = 1
+        lot = lot_map.get(main_fg, 100)
         price = price * fx  # 汇率折算为 CNY 等价
 
         trace = simulate_portfolio(
@@ -1238,7 +1243,7 @@ class PortfolioOptimizer:
 
         # 从配置加载策略参数
         ps_config = self.config.get("portfolio_strategy", {})
-        lookback_days = ps_config.get("lookback_days", 730)
+        lookback_days = ps_config.get("lookback_days", 441)   # 252预热+189验证≈9个月
 
         # 加载自定义规则：构造参数优先 > config 配置
         custom_rules = self.custom_rules
@@ -1320,7 +1325,7 @@ class PortfolioOptimizer:
 
         target_groups = groups or ["a_share", "hk", "us"]
         ps_config = self.config.get("portfolio_strategy", {})
-        lookback_days = ps_config.get("lookback_days", 730)
+        lookback_days = ps_config.get("lookback_days", 441)   # 252预热+189验证≈9个月
 
         custom_rules = self.custom_rules
         if custom_rules is None:

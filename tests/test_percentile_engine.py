@@ -105,9 +105,9 @@ class TestScoreTimeseries:
         df = _mk_hist()
         buy, sell = fn.score_timeseries(Params(values=_pct_params()), df)
         assert len(buy) == len(df) == len(sell)
-        # 归一分数应落在 [0,1]
-        assert buy.max() <= 1.0 + 1e-9 and buy.min() >= -1e-9
-        assert sell.max() <= 1.0 + 1e-9
+        # 净分 ∈ [-1,1]，sell = -net（天然互斥）
+        assert buy.max() <= 1.0 + 1e-9 and buy.min() >= -1.0 - 1e-9
+        assert np.allclose(sell, -buy)
 
     def test_empty_history(self):
         import pandas as pd
@@ -126,8 +126,9 @@ class TestScoreTimeseries:
                         vol_ratio_pct_w=0, ma200_dev_pct_w=0)
         b, s = PercentileSignalFn().score_timeseries(
             Params(values=p), _mk_hist())
-        # 全部最小权重 → 归一后分数仍在 [0,1] 有效
-        assert b.max() <= 1.0 + 1e-9 and b.min() >= -1e-9
+        # 净分 ∈ [-1,1]（买分-卖分），sell=-net 天然互斥
+        assert b.max() <= 1.0 + 1e-9 and b.min() >= -1.0 - 1e-9
+        assert np.allclose(s, -b)
 
 
 class TestScanSignals:

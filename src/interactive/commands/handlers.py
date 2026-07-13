@@ -577,6 +577,10 @@ _CONFIG_HELP = {
     "frac_levels": ("frac_levels", "买入比例档位 (Fixed-Frac)", "discrete_search", None, None),
     "num_buy": ("num_buy_rules", "买入规则槽位数", "discrete_search", 1, 10),
     "num_sell": ("num_sell_rules", "卖出规则槽位数", "discrete_search", 1, 5),
+    # 执行参数（统一月额度/手续费/本金）
+    "monthly_limit": ("monthly_buy_limit", "月买入额度", "execution_params", 1000, 200000),
+    "commission": ("commission_rate", "手续费率", "execution_params", 0.001, 0.02),
+    "init_capital": ("initial_capital", "初始本金", "execution_params", 10000, 1000000),
 }
 
 
@@ -655,7 +659,15 @@ def handle_config(action: str, key: str, value: str) -> str:
             cfg.setdefault("walk_forward", {})[field] = val
         elif section == "discrete_search":
             cfg.setdefault("discrete_search", {})[field] = val
+        elif section == "execution_params":
+            cfg.setdefault("execution_params", {})[field] = val
         _save_opt_config(cfg)
+        # 刷新执行配置缓存（search/daily 两路径生效）
+        try:
+            from src.analysis.execution_config import reload_execution_config
+            reload_execution_config()
+        except Exception:
+            pass
         return f"✅ {_CONFIG_HELP[key][1]}: {value}"
 
     # show
@@ -680,13 +692,17 @@ def handle_config(action: str, key: str, value: str) -> str:
             val = wf.get(field)
         elif section == "discrete_search":
             val = ds.get(field)
+        elif section == "execution_params":
+            val = cfg.get("execution_params", {}).get(field)
         return f"<b>{label_f}</b>: {val}"
 
+    ep = cfg.get("execution_params", {})
     lines = [
         f"<b>优化器配置</b> (模式: {label})",
         f"  数据年: {wf.get('data_years', 5)}",
         f"  最低仓位%: {hc.get('min_avg_position_pct', 5)}  最大回撤%: {hc.get('max_drawdown_pct', -40)}",
         f"  月交易上限: {hc.get('max_trades_per_month', 100)}",
+        f"  月买入额度: {ep.get('monthly_buy_limit', 15000):.0f}  手续费: {ep.get('commission_rate', 0.005):.3f}",
     ]
     if mode == "position_target":
         lines.append(f"  日调仓上限: {pm.get('max_daily_adjust', 0.10):.0%}")
