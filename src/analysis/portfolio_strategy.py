@@ -611,7 +611,7 @@ class PortfolioEvaluator:
 
         exec_p = self.signal_fn.execution_params(params)
         lot = 100 if self.group == "a_share" else 1
-        monthly = float("inf")  # 评分引擎不设人为月额度上限
+        monthly = MONTHLY_BUY_LIMIT  # 与旧 global 日报一致（分批注入，防满仓虚高）
 
         trace = simulate_portfolio(
             buy_scores, sell_scores, price,

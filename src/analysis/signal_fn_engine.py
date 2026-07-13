@@ -30,7 +30,7 @@ class SignalFnSearchEngine(StrategyEngine):
     """
 
     def __init__(self, signal_fn: SignalFn, initial_cash: float = 100000.0,
-                 lot_size: int = 100, monthly_limit: float = float("inf"),
+                 lot_size: int = 100, monthly_limit: float = 100000.0,
                  commission_rate: float = 0.002):
         self.signal_fn = signal_fn
         self.initial_cash = initial_cash
@@ -69,7 +69,7 @@ class SignalFnSearchEngine(StrategyEngine):
 
         lot = getattr(evaluator, "lot_size", self.lot_size)
         init_cash = getattr(evaluator, "initial_cash", self.initial_cash)
-        monthly = self.monthly_limit  # 评分引擎不设人为月额度上限（默认 inf）
+        monthly = self.monthly_limit  # 搜参月额度（默认 100000，与旧 global 搜参一致）
         comm = getattr(evaluator, "commission_rate", self.commission_rate)
 
         rf_rate = getattr(constraints, "risk_free_rate", 0.02)
