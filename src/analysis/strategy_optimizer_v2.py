@@ -393,6 +393,7 @@ class StrategyOptimizerV2:
             avg_test_ret = np.mean([ws.test_excess_return for ws in rank_ws])
             avg_dd = np.mean([ws.max_drawdown_pct for ws in rank_ws])
             avg_sharpe = np.mean([s.sharpe_ratio for s in rank_ws])
+            avg_strat_ret = np.mean([ws.strategy_return for ws in rank_ws])
             total_trades = sum(ws.total_trades for ws in all_ws)
 
             # 收集基准收益 + 期末持仓（取最后窗口的数据）
@@ -550,7 +551,7 @@ class StrategyOptimizerV2:
                 sharpe=round(avg_sharpe, 4),
                 trade_count=total_trades,
                 benchmark_returns=bench_info,
-                strategy_return=round(strat_ret, 2),
+                strategy_return=round(avg_strat_ret, 2),  # 验证期原始涨幅(非超额)均值
                 final_position_pct=final_pos,
                 final_holdings=final_holdings,
                 final_cash=final_cash_val,
