@@ -668,6 +668,11 @@ def run_optimization_v2(config):
     # V2 需要 3年数据 (36个月 Walk-Forward)
     lookback = config.get("portfolio_strategy", {}).get("lookback_days", 1095)
 
+    # ── 搜参心跳 ──
+    from threading import Event
+    heartbeat_stop = Event()
+    _start_heartbeat(config, heartbeat_stop)
+
     for group_name, codes in [("a_share", a_codes), ("hk", hk_codes), ("us", us_codes)]:
         if not codes:
             logger.info("跳过 %s: 无标的", group_name)
@@ -751,6 +756,7 @@ def run_optimization_v2(config):
 
         notifier.send_optimizer_notification(report, group_name, full_report)
 
+    heartbeat_stop.set()
     logger.info("策略搜索 V2 完成")
 
 
@@ -1089,7 +1095,107 @@ def main():
             config, task_function=run_daily_task, brief_function=run_brief_report
         )
         scheduler.start()
+        # ── 服务重启通知 ──
+        _send_restart_notification(config)
 
 
 if __name__ == "__main__":
     main()
+
+
+def _start_heartbeat(config, stop_event):
+    """搜参过程每5分钟飞书心跳通知。"""
+    import json
+    import os
+    import threading
+    import time
+
+    import requests
+
+    webhook = os.getenv("FEISHU_WEBHOOK_URL", "")
+    if not webhook:
+        fc = config.get("notification", {}).get("feishu", {})
+        webhook = fc.get("webhook_url", "")
+    if not webhook:
+        return
+
+    def _beat():
+        start = time.time()
+        count = 0
+        while not stop_event.is_set():
+            time.sleep(300)  # 5 分钟
+            if stop_event.is_set():
+                break
+            count += 1
+            elapsed = int(time.time() - start)
+            mins = elapsed // 60
+            title = f"Trade Eyes · 搜参运行中 ({mins}min)"
+            body_lines = [
+                f"**{title}**",
+                f"已连续运行 {mins} 分钟 · 第 {count} 次心跳",
+                "搜参完成后自动推送报告",
+            ]
+            card = {
+                "schema": "2.0",
+                "header": {"title": {"tag": "plain_text", "content": title}, "template": "blue"},
+                "body": {"elements": [
+                    {"tag": "markdown", "content": "\n".join(body_lines)},
+                ]},
+            }
+            try:
+                requests.post(webhook, json={
+                    "msg_type": "interactive", "card": card,
+                }, timeout=10)
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_beat, daemon=True, name="heartbeat")
+    t.start()
+
+
+def _send_restart_notification(config: dict):
+    """服务重启后飞书通知。"""
+    try:
+        import os
+        from datetime import datetime
+        from pathlib import Path
+        import json
+        import requests
+
+        webhook = os.getenv("FEISHU_WEBHOOK_URL", "")
+        if not webhook:
+            fc = config.get("notification", {}).get("feishu", {})
+            webhook = fc.get("webhook_url", "")
+        if not webhook:
+            return
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        title = "Trade Eyes · 已上线"
+        lines = [
+            f"**{title}**",
+            f"重启时间: {now}",
+            f"状态: 定时任务已注册 (日报 19:00 / 简报 09:50 14:30 / 搜参 02:00)",
+        ]
+        try:
+            root = Path(__file__).parent
+            import subprocess
+            commits = subprocess.run(
+                ["git", "-C", str(root), "log", "-1", "--pretty=format:%h %s"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if commits.returncode == 0 and commits.stdout.strip():
+                lines.append(f"版本: `{commits.stdout.strip()[:80]}`")
+        except Exception:
+            pass
+
+        card = {
+            "schema": "2.0",
+            "header": {"title": {"tag": "plain_text", "content": title}, "template": "green"},
+            "body": {"elements": [
+                {"tag": "markdown", "content": "\n".join(lines)},
+            ]},
+        }
+        payload = {"msg_type": "interactive", "card": card}
+        requests.post(webhook, json=payload, timeout=10)
+    except Exception:
+        pass
