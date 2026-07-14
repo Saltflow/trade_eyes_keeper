@@ -14,6 +14,7 @@ from .command_parser import (
     ErrorCommand,
     HelpCommand,
     ListCommand,
+    RefDateCommand,
     RemoveCommand,
     parse_command,
 )
@@ -22,6 +23,7 @@ from .commands.handlers import (
     handle_backtest,
     handle_help,
     handle_list,
+    handle_ref_date,
     handle_remove,
 )
 from .security import RateLimiter, SecurityGate
@@ -131,6 +133,8 @@ class TelegramBot:
             response = handle_backtest(cmd.stock_code, cmd.start_date, cmd.end_date)
         elif isinstance(cmd, ErrorCommand):
             response = f"❌ {cmd.message}"
+        elif isinstance(cmd, RefDateCommand):
+            response = handle_ref_date(cmd.date_str)
         else:
             response = "❌ 未知错误"
 
