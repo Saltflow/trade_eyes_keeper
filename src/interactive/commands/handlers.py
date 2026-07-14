@@ -66,9 +66,10 @@ def handle_help() -> str:
         ]),
         ("🔬 策略与搜参", [
             ("/optimize [v1]", "触发策略优化（默认 V2）"),
-            ("/switch_optimizer [引擎]", "查看/切换搜参引擎 例 <code>/switch_optimizer percentile</code>"),
+            ("/switch_optimizer [引擎]", "查看/切换搜参引擎"),
             ("/mode [frac|position]", "查看/切换策略模式"),
-            ("/config [show|set K V|reset]", "查看/修改优化器配置 例 <code>/config set max_dd -30</code>"),
+            ("/config [show|set K V|reset]", "查看/修改优化器配置"),
+            ("/ref_date [YYYY-MM-DD]", "设置参考持仓基期（默认今天）"),
         ]),
         ("🎯 标的开关", [
             ("/skip search|signals 代码", "关闭标的搜参/信号 例 <code>/skip search 601985</code>"),
@@ -715,3 +716,29 @@ def handle_config(action: str, key: str, value: str) -> str:
         "可配置项: " + ", ".join(_CONFIG_HELP.keys()),
     ])
     return "\n".join(lines)
+
+
+def handle_ref_date(date_str: str | None = None) -> str:
+    """设置或查看参考持仓基期。"""
+    config = _load_config()
+    opt = config.get("optimizer", {}) or {}
+    current = opt.get("reference_base_date", "")
+
+    if not date_str:
+        if current:
+            return f"参考持仓基期: <b>{current}</b>（发送 <code>/ref_date YYYY-MM-DD</code> 重设并重置持仓）"
+        return "参考持仓基期未设置。发送 <code>/ref_date 2026-07-14</code> 以今天为基期开始跟踪。"
+
+    from datetime import datetime as _dt
+    try:
+        _dt.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        return f"❌ 日期格式错误: {date_str}。请使用 YYYY-MM-DD。"
+
+    config.setdefault("optimizer", {})["reference_base_date"] = date_str
+    _save_config(config)
+    return (
+        f"✅ 参考持仓基期已设为 <b>{date_str}</b>\n"
+        f"参考持仓将从该日起按最新搜参策略执行，每日信号驱动买卖。\n"
+        f"发送 <code>/ref_date</code> 查看当前基期。"
+    )

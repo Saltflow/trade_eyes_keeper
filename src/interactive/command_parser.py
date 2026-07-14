@@ -22,6 +22,7 @@ class CommandType(Enum):
     CONFIG = auto()
     SKIP = auto()
     SWITCH_OPTIMIZER = auto()
+    REF_DATE = auto()
     ERROR = auto()
 
 
@@ -73,6 +74,12 @@ class SaveCommand:
 class BriefCommand:
     report_id: str = "morning_snapshot"
     cmd_type: CommandType = CommandType.BRIEF
+
+
+@dataclass
+class RefDateCommand:
+    date_str: str | None = None
+    cmd_type: CommandType = CommandType.REF_DATE
 
 
 @dataclass
@@ -255,6 +262,9 @@ def parse_command(text: str):
 
     if cmd_name == "daily":
         return DailyCommand()
+
+    if cmd_name == "ref_date":
+        return RefDateCommand(date_str=args.strip() or None)
 
     if cmd_name == "schedule":
         parts = args.split()

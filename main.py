@@ -563,8 +563,8 @@ def run_optimization(config):
                 bdf = data_source.fetch_stock_data(bcode, days=lookback)
                 if bdf is not None and not bdf.empty:
                     bench_data[bname] = bdf
-            except Exception:
-                pass
+            except Exception as _e:
+                _hb_logger.warning(f"heartbeat send failed: {_e}")
         if bench_data:
             logger.info("%s 基准 ETF: %d 只就绪", group_name, len(bench_data))
 
@@ -667,7 +667,7 @@ def run_optimization_v2(config):
     # 数据源
     data_source = DataSource(config)
     # V2 需要 3年数据 (36个月 Walk-Forward)
-    lookback = config.get("portfolio_strategy", {}).get("lookback_days", 1095)
+    lookback = config.get("portfolio_strategy", {}).get("lookback_days") or _eval_opt_lookback()
 
     heartbeat_stop = threading.Event()
     heartbeat_state = {
@@ -792,8 +792,7 @@ def _build_optimizer_report(config, group_name, codes, signal_fn):
     import yaml
     from pathlib import Path
     from src.analysis.portfolio_strategy import (
-        PortfolioEvaluator, PERCENTILE_WARMUP,
-        _detect_fine_group,
+        PortfolioEvaluator, _detect_fine_group,
     )
     from src.analysis.signal_scanner import _params_from_yaml
     from src.analysis.rule_engine import Rule
@@ -821,7 +820,7 @@ def _build_optimizer_report(config, group_name, codes, signal_fn):
     ds = DataSource(config)
     stocks_data = {}
     for code in codes:
-        df = ds.fetch_stock_data(code, days=441)
+        df = ds.fetch_stock_data(code, days=_eval_opt_lookback())
         if df is not None and not df.empty:
             stocks_data[str(code)] = df
     if not stocks_data:
@@ -914,12 +913,6 @@ def _build_optimizer_report(config, group_name, codes, signal_fn):
                 else:
                     last = price[ti, j]
         price = np.nan_to_num(price, nan=0.0)
-        # 限制测试期：只取预热期之后的数据
-        warmup = PERCENTILE_WARMUP
-        if T > warmup:
-            buy_scores = buy_scores[warmup:]
-            sell_scores = sell_scores[warmup:]
-            price = price[warmup:]
         copies = sfn.random_perturbations(ep, n=10)
         pert_rets = []
         from src.analysis.signal_functions import simulate_portfolio
@@ -1112,8 +1105,22 @@ if __name__ == "__main__":
     main()
 
 
+def _eval_opt_lookback() -> int:
+    """读 optimizer_constraints.yaml 的 walk_forward.test_months × 21。"""
+    try:
+        import yaml
+        with open("config/optimizer_constraints.yaml", "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        months = int((raw.get("walk_forward", {}) or {}).get("test_months", 9))
+        return max(months * 21, 60)
+    except Exception:
+        return 9 * 21
+
+
 def _start_heartbeat(config, stop_event, state: dict):
     """搜参过程每5分钟飞书心跳通知，含相位/组合/耗时的实时进度。"""
+    import logging as _logging
+    _hb_logger = _logging.getLogger(__name__)
 
     def _beat():
         import time as _time
@@ -1149,18 +1156,18 @@ def _start_heartbeat(config, stop_event, state: dict):
                     {"tag": "markdown", "content": "\n".join(body_lines)},
                 ]},
             }
-        try:
-            import os as _os
-            import requests as _requests
-            webhook = _os.getenv("FEISHU_WEBHOOK_URL", "")
-            if not webhook:
-                webhook = config.get("notification", {}).get("feishu", {}).get("webhook_url", "")
-            if webhook:
-                _requests.post(webhook, json={
-                    "msg_type": "interactive", "card": card,
-                }, timeout=10)
-        except Exception:
-            pass
+            try:
+                import os as _os
+                import requests as _requests
+                webhook = _os.getenv("FEISHU_WEBHOOK_URL", "")
+                if not webhook:
+                    webhook = config.get("notification", {}).get("feishu", {}).get("webhook_url", "")
+                if webhook:
+                    _requests.post(webhook, json={
+                        "msg_type": "interactive", "card": card,
+                    }, timeout=10)
+            except Exception as _e:
+                _hb_logger.warning(f"heartbeat send failed: {_e}")
 
     threading.Thread(target=_beat, daemon=True, name="heartbeat").start()
 

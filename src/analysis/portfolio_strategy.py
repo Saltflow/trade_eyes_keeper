@@ -39,8 +39,22 @@ RISK_FREE_A = 0.02
 RISK_FREE_NON_A = 0.045
 MIN_TRADING_DAYS = 400
 MIN_EVAL_DAYS = 60
-PERCENTILE_WARMUP = 252
 
+
+def _eval_lookback_days() -> int:
+    """读 optimizer_constraints.yaml 的 walk_forward.test_months，×21 返回 lookback 天数。
+
+    config.yaml 的 lookback_days 优先；未设则用 walk_forward 口径。
+    """
+    try:
+        import yaml
+        with open("config/optimizer_constraints.yaml", "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        wf = raw.get("walk_forward", {}) or {}
+        months = int(wf.get("test_months", 9))
+        return max(months * 21, 60)  # 最少 60 天
+    except Exception:
+        return 9 * 21  # default: 9 months ≈ 189 天
 
 # ── 数据模型 ──
 
@@ -613,12 +627,6 @@ class PortfolioEvaluator:
                 else:
                     last = price[ti, j]
         price = np.nan_to_num(price, nan=0.0)
-
-        # 预热期：前 PERCENTILE_WARMUP 天禁止交易（分位排名需要252日历史）
-        warmup = PERCENTILE_WARMUP
-        if T > warmup:
-            buy_scores[:warmup, :] = 0.0
-            sell_scores[:warmup, :] = 0.0
 
         exec_p = self.signal_fn.execution_params(params)
         # 读取统一执行配置
@@ -1243,7 +1251,8 @@ class PortfolioOptimizer:
 
         # 从配置加载策略参数
         ps_config = self.config.get("portfolio_strategy", {})
-        lookback_days = ps_config.get("lookback_days", 441)   # 252预热+189验证≈9个月
+        lookback_days = ps_config.get("lookback_days") or _eval_lookback_days()
+
 
         # 加载自定义规则：构造参数优先 > config 配置
         custom_rules = self.custom_rules
@@ -1325,7 +1334,8 @@ class PortfolioOptimizer:
 
         target_groups = groups or ["a_share", "hk", "us"]
         ps_config = self.config.get("portfolio_strategy", {})
-        lookback_days = ps_config.get("lookback_days", 441)   # 252预热+189验证≈9个月
+        lookback_days = ps_config.get("lookback_days") or _eval_lookback_days()
+
 
         custom_rules = self.custom_rules
         if custom_rules is None:

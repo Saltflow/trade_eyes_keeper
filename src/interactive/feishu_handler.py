@@ -16,6 +16,7 @@ from .command_parser import (
     ListCommand,
     ModeCommand,
     OptimizeCommand,
+    RefDateCommand,
     RemoveCommand,
     ResetAlertsCommand,
     ScheduleCommand,
@@ -35,6 +36,7 @@ from .commands.handlers import (
     handle_list,
     handle_mode,
     handle_optimize,
+    handle_ref_date,
     handle_remove,
     handle_reset_alerts,
     handle_save,
@@ -173,9 +175,11 @@ def _dispatch(cmd) -> str:
     if isinstance(cmd, ConfigCommand):
         return handle_config(cmd.action, cmd.key, cmd.value)
     if isinstance(cmd, SkipCommand):
-        return handle_skip(cmd.kind, cmd.codes, cmd.remove)
+        return handle_skip(cmd.kind, cmd.codes, remove=cmd.remove)
     if isinstance(cmd, SwitchOptimizerCommand):
         return handle_switch_optimizer(cmd.kind)
+    if isinstance(cmd, RefDateCommand):
+        return handle_ref_date(cmd.date_str)
     if isinstance(cmd, ErrorCommand):
         return f"❌ {cmd.message}"
     return "❌ 未知命令。发送 /help 查看可用命令。"
