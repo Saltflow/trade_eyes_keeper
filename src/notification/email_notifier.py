@@ -749,27 +749,26 @@ def build_optimizer_summary(report, group_name: str = "",
                 f'  (波幅 {vol["range"]:.1f}pp)'
             )
 
-        # 周K OHLC 表
+        # 周K 蜡烛图
         ohlc = full_report.get("weekly_ohlc")
+        lines.append("<br><b>━━━ 周K NAV 蜡烛图 ━━━</b>")
         if ohlc:
-            lines.append("")
-            lines.append("<b>━━━ 周K OHLC (近12周) ━━━</b>")
-            lines.append(
-                '<table style="font-size:11px;border-collapse:collapse">'
-                '<tr style="background:#34495e;color:#fff">'
-                '<th>周</th><th>开</th><th>高</th><th>低</th><th>收</th></tr>'
-            )
-            for k in range(max(0, len(ohlc["labels"]) - 12), len(ohlc["labels"])):
-                lines.append(
-                    f'<tr><td>{ohlc["labels"][k]}</td>'
-                    f'<td>{ohlc["open"][k]:.0f}</td>'
-                    f'<td>{ohlc["high"][k]:.0f}</td>'
-                    f'<td>{ohlc["low"][k]:.0f}</td>'
-                    f'<td>{ohlc["close"][k]:.0f}</td></tr>'
-                )
-            lines.append("</table>")
+            try:
+                from .chart_generator import generate_candlestick_chart
+                img_src = generate_candlestick_chart(ohlc)
+                if img_src:
+                    lines.append(
+                        f'<img src="{img_src}" style="max-width:100%;'
+                        f'border:1px solid #444;border-radius:4px;margin:8px 0">'
+                    )
+                else:
+                    lines.append("<p style='color:#888'>图表生成失败</p>")
+            except Exception:
+                lines.append("<p style='color:#888'>图表生成失败</p>")
+        else:
+            lines.append("<p style='color:#888'>无周K数据</p>")
 
-    return "\n".join(lines)
+    return "<br>".join(lines)
 
 
 class EmailNotifier(BaseNotifier):
@@ -1642,7 +1641,7 @@ class EmailNotifier(BaseNotifier):
             lines.append("</div>")  # close card
 
         lines.append("</div>")  # close section
-        return "\n".join(lines)
+    return "<br>".join(lines)
 
     def _build_portfolio_section(self, portfolio_results, portfolio_chart_dict=None):
         """

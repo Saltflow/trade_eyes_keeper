@@ -281,3 +281,77 @@ def _build_weekly_ohlc(
     except Exception as e:
         logger.warning(f"周K OHLC 构建失败: {e}")
         return None
+
+
+def generate_candlestick_chart(weekly_ohlc: dict) -> str | None:
+    """从周K OHLC 数据生成蜡烛图 PNG，返回 base64 data URI。
+
+    Args:
+        weekly_ohlc: _build_weekly_ohlc() 返回值
+
+    Returns:
+        "data:image/png;base64,..." 或 None
+    """
+    import base64
+    import io
+
+    import numpy as np
+
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Rectangle
+    except Exception:
+        logger.warning("matplotlib 不可用，跳过蜡烛图")
+        return None
+
+    labels = weekly_ohlc.get("labels", [])
+    opens = weekly_ohlc.get("open", [])
+    highs = weekly_ohlc.get("high", [])
+    lows = weekly_ohlc.get("low", [])
+    closes = weekly_ohlc.get("close", [])
+    if len(labels) < 3:
+        return None
+
+    n = len(labels)
+    x = np.arange(n)
+    width = 0.6
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    fig.patch.set_facecolor("#1a1a2e")
+    ax.set_facecolor("#1a1a2e")
+
+    body_colors = [
+        "#27ae60" if closes[i] >= opens[i] else "#c0392b"
+        for i in range(n)
+    ]
+    for i in range(n):
+        # 影线
+        ax.plot([x[i], x[i]], [lows[i], highs[i]], color=body_colors[i], linewidth=1)
+        # 实体
+        body_lo = min(opens[i], closes[i])
+        body_hi = max(opens[i], closes[i])
+        body_h = body_hi - body_lo
+        if body_h < 1e-6:
+            body_h = max(0.001 * body_hi, 0.01)
+        rect = Rectangle((x[i] - width / 2, body_lo), width, body_h,
+                         facecolor=body_colors[i], edgecolor=body_colors[i],
+                         linewidth=0.5)
+        ax.add_patch(rect)
+
+    ax.set_xticks(x[::max(1, n // 10)])
+    ax.set_xticklabels([labels[i] for i in range(0, n, max(1, n // 10))],
+                       rotation=45, fontsize=8, color="#cccccc")
+    ax.tick_params(colors="#cccccc", labelsize=8)
+    ax.set_ylabel("NAV", color="#cccccc")
+    ax.set_title("Weekly NAV Candlestick", color="#ffffff", fontsize=12)
+    ax.grid(axis="y", alpha=0.2, color="#555555")
+
+    buf = io.BytesIO()
+    plt.tight_layout()
+    fig.savefig(buf, format="png", dpi=100, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    b64 = base64.b64encode(buf.read()).decode("utf-8")
+    return f"data:image/png;base64,{b64}"
