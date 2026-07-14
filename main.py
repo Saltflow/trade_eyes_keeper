@@ -1058,76 +1058,6 @@ def _send_optimizer_report_telegram(config, report):
         _logger.warning("Telegram 报告发送异常: %s", e)
 
 
-def main():
-    """主函数"""
-    # 加载配置
-    config = load_config()
-    # 设置日志
-    logger = setup_logging(config)
-    # 解析命令行参数
-    if len(sys.argv) > 1:
-        if sys.argv[1] == "--once":
-            # 单次运行模式
-            logger.info("单次运行模式")
-            run_daily_task()
-        elif sys.argv[1] == "--brief":
-            # 简报模式（默认 morning_snapshot）
-            report_id = sys.argv[2] if len(sys.argv) > 2 else "morning_snapshot"
-            logger.info(f"简报模式: {report_id}")
-            run_brief_report(report_id)
-        elif sys.argv[1] == "--optimize":
-            # 策略优化模式 (V1: 贝叶斯优化)
-            run_optimization(config)
-        elif sys.argv[1] == "--optimize-v2":
-            # 策略优化模式 V2 (遗传搜索 + Walk-Forward)
-            run_optimization_v2(config)
-        elif sys.argv[1] == "--health-server":
-            # 仅启动健康服务器模式
-            logger.info("启动健康服务器模式")
-            from src.health_server import start_health_server
-
-            start_health_server()
-        elif sys.argv[1] == "--interactive":
-            # Telegram 交互 Bot 模式
-            logger.info("启动 Telegram 交互 Bot")
-            from src.interactive.telegram_bot import TelegramBot
-
-            bot = TelegramBot(config)
-            bot.run()
-        elif sys.argv[1] == "--help":
-            # 显示帮助信息
-            print("股票量化系统使用说明:")
-            print("  python main.py              # 启动定时任务调度器（默认）")
-            print("  python main.py --once       # 单次运行任务")
-            print("  python main.py --brief      # 运行早盘简报（默认9:50触发）")
-            print("  python main.py --brief <id> # 运行指定简报")
-            print("  python main.py --optimize              # 策略参数贝叶斯优化搜索 (V1)")
-            print("  python main.py --optimize-v2           # 策略参数遗传搜索 + Walk-Forward (V2)")
-            print("  python main.py --health-server # 仅启动健康服务器")
-            print("  python main.py --interactive   # 启动 Telegram 交互 Bot")
-            print("  python main.py --help       # 显示此帮助信息")
-            print("\n健康服务器端口等配置见 config/config.yaml → health_server")
-            return
-        else:
-            logger.error(f"未知参数: {sys.argv[1]}")
-            print(f"未知参数: {sys.argv[1]}")
-            print("使用 python main.py --help 查看可用参数")
-            return
-    else:
-        # 定时运行模式
-        logger.info("启动定时任务调度器")
-        scheduler = SchedulerManager(
-            config, task_function=run_daily_task, brief_function=run_brief_report
-        )
-        scheduler.start()
-        # ── 服务重启通知 ──
-        _send_restart_notification(config)
-
-
-if __name__ == "__main__":
-    main()
-
-
 def _eval_opt_lookback() -> int:
     """读 optimizer_constraints.yaml 的 walk_forward.test_months × 21。"""
     try:
@@ -1241,3 +1171,73 @@ def _send_restart_notification(config: dict):
         requests.post(webhook, json=payload, timeout=10)
     except Exception:
         pass
+
+
+def main():
+    """主函数"""
+    # 加载配置
+    config = load_config()
+    # 设置日志
+    logger = setup_logging(config)
+    # 解析命令行参数
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--once":
+            # 单次运行模式
+            logger.info("单次运行模式")
+            run_daily_task()
+        elif sys.argv[1] == "--brief":
+            # 简报模式（默认 morning_snapshot）
+            report_id = sys.argv[2] if len(sys.argv) > 2 else "morning_snapshot"
+            logger.info(f"简报模式: {report_id}")
+            run_brief_report(report_id)
+        elif sys.argv[1] == "--optimize":
+            # 策略优化模式 (V1: 贝叶斯优化)
+            run_optimization(config)
+        elif sys.argv[1] == "--optimize-v2":
+            # 策略优化模式 V2 (遗传搜索 + Walk-Forward)
+            run_optimization_v2(config)
+        elif sys.argv[1] == "--health-server":
+            # 仅启动健康服务器模式
+            logger.info("启动健康服务器模式")
+            from src.health_server import start_health_server
+
+            start_health_server()
+        elif sys.argv[1] == "--interactive":
+            # Telegram 交互 Bot 模式
+            logger.info("启动 Telegram 交互 Bot")
+            from src.interactive.telegram_bot import TelegramBot
+
+            bot = TelegramBot(config)
+            bot.run()
+        elif sys.argv[1] == "--help":
+            # 显示帮助信息
+            print("股票量化系统使用说明:")
+            print("  python main.py              # 启动定时任务调度器（默认）")
+            print("  python main.py --once       # 单次运行任务")
+            print("  python main.py --brief      # 运行早盘简报（默认9:50触发）")
+            print("  python main.py --brief <id> # 运行指定简报")
+            print("  python main.py --optimize              # 策略参数贝叶斯优化搜索 (V1)")
+            print("  python main.py --optimize-v2           # 策略参数遗传搜索 + Walk-Forward (V2)")
+            print("  python main.py --health-server # 仅启动健康服务器")
+            print("  python main.py --interactive   # 启动 Telegram 交互 Bot")
+            print("  python main.py --help       # 显示此帮助信息")
+            print("\n健康服务器端口等配置见 config/config.yaml → health_server")
+            return
+        else:
+            logger.error(f"未知参数: {sys.argv[1]}")
+            print(f"未知参数: {sys.argv[1]}")
+            print("使用 python main.py --help 查看可用参数")
+            return
+    else:
+        # 定时运行模式
+        logger.info("启动定时任务调度器")
+        scheduler = SchedulerManager(
+            config, task_function=run_daily_task, brief_function=run_brief_report
+        )
+        scheduler.start()
+        # ── 服务重启通知 ──
+        _send_restart_notification(config)
+
+
+if __name__ == "__main__":
+    main()
