@@ -12,6 +12,7 @@
 import os
 import sys
 import threading
+import traceback
 import yaml
 import logging
 import pandas as pd
@@ -616,6 +617,25 @@ def run_optimization_v2(config):
     logger.info("策略搜索优化器 V2 启动")
     logger.info("=" * 60)
 
+    try:
+        _run_optimize_v2_impl(config)
+    except Exception as _fatal:
+        logger.exception(f"V2 优化器致命错误: {_fatal}")
+        import traceback
+        traceback.print_exc()
+        # 确保 traceback 写入 stderr（已重定向到日志文件）
+        import sys
+        sys.stderr.flush()
+
+
+def _run_optimize_v2_impl(config):
+    logger = logging.getLogger(__name__)
+    import time
+    from src.data.data_source import DataSource
+    from src.analysis.strategy_optimizer_v2 import StrategyOptimizerV2
+    from src.analysis.portfolio_strategy import _detect_fine_group, get_skip_search
+    from src.analysis.indicator_library import compute_all
+
     stocks = config.get("stocks", [])
     if not stocks:
         logger.error("配置中没有股票列表")
@@ -665,16 +685,19 @@ def run_optimization_v2(config):
         logger.info("使用全局阈值引擎 (GlobalThresholdSignalFn [deprecated])")
 
     # 数据源
+    logger.info("data_source init...")
     data_source = DataSource(config)
-    # V2 需要 3年数据 (36个月 Walk-Forward)
     lookback = config.get("portfolio_strategy", {}).get("lookback_days") or _eval_opt_lookback()
+    logger.info(f"data_source OK, lookback={lookback}")
 
     heartbeat_stop = threading.Event()
     heartbeat_state = {
         "group": "", "group_n": 0, "total_groups": 3,
         "phase": "starting", "elapsed": 0, "active": True,
     }
+    logger.info("starting heartbeat...")
     _start_heartbeat(config, heartbeat_stop, heartbeat_state)
+    logger.info("heartbeat started")
 
     group_labels = {"a_share": "A股", "hk": "港股", "us": "美股"}
     group_index = 0
