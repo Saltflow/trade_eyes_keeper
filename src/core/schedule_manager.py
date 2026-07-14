@@ -98,10 +98,12 @@ class ScheduleManager:
             main_py = project_root / "main.py"
             cmd = [sys.executable, str(main_py)] + cli_args
             try:
+                log_file = project_root / "logs" / "quant_system.log"
+                stderr_target = open(str(log_file), "a")
                 subprocess.Popen(
                     cmd, cwd=str(project_root),
                     env=os.environ.copy(),
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    stdout=stderr_target, stderr=stderr_target,
                 )
                 logger.info(f"调度任务已启动子进程: {' '.join(cmd)}")
             except Exception as e:

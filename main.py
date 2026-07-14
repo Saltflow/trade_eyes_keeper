@@ -1150,16 +1150,18 @@ def _start_heartbeat(config, stop_event, state: dict):
                     {"tag": "markdown", "content": "\n".join(body_lines)},
                 ]},
             }
-            try:
-                webhook = os.getenv("FEISHU_WEBHOOK_URL", "")
-                if not webhook:
-                    webhook = config.get("notification", {}).get("feishu", {}).get("webhook_url", "")
-                if webhook:
-                    requests.post(webhook, json={
-                        "msg_type": "interactive", "card": card,
-                    }, timeout=10)
-            except Exception:
-                pass
+        try:
+            import os as _os
+            import requests as _requests
+            webhook = _os.getenv("FEISHU_WEBHOOK_URL", "")
+            if not webhook:
+                webhook = config.get("notification", {}).get("feishu", {}).get("webhook_url", "")
+            if webhook:
+                _requests.post(webhook, json={
+                    "msg_type": "interactive", "card": card,
+                }, timeout=10)
+        except Exception:
+            pass
 
     threading.Thread(target=_beat, daemon=True, name="heartbeat").start()
 
