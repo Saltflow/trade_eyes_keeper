@@ -394,9 +394,11 @@ def _run_main(command_args: list[str], env_extra: dict | None = None) -> str:
     if env_extra:
         env.update(env_extra)
     try:
+        log_file = project_root / "logs" / "quant_system.log"
+        log_fh = open(str(log_file), "a")
         subprocess.Popen(
             cmd, cwd=str(project_root), env=env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=log_fh, stderr=log_fh,
         )
         logger.info(f"后台进程已启动: {' '.join(cmd)}")
         return True
