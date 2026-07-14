@@ -1641,7 +1641,7 @@ class EmailNotifier(BaseNotifier):
             lines.append("</div>")  # close card
 
         lines.append("</div>")  # close section
-    return "<br>".join(lines)
+        return "<br>".join(lines)
 
     def _build_portfolio_section(self, portfolio_results, portfolio_chart_dict=None):
         """
