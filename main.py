@@ -11,6 +11,7 @@
 
 import os
 import sys
+import threading
 import yaml
 import logging
 import pandas as pd
@@ -668,9 +669,7 @@ def run_optimization_v2(config):
     # V2 需要 3年数据 (36个月 Walk-Forward)
     lookback = config.get("portfolio_strategy", {}).get("lookback_days", 1095)
 
-    # ── 搜参心跳 ──
-    from threading import Event
-    heartbeat_stop = Event()
+    heartbeat_stop = threading.Event()
     heartbeat_state = {
         "group": "", "group_n": 0, "total_groups": 3,
         "phase": "starting", "elapsed": 0, "active": True,
