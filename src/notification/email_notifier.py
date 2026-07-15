@@ -633,10 +633,12 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
 
 
 def build_optimizer_summary(report, group_name: str = "",
-                            full_report: dict | None = None) -> str:
+                            full_report: dict | None = None,
+                            include_charts: bool = True) -> str:
     """将 OptimizationReport + 完整回测报告格式化为 HTML 摘要。
 
     full_report 非空时追加：日回报测指标 / 季末持仓 / 敏感性 / 波动率。
+    include_charts=False 时跳过图片（飞书 markdown 不支持 <img>）。
     """
     lines = ["<b>策略优化完成</b>"]
     if group_name:
@@ -749,14 +751,25 @@ def build_optimizer_summary(report, group_name: str = "",
                 f'  (波幅 {vol["range"]:.1f}pp)'
             )
 
-        # 周K 蜡烛图（CID 嵌入，与日报 matplot 同一机制）
-        png_bytes = full_report.get("candlestick_png")
-        lines.append("<br><b>━━━ 周K NAV 蜡烛图 ━━━</b>")
-        if png_bytes:
+        # 周K 蜡烛图（邮件用 CID，飞书跳过）
+        ohlc = full_report.get("weekly_ohlc")
+        if include_charts and full_report.get("candlestick_png"):
+            lines.append("<br><b>━━━ 周K NAV 蜡烛图 ━━━</b>")
             lines.append(
                 '<img src="cid:candlestick" style="max-width:100%;'
                 'border:1px solid #444;border-radius:4px;margin:8px 0">'
             )
+        elif ohlc:
+            # 飞书/无图时：贴周K收益摘要
+            labels = ohlc.get("labels", [])
+            closes = ohlc.get("close", [])
+            if labels and closes:
+                n = len(labels)
+                lines.append("<br><b>━━━ 周K收益 ━━━</b>")
+                summary_parts = []
+                for k in range(max(0, n - 8), n):
+                    summary_parts.append(f"{labels[k]}: {closes[k]:.0f}")
+                lines.append("  " + " | ".join(summary_parts))
 
     return "<br>".join(lines)
 
