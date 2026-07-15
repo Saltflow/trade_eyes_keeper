@@ -749,24 +749,14 @@ def build_optimizer_summary(report, group_name: str = "",
                 f'  (波幅 {vol["range"]:.1f}pp)'
             )
 
-        # 周K 蜡烛图
-        ohlc = full_report.get("weekly_ohlc")
+        # 周K 蜡烛图（CID 嵌入，与日报 matplot 同一机制）
+        png_bytes = full_report.get("candlestick_png")
         lines.append("<br><b>━━━ 周K NAV 蜡烛图 ━━━</b>")
-        if ohlc:
-            try:
-                from .chart_generator import generate_candlestick_chart
-                img_src = generate_candlestick_chart(ohlc)
-                if img_src:
-                    lines.append(
-                        f'<img src="{img_src}" style="max-width:100%;'
-                        f'border:1px solid #444;border-radius:4px;margin:8px 0">'
-                    )
-                else:
-                    lines.append("<p style='color:#888'>图表生成失败</p>")
-            except Exception:
-                lines.append("<p style='color:#888'>图表生成失败</p>")
-        else:
-            lines.append("<p style='color:#888'>无周K数据</p>")
+        if png_bytes:
+            lines.append(
+                '<img src="cid:candlestick" style="max-width:100%;'
+                'border:1px solid #444;border-radius:4px;margin:8px 0">'
+            )
 
     return "<br>".join(lines)
 
@@ -2908,7 +2898,7 @@ class EmailNotifier(BaseNotifier):
 
     # ────────────────────────────────────
 
-    def _send_email(self, subject, body, chart_png_bytes=None, portfolio_chart_dict=None, pdf_bytes=None):
+    def _send_email(self, subject, body, chart_png_bytes=None, portfolio_chart_dict=None, pdf_bytes=None, candlestick_png=None):
         """
         发送邮件
 
@@ -2918,6 +2908,7 @@ class EmailNotifier(BaseNotifier):
             chart_png_bytes: 告警走势图 PNG 字节（可选），CID=chart001
             portfolio_chart_dict: 投资组合走势图 {"a_share": bytes, "non_a_share": bytes}
             pdf_bytes: 日报 PDF 附件 bytes（可选）
+            candlestick_png: 周K蜡烛图 bytes（可选），CID=candlestick
         """
         import os
 
@@ -2938,7 +2929,7 @@ class EmailNotifier(BaseNotifier):
             html_part.set_charset("utf-8")
             html_part["Content-Transfer-Encoding"] = "quoted-printable"
 
-            has_any_chart = chart_png_bytes or portfolio_chart_dict
+            has_any_chart = chart_png_bytes or portfolio_chart_dict or candlestick_png
 
             if has_any_chart:
                 # 有任意图表：MIMEMultipart("related") 容器，HTML + 内嵌图片
@@ -2957,6 +2948,15 @@ class EmailNotifier(BaseNotifier):
                     image.add_header("Content-Disposition", "inline", filename="chart.png")
                     inner.attach(image)
                     logger.info("告警走势图以 CID chart001 嵌入邮件")
+
+                # 添加周K蜡烛图（CID: candlestick）
+                if candlestick_png:
+                    cs_img = MIMEImage(candlestick_png, "png")
+                    cs_img.add_header("Content-ID", "<candlestick>")
+                    cs_img.add_header("Content-Disposition", "inline",
+                                      filename="candlestick.png")
+                    inner.attach(cs_img)
+                    logger.info("周K蜡烛图以 CID candlestick 嵌入邮件")
 
                 # 添加投资组合走势图（CID: chart002=A股, chart003=非A股）
                 if portfolio_chart_dict:
@@ -3099,7 +3099,8 @@ class EmailNotifier(BaseNotifier):
         """发送优化结果邮件。含完整回测报告（日回报测+敏感性+波动率）。"""
         body = build_optimizer_summary(report, group_name, full_report)
         subject = f"策略优化完成 · {group_name}" if group_name else "策略优化完成"
-        self._send_email(subject, body)
+        candlestick_png = (full_report or {}).get("candlestick_png")
+        self._send_email(subject, body, candlestick_png=candlestick_png)
 
     def _save_email_copy(self, subject, body):
         """

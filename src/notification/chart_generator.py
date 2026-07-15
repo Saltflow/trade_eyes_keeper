@@ -283,14 +283,11 @@ def _build_weekly_ohlc(
         return None
 
 
-def generate_candlestick_chart(weekly_ohlc: dict) -> str | None:
-    """从周K OHLC 数据生成蜡烛图 PNG，返回 base64 data URI。
-
-    Args:
-        weekly_ohlc: _build_weekly_ohlc() 返回值
+def generate_candlestick_chart(weekly_ohlc: dict) -> tuple[str, bytes] | None:
+    """从周K OHLC 数据生成蜡烛图 PNG。
 
     Returns:
-        "data:image/png;base64,..." 或 None
+        (base64_data_uri, raw_png_bytes) 或 None
     """
     import base64
     import io
@@ -354,4 +351,4 @@ def generate_candlestick_chart(weekly_ohlc: dict) -> str | None:
     plt.close(fig)
     buf.seek(0)
     b64 = base64.b64encode(buf.read()).decode("utf-8")
-    return f"data:image/png;base64,{b64}"
+    return (f"data:image/png;base64,{b64}", buf.getvalue())

@@ -986,9 +986,14 @@ def _build_optimizer_report(config, group_name, codes, signal_fn):
 
     # ── 周K蜡烛图 ──
     try:
-        from src.notification.chart_generator import _build_weekly_ohlc
+        from src.notification.chart_generator import _build_weekly_ohlc, generate_candlestick_chart
         ohlc = _build_weekly_ohlc(report["nav_series"], report["nav_dates"])
-        report["weekly_ohlc"] = ohlc
+        if ohlc:
+            result = generate_candlestick_chart(ohlc)
+            if result:
+                _, png_bytes = result
+                report["candlestick_png"] = png_bytes
+                report["weekly_ohlc"] = ohlc  # 保留 OHLC 数据备用
     except Exception as e:
         logger.warning(f"[{group_name}] 周K图生成失败: {e}")
         report["weekly_ohlc"] = None
