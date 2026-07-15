@@ -145,12 +145,12 @@ class FeishuNotifier(BaseNotifier):
                 code = getattr(a, "stock_code", "?")
                 raw = getattr(a, "rule_label", "?")
                 readable = _readable_signal(code, raw, map_a, map_hk, map_us)
-            alert_lines.append(f"  {code} {readable}")
-                extra.append({
-                    "tag": "markdown",
-                    "content": f"**策略信号** ({len(signal_scan.alerts)} 条)\n"
-                               + "\n".join(alert_lines),
-                })
+                alert_lines.append(f"  {code} {readable}")
+            extra.append({
+                "tag": "markdown",
+                "content": f"**策略信号** ({len(signal_scan.alerts)} 条)\n"
+                           + "\n".join(alert_lines),
+            })
 
         # ── 参考持仓（无论有无信号都展示）──
         ref_md = _build_ref_portfolio_markdown(session)
