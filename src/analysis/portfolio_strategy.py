@@ -42,9 +42,10 @@ MIN_EVAL_DAYS = 60
 
 
 def _eval_lookback_days() -> int:
-    """读 optimizer_constraints.yaml 的 walk_forward.test_months，×21 返回 lookback 天数。
+    """读 optimizer_constraints.yaml 的 walk_forward.test_months，返回日历天数。
 
     config.yaml 的 lookback_days 优先；未设则用 walk_forward 口径。
+    fetch_stock_data(days=N) 的 N 是日历天，不是交易日。
     """
     try:
         import yaml
@@ -52,9 +53,9 @@ def _eval_lookback_days() -> int:
             raw = yaml.safe_load(f) or {}
         wf = raw.get("walk_forward", {}) or {}
         months = int(wf.get("test_months", 9))
-        return max(months * 21, 60)  # 最少 60 天
+        return int(months * 30.4375)  # 9 个月 ≈ 274 日历天
     except Exception:
-        return 9 * 21  # default: 9 months ≈ 189 天
+        return 274  # default: 9 个月
 
 # ── 数据模型 ──
 

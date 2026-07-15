@@ -1135,15 +1135,18 @@ def _send_optimizer_report_telegram(config, report):
 
 
 def _eval_opt_lookback() -> int:
-    """读 optimizer_constraints.yaml 的 walk_forward.test_months × 21。"""
+    """读 optimizer_constraints.yaml 的 walk_forward.test_months，返回日历天数。
+
+    fetch_stock_data(days=N) 的 N 是日历天，不是交易日。
+    """
     try:
         import yaml
         with open("config/optimizer_constraints.yaml", "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
         months = int((raw.get("walk_forward", {}) or {}).get("test_months", 9))
-        return max(months * 21, 60)
+        return int(months * 30.4375)  # 9 个月 ≈ 274 日历天
     except Exception:
-        return 9 * 21
+        return 274
 
 
 def _start_heartbeat(config, stop_event, state: dict):
