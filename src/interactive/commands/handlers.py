@@ -721,26 +721,102 @@ def handle_config(action: str, key: str, value: str) -> str:
 
 
 def handle_ref_date(date_str: str | None = None) -> str:
-    """设置或查看参考持仓基期。"""
+    """设置或查看参考持仓基期。
+
+    无参数: 显示当前基期 + 参考持仓状态
+    有参数: 设置新基期并重置参考持仓（⚠️ 清空所有标的）
+    参数 "confirm": 确认上次设置操作（防呆）
+    """
+    from src.core.ref_portfolio import (
+        RefPortfolioManager, DEFAULT_INITIAL_CAPITAL, DEFAULT_COMMISSION_RATE,
+    )
+
     config = _load_config()
     opt = config.get("optimizer", {}) or {}
     current = opt.get("reference_base_date", "")
+    mgr = RefPortfolioManager()
+    pf = mgr.load()
+
+    # ── 需要确认（防呆）──
+    pending_date = opt.get("_ref_date_pending", "")
+    if date_str and date_str.strip().lower() == "confirm":
+        if not pending_date:
+            return "⚠️ 没有待确认的基期设置操作。发送 <code>/ref_date YYYY-MM-DD</code> 开始。"
+        date_str = pending_date
+        # 清除 pending，继续执行设置逻辑
+        opt.pop("_ref_date_pending", None)
+        config["optimizer"] = opt
 
     if not date_str:
+        # ── 查看状态 ──
+        lines = []
         if current:
-            return f"参考持仓基期: <b>{current}</b>（发送 <code>/ref_date YYYY-MM-DD</code> 重设并重置持仓）"
-        return "参考持仓基期未设置。发送 <code>/ref_date 2026-07-14</code> 以今天为基期开始跟踪。"
+            lines.append(f"📅 参考持仓基期: <b>{current}</b>")
+        else:
+            lines.append("📅 参考持仓基期: <b>未设置</b>")
 
+        if mgr.is_initialized(pf):
+            nav_val = pf.cash  # 无实时价格时仅展示现金
+            holdings_count = len(pf.holdings)
+            total_mv = 0.0
+            lines.append(f"💰 现金: {pf.cash:,.2f}")
+            lines.append(f"📊 持仓标的: {holdings_count} 只")
+            if pf.holdings:
+                for code, h in sorted(pf.holdings.items()):
+                    lines.append(f"  • <code>{code}</code> {h.shares}股 "
+                                 f"成本 {h.avg_cost:.2f}")
+            lines.append(f"📈 期初资金: {pf.initial_capital:,.0f}")
+            lines.append(f"📆 交易天数: {pf.trading_days}")
+            if pf.last_rebalance_date:
+                lines.append(f"🔄 最近调仓: {pf.last_rebalance_date}")
+            if pf.last_reset_date:
+                lines.append(f"🔄 最近重置: {pf.last_reset_date}")
+            lines.append("")
+            lines.append(
+                "⚠️ 发送 <code>/ref_date YYYY-MM-DD</code> 将<b>清空所有持仓</b>并重置。"
+            )
+        else:
+            lines.append("📭 参考持仓未初始化（发送 <code>/ref_date YYYY-MM-DD</code> 开始跟踪）")
+
+        return "\n".join(lines)
+
+    # ── 设置新基期 ──
     from datetime import datetime as _dt
     try:
         _dt.strptime(date_str, "%Y-%m-%d")
     except ValueError:
         return f"❌ 日期格式错误: {date_str}。请使用 YYYY-MM-DD。"
 
-    config.setdefault("optimizer", {})["reference_base_date"] = date_str
+    # 防呆：设置新基期前需要确认
+    if not pending_date:
+        # 检查是否已有持仓（非首次设置）
+        if mgr.is_initialized(pf) and pf.holdings:
+            # 暂存待确认
+            opt["_ref_date_pending"] = date_str
+            config["optimizer"] = opt
+            _save_config(config)
+            return (
+                f"⚠️ <b>确认重置参考持仓？</b>\n\n"
+                f"当前持仓: {len(pf.holdings)} 只标的，现金 {pf.cash:,.2f}，"
+                f"期初 {pf.inception_date}，已运行 {pf.trading_days} 个交易日。\n\n"
+                f"重置后将:\n"
+                f"• 清空所有持仓标的\n"
+                f"• 恢复初始现金 {DEFAULT_INITIAL_CAPITAL:,.0f}\n"
+                f"• 期初日期设为 {date_str}\n\n"
+                f"确认请发送: <code>/ref_date confirm</code>\n"
+                f"取消请忽略本条消息。"
+            )
+
+    # 执行重置
+    initial_capital = DEFAULT_INITIAL_CAPITAL
+    mgr.reset(initial_capital=initial_capital, inception_date=date_str)
+    opt["reference_base_date"] = date_str
+    config["optimizer"] = opt
     _save_config(config)
     return (
-        f"✅ 参考持仓基期已设为 <b>{date_str}</b>\n"
-        f"参考持仓将从该日起按最新搜参策略执行，每日信号驱动买卖。\n"
-        f"发送 <code>/ref_date</code> 查看当前基期。"
+        f"✅ 参考持仓已重置\n"
+        f"📅 基期: <b>{date_str}</b>\n"
+        f"💰 初始资金: {initial_capital:,.0f}\n"
+        f"📭 持仓: 已清空\n"
+        f"\n每日简报信号将自动驱动买卖。发送 <code>/ref_date</code> 查看状态。"
     )

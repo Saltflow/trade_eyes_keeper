@@ -83,6 +83,7 @@ class TelegramNotifier(BaseNotifier):
         for label, body in sections:
             self._send(title, f"{label}\n{body}")
         self._send_strategy_summary(session, title)
+        self._send_ref_portfolio(session, title)
 
     def send_daily_report_from_session(self, session) -> None:
         df = session.get_all_dataframe()
@@ -92,6 +93,7 @@ class TelegramNotifier(BaseNotifier):
         for label, body in sections:
             self._send(title, f"{label}\n{body}")
         self._send_strategy_summary(session, title)
+        self._send_ref_portfolio(session, title)
 
     def _send_strategy_summary(self, session, title: str) -> None:
         """发送搜参策略+今日信号+定增摘要（与邮件对齐）。"""
@@ -103,6 +105,12 @@ class TelegramNotifier(BaseNotifier):
         except Exception as e:
             logger.warning(f"Telegram 策略摘要发送失败 (非致命): {e}")
 
+    def _send_ref_portfolio(self, session, title: str) -> None:
+        """发送参考持仓摘要（日报/提醒模式）。"""
+        ref_text = self._build_ref_portfolio_text(session)
+        if ref_text:
+            self._send(title, ref_text)
+
     def send_brief_report(self, session, report_config: dict) -> None:
         label = report_config.get("label", "简报")
         stock_data = session.get_all_dataframe()
@@ -111,6 +119,12 @@ class TelegramNotifier(BaseNotifier):
         body = self._build_brief_blocks(stock_data, today)
         if not body:
             body = "无活跃标的"
+
+        # ── 参考持仓 ──
+        ref_text = self._build_ref_portfolio_text(session)
+        if ref_text:
+            body += "\n\n" + ref_text
+
         self._send(title, body)
 
     def send_deployment_notification(
@@ -156,6 +170,29 @@ class TelegramNotifier(BaseNotifier):
                 f"<b>{e['dev_str']}</b>  {emoji}"
             )
         return "\n\n".join(lines)
+
+    @staticmethod
+    def _build_ref_portfolio_text(session) -> str:
+        """构建参考持仓文本片段（Telegram HTML）。"""
+        status = getattr(session, "ref_portfolio_status", None)
+        if not status:
+            return ""
+
+        lines = [
+            "<b>📊 参考持仓</b>",
+            f"期初: {status['inception_date']} | 净值: {status['nav']:,.0f} | "
+            f"回报: {status['nav_return_pct']:+.2f}% | 交易日: {status['trading_days']}",
+        ]
+        if status["holdings"]:
+            for h in status["holdings"]:
+                lines.append(
+                    f"  <code>{h['code']}</code> {h['shares']}股×{h['price']:.2f} = "
+                    f"{h['market_value']:,.0f} (成本 {h['avg_cost']:.2f})"
+                )
+        else:
+            lines.append("  📭 空仓")
+        lines.append(f"现金: {status['cash']:,.2f}")
+        return "\n".join(lines)
 
     @staticmethod
     def _build_daily_sections(stock_data, alerts=None) -> list:

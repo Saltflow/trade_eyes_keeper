@@ -640,57 +640,24 @@ def deploy():
         else:
             _step("system_test", True, f"exit=0 errors=0")
 
-        # ── 8. 检查cron ──
-        _info("Verifying cron job...")
-        ok, out, _ = _ssh_cmd("crontab -l", "Current cron jobs")
-
-        has_once = "python3 main.py --once" in (out or "")
-        has_brief_morning = "--brief morning_snapshot" in (out or "")
-        has_brief_afternoon = "--brief afternoon_snapshot" in (out or "")
-        has_optimize = "python3 main.py --optimize" in (out or "")
-
-        # ── 9. 更新cron（如需） ──
-        if not has_once:
-            _info("Configuring daily cron job...")
-            cron_line = f"00 19 * * * cd {REMOTE_DIR} && python3 main.py --once >> {REMOTE_DIR}/logs/cron.log 2>&1  # Stock quantitative system"
-            _ssh_cmd(
-                f"(crontab -l 2>/dev/null; echo '{cron_line}') | crontab -",
-                "Add main cron",
-            )
-        if not has_brief_morning:
-            _info("Configuring morning brief report cron at 09:50...")
-            brief_line = f"50 9 * * * cd {REMOTE_DIR} && python3 main.py --brief morning_snapshot >> {REMOTE_DIR}/logs/cron_brief.log 2>&1"
-            _ssh_cmd(
-                f"(crontab -l 2>/dev/null; echo '{brief_line}') | crontab -",
-                "Add morning brief report cron",
-            )
-            _info("Morning brief report cron registered (09:50 daily)")
-        if not has_brief_afternoon:
-            _info("Configuring afternoon brief report cron at 14:30...")
-            brief_line = f"30 14 * * * cd {REMOTE_DIR} && python3 main.py --brief afternoon_snapshot >> {REMOTE_DIR}/logs/cron_brief_afternoon.log 2>&1"
-            _ssh_cmd(
-                f"(crontab -l 2>/dev/null; echo '{brief_line}') | crontab -",
-                "Add afternoon brief report cron",
-            )
-            _info("Afternoon brief report cron registered (14:30 daily)")
-        if not has_optimize:
-            _info("Configuring strategy optimizer cron at 02:00...")
-            opt_line = f"0 2 * * * cd {REMOTE_DIR} && python3 main.py --optimize >> {REMOTE_DIR}/logs/cron_optimize.log 2>&1"
-            _ssh_cmd(
-                f"(crontab -l 2>/dev/null; echo '{opt_line}') | crontab -",
-                "Add optimizer cron",
-            )
-            _info("Optimizer cron registered (02:00 daily)")
-
-        # 重新检查 cron
-        ok, out, _ = _ssh_cmd("crontab -l", "Verify final cron")
-        cron_ok = (
-            ("--once" in (out or ""))
-            and ("--brief morning_snapshot" in (out or ""))
-            and ("--brief afternoon_snapshot" in (out or ""))
-            and ("--optimize" in (out or ""))
+        # ── 8. 清理系统 crontab（调度改为 health server 内嵌 APScheduler）──
+        _info("Removing legacy crontab entries (scheduler now inside health server)...")
+        del_cron = (
+            "crontab -l 2>/dev/null | "
+            "grep -v 'main.py --once' | "
+            "grep -v 'main.py --brief' | "
+            "grep -v 'main.py --optimize' | "
+            "crontab -"
         )
-        _step("cron", cron_ok, "daily+brief+optimize registered" if cron_ok else "missing")
+        _ssh_cmd(del_cron, "Clean up legacy cron entries")
+
+        # 确认清理干净
+        ok, out, _ = _ssh_cmd("crontab -l", "Verify cron cleaned")
+        has_legacy = ("main.py --once" in (out or "")
+                      or "main.py --brief" in (out or "")
+                      or "main.py --optimize" in (out or ""))
+        _step("cron", not has_legacy,
+              "legacy entries removed" if not has_legacy else "STILL HAS LEGACY ENTRIES!")
 
         # ── 9c. 检查优化器数据, 首次部署触发初始运行 ──
         _info("Checking optimizer data...")

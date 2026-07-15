@@ -904,6 +904,12 @@ class EmailNotifier(BaseNotifier):
                 placements=getattr(session, "placements", None),
             )
 
+            # ── 参考持仓 ──
+            from datetime import date as _dt_date
+            ref_html = self._build_ref_portfolio_html(session, _dt_date.today())
+            if ref_html:
+                body += ref_html
+
             # 发送邮件（PDF 作为附件）
             self._send_email(subject, body, chart_png_bytes=chart_png_bytes, portfolio_chart_dict=portfolio_chart_dict, pdf_bytes=pdf_bytes)
 
@@ -984,6 +990,12 @@ class EmailNotifier(BaseNotifier):
                 opt_data_map=opt_data_map,
                 placements=getattr(session, "placements", None),
             )
+
+            # ── 参考持仓 ──
+            from datetime import date as _dt_date
+            ref_html = self._build_ref_portfolio_html(session, _dt_date.today())
+            if ref_html:
+                body += ref_html
 
             # 发送邮件
             self._send_email(subject, body, portfolio_chart_dict=portfolio_chart_dict, pdf_bytes=pdf_bytes)
@@ -2815,6 +2827,48 @@ class EmailNotifier(BaseNotifier):
         best = candidates[0]
         return (best[0], best[1], best[2])
 
+    # ── 参考持仓 HTML 构建 ────────────────────────────────────
+
+    @staticmethod
+    def _build_ref_portfolio_html(session, today_date) -> str:
+        """构建参考持仓 HTML 片段。邮件/飞书/Telegram 三端共享数据源。"""
+        status = getattr(session, "ref_portfolio_status", None)
+        if not status:
+            return ""
+
+        lines = ["<h3>📊 参考持仓</h3>"]
+        lines.append(
+            f"<p>📅 期初: {status['inception_date']} | "
+            f"💰 净值: {status['nav']:,.0f} | "
+            f"📈 回报: {status['nav_return_pct']:+.2f}% | "
+            f"📆 交易日: {status['trading_days']}</p>"
+        )
+
+        if status["holdings"]:
+            lines.append(
+                "<table><tr><th>代码</th><th>持仓</th><th>现价</th>"
+                "<th>市值</th><th>成本</th></tr>"
+            )
+            for h in status["holdings"]:
+                lines.append(
+                    f"<tr>"
+                    f"<td>{h['code']}</td>"
+                    f"<td>{h['shares']}</td>"
+                    f"<td>{h['price']:.2f}</td>"
+                    f"<td>{h['market_value']:,.0f}</td>"
+                    f"<td>{h['avg_cost']:.2f}</td>"
+                    f"</tr>"
+                )
+            lines.append("</table>")
+        else:
+            lines.append("<p>📭 空仓</p>")
+
+        lines.append(f"<p>💵 现金: {status['cash']:,.2f}</p>")
+        if status.get("last_rebalance_date"):
+            lines.append(f"<p>🔄 最近调仓: {status['last_rebalance_date']}</p>")
+
+        return "\n".join(lines)
+
     def send_brief_report(self, session, report_config: dict):
         """
         发送简报邮件（仅价格+锚点偏离率，无图表/基本面/公告）。
@@ -2858,6 +2912,9 @@ class EmailNotifier(BaseNotifier):
             strat_html += "</table><br>"
         elif signal_scan:
             strat_html = "<h3>策略信号</h3><p>当前无活跃信号</p><br>"
+
+        # ── 参考持仓状态 ──
+        ref_html = self._build_ref_portfolio_html(session, today_date)
 
         # ── 渲染 HTML ──
         html_rows = []
@@ -2904,6 +2961,7 @@ class EmailNotifier(BaseNotifier):
             total_count=active_count,
             brief_rows=rows,
             strategy_suggestions=strat_html,
+            ref_portfolio=ref_html,
         )
 
         subject = f"{label} - {today.strftime('%Y-%m-%d')}"

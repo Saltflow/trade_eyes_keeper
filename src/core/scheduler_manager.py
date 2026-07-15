@@ -38,9 +38,6 @@ class SchedulerManager:
             # 创建调度器
             self.scheduler = BlockingScheduler()
 
-            # 启动健康服务器（如果启用）
-            self._start_health_server()
-
             # 获取运行时间配置
             run_time = self.scheduler_config.get("run_time", "15:30")
             timezone_str = self.scheduler_config.get("timezone", "Asia/Shanghai")

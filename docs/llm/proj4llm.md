@@ -1,7 +1,110 @@
 # 股票量化系统 - 关键设计决策文档
 
-**文档版本**: v1.20
-**最后更新**: 2026-07-13
+**文档版本**: v1.22
+**最后更新**: 2026-07-15
+
+---
+
+## 2026-07-15 修复 (v1.22)
+
+### 1. 图表 + 季度统一 9 个月窗口
+- `config/config.yaml` `lookback_days: 730` → `189`（9 个月 × 21 交易日）
+- `portfolio_strategy.py` 图表标题去硬编码"近2年"，改为 `len(navs)/21` 动态算月数
+- 结果：第二张图从 2 年缩到 9 个月，季度从 7Q 缩到 ~3Q
+
+### 2. 消灭重复调度 → 只有 health server 内嵌 APScheduler
+- `ci_cd_deploy.py` 删除 cron 安装逻辑，改为**清理**旧 cron 条目
+- `src/core/scheduler_manager.py` 移除 `_start_health_server()` 调用（health server 由 `--health-server` 显式启动）
+- 结果：不再同时跑 crontab + OLD SchedulerManager + NEW ScheduleManager 三套调度
+
+### 3. 简报信号名修复：用 hk/us 分开扫描
+- `main.py run_brief_report()`：`scanner.scan("non_a_share")` → 改为 `scanner.scan("hk")` + `scanner.scan("us")`
+- `feishu_notifier.py` brief：补上 `map_hk`/`map_us`（之前只有 `map_a`/`map_n`）
+- 结果：V2 优化器产出 `_hk_`/`_us_` YAML 被正确读取，信号名不再是 "买入规则1"
+
+## 📊 参考持仓跟踪 (v1.21)
+
+持久化参考持仓（Ref Portfolio），用于日报/简报展示系统持续运行的仓位状态。
+
+### 数据持久化
+
+文件 `data/ref_portfolio.yaml`:
+```yaml
+ref_portfolio:
+  inception_date: "2026-07-14"
+  cash: 95820.50
+  initial_capital: 100000.0
+  trading_days: 3
+  last_rebalance_date: "2026-07-15"
+  last_reset_date: "2026-07-14"
+  holdings:
+    "601728": {shares: 500, avg_cost: 12.34}
+  trade_log:
+    - {date: "2026-07-14", code: "601728", action: "buy", shares: 500, ...}
+```
+
+### 核心模块
+
+`src/core/ref_portfolio.py`:
+- `RefPortfolio` dataclass: 完整持仓状态（现金/持仓/初始资金/交易天数）
+- `RefPortfolioManager`: 加载/保存/重置/调仓/Nav 计算
+  - `load()` / `save()`: YAML 持久化
+  - `reset(initial_capital, inception_date)`: 清空持仓，恢复初始现金
+  - `rebalance(alerts, prices, date)`: 根据 StrategyAlert 信号按现价调仓
+  - `get_status(pf, prices)`: 返回可展示的状态摘要（Nav/回报/持仓/期初/交易天数）
+  - `is_initialized(pf)`: 是否已设置期初日期
+
+### 调仓规则
+
+1. **只在简报时间调仓**（09:50 / 14:30）。日报不调仓。
+2. **买卖互斥**: 同标的同日既有买又有卖信号 → 双方都取消。
+3. **周末阻挡**: 周末（weekday >= 5）不执行任何交易。
+4. **手数取整**: A 股 100 股/手、美股 1 股/手。
+5. **买入限制**: 单次最多 5000 元，日累计不超 monthly_buy_limit。
+6. **卖出比例**: 单次最多 25% 持仓（取整手）。
+
+### 交互命令
+
+`/ref_date [YYYY-MM-DD|confirm]`:
+- 无参数: 显示当前基期 + 持仓状态（标的/持仓/现价/现金/期初/交易日）
+- 有参数: 设置新基期 → 如果有持仓则要求确认 → 发送 `/ref_date confirm` 执行重置
+- 重置行为: 清空所有持仓标的、恢复初始现金（100,000）、期初日期设为指定日期
+
+### 简报集成
+
+`main.py run_brief_report()`:
+1. 获取数据 + 扫描信号（SignalScanner）
+2. 加载 RefPortfolio → 如果已初始化，按信号调仓
+3. 将 `ref_portfolio_status` 附加到 session
+4. Email/Feishu/Telegram 三端展示参考持仓
+
+### 日报集成
+
+`main.py run_daily_task()`:
+1. 加载 RefPortfolio → 只读，不调仓
+2. 将 `ref_portfolio_status` 附加到 session
+3. Email/Feishu/Telegram 三端展示参考持仓
+
+### 展示内容
+
+| 字段 | 说明 |
+|------|------|
+| 期初日期 | `inception_date` |
+| 净值 (Nav) | 现金 + 持仓市值 |
+| 回报率 | (Nav / initial_capital - 1) × 100% |
+| 交易日 | 有交易的天数 |
+| 持仓明细 | 代码/股数/现价/市值/成本 |
+| 现金 | 当前可用现金 |
+
+### 测试覆盖
+
+`tests/test_ref_portfolio.py` — 25 项 TDD 测试，覆盖:
+- 数据模型序列化/反序列化
+- 持久化加载/保存
+- Reset 清空重置
+- 调仓：买入/卖出/互斥/周末/资金不足/手数取整
+- Nav 计算与状态摘要
+- 交易日计数
 
 ---
 
@@ -719,3 +822,4 @@ pytest tests/test_import_smoke.py         # 导入完整性
 | 飞书核心链路测试 | ✅ 已实现 | `tests/test_feishu_notifier.py` 扩展到 29 个测试，覆盖初始化、传输、日报/告警/简报、多卡分段、DataFrame 采集、告警码、技术字段、纯文本表格、中文宽度、格式化 helper；测试允许 Mock Session 接口但不 Mock 数据对象 |
 | 飞书真实数据链路测试 | ✅ 已实现 | `tests/integration/test_feishu_real_data.py` 用最小 config 只放 `601728`，通过 `StockDataFetcher` 真实取数写入 Session，只启 Feishu；默认 patch `_send` 只验证一张价格卡片，设置 `FEISHU_E2E_SEND=1` 时才真实发送 |
 | Telegram 交互 Bot | ✅ 已实现 | `main.py --interactive` 启动 Telegram 轮询 Bot，支持 `/help` `/list` `/add` `/remove` `/backtest`；白名单 + 限流安全层；纯 requests 轮询，不添加第三方依赖 |
+| **参考持仓跟踪** | ✅ 已实现 | 持久化参考持仓（RefPortfolio），简报/日报展示系统持续运行的仓位状态（标的/持仓/现价/现金/参考 Nav/期初日期/交易天数）。只在简报时间（09:50/14:30）按量化信号调仓，禁止盘后交易，周末休市不交易。手动 `/ref_date` 重置时清空仓位并恢复初始现金，有防呆确认。详细设计见下方。 |

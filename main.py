@@ -387,6 +387,25 @@ def run_daily_task(force: bool = False):
         except Exception as e:
             logger.error(f"投资组合策略分析失败: {e}", exc_info=True)
 
+        # ── 参考持仓状态（只读，日报不做调仓）──
+        from src.core.ref_portfolio import RefPortfolioManager
+        mgr = RefPortfolioManager()
+        pf = mgr.load()
+        if mgr.is_initialized(pf):
+            stock_data_df = session.get_all_dataframe()
+            prices = {}
+            for _, row in stock_data_df.iterrows():
+                code = str(row.get("stock_code", ""))
+                close = row.get("close")
+                if code and close is not None and not pd.isna(close):
+                    prices[code] = float(close)
+            status = mgr.get_status(pf, prices)
+            object.__setattr__(session, "ref_portfolio_status", status)
+            logger.debug(
+                f"参考持仓已加载: 净值 {status['nav']:,.0f}, "
+                f"回报 {status['nav_return_pct']:+.2f}%"
+            )
+
         # 8. 发送邮件（无论是否有满足条件的股票都发送日报）
         if session.alerts:
             logger.info(f"发现{len(session.alerts)}个满足条件的警报")
@@ -448,20 +467,72 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
 
         logger.info(f"简报：获取到 {len(session.stocks_data)} 只股票数据")
 
-        # 策略信号扫描（和日报同一套 SignalScanner，保证信号一致）
+        # 策略信号扫描（和日报同一套 SignalScanner，三组分别扫描）
         try:
             from src.analysis.signal_scanner import SignalScanner
             scanner = SignalScanner()
             scan_result = scanner.scan(session, "a_share", top_n=5)
-            nona_result = scanner.scan(session, "non_a_share", top_n=5)
+            hk_result = scanner.scan(session, "hk", top_n=5)
+            us_result = scanner.scan(session, "us", top_n=5)
             merged_snapshot = dict(scan_result.indicator_snapshot or {})
-            merged_snapshot.update(nona_result.indicator_snapshot or {})
+            merged_snapshot.update(hk_result.indicator_snapshot or {})
+            merged_snapshot.update(us_result.indicator_snapshot or {})
             scan_result.indicator_snapshot = merged_snapshot
-            scan_result.alerts = list(scan_result.alerts) + list(nona_result.alerts)
+            scan_result.alerts = (
+                list(scan_result.alerts)
+                + list(hk_result.alerts)
+                + list(us_result.alerts)
+            )
             session.signal_scan = scan_result
             logger.info(f"简报策略信号扫描完成: {len(scan_result.alerts)} 个策略告警")
         except Exception as e:
             logger.warning(f"简报策略信号扫描失败 (非致命): {e}")
+
+        # ── 参考持仓调仓（只在简报时间，按现价 + 策略信号驱动买卖）──
+        from src.core.ref_portfolio import RefPortfolioManager
+        from src.analysis.execution_config import get_execution_config
+
+        mgr = RefPortfolioManager()
+        pf = mgr.load()
+        if mgr.is_initialized(pf):
+            # 构建现价表
+            stock_data_df = session.get_all_dataframe()
+            prices = {}
+            for _, row in stock_data_df.iterrows():
+                code = str(row.get("stock_code", ""))
+                close = row.get("close")
+                if code and close is not None and not pd.isna(close):
+                    prices[code] = float(close)
+
+            # 获取执行配置
+            exec_cfg = get_execution_config()
+            lot_size = exec_cfg.lot_sizes.get("a_share", 100)
+
+            # 调仓（沪深用 100 手，美股用 1 手 — 后面细化）
+            new_pf, trades = mgr.rebalance(
+                pf,
+                session.signal_scan.alerts if session.signal_scan else [],
+                prices,
+                today.strftime("%Y-%m-%d"),
+                lot_size=lot_size,
+                commission_rate=exec_cfg.commission_rate,
+                monthly_buy_limit=exec_cfg.monthly_buy_limit,
+            )
+            mgr.save(new_pf)
+
+            # 附到 session 供 notifier 展示
+            status = mgr.get_status(new_pf, prices)
+            object.__setattr__(session, "ref_portfolio_status", status)
+            if trades:
+                logger.info(
+                    f"参考持仓调仓完成: {len(trades)} 笔交易, "
+                    f"持仓 {len(new_pf.holdings)} 只, "
+                    f"现金 {new_pf.cash:,.2f}"
+                )
+            else:
+                logger.debug("参考持仓: 无需调仓（无信号或无可用资金）")
+        else:
+            logger.debug("参考持仓未初始化，跳过调仓（发送 /ref_date YYYY-MM-DD 开始）")
 
         # 休市检测：数据指纹比较（仅定时，按简报类型区分文件）
         if not force:

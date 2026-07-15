@@ -86,6 +86,11 @@ class FeishuNotifier(BaseNotifier):
         except Exception as e:
             logger.warning(f"飞书策略摘要发送失败 (非致命): {e}")
 
+        # ── 参考持仓 ──
+        ref_md = _build_ref_portfolio_markdown(session)
+        if ref_md:
+            self._send(f"{title} · 参考持仓", ref_md)
+
     def send_daily_report_from_session(self, session) -> None:
         stock_data = session.get_all_dataframe()
         title = f"股票日报 - {datetime.now().strftime('%Y-%m-%d')}"
@@ -100,6 +105,11 @@ class FeishuNotifier(BaseNotifier):
                 self._send(f"{title} · 策略与信号", strat_body)
         except Exception as e:
             logger.warning(f"飞书策略摘要发送失败 (非致命): {e}")
+
+        # ── 参考持仓 ──
+        ref_md = _build_ref_portfolio_markdown(session)
+        if ref_md:
+            self._send(f"{title} · 参考持仓", ref_md)
 
     def send_brief_report(self, session, report_config: dict) -> None:
         label = report_config.get("label", "简报")
@@ -128,18 +138,24 @@ class FeishuNotifier(BaseNotifier):
                 _build_signal_label_map, _readable_signal,
             )
             map_a = _build_signal_label_map("a_share")
-            map_n = _build_signal_label_map("non_a_share")
+            map_hk = _build_signal_label_map("hk") or _build_signal_label_map("non_a_share")
+            map_us = _build_signal_label_map("us") or _build_signal_label_map("non_a_share")
             alert_lines = []
             for a in signal_scan.alerts[:8]:
                 code = getattr(a, "stock_code", "?")
                 raw = getattr(a, "rule_label", "?")
-                readable = _readable_signal(code, raw, map_a, map_n)
-                alert_lines.append(f"  {code} {readable}")
-            extra.append({
-                "tag": "markdown",
-                "content": f"**策略信号** ({len(signal_scan.alerts)} 条)\n"
-                           + "\n".join(alert_lines),
-            })
+                readable = _readable_signal(code, raw, map_a, map_hk, map_us)
+            alert_lines.append(f"  {code} {readable}")
+                extra.append({
+                    "tag": "markdown",
+                    "content": f"**策略信号** ({len(signal_scan.alerts)} 条)\n"
+                               + "\n".join(alert_lines),
+                })
+
+        # ── 参考持仓（无论有无信号都展示）──
+        ref_md = _build_ref_portfolio_markdown(session)
+        if ref_md:
+            extra.append({"tag": "markdown", "content": ref_md})
 
         card = _build_interactive_card(title, summary, extra_elements=extra if extra else None)
         payload = {"msg_type": "interactive", "card": card}
@@ -467,6 +483,29 @@ def _short_text(text: str, max_len: int) -> str:
 
 def _escape_cell(text: str) -> str:
     return text.replace("|", "/").replace("\n", " ")
+
+
+def _build_ref_portfolio_markdown(session) -> str:
+    """构建参考持仓 Markdown 片段（飞书卡片 text 元素）。"""
+    status = getattr(session, "ref_portfolio_status", None)
+    if not status:
+        return ""
+
+    lines = [
+        "**📊 参考持仓**",
+        f"期初: {status['inception_date']} | 净值: {status['nav']:,.0f} | "
+        f"回报: {status['nav_return_pct']:+.2f}% | 交易日: {status['trading_days']}",
+    ]
+    if status["holdings"]:
+        for h in status["holdings"]:
+            lines.append(
+                f"  {h['code']} {h['shares']}股 × {h['price']:.2f} = "
+                f"{h['market_value']:,.0f} (成本 {h['avg_cost']:.2f})"
+            )
+    else:
+        lines.append("  📭 空仓")
+    lines.append(f"现金: {status['cash']:,.2f}")
+    return "\n".join(lines)
 
 
 def _build_brief_table_element(entries: list[dict]) -> dict | None:

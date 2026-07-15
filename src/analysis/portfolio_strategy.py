@@ -1530,7 +1530,11 @@ def generate_portfolio_chart(
 
         # ── 创建画布 ──
         fig, ax = plt.subplots(figsize=(14, 5))
-        title = f"{group_labels.get(group_key, group_key)} — Top1 搜参策略净值走势（近2年）"
+        months_approx = max(1, round(len(navs) / 21))
+        title = (
+            f"{group_labels.get(group_key, group_key)} — Top1 搜参策略净值走势"
+            f"（近{months_approx}个月）"
+        )
         ax.set_title(title, fontsize=14, fontweight="bold")
         ax.set_ylabel("组合净值 (基准100)", fontsize=11)
         ax.grid(True, alpha=0.25, linestyle="--")
