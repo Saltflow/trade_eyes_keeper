@@ -23,7 +23,9 @@ logger = logging.getLogger(__name__)
 # ── 常量 ──────────────────────────────────────────────────────
 DEFAULT_INITIAL_CAPITAL = 100000.0
 DEFAULT_COMMISSION_RATE = 0.005
-DEFAULT_BUY_AMOUNT = 5000.0          # 每次买入最大金额
+DEFAULT_BUY_AMOUNT = 5000.0          # 每次买入最大金额（已废弃）
+BUY_CASH_FRACTION = 0.20             # 每次买入占现金的比例
+MAX_BUY_AMOUNT = 30000.0             # 单次买入金额上限
 DEFAULT_SELL_FRACTION = 0.25         # 每次卖出最大比例
 BRIEF_WINDOWS = ("09:50", "14:30")   # 允许调仓的时间窗口
 DATA_DIR = Path("data")
@@ -374,7 +376,7 @@ class RefPortfolioManager:
             price = raw_price * fx_rate  # → CNY
             price_cny = price
 
-            max_amount = min(DEFAULT_BUY_AMOUNT, new_pf.cash)
+            max_amount = min(new_pf.cash * BUY_CASH_FRACTION, MAX_BUY_AMOUNT, new_pf.cash)
             if max_amount <= 0:
                 logger.debug(f"参考持仓{tag} 买入跳过 {code}: 现金不足")
                 continue
