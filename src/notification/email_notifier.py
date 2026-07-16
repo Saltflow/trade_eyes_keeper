@@ -2831,41 +2831,47 @@ class EmailNotifier(BaseNotifier):
 
     @staticmethod
     def _build_ref_portfolio_html(session, today_date) -> str:
-        """构建参考持仓 HTML 片段。邮件/飞书/Telegram 三端共享数据源。"""
-        status = getattr(session, "ref_portfolio_status", None)
-        if not status:
+        """构建参考持仓 HTML 片段。三组（A股/港股/美股）各自展示。"""
+        all_statuses = getattr(session, "ref_portfolio_status", None)
+        if not all_statuses:
             return ""
 
         lines = ["<h3>📊 参考持仓</h3>"]
-        lines.append(
-            f"<p>📅 期初: {status['inception_date']} | "
-            f"💰 净值: {status['nav']:,.0f} | "
-            f"📈 回报: {status['nav_return_pct']:+.2f}% | "
-            f"📆 交易日: {status['trading_days']}</p>"
-        )
+        group_order = ["a_share", "hk", "us"]
 
-        if status["holdings"]:
+        for gk in group_order:
+            status = all_statuses.get(gk)
+            if not status:
+                continue
+            label = status.get("_label", gk)
             lines.append(
-                "<table><tr><th>代码</th><th>持仓</th><th>现价</th>"
-                "<th>市值</th><th>成本</th></tr>"
+                f"<h4>{label}</h4>"
+                f"<p>📅 期初: {status['inception_date']} | "
+                f"💰 净值: {status['nav']:,.0f} | "
+                f"📈 回报: {status['nav_return_pct']:+.2f}% | "
+                f"📆 交易日: {status['trading_days']}</p>"
             )
-            for h in status["holdings"]:
-                lines.append(
-                    f"<tr>"
-                    f"<td>{h['code']}</td>"
-                    f"<td>{h['shares']}</td>"
-                    f"<td>{h['price']:.2f}</td>"
-                    f"<td>{h['market_value']:,.0f}</td>"
-                    f"<td>{h['avg_cost']:.2f}</td>"
-                    f"</tr>"
-                )
-            lines.append("</table>")
-        else:
-            lines.append("<p>📭 空仓</p>")
 
-        lines.append(f"<p>💵 现金: {status['cash']:,.2f}</p>")
-        if status.get("last_rebalance_date"):
-            lines.append(f"<p>🔄 最近调仓: {status['last_rebalance_date']}</p>")
+            if status["holdings"]:
+                lines.append(
+                    "<table><tr><th>代码</th><th>持仓</th><th>现价</th>"
+                    "<th>市值</th><th>成本</th></tr>"
+                )
+                for h in status["holdings"]:
+                    lines.append(
+                        f"<tr>"
+                        f"<td>{h['code']}</td>"
+                        f"<td>{h['shares']}</td>"
+                        f"<td>{h['price']:.2f}</td>"
+                        f"<td>{h['market_value']:,.0f}</td>"
+                        f"<td>{h['avg_cost']:.2f}</td>"
+                        f"</tr>"
+                    )
+                lines.append("</table>")
+            else:
+                lines.append("<p>📭 空仓</p>")
+
+            lines.append(f"<p>💵 现金: {status['cash']:,.2f}</p>")
 
         return "\n".join(lines)
 

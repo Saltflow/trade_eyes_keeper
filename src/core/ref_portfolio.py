@@ -222,60 +222,89 @@ class RefPortfolioManager:
         lot_size: int = 100,
         commission_rate: float = DEFAULT_COMMISSION_RATE,
         monthly_buy_limit: float = 15000.0,
+        fx_rate: float = 1.0,
+        label: str = "",
     ) -> tuple[RefPortfolio, list[Trade]]:
         """根据策略信号和当前价格调仓。
 
         Args:
             pf: 当前参考持仓
             alerts: StrategyAlert 列表（来自 SignalScanner）
-            prices: {stock_code: current_price} 现价表
+            prices: {stock_code: current_price} 现价表（原始货币）
             trade_date: 调仓日期 YYYY-MM-DD
-            lot_size: 默认每手股数（美股用 1）
+            lot_size: 每手股数（A股=100, 美股=1）
             commission_rate: 手续费率
-            monthly_buy_limit: 当日买入上限（默认 15000）
+            monthly_buy_limit: 当日买入上限（CNY）
+            fx_rate: 汇率乘数（A股=1.0, 港股=0.9, 美股=7.0）
+            label: 分组标识（用于日志）
 
         Returns:
             (更新后的 RefPortfolio, 本次产生的 Trade 列表)
         """
+        tag = f"[{label}]" if label else ""
+        logger.info(
+            f"参考持仓{tag} 调仓开始: {len(alerts)} 条信号, "
+            f"cash={pf.cash:,.0f}, 持仓={len(pf.holdings)}只, "
+            f"lot={lot_size}, fx={fx_rate}"
+        )
+
         # ── 前置校验：周末不交易 ──
         try:
             dt = datetime.strptime(trade_date, "%Y-%m-%d")
             if dt.weekday() >= 5:
-                logger.info(f"参考持仓跳过调仓: {trade_date} 是周末")
+                logger.info(f"参考持仓{tag} 跳过调仓: {trade_date} 是周末")
                 return pf, []
         except ValueError:
-            logger.warning(f"无法解析日期 {trade_date}，跳过调仓")
+            logger.warning(f"参考持仓{tag} 无法解析日期 {trade_date}")
             return pf, []
 
         # ── 分类信号 ──
         buy_signals = []   # (stock_code, rule_id)
         sell_signals = []  # (stock_code, rule_id)
+        skipped_alerts = 0
 
         for alert in alerts:
             code = str(getattr(alert, "stock_code", ""))
             rid = str(getattr(alert, "rule_id", ""))
             rtype = str(getattr(alert, "type", ""))
+            rlabel = str(getattr(alert, "rule_label", ""))
             if not code:
+                skipped_alerts += 1
                 continue
 
-            # type 字段优先；rid 包含 "buy"/"sell" 作为回退
             is_buy = rtype == "strategy_buy" or "buy" in rid.lower()
             is_sell = rtype == "strategy_sell" or "sell" in rid.lower()
 
             if is_buy and not is_sell:
                 buy_signals.append((code, rid))
+                logger.debug(
+                    f"参考持仓{tag} 买入信号: {code} | {rlabel[:30]} | "
+                    f"type={rtype} rid={rid}"
+                )
             elif is_sell and not is_buy:
                 sell_signals.append((code, rid))
-            # 同时含 buy+ sell → 不确定，跳过
+                logger.debug(
+                    f"参考持仓{tag} 卖出信号: {code} | {rlabel[:30]} | "
+                    f"type={rtype} rid={rid}"
+                )
+            else:
+                skipped_alerts += 1
+                logger.debug(
+                    f"参考持仓{tag} 跳过模糊信号: {code} "
+                    f"is_buy={is_buy} is_sell={is_sell} type={rtype} rid={rid}"
+                )
 
-        # ── 同日互斥：同标的既有买又有卖 → 两方都取消 ──
+        logger.info(
+            f"参考持仓{tag} 信号分类: 买{buy_signals} 卖{sell_signals} "
+            f"跳过{skipped_alerts}"
+        )
+
+        # ── 同日互斥 ──
         buy_codes = {c for c, _ in buy_signals}
         sell_codes = {c for c, _ in sell_signals}
         conflict_codes = buy_codes & sell_codes
         if conflict_codes:
-            logger.info(
-                f"参考持仓同日互斥取消: {conflict_codes}"
-            )
+            logger.info(f"参考持仓{tag} 同日互斥取消: {conflict_codes}")
             buy_signals = [(c, r) for c, r in buy_signals if c not in conflict_codes]
             sell_signals = [(c, r) for c, r in sell_signals if c not in conflict_codes]
 
@@ -297,15 +326,21 @@ class RefPortfolioManager:
         for code, rid in sell_signals:
             h = new_pf.holdings.get(code)
             if not h or h.shares <= 0:
+                logger.debug(f"参考持仓{tag} 卖出跳过 {code}: 无持仓")
                 continue
-            price = prices.get(code, 0)
-            if price <= 0:
+            raw_price = prices.get(code, 0)
+            if raw_price <= 0:
+                logger.debug(f"参考持仓{tag} 卖出跳过 {code}: 无价格")
                 continue
+            price = raw_price * fx_rate  # → CNY
 
-            # 卖出手数
             raw_shares = int(h.shares * DEFAULT_SELL_FRACTION)
             sell_shares = (raw_shares // lot_size) * lot_size
             if sell_shares <= 0:
+                logger.debug(
+                    f"参考持仓{tag} 卖出跳过 {code}: "
+                    f"不足一手 (持仓{h.shares}, 25%={raw_shares}, lot={lot_size})"
+                )
                 continue
 
             gross = sell_shares * price
@@ -314,102 +349,113 @@ class RefPortfolioManager:
 
             h.shares -= sell_shares
             new_pf.cash += net
-            day_buy_total += net  # 卖出释放的现金可用于当天买入
 
             if h.shares <= 0:
                 del new_pf.holdings[code]
 
             trade = Trade(
                 date=trade_date, code=code, action="sell",
-                shares=sell_shares, price=price, cost=-gross,
+                shares=sell_shares, price=round(price, 4), cost=-gross,
                 reason=rid, commission=commission,
             )
             trades.append(trade)
             new_pf.trade_log.append(trade)
             logger.info(
-                f"参考持仓卖出: {code} {sell_shares}股 @{price:.2f} "
-                f"净收入 {net:.2f} (佣金 {commission:.2f})"
+                f"参考持仓{tag} 卖出: {code} {sell_shares}股 "
+                f"@CNY{price:.2f} 净收入 {net:.2f}"
             )
 
-        # ── 2. 再执行买入（使用已有现金 + 卖出释放的现金）──
+        # ── 2. 再执行买入 ──
         for code, rid in buy_signals:
-            price = prices.get(code, 0)
-            if price <= 0:
+            raw_price = prices.get(code, 0)
+            if raw_price <= 0:
+                logger.debug(f"参考持仓{tag} 买入跳过 {code}: 无价格")
                 continue
+            price = raw_price * fx_rate  # → CNY
+            price_cny = price
 
-            # 买入金额上限
             max_amount = min(DEFAULT_BUY_AMOUNT, new_pf.cash)
             if max_amount <= 0:
+                logger.debug(f"参考持仓{tag} 买入跳过 {code}: 现金不足")
                 continue
 
-            # 计算可买手数
-            raw_shares = int(max_amount / price)
+            raw_shares = int(max_amount / price_cny)
             buy_shares = (raw_shares // lot_size) * lot_size
             if buy_shares <= 0:
+                logger.debug(
+                    f"参考持仓{tag} 买入跳过 {code}: "
+                    f"不足一手 (金额{max_amount:.0f}, 价CNY{price_cny:.2f}, "
+                    f"算得{raw_shares}股, lot={lot_size})"
+                )
                 continue
 
-            gross = buy_shares * price
+            gross = buy_shares * price_cny
             commission = gross * commission_rate
             total_cost = gross + commission
 
             if total_cost > new_pf.cash:
-                # 差一点：减一手重算
                 buy_shares = max(0, buy_shares - lot_size)
                 if buy_shares <= 0:
+                    logger.debug(
+                        f"参考持仓{tag} 买入跳过 {code}: "
+                        f"减一手后仍不足 (cost={total_cost:.0f} > cash={new_pf.cash:.0f})"
+                    )
                     continue
-                gross = buy_shares * price
+                gross = buy_shares * price_cny
                 commission = gross * commission_rate
                 total_cost = gross + commission
 
             if total_cost > new_pf.cash:
+                logger.debug(
+                    f"参考持仓{tag} 买入跳过 {code}: "
+                    f"资金不足 (cost={total_cost:.0f} > cash={new_pf.cash:.0f})"
+                )
                 continue
 
-            # 月度买入上限
             if day_buy_total + gross > monthly_buy_limit:
                 logger.info(
-                    f"参考持仓买入 {code} 跳过: 当日买入已达上限 "
-                    f"({day_buy_total:.0f} + {gross:.0f} > {monthly_buy_limit})"
+                    f"参考持仓{tag} 买入跳过 {code}: 当日买入超限 "
+                    f"({day_buy_total:.0f}+{gross:.0f}>{monthly_buy_limit})"
                 )
                 continue
 
             new_pf.cash -= total_cost
             day_buy_total += gross
 
-            # 更新持仓
             if code in new_pf.holdings:
                 h = new_pf.holdings[code]
                 total_cost_basis = h.shares * h.avg_cost + total_cost
                 h.shares += buy_shares
-                h.avg_cost = total_cost_basis / h.shares if h.shares > 0 else price
+                h.avg_cost = total_cost_basis / h.shares if h.shares > 0 else price_cny
             else:
                 new_pf.holdings[code] = Holding(
-                    code=code, shares=buy_shares, avg_cost=price,
+                    code=code, shares=buy_shares, avg_cost=price_cny,
                 )
 
             trade = Trade(
                 date=trade_date, code=code, action="buy",
-                shares=buy_shares, price=price, cost=gross,
+                shares=buy_shares, price=round(price_cny, 4), cost=gross,
                 reason=rid, commission=commission,
             )
             trades.append(trade)
             new_pf.trade_log.append(trade)
             logger.info(
-                f"参考持仓买入: {code} {buy_shares}股 @{price:.2f} "
-                f"成本 {total_cost:.2f} (佣金 {commission:.2f})"
+                f"参考持仓{tag} 买入: {code} {buy_shares}股 "
+                f"@CNY{price_cny:.2f} 成本 {total_cost:.2f}"
             )
 
         # ── 更新统计 ──
         if trades:
             new_pf.last_rebalance_date = trade_date
-            # 同一天多次调仓不算多次交易日
-            if new_pf.last_rebalance_date != trade_date or \
-               (pf.last_rebalance_date or "")[:10] != trade_date[:10]:
-                pass  # trading_days 由外部管理
             new_pf.trading_days = pf.trading_days + (
-                1 if trades and (pf.last_rebalance_date or "")[:10] != trade_date[:10]
+                1 if (pf.last_rebalance_date or "")[:10] != trade_date[:10]
                 else 0
             )
 
+        logger.info(
+            f"参考持仓{tag} 调仓结束: {len(trades)}笔交易, "
+            f"持仓{len(new_pf.holdings)}只, cash={new_pf.cash:,.0f}"
+        )
         return new_pf, trades
 
     # ── 查询 ──

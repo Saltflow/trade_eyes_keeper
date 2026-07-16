@@ -387,24 +387,38 @@ def run_daily_task(force: bool = False):
         except Exception as e:
             logger.error(f"投资组合策略分析失败: {e}", exc_info=True)
 
-        # ── 参考持仓状态（只读，日报不做调仓）──
+        # ── 参考持仓状态（只读，日报不做调仓，三分仓）──
         from src.core.ref_portfolio import RefPortfolioManager
-        mgr = RefPortfolioManager()
-        pf = mgr.load()
-        if mgr.is_initialized(pf):
-            stock_data_df = session.get_all_dataframe()
+        from src.analysis.portfolio_strategy import _detect_fine_group
+
+        stock_data_df = session.get_all_dataframe()
+        all_statuses = {}
+        for group_key, label, file_name in [
+            ("a_share", "A股", "data/ref_portfolio_a.yaml"),
+            ("hk", "港股", "data/ref_portfolio_hk.yaml"),
+            ("us", "美股", "data/ref_portfolio_us.yaml"),
+        ]:
+            mgr = RefPortfolioManager(file_path=file_name)
+            pf = mgr.load()
+            if not mgr.is_initialized(pf):
+                continue
             prices = {}
             for _, row in stock_data_df.iterrows():
                 code = str(row.get("stock_code", ""))
+                if _detect_fine_group(code) != group_key:
+                    continue
                 close = row.get("close")
                 if code and close is not None and not pd.isna(close):
                     prices[code] = float(close)
             status = mgr.get_status(pf, prices)
-            object.__setattr__(session, "ref_portfolio_status", status)
+            status["_group"] = group_key
+            status["_label"] = label
+            all_statuses[group_key] = status
             logger.debug(
-                f"参考持仓已加载: 净值 {status['nav']:,.0f}, "
+                f"参考持仓{label}已加载: 净值 {status['nav']:,.0f}, "
                 f"回报 {status['nav_return_pct']:+.2f}%"
             )
+        object.__setattr__(session, "ref_portfolio_status", all_statuses)
 
         # 8. 发送邮件（无论是否有满足条件的股票都发送日报）
         if session.alerts:
@@ -488,51 +502,86 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
         except Exception as e:
             logger.warning(f"简报策略信号扫描失败 (非致命): {e}")
 
-        # ── 参考持仓调仓（只在简报时间，按现价 + 策略信号驱动买卖）──
+        # ── 参考持仓三分仓调仓（A股/港股/美股各自独立资金池）──
         from src.core.ref_portfolio import RefPortfolioManager
         from src.analysis.execution_config import get_execution_config
+        from src.analysis.portfolio_strategy import _detect_fine_group
 
-        mgr = RefPortfolioManager()
-        pf = mgr.load()
-        if mgr.is_initialized(pf):
-            # 构建现价表
-            stock_data_df = session.get_all_dataframe()
+        exec_cfg = get_execution_config()
+        alerts_all = session.signal_scan.alerts if session.signal_scan else []
+        stock_data_df = session.get_all_dataframe()
+
+        # 按分组拆分信号和现价
+        POOLS = {
+            "a_share": {
+                "file": "data/ref_portfolio_a.yaml",
+                "lot": exec_cfg.lot_sizes.get("a_share", 100),
+                "fx": exec_cfg.fx_rates.get("a_share", 1.0),
+                "label": "A股",
+                "initial_capital": exec_cfg.initial_capital,
+                "monthly_limit": exec_cfg.monthly_buy_limit,
+            },
+            "hk": {
+                "file": "data/ref_portfolio_hk.yaml",
+                "lot": exec_cfg.lot_sizes.get("hk", 100),
+                "fx": exec_cfg.fx_rates.get("hk", 0.9),
+                "label": "港股",
+                "initial_capital": exec_cfg.initial_capital,
+                "monthly_limit": exec_cfg.monthly_buy_limit,
+            },
+            "us": {
+                "file": "data/ref_portfolio_us.yaml",
+                "lot": exec_cfg.lot_sizes.get("us", 1),
+                "fx": exec_cfg.fx_rates.get("us", 7.0),
+                "label": "美股",
+                "initial_capital": exec_cfg.initial_capital,
+                "monthly_limit": exec_cfg.monthly_buy_limit,
+            },
+        }
+
+        all_statuses: dict[str, dict] = {}
+        for group_key, cfg in POOLS.items():
+            mgr = RefPortfolioManager(file_path=cfg["file"])
+            pf = mgr.load()
+            if not mgr.is_initialized(pf):
+                logger.debug(f"参考持仓{cfg['label']} 未初始化，跳过")
+                continue
+
+            # 筛选本组信号
+            group_alerts = [
+                a for a in alerts_all
+                if _detect_fine_group(str(getattr(a, "stock_code", ""))) == group_key
+            ]
+
+            # 构建本组现价表
             prices = {}
             for _, row in stock_data_df.iterrows():
                 code = str(row.get("stock_code", ""))
+                if _detect_fine_group(code) != group_key:
+                    continue
                 close = row.get("close")
                 if code and close is not None and not pd.isna(close):
                     prices[code] = float(close)
 
-            # 获取执行配置
-            exec_cfg = get_execution_config()
-            lot_size = exec_cfg.lot_sizes.get("a_share", 100)
-
-            # 调仓（沪深用 100 手，美股用 1 手 — 后面细化）
             new_pf, trades = mgr.rebalance(
-                pf,
-                session.signal_scan.alerts if session.signal_scan else [],
-                prices,
+                pf, group_alerts, prices,
                 today.strftime("%Y-%m-%d"),
-                lot_size=lot_size,
+                lot_size=cfg["lot"],
                 commission_rate=exec_cfg.commission_rate,
-                monthly_buy_limit=exec_cfg.monthly_buy_limit,
+                monthly_buy_limit=cfg["monthly_limit"],
+                fx_rate=cfg["fx"],
+                label=cfg["label"],
             )
             mgr.save(new_pf)
 
-            # 附到 session 供 notifier 展示
+            # 本组 status（现价用原始货币显示，非 CNY）
             status = mgr.get_status(new_pf, prices)
-            object.__setattr__(session, "ref_portfolio_status", status)
-            if trades:
-                logger.info(
-                    f"参考持仓调仓完成: {len(trades)} 笔交易, "
-                    f"持仓 {len(new_pf.holdings)} 只, "
-                    f"现金 {new_pf.cash:,.2f}"
-                )
-            else:
-                logger.debug("参考持仓: 无需调仓（无信号或无可用资金）")
-        else:
-            logger.debug("参考持仓未初始化，跳过调仓（发送 /ref_date YYYY-MM-DD 开始）")
+            status["_group"] = group_key
+            status["_label"] = cfg["label"]
+            all_statuses[group_key] = status
+
+        # 合并附到 session
+        object.__setattr__(session, "ref_portfolio_status", all_statuses)
 
         # 休市检测：数据指纹比较（仅定时，按简报类型区分文件）
         if not force:

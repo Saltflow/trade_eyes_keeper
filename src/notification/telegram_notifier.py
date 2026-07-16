@@ -173,25 +173,27 @@ class TelegramNotifier(BaseNotifier):
 
     @staticmethod
     def _build_ref_portfolio_text(session) -> str:
-        """构建参考持仓文本片段（Telegram HTML）。"""
-        status = getattr(session, "ref_portfolio_status", None)
-        if not status:
+        """构建参考持仓文本片段（Telegram HTML），三组各自一行。"""
+        all_statuses = getattr(session, "ref_portfolio_status", None)
+        if not all_statuses:
             return ""
 
-        lines = [
-            "<b>📊 参考持仓</b>",
-            f"期初: {status['inception_date']} | 净值: {status['nav']:,.0f} | "
-            f"回报: {status['nav_return_pct']:+.2f}% | 交易日: {status['trading_days']}",
-        ]
-        if status["holdings"]:
-            for h in status["holdings"]:
-                lines.append(
-                    f"  <code>{h['code']}</code> {h['shares']}股×{h['price']:.2f} = "
-                    f"{h['market_value']:,.0f} (成本 {h['avg_cost']:.2f})"
-                )
-        else:
-            lines.append("  📭 空仓")
-        lines.append(f"现金: {status['cash']:,.2f}")
+        lines = ["<b>📊 参考持仓</b>"]
+        for gk in ("a_share", "hk", "us"):
+            s = all_statuses.get(gk)
+            if not s:
+                continue
+            label = s.get("_label", gk)
+            hd = ", ".join(
+                f"<code>{h['code']}</code> {h['shares']}股"
+                for h in s["holdings"]
+            ) if s["holdings"] else "空仓"
+            lines.append(
+                f"{label}: 净值 {s['nav']:,.0f} | "
+                f"回报 {s['nav_return_pct']:+.1f}% | "
+                f"现金 {s['cash']:,.0f} | "
+                f"{hd}"
+            )
         return "\n".join(lines)
 
     @staticmethod

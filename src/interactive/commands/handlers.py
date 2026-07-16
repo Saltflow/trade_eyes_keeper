@@ -728,14 +728,12 @@ def handle_ref_date(date_str: str | None = None) -> str:
     参数 "confirm": 确认上次设置操作（防呆）
     """
     from src.core.ref_portfolio import (
-        RefPortfolioManager, DEFAULT_INITIAL_CAPITAL, DEFAULT_COMMISSION_RATE,
+        RefPortfolioManager, DEFAULT_INITIAL_CAPITAL,
     )
 
     config = _load_config()
     opt = config.get("optimizer", {}) or {}
     current = opt.get("reference_base_date", "")
-    mgr = RefPortfolioManager()
-    pf = mgr.load()
 
     # ── 需要确认（防呆）──
     pending_date = opt.get("_ref_date_pending", "")
@@ -748,36 +746,37 @@ def handle_ref_date(date_str: str | None = None) -> str:
         config["optimizer"] = opt
 
     if not date_str:
-        # ── 查看状态 ──
+        # ── 查看状态（三组各自展示）──
         lines = []
         if current:
             lines.append(f"📅 参考持仓基期: <b>{current}</b>")
         else:
             lines.append("📅 参考持仓基期: <b>未设置</b>")
 
-        if mgr.is_initialized(pf):
-            nav_val = pf.cash  # 无实时价格时仅展示现金
-            holdings_count = len(pf.holdings)
-            total_mv = 0.0
-            lines.append(f"💰 现金: {pf.cash:,.2f}")
-            lines.append(f"📊 持仓标的: {holdings_count} 只")
+        any_init = False
+        for label, fname in [
+            ("A股", "data/ref_portfolio_a.yaml"),
+            ("港股", "data/ref_portfolio_hk.yaml"),
+            ("美股", "data/ref_portfolio_us.yaml"),
+        ]:
+            mgr = RefPortfolioManager(file_path=fname)
+            pf = mgr.load()
+            if not mgr.is_initialized(pf):
+                continue
+            any_init = True
+            lines.append(f"\n<b>{label}</b>: 现金 {pf.cash:,.2f} | "
+                         f"持仓 {len(pf.holdings)} 只 | 交易日 {pf.trading_days}")
             if pf.holdings:
                 for code, h in sorted(pf.holdings.items()):
                     lines.append(f"  • <code>{code}</code> {h.shares}股 "
                                  f"成本 {h.avg_cost:.2f}")
-            lines.append(f"📈 期初资金: {pf.initial_capital:,.0f}")
-            lines.append(f"📆 交易天数: {pf.trading_days}")
-            if pf.last_rebalance_date:
-                lines.append(f"🔄 最近调仓: {pf.last_rebalance_date}")
-            if pf.last_reset_date:
-                lines.append(f"🔄 最近重置: {pf.last_reset_date}")
-            lines.append("")
-            lines.append(
-                "⚠️ 发送 <code>/ref_date YYYY-MM-DD</code> 将<b>清空所有持仓</b>并重置。"
-            )
+        if not any_init:
+            lines.append("\n📭 参考持仓未初始化"
+                         "（发送 <code>/ref_date YYYY-MM-DD</code> 开始跟踪）")
         else:
-            lines.append("📭 参考持仓未初始化（发送 <code>/ref_date YYYY-MM-DD</code> 开始跟踪）")
-
+            lines.append(
+                "\n⚠️ 发送 <code>/ref_date YYYY-MM-DD</code> 将<b>清空所有持仓</b>并重置。"
+            )
         return "\n".join(lines)
 
     # ── 设置新基期 ──
@@ -789,34 +788,46 @@ def handle_ref_date(date_str: str | None = None) -> str:
 
     # 防呆：设置新基期前需要确认
     if not pending_date:
-        # 检查是否已有持仓（非首次设置）
-        if mgr.is_initialized(pf) and pf.holdings:
-            # 暂存待确认
+        total_holdings = 0
+        total_cash = 0.0
+        for fname in ["data/ref_portfolio_a.yaml", "data/ref_portfolio_hk.yaml",
+                       "data/ref_portfolio_us.yaml"]:
+            mgr = RefPortfolioManager(file_path=fname)
+            pf = mgr.load()
+            if mgr.is_initialized(pf):
+                total_holdings += len(pf.holdings)
+                total_cash += pf.cash
+        if total_holdings > 0:
             opt["_ref_date_pending"] = date_str
             config["optimizer"] = opt
             _save_config(config)
             return (
                 f"⚠️ <b>确认重置参考持仓？</b>\n\n"
-                f"当前持仓: {len(pf.holdings)} 只标的，现金 {pf.cash:,.2f}，"
-                f"期初 {pf.inception_date}，已运行 {pf.trading_days} 个交易日。\n\n"
+                f"当前持仓: {total_holdings} 只标的，现金 {total_cash:,.2f}。\n\n"
                 f"重置后将:\n"
-                f"• 清空所有持仓标的\n"
-                f"• 恢复初始现金 {DEFAULT_INITIAL_CAPITAL:,.0f}\n"
+                f"• 清空 A股/港股/美股 全部持仓\n"
+                f"• 每组恢复初始现金 {DEFAULT_INITIAL_CAPITAL:,.0f}\n"
                 f"• 期初日期设为 {date_str}\n\n"
                 f"确认请发送: <code>/ref_date confirm</code>\n"
                 f"取消请忽略本条消息。"
             )
 
-    # 执行重置
+    # 执行重置（三组各自独立）
     initial_capital = DEFAULT_INITIAL_CAPITAL
-    mgr.reset(initial_capital=initial_capital, inception_date=date_str)
+    for label, fname in [
+        ("A股", "data/ref_portfolio_a.yaml"),
+        ("港股", "data/ref_portfolio_hk.yaml"),
+        ("美股", "data/ref_portfolio_us.yaml"),
+    ]:
+        mgr = RefPortfolioManager(file_path=fname)
+        mgr.reset(initial_capital=initial_capital, inception_date=date_str)
     opt["reference_base_date"] = date_str
     config["optimizer"] = opt
     _save_config(config)
     return (
-        f"✅ 参考持仓已重置\n"
+        f"✅ 参考持仓已重置（A股/港股/美股 三分仓）\n"
         f"📅 基期: <b>{date_str}</b>\n"
-        f"💰 初始资金: {initial_capital:,.0f}\n"
+        f"💰 每组初始资金: {initial_capital:,.0f}\n"
         f"📭 持仓: 已清空\n"
         f"\n每日简报信号将自动驱动买卖。发送 <code>/ref_date</code> 查看状态。"
     )

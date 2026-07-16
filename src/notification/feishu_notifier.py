@@ -486,25 +486,27 @@ def _escape_cell(text: str) -> str:
 
 
 def _build_ref_portfolio_markdown(session) -> str:
-    """构建参考持仓 Markdown 片段（飞书卡片 text 元素）。"""
-    status = getattr(session, "ref_portfolio_status", None)
-    if not status:
+    """构建参考持仓 Markdown 片段（飞书卡片），三组各自一行。"""
+    all_statuses = getattr(session, "ref_portfolio_status", None)
+    if not all_statuses:
         return ""
 
-    lines = [
-        "**📊 参考持仓**",
-        f"期初: {status['inception_date']} | 净值: {status['nav']:,.0f} | "
-        f"回报: {status['nav_return_pct']:+.2f}% | 交易日: {status['trading_days']}",
-    ]
-    if status["holdings"]:
-        for h in status["holdings"]:
-            lines.append(
-                f"  {h['code']} {h['shares']}股 × {h['price']:.2f} = "
-                f"{h['market_value']:,.0f} (成本 {h['avg_cost']:.2f})"
-            )
-    else:
-        lines.append("  📭 空仓")
-    lines.append(f"现金: {status['cash']:,.2f}")
+    lines = ["**📊 参考持仓**"]
+    for gk in ("a_share", "hk", "us"):
+        s = all_statuses.get(gk)
+        if not s:
+            continue
+        label = s.get("_label", gk)
+        holdings_str = (
+            ", ".join(f"{h['code']} {h['shares']}股" for h in s["holdings"])
+            if s["holdings"] else "空仓"
+        )
+        lines.append(
+            f"{label}: 净值 {s['nav']:,.0f} | "
+            f"回报 {s['nav_return_pct']:+.1f}% | "
+            f"现金 {s['cash']:,.0f} | "
+            f"{holdings_str}"
+        )
     return "\n".join(lines)
 
 
