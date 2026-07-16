@@ -503,7 +503,7 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
             logger.warning(f"简报策略信号扫描失败 (非致命): {e}")
 
         # ── 参考持仓三分仓调仓（A股/港股/美股各自独立资金池）──
-        from src.core.ref_portfolio import RefPortfolioManager
+        from src.core.ref_portfolio import RefPortfolioManager, REF_MONTHLY_LIMIT
         from src.analysis.execution_config import get_execution_config
         from src.analysis.portfolio_strategy import _detect_fine_group
 
@@ -519,7 +519,7 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                 "fx": exec_cfg.fx_rates.get("a_share", 1.0),
                 "label": "A股",
                 "initial_capital": exec_cfg.initial_capital,
-                "monthly_limit": exec_cfg.monthly_buy_limit,
+                "monthly_limit": REF_MONTHLY_LIMIT,
             },
             "hk": {
                 "file": "data/ref_portfolio_hk.yaml",
@@ -527,7 +527,7 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                 "fx": exec_cfg.fx_rates.get("hk", 0.9),
                 "label": "港股",
                 "initial_capital": exec_cfg.initial_capital,
-                "monthly_limit": exec_cfg.monthly_buy_limit,
+                "monthly_limit": REF_MONTHLY_LIMIT,
             },
             "us": {
                 "file": "data/ref_portfolio_us.yaml",
@@ -535,7 +535,7 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                 "fx": exec_cfg.fx_rates.get("us", 7.0),
                 "label": "美股",
                 "initial_capital": exec_cfg.initial_capital,
-                "monthly_limit": exec_cfg.monthly_buy_limit,
+                "monthly_limit": REF_MONTHLY_LIMIT,
             },
         }
 
