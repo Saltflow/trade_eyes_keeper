@@ -439,15 +439,7 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
     # ── 搜参策略结果（三组）──
     if portfolio_results:
         group_labels = {"a_share": "A股组合", "hk": "港股组合", "us": "美股组合"}
-        # 每组三基线：(展示名, 价格基准code 或 None=无风险, 无风险年化)
-        bench_sets = {
-            "a_share": [("510880", "510880", None), ("沪深300", "510300", None),
-                        ("无风险", None, 0.02)],
-            "hk": [("VOO", "VOO", None), ("BRK.B", "BRK.B", None),
-                   ("无风险", None, 0.038)],
-            "us": [("VOO", "VOO", None), ("BRK.B", "BRK.B", None),
-                   ("无风险", None, 0.038)],
-        }
+        eval_cache = getattr(session, "_yaml_eval_cache", {}) or {}
         for gk, gl in group_labels.items():
             gd = portfolio_results.get(gk)
             if not gd:
@@ -474,23 +466,12 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
             avg_cash = sum(cash_pcts) / len(cash_pcts) if cash_pcts else None
             comp = getattr(r, "composition", [])
 
-            # 验证期胜率（三基线各算一个）
-            # 空仓策略（平均现金≈100%）胜率无意义，不展示以免误导
-            trade_cnt = getattr(r, "trade_count", 0) or 0
-            near_empty = (avg_cash is not None and avg_cash >= 98.0) or trade_cnt == 0
+            # 基准收益（来自统一回测报告）
             wr_parts = []
-            if not near_empty:
-                for disp, bcode, rf in bench_sets.get(gk, []):
-                    if bcode is not None:
-                        wr, wd, td, _ = EmailNotifier._calc_validation_winrate(
-                            r, benchmark.get(bcode), months=9,
-                        )
-                    else:
-                        wr, wd, td = EmailNotifier._calc_winrate_vs_riskfree(
-                            r, annual_rate=rf, months=9,
-                        )
-                    if wr is not None:
-                        wr_parts.append(f"{disp} {wr:.0f}%")
+            bench_returns = er.get("benchmark_returns", {}) or {}
+            for bcode, bret in bench_returns.items():
+                lbl = "无风险" if bcode == "risk_free" else bcode
+                wr_parts.append(f"{lbl} {bret:+.2f}%")
 
             total_ret = g_top.get("total_return")
             if test_ret is not None:
@@ -1545,30 +1526,12 @@ class EmailNotifier(BaseNotifier):
             ]
             avg_cash = sum(cash_pcts) / len(cash_pcts) if cash_pcts else None
 
-            # ── 验证期胜率（现场用 nav_series vs 三基线算，不依赖 YAML）──
-            # 每组三基线：(展示名, 价格基准code 或 None=无风险, 无风险年化)
-            bench_sets = {
-                "a_share": [("510880", "510880", None), ("沪深300", "510300", None),
-                            ("无风险", None, 0.02)],
-                "hk": [("VOO", "VOO", None), ("BRK.B", "BRK.B", None),
-                       ("无风险", None, 0.038)],
-                "us": [("VOO", "VOO", None), ("BRK.B", "BRK.B", None),
-                       ("无风险", None, 0.038)],
-            }
+            # ── 基准收益（来自统一回测报告）──
+            bench_returns = er.get("benchmark_returns", {}) or {}
             wr_parts = []
-            for disp, bcode, rf in bench_sets.get(group_key, []):
-                if bcode is not None:
-                    wr, _, _, _ = self._calc_validation_winrate(
-                        r, benchmark_data.get(bcode), months=9,
-                    )
-                else:
-                    wr, _, _ = self._calc_winrate_vs_riskfree(
-                        r, annual_rate=rf, months=9,
-                    )
-                if wr is not None:
-                    wc = "#27ae60" if wr >= 50 else "#c0392b"
-                    wr_parts.append(
-                        f'{disp} <span style="color:{wc}">{wr:.0f}%</span>')
+            for bcode, bret in bench_returns.items():
+                lbl = "无风险" if bcode == "risk_free" else bcode
+                wr_parts.append(f"{lbl} {bret:+.2f}%")
 
             total_ret = er.get("total_return")
             if total_ret is None:
