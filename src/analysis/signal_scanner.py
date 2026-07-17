@@ -479,18 +479,8 @@ class SignalScanner:
         return ", ".join(parts) if parts else "—"
 
     def _detect_divergence(self, strategies: list[dict]) -> list[str]:
-        """检测训练-测试背离"""
-        warnings = []
-        for s in strategies:
-            train = s.get("train_return", 0) or 0
-            test = s.get("test_return", 0) or 0
-            divergence = abs(train - test)
-            if divergence > 15:
-                rank = s.get("rank", "?")
-                warnings.append(
-                    f"Rank {rank}: 背离 {divergence:.0f}% (训练 {train:+.1f}% vs 测试 {test:+.1f}%)"
-                )
-        return warnings
+        """新 YAML 不再存储回测数据，此函数已废弃。"""
+        return []
 
     # ── 回测 ──
 

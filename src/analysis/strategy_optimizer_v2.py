@@ -701,15 +701,22 @@ class StrategyOptimizerV2:
         return rules
 
     def _save_results(self, report: OptimizationReport, save_dir: Path):
-        """保存最优策略到 YAML 文件（V1 兼容格式）"""
+        """保存最优策略到 YAML。只存策略定义（params + rules + market_config）。"""
+        from .execution_config import get_execution_config
 
-        def _native(v):
-            if hasattr(v, "item"):
-                return float(v.item()) if hasattr(v, "dtype") else v
-            return round(float(v), 4) if isinstance(v, float) else v
+        exec_cfg = get_execution_config()
+        constraints = self.constraints
+        market_config = {
+            "fx_rate": exec_cfg.fx_rates.get(self.group, 1.0),
+            "lot_size": exec_cfg.lot_sizes.get(self.group, 100),
+            "commission_rate": exec_cfg.commission_rate,
+            "initial_capital": exec_cfg.initial_capital,
+            "monthly_buy_limit": exec_cfg.monthly_buy_limit,
+            "benchmark_codes": list(constraints.benchmark_codes or []),
+            "risk_free_rate": constraints.risk_free_rate,
+        }
 
         fname = save_dir / f"{report.report_id}_{report.group}_strategies.yaml"
-
         output = {
             "report_id": report.report_id,
             "group": report.group,
@@ -717,19 +724,13 @@ class StrategyOptimizerV2:
             "iterations": report.iterations,
             "elapsed_seconds": report.elapsed_seconds,
             "optimizer_version": "v2",
-            "benchmarks": dict(report.benchmarks),
+            "market_config": market_config,
         }
 
         strategies = []
         for i, t in enumerate(report.top_strategies, 1):
             strat = {
                 "rank": i,
-                "train_return": _native(t.train_return),
-                "total_return": _native(t.strategy_return),  # 验证期原始涨幅（非超额）
-                "test_return": _native(t.test_return),       # 验证期超额涨幅（vs 基准）
-                "test_drawdown": _native(t.test_drawdown),
-                "sharpe": _native(t.sharpe),
-                "trade_count": t.trade_count,
                 "params": t.params,
                 "rules": [
                     {

@@ -455,13 +455,19 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
             r = gd.get("top1") or gd.get("max_return")
             if not r:
                 continue
-            # YAML 权威预估收益（各组用自己的 YAML）
-            g_yaml = yaml_by_group.get(gk)
-            g_top = ((g_yaml or {}).get("strategies") or [{}])[0]
-            test_ret = g_top.get("test_return")
-            test_dd = g_top.get("test_drawdown")
-            g_sharpe = g_top.get("sharpe")
-            ts = (g_yaml or {}).get("timestamp", "")[:16].replace("T", " ")
+            # 统一回测报告优先，回退到 YAML test_return（兼容旧 YAML）
+            eval_cache = getattr(session, "_yaml_eval_cache", {}) or {}
+            er = eval_cache.get(gk, {}) or {}
+            yaml_data = yaml_by_group.get(gk) or {}
+            g_top = (yaml_data.get("strategies") or [{}])[0]
+
+            total_ret = er.get("total_return")
+            test_ret = er.get("excess_return")
+            if test_ret is None:
+                test_ret = g_top.get("test_return")
+            test_dd = er.get("dd") or g_top.get("test_drawdown")
+            g_sharpe = er.get("sharpe") or g_top.get("sharpe")
+            ts = yaml_data.get("timestamp", "")[:16].replace("T", " ")
 
             qh = getattr(r, "quarterly_holdings", None) or []
             cash_pcts = [(100 - q["pos_pct"]) for q in qh if q.get("nav", 0) > 0]
@@ -1518,14 +1524,18 @@ class EmailNotifier(BaseNotifier):
                 f'padding-left:10px;margin:16px 0 8px">{group_label}</h4>'
             )
 
-            # ── YAML 权威预估收益（Top1 测试期，近9个月样本外）──
-            # 各组用自己的 YAML（hk/us 独立搜参），回退 non_a_share
+            # ── 统一回测报告优先，回退 YAML test_return（兼容旧 YAML）──
+            eval_cache = getattr(session, "_yaml_eval_cache", {}) or {}
+            er = eval_cache.get(group_key, {}) or {}
             g_yaml = (opt_data_map.get(group_key)
                       or opt_data_map.get("non_a_share") or {})
             g_top = (g_yaml.get("strategies") or [{}])[0]
-            test_ret = g_top.get("test_return")
-            test_dd = g_top.get("test_drawdown")
-            g_sharpe = g_top.get("sharpe")
+            total_ret = er.get("total_return")
+            test_ret = er.get("excess_return")
+            if test_ret is None:
+                test_ret = g_top.get("test_return")
+            test_dd = er.get("dd") or g_top.get("test_drawdown")
+            g_sharpe = er.get("sharpe") or g_top.get("sharpe")
             ts = g_yaml.get("timestamp", "")[:16].replace("T", " ")
             comp = getattr(r, "composition", [])
             qh = getattr(r, "quarterly_holdings", None) or []
@@ -1560,7 +1570,9 @@ class EmailNotifier(BaseNotifier):
                     wr_parts.append(
                         f'{disp} <span style="color:{wc}">{wr:.0f}%</span>')
 
-            total_ret = g_top.get("total_return")
+            total_ret = er.get("total_return")
+            if total_ret is None:
+                total_ret = g_top.get("total_return")
             if test_ret is not None:
                 rc = "#27ae60" if test_ret >= 0 else "#c0392b"
                 if total_ret is not None:

@@ -190,24 +190,28 @@ class TestRebalance:
         mgr = RefPortfolioManager()
         new_pf, trades = mgr.rebalance(
             self.pf, [_buy_alert("601728")], self.prices, "2026-07-15",
+            monthly_buy_limit=50000,
         )
         assert "601728" in new_pf.holdings
         h = new_pf.holdings["601728"]
-        assert h.shares == 400  # 5000/12=416.6 → 400 (lot=100)
+        # BUY_CASH_FRACTION=0.20: max_amount=min(20000,50000,100000)=20000
+        # raw=20000/12=1666, buy=1600 (lot=100)
+        assert h.shares == 1600
         assert new_pf.cash < 100000.0  # 扣了现金
         assert len(trades) == 1
         assert trades[0].action == "buy"
-        assert trades[0].shares == 400
+        assert trades[0].shares == 1600
 
     def test_buy_deducts_cash_and_commission(self):
         from src.core.ref_portfolio import RefPortfolioManager
         mgr = RefPortfolioManager()
         new_pf, trades = mgr.rebalance(
             self.pf, [_buy_alert("601728")], self.prices, "2026-07-15",
+            monthly_buy_limit=50000,
         )
-        expected_gross = 400 * 12.0  # 4800
-        expected_commission = expected_gross * 0.005  # 24
-        expected_cost = expected_gross + expected_commission  # 4824
+        expected_gross = 1600 * 12.0  # 19200
+        expected_commission = expected_gross * 0.005  # 96
+        expected_cost = expected_gross + expected_commission  # 19296
         assert new_pf.cash == pytest.approx(100000.0 - expected_cost)
         assert trades[0].commission == pytest.approx(expected_commission)
 
@@ -215,9 +219,9 @@ class TestRebalance:
         """买入股数必须是 lot_size 的整数倍。"""
         from src.core.ref_portfolio import RefPortfolioManager
         mgr = RefPortfolioManager()
-        # 价格 12.0, lot=100: 416.6 → 400 ✓
         new_pf, trades = mgr.rebalance(
             self.pf, [_buy_alert("601728")], self.prices, "2026-07-15",
+            monthly_buy_limit=50000,
         )
         assert new_pf.holdings["601728"].shares % 100 == 0
 
@@ -324,9 +328,9 @@ class TestRebalance:
     def test_weekday_trading_allowed(self):
         from src.core.ref_portfolio import RefPortfolioManager
         mgr = RefPortfolioManager()
-        # 2026-07-15 is Wednesday
         new_pf, trades = mgr.rebalance(
             self.pf, [_buy_alert("601728")], self.prices, "2026-07-15",
+            monthly_buy_limit=50000,
         )
         assert len(trades) >= 1
 
@@ -342,6 +346,7 @@ class TestRebalance:
 
         new_pf, trades = mgr.rebalance(
             pf, [_buy_alert("601728")], prices, "2026-07-15",
+            monthly_buy_limit=50000,
         )
         # 600938 still there
         assert "600938" in new_pf.holdings
@@ -359,6 +364,7 @@ class TestRebalance:
 
         new_pf, trades1 = mgr.rebalance(
             pf, [_buy_alert("601728")], self.prices, "2026-07-15",
+            monthly_buy_limit=50000,
         )
         assert len(new_pf.trade_log) == 1
 
@@ -378,6 +384,7 @@ class TestRebalance:
 
         new_pf, _ = mgr.rebalance(
             pf, [_buy_alert("601728")], self.prices, "2026-07-15",
+            monthly_buy_limit=50000,
         )
         assert new_pf.trading_days == 1
 
@@ -385,6 +392,7 @@ class TestRebalance:
         new_pf2, _ = mgr.rebalance(
             new_pf, [_buy_alert("600938")],
             {"601728": 12.0, "600938": 8.0}, "2026-07-15",
+            monthly_buy_limit=50000,
         )
         assert new_pf2.trading_days == 1
 
@@ -392,6 +400,7 @@ class TestRebalance:
         new_pf3, _ = mgr.rebalance(
             new_pf2, [_buy_alert("600938")],
             {"601728": 12.0, "600938": 8.0}, "2026-07-16",
+            monthly_buy_limit=50000,
         )
         assert new_pf3.trading_days == 2
 

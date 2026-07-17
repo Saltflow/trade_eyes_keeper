@@ -35,8 +35,8 @@ MONTHLY_BUY_LIMIT = 15000.0
 MONTHLY_SELL_LIMIT = 15000.0
 INITIAL_CASH_PER_STOCK = 10000.0
 TOTAL_CAPITAL = 100000.0
-RISK_FREE_A = 0.02
-RISK_FREE_NON_A = 0.045
+RISK_FREE_A = 0.02       # deprecated: 新代码应读 YAML market_config.risk_free_rate
+RISK_FREE_NON_A = 0.045  # deprecated: 新代码应读 YAML market_config.risk_free_rate
 MIN_TRADING_DAYS = 400
 MIN_EVAL_DAYS = 60
 
