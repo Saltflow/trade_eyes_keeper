@@ -402,6 +402,7 @@ def run_daily_task(force: bool = False):
             pf = mgr.load()
             if not mgr.is_initialized(pf):
                 continue
+            fx = {"a_share": 1.0, "hk": 0.9, "us": 7.0}.get(group_key, 1.0)
             prices = {}
             for _, row in stock_data_df.iterrows():
                 code = str(row.get("stock_code", ""))
@@ -409,7 +410,7 @@ def run_daily_task(force: bool = False):
                     continue
                 close = row.get("close")
                 if code and close is not None and not pd.isna(close):
-                    prices[code] = float(close)
+                    prices[code] = float(close) * fx
             status = mgr.get_status(pf, prices)
             status["_group"] = group_key
             status["_label"] = label
@@ -592,8 +593,9 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
             )
             mgr.save(new_pf)
 
-            # 本组 status（现价用原始货币显示，非 CNY）
-            status = mgr.get_status(new_pf, prices)
+            # 本组 status（现价 × FX → CNY，与成本基准一致）
+            cny_prices = {code: p * cfg["fx"] for code, p in prices.items()}
+            status = mgr.get_status(new_pf, cny_prices)
             status["_group"] = group_key
             status["_label"] = cfg["label"]
             all_statuses[group_key] = status
