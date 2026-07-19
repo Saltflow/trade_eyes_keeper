@@ -227,6 +227,7 @@ class RefPortfolioManager:
         monthly_buy_limit: float = 15000.0,
         fx_rate: float = 1.0,
         label: str = "",
+        force: bool = False,
     ) -> tuple[RefPortfolio, list[Trade]]:
         """根据策略信号和当前价格调仓。
 
@@ -251,10 +252,10 @@ class RefPortfolioManager:
             f"lot={lot_size}, fx={fx_rate}"
         )
 
-        # ── 前置校验：周末不交易 ──
+        # ── 前置校验：周末不交易（force 模式跳过）──
         try:
             dt = datetime.strptime(trade_date, "%Y-%m-%d")
-            if dt.weekday() >= 5:
+            if not force and dt.weekday() >= 5:
                 logger.info(f"参考持仓{tag} 跳过调仓: {trade_date} 是周末")
                 return pf, []
         except ValueError:

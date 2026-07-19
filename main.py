@@ -590,6 +590,7 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                 monthly_buy_limit=cfg["monthly_limit"],
                 fx_rate=cfg["fx"],
                 label=cfg["label"],
+                force=force,
             )
             mgr.save(new_pf)
 
