@@ -920,11 +920,15 @@ def _run_optimize_v2_impl(config):
 
         # ── 统一回测报告（近9月固定窗口）──
         full_report = None
-        yaml_path = files[0] if files else None
-        if yaml_path:
+        opt_dir = Path("data/optimizer")
+        yaml_files = sorted(
+            [f for f in opt_dir.glob(f"*_{group_name}_strategies.yaml")],
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
+        if yaml_files:
             from src.analysis.yaml_evaluator import evaluate_yaml_strategy
             er = evaluate_yaml_strategy(
-                yaml_path, config, stock_codes=codes,
+                yaml_files[0], config, stock_codes=codes,
                 with_sensitivity=True, with_volatility=True, with_candlestick=True,
             )
             if er:
