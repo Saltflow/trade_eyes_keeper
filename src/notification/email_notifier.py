@@ -473,7 +473,8 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
                 lbl = "无风险" if bcode == "risk_free" else bcode
                 wr_parts.append(f"{lbl} {bret:+.2f}%")
 
-            total_ret = g_top.get("total_return")
+            if total_ret is None:
+                total_ret = g_top.get("total_return")
             if test_ret is not None:
                 if total_ret is not None:
                     head = (f"{b}{gl}{b} 验证期涨幅 {total_ret:+.1f}% "
