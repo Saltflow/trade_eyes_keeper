@@ -4,10 +4,10 @@ import numpy as np
 import pandas as pd
 import pytest
 from unittest.mock import patch, MagicMock
-from pathlib import Path
 
 from src.analysis.signal_scanner import (
-    SignalScanner, ConsensusReport, ScanResult, StrategyAlert,
+    SignalScanner,
+    ConsensusReport,
 )
 
 
@@ -184,9 +184,11 @@ class TestContextBuilding:
 
     def test_build_context_with_history(self, scanner):
         today = {"close": 10.0, "deviation": -0.03, "rsi": 45}
-        hist = pd.DataFrame({
-            "close": [10.2, 10.1, 10.0],
-        })
+        hist = pd.DataFrame(
+            {
+                "close": [10.2, 10.1, 10.0],
+            }
+        )
         hist["ma60"] = hist["close"].rolling(60, min_periods=1).mean()
         hist["deviation"] = (hist["close"] - hist["ma60"]) / hist["ma60"]
         ctx = scanner._build_context(today, hist, "test")
@@ -204,14 +206,20 @@ class TestScanDedup:
     def _session(self, code="00883"):
         """构造带 _historical + stocks_data 的最小 session。"""
         import pandas as pd
+
         dates = pd.date_range("2025-01-01", periods=80, freq="D")
         # 造一个 ADX 高、MACD 正的上涨序列
         close = pd.Series(range(100, 180))
-        df = pd.DataFrame({
-            "date": dates.strftime("%Y-%m-%d"),
-            "open": close, "high": close + 1, "low": close - 1,
-            "close": close, "volume": [1e6] * 80,
-        })
+        df = pd.DataFrame(
+            {
+                "date": dates.strftime("%Y-%m-%d"),
+                "open": close,
+                "high": close + 1,
+                "low": close - 1,
+                "close": close,
+                "volume": [1e6] * 80,
+            }
+        )
         sess = MagicMock()
         sess._historical = {code: df}
         sess.stocks_data = [{"stock_code": code}]
@@ -221,20 +229,35 @@ class TestScanDedup:
         """两个策略含相同 condition → 只产 1 条告警。"""
         # 两个策略，buy_2 和 buy_4 完全相同条件
         strategies = [
-            {"rules": [
-                {"id": "buy_2", "type": "buy", "label": None,
-                 "condition": "adx > 10 and macd_hist > -999"},
-            ]},
-            {"rules": [
-                {"id": "buy_4", "type": "buy", "label": None,
-                 "condition": "adx > 10 and macd_hist > -999"},
-            ]},
+            {
+                "rules": [
+                    {
+                        "id": "buy_2",
+                        "type": "buy",
+                        "label": None,
+                        "condition": "adx > 10 and macd_hist > -999",
+                    },
+                ]
+            },
+            {
+                "rules": [
+                    {
+                        "id": "buy_4",
+                        "type": "buy",
+                        "label": None,
+                        "condition": "adx > 10 and macd_hist > -999",
+                    },
+                ]
+            },
         ]
         sess = self._session("00883")
-        with patch.object(scanner, "_load_strategies", return_value=strategies), \
-             patch.object(scanner, "compute_consensus",
-                          return_value=ConsensusReport(consensus_stocks=["00883"])), \
-             patch.object(scanner, "_get_stock_codes", return_value=["00883"]):
+        with patch.object(
+            scanner, "_load_strategies", return_value=strategies
+        ), patch.object(
+            scanner,
+            "compute_consensus",
+            return_value=ConsensusReport(consensus_stocks=["00883"]),
+        ), patch.object(scanner, "_get_stock_codes", return_value=["00883"]):
             result = scanner.scan(sess, "hk", top_n=5)
         # 相同条件只报一次
         codes = [(a.stock_code, a.condition_str) for a in result.alerts]
@@ -246,11 +269,17 @@ class TestParamsFromYaml:
 
     def test_string_levels_coerced_to_int(self):
         from src.analysis.signal_scanner import _params_from_yaml
-        p = _params_from_yaml({
-            "adx_pct_tau": "6", "adx_pct_w": "3", "buy_score_thresh": "9",
-            "_engine": "percentile", "_mode": "signal_score",
-            "_stocks": "600001,600002",
-        })
+
+        p = _params_from_yaml(
+            {
+                "adx_pct_tau": "6",
+                "adx_pct_w": "3",
+                "buy_score_thresh": "9",
+                "_engine": "percentile",
+                "_mode": "signal_score",
+                "_stocks": "600001,600002",
+            }
+        )
         assert p.values["adx_pct_tau"] == 6
         assert p.values["buy_score_thresh"] == 9
         assert "_engine" not in p.values
@@ -259,11 +288,13 @@ class TestParamsFromYaml:
 
     def test_float_string_truncated(self):
         from src.analysis.signal_scanner import _params_from_yaml
+
         p = _params_from_yaml({"position_frac": "4.0"})
         assert p.values["position_frac"] == 4
 
     def test_non_numeric_skipped(self):
         from src.analysis.signal_scanner import _params_from_yaml
+
         # 全局引擎的 builder 名（非数值）应被跳过
         p = _params_from_yaml({"buy_1_signal": "deviation_cross", "adx_pct_w": "2"})
         assert "buy_1_signal" not in p.values
@@ -275,12 +306,14 @@ class TestMakeSignalFn:
 
     def test_global_returns_none(self):
         from src.analysis.signal_scanner import _make_signal_fn
+
         assert _make_signal_fn("global") is None
         assert _make_signal_fn("") is None
         assert _make_signal_fn(None) is None
 
     def test_percentile_returns_fn(self):
         from src.analysis.signal_scanner import _make_signal_fn
+
         fn = _make_signal_fn("percentile")
         assert fn is not None
         assert fn.name == "percentile"
@@ -292,15 +325,21 @@ class TestSignalFnDispatch:
 
     def _session(self, code="600001", n=300, drift=0.8):
         import pandas as pd
+
         rng = np.random.RandomState(3)
         dates = pd.date_range("2023-01-01", periods=n, freq="B")
         t = np.linspace(0, drift, n) + rng.randn(n).cumsum() * 0.012
         close = 10 * np.exp(t)
-        df = pd.DataFrame({
-            "date": dates.strftime("%Y-%m-%d"),
-            "open": close, "high": close * 1.01, "low": close * 0.99,
-            "close": close, "volume": np.abs(rng.randn(n)) * 1e6 + 5e5,
-        })
+        df = pd.DataFrame(
+            {
+                "date": dates.strftime("%Y-%m-%d"),
+                "open": close,
+                "high": close * 1.01,
+                "low": close * 0.99,
+                "close": close,
+                "volume": np.abs(rng.randn(n)) * 1e6 + 5e5,
+            }
+        )
         sess = MagicMock()
         sess._historical = {code: df}
         sess.stocks_data = [{"stock_code": code}]
@@ -308,79 +347,129 @@ class TestSignalFnDispatch:
         return sess
 
     def test_percentile_dispatch_produces_engine_named_alert(self, scanner):
-        strategies = [{
-            "params": {
-                "adx_pct_tau": "5", "adx_pct_w": "3", "rsi_pct_tau": "5",
-                "rsi_pct_w": "3", "deviation_pct_tau": "5", "deviation_pct_w": "2",
-                "vol_ratio_pct_tau": "5", "vol_ratio_pct_w": "2",
-                "ma200_dev_pct_tau": "5", "ma200_dev_pct_w": "2",
-                "buy_score_thresh": "0", "sell_score_thresh": "9",
-                "position_frac": "2", "_engine": "percentile",
-                "_mode": "signal_score",
-            },
-            "rules": [
-                {"id": "buy_1", "label": "加权分位≥0.10买入", "type": "buy",
-                 "condition": "__signal_fn__"},
-            ],
-        }]
+        strategies = [
+            {
+                "params": {
+                    "adx_pct_tau": "5",
+                    "adx_pct_w": "3",
+                    "rsi_pct_tau": "5",
+                    "rsi_pct_w": "3",
+                    "deviation_pct_tau": "5",
+                    "deviation_pct_w": "2",
+                    "vol_ratio_pct_tau": "5",
+                    "vol_ratio_pct_w": "2",
+                    "ma200_dev_pct_tau": "5",
+                    "ma200_dev_pct_w": "2",
+                    "buy_score_thresh": "0",
+                    "sell_score_thresh": "9",
+                    "position_frac": "2",
+                    "_engine": "percentile",
+                    "_mode": "signal_score",
+                },
+                "rules": [
+                    {
+                        "id": "buy_1",
+                        "label": "加权分位≥0.10买入",
+                        "type": "buy",
+                        "condition": "__signal_fn__",
+                    },
+                ],
+            }
+        ]
         sess = self._session("600001", drift=0.8)  # 强上涨→高分位
-        with patch.object(scanner, "_load_strategies", return_value=strategies), \
-             patch.object(scanner, "compute_consensus",
-                          return_value=ConsensusReport(consensus_stocks=["600001"])), \
-             patch.object(scanner, "_get_stock_codes", return_value=["600001"]):
+        with patch.object(
+            scanner, "_load_strategies", return_value=strategies
+        ), patch.object(
+            scanner,
+            "compute_consensus",
+            return_value=ConsensusReport(consensus_stocks=["600001"]),
+        ), patch.object(scanner, "_get_stock_codes", return_value=["600001"]):
             result = scanner.scan(sess, "a_share", top_n=5)
         # 分位引擎命中 → 告警名来自引擎（含"分位评分"），非 buy_1
-        assert any("分位评分" in a.rule_label for a in result.alerts), \
-            [a.rule_label for a in result.alerts]
+        assert any("分位评分" in a.rule_label for a in result.alerts), [
+            a.rule_label for a in result.alerts
+        ]
 
     def test_signal_fn_marker_not_evaluated_as_expression(self, scanner):
         # __signal_fn__ 不应被 ExpressionEngine 当作表达式求值报错
-        strategies = [{
-            "params": {"_engine": "percentile", "adx_pct_w": "2",
-                       "buy_score_thresh": "9", "sell_score_thresh": "9",
-                       "position_frac": "2"},
-            "rules": [{"id": "buy_1", "label": "x", "type": "buy",
-                       "condition": "__signal_fn__"}],
-        }]
+        strategies = [
+            {
+                "params": {
+                    "_engine": "percentile",
+                    "adx_pct_w": "2",
+                    "buy_score_thresh": "9",
+                    "sell_score_thresh": "9",
+                    "position_frac": "2",
+                },
+                "rules": [
+                    {
+                        "id": "buy_1",
+                        "label": "x",
+                        "type": "buy",
+                        "condition": "__signal_fn__",
+                    }
+                ],
+            }
+        ]
         sess = self._session("600001", drift=0.0)
-        with patch.object(scanner, "_load_strategies", return_value=strategies), \
-             patch.object(scanner, "compute_consensus",
-                          return_value=ConsensusReport()), \
-             patch.object(scanner, "_get_stock_codes", return_value=["600001"]):
+        with patch.object(
+            scanner, "_load_strategies", return_value=strategies
+        ), patch.object(
+            scanner, "compute_consensus", return_value=ConsensusReport()
+        ), patch.object(scanner, "_get_stock_codes", return_value=["600001"]):
             result = scanner.scan(sess, "a_share", top_n=5)
         # 高阈值(9)→大概率不触发，但关键是不崩溃、无 buy_1 原始名泄漏
         assert all(a.rule_label != "__signal_fn__" for a in result.alerts)
 
     def test_sell_signals_not_filtered(self, scanner):
         # 修复：scanner 不应过滤 sell 信号，type 字段应区分 buy/sell
-        strategies = [{
-            "params": {
-                "adx_pct_tau": "5", "adx_pct_w": "3", "rsi_pct_tau": "5",
-                "rsi_pct_w": "3", "deviation_pct_tau": "5", "deviation_pct_w": "2",
-                "vol_ratio_pct_tau": "5", "vol_ratio_pct_w": "2",
-                "ma200_dev_pct_tau": "5", "ma200_dev_pct_w": "2",
-                "buy_score_thresh": "9", "sell_score_thresh": "0",  # 买阈高(9→0.9)不触发,卖阈低(0→0.1)
-                "position_frac": "2", "_engine": "percentile",
-                "_mode": "signal_score",
-            },
-            "rules": [
-                {"id": "buy_1", "label": "加权分位≥0.90买入", "type": "buy",
-                 "condition": "__signal_fn__"},
-                {"id": "sell_1", "label": "加权分位≥0.10卖出", "type": "sell",
-                 "condition": "__signal_fn__"},
-            ],
-        }]
+        strategies = [
+            {
+                "params": {
+                    "adx_pct_tau": "5",
+                    "adx_pct_w": "3",
+                    "rsi_pct_tau": "5",
+                    "rsi_pct_w": "3",
+                    "deviation_pct_tau": "5",
+                    "deviation_pct_w": "2",
+                    "vol_ratio_pct_tau": "5",
+                    "vol_ratio_pct_w": "2",
+                    "ma200_dev_pct_tau": "5",
+                    "ma200_dev_pct_w": "2",
+                    "buy_score_thresh": "9",
+                    "sell_score_thresh": "0",  # 买阈高(9→0.9)不触发,卖阈低(0→0.1)
+                    "position_frac": "2",
+                    "_engine": "percentile",
+                    "_mode": "signal_score",
+                },
+                "rules": [
+                    {
+                        "id": "buy_1",
+                        "label": "加权分位≥0.90买入",
+                        "type": "buy",
+                        "condition": "__signal_fn__",
+                    },
+                    {
+                        "id": "sell_1",
+                        "label": "加权分位≥0.10卖出",
+                        "type": "sell",
+                        "condition": "__signal_fn__",
+                    },
+                ],
+            }
+        ]
         sess = self._session("600001", drift=-2.0, n=500)  # 强跌，净分为负→触发卖
-        with patch.object(scanner, "_load_strategies", return_value=strategies), \
-             patch.object(scanner, "compute_consensus",
-                          return_value=ConsensusReport(consensus_stocks=["600001"])), \
-             patch.object(scanner, "_get_stock_codes", return_value=["600001"]):
+        with patch.object(
+            scanner, "_load_strategies", return_value=strategies
+        ), patch.object(
+            scanner,
+            "compute_consensus",
+            return_value=ConsensusReport(consensus_stocks=["600001"]),
+        ), patch.object(scanner, "_get_stock_codes", return_value=["600001"]):
             result = scanner.scan(sess, "a_share", top_n=5)
-        buy_alerts = [a for a in result.alerts if a.type == "strategy_buy"]
-        sell_alerts = [a for a in result.alerts if a.type == "strategy_sell"]
         assert any(a.rule_label for a in result.alerts), "应产生告警（买卖至少一种）"
         # 类型字段正确区分：buy 应有 "strategy_buy"，sell 应有 "strategy_sell"
         for a in result.alerts:
-            assert a.type in ("strategy_buy", "strategy_sell"), \
+            assert a.type in ("strategy_buy", "strategy_sell"), (
                 f"告警类型应为 strategy_buy 或 strategy_sell，实际 {a.type}"
-
+            )

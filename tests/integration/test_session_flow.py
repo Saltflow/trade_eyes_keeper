@@ -72,7 +72,6 @@ class TestSessionFlow:
         session = session_manager.create_session(config)
 
         # 手动添加测试数据到session
-        from src.models.converters import dataframe_to_stock_price_data
 
         test_df = pd.DataFrame(
             [

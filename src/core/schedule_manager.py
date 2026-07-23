@@ -27,7 +27,9 @@ class ScheduleManager:
 
     def __init__(self, config: dict, config_path: Path | None = None):
         self.config = config
-        self.config_path = Path(config_path) if config_path else Path("config/config.yaml")
+        self.config_path = (
+            Path(config_path) if config_path else Path("config/config.yaml")
+        )
         tz_str = config.get("scheduler", {}).get("timezone", "Asia/Shanghai")
         try:
             timezone = pytz.timezone(tz_str)
@@ -52,7 +54,8 @@ class ScheduleManager:
             br_time = br.get("run_time", "09:50")
             job_id = _JOB_IDS.get(br_id, f"brief_{br_id}")
             self._add_job(
-                br_id, br_time,
+                br_id,
+                br_time,
                 ["--brief", br_id],
                 br.get("label", br_id),
                 job_id_override=job_id,
@@ -62,15 +65,14 @@ class ScheduleManager:
         opt_time = sched_cfg.get("optimize_time", "02:00")
         if sched_cfg.get("optimize_enabled", True):
             self._add_job(
-                "optimize", opt_time,
+                "optimize",
+                opt_time,
                 ["--optimize-v2"],
                 "策略优化",
             )
 
         self.scheduler.start()
-        logger.info(
-            f"调度器已启动: {len(self.scheduler.get_jobs())} 个任务"
-        )
+        logger.info(f"调度器已启动: {len(self.scheduler.get_jobs())} 个任务")
 
     def _add_job(
         self,
@@ -101,9 +103,11 @@ class ScheduleManager:
                 log_file = project_root / "logs" / "quant_system.log"
                 stderr_target = open(str(log_file), "a")
                 subprocess.Popen(
-                    cmd, cwd=str(project_root),
+                    cmd,
+                    cwd=str(project_root),
                     env=os.environ.copy(),
-                    stdout=stderr_target, stderr=stderr_target,
+                    stdout=stderr_target,
+                    stderr=stderr_target,
                 )
                 logger.info(f"调度任务已启动子进程: {' '.join(cmd)}")
             except Exception as e:
@@ -129,12 +133,14 @@ class ScheduleManager:
         """返回当前所有任务的调度信息。"""
         result = []
         for job in self.scheduler.get_jobs():
-            result.append({
-                "id": job.id,
-                "name": job.name,
-                "time": f"{job.next_run_time.hour:02d}:{job.next_run_time.minute:02d}",
-                "next_run": str(job.next_run_time),
-            })
+            result.append(
+                {
+                    "id": job.id,
+                    "name": job.name,
+                    "time": f"{job.next_run_time.hour:02d}:{job.next_run_time.minute:02d}",
+                    "next_run": str(job.next_run_time),
+                }
+            )
         return result
 
     def reschedule(self, task_id: str, time_str: str) -> bool:
@@ -185,7 +191,13 @@ class ScheduleManager:
                         break
 
             with open(self.config_path, "w", encoding="utf-8") as f:
-                yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+                yaml.dump(
+                    config,
+                    f,
+                    allow_unicode=True,
+                    default_flow_style=False,
+                    sort_keys=False,
+                )
             logger.info(f"调度配置已写入: {self.config_path}")
         except Exception as e:
             logger.error(f"写入调度配置失败: {e}")

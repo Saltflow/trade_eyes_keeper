@@ -59,7 +59,9 @@ def test_feishu_real_data_one_card_pipeline():
         ok, msg = manager.feishu._send(title, body)
         assert ok, msg
     else:
-        with patch.object(manager.feishu, "_send", return_value=(True, "ok")) as mock_send:
+        with patch.object(
+            manager.feishu, "_send", return_value=(True, "ok")
+        ) as mock_send:
             ok, msg = manager.feishu._send(title, body)
 
         assert ok

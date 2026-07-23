@@ -14,7 +14,7 @@ def _load_config() -> dict:
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             return yaml.safe_load(f)
-    except Exception as e:
+    except Exception:
         logger.exception(f"读取配置失败: {CONFIG_PATH}")
         return {}
 
@@ -23,22 +23,34 @@ def _save_config(config: dict) -> None:
     tmp = CONFIG_PATH.with_suffix(".yaml.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            yaml.dump(
+                config, f, allow_unicode=True, default_flow_style=False, sort_keys=False
+            )
         tmp.replace(CONFIG_PATH)
         logger.info(f"配置已保存: {CONFIG_PATH}")
-    except Exception as e:
+    except Exception:
         logger.exception(f"保存配置失败: {tmp} -> {CONFIG_PATH}")
 
 
 def _git_info() -> str:
     """返回当前部署的更新日期 + 最近3条 commit（供 /help 展示）。"""
     import subprocess
+
     root = CONFIG_PATH.parent.parent
     try:
         out = subprocess.run(
-            ["git", "-C", str(root), "log", "-3",
-             "--pretty=format:%cd %h %s", "--date=format:%m-%d %H:%M"],
-            capture_output=True, text=True, timeout=5,
+            [
+                "git",
+                "-C",
+                str(root),
+                "log",
+                "-3",
+                "--pretty=format:%cd %h %s",
+                "--date=format:%m-%d %H:%M",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if out.returncode != 0 or not out.stdout.strip():
             return ""
@@ -53,36 +65,63 @@ def _git_info() -> str:
 
 def handle_help() -> str:
     sections = [
-        ("📋 监控列表", [
-            ("/list", "查看监控列表"),
-            ("/add 代码,...", "批量添加 例 <code>/add 601728,GOOG,00883</code>"),
-            ("/remove 代码,...", "批量移除"),
-            ("/save", "保存监控列表到 git"),
-        ]),
-        ("📊 报告触发", [
-            ("/daily", "触发完整日报"),
-            ("/brief [afternoon]", "触发简报（默认早盘）"),
-            ("/backtest 代码 起 止", "回测 例 <code>/backtest 601919 2024-01-01 2024-12-31</code>"),
-        ]),
-        ("🔬 策略与搜参", [
-            ("/optimize [v1]", "触发策略优化（默认 V2）"),
-            ("/switch_optimizer [引擎]", "查看/切换搜参引擎"),
-            ("/mode [frac|position]", "查看/切换策略模式"),
-            ("/config [show|set K V|reset]", "查看/修改优化器配置"),
-            ("/ref_date [YYYY-MM-DD]", "设置参考持仓基期（默认今天）"),
-        ]),
-        ("🎯 标的开关", [
-            ("/skip search|signals 代码", "关闭标的搜参/信号 例 <code>/skip search 601985</code>"),
-            ("/unskip search|signals 代码", "恢复搜参/信号"),
-        ]),
-        ("🔔 报警与调度", [
-            ("/alerts", "查看报警状态"),
-            ("/reset_alerts [代码]", "重置报警"),
-            ("/schedule [任务 时间]", "查看/修改调度 例 <code>/schedule daily 20:00</code>"),
-        ]),
-        ("ℹ️ 其他", [
-            ("/help", "显示此帮助"),
-        ]),
+        (
+            "📋 监控列表",
+            [
+                ("/list", "查看监控列表"),
+                ("/add 代码,...", "批量添加 例 <code>/add 601728,GOOG,00883</code>"),
+                ("/remove 代码,...", "批量移除"),
+                ("/save", "保存监控列表到 git"),
+            ],
+        ),
+        (
+            "📊 报告触发",
+            [
+                ("/daily", "触发完整日报"),
+                ("/brief [afternoon]", "触发简报（默认早盘）"),
+                (
+                    "/backtest 代码 起 止",
+                    "回测 例 <code>/backtest 601919 2024-01-01 2024-12-31</code>",
+                ),
+            ],
+        ),
+        (
+            "🔬 策略与搜参",
+            [
+                ("/optimize [v1]", "触发策略优化（默认 V2）"),
+                ("/switch_optimizer [引擎]", "查看/切换搜参引擎"),
+                ("/mode [frac|position]", "查看/切换策略模式"),
+                ("/config [show|set K V|reset]", "查看/修改优化器配置"),
+                ("/ref_date [YYYY-MM-DD]", "设置参考持仓基期（默认今天）"),
+            ],
+        ),
+        (
+            "🎯 标的开关",
+            [
+                (
+                    "/skip search|signals 代码",
+                    "关闭标的搜参/信号 例 <code>/skip search 601985</code>",
+                ),
+                ("/unskip search|signals 代码", "恢复搜参/信号"),
+            ],
+        ),
+        (
+            "🔔 报警与调度",
+            [
+                ("/alerts", "查看报警状态"),
+                ("/reset_alerts [代码]", "重置报警"),
+                (
+                    "/schedule [任务 时间]",
+                    "查看/修改调度 例 <code>/schedule daily 20:00</code>",
+                ),
+            ],
+        ),
+        (
+            "ℹ️ 其他",
+            [
+                ("/help", "显示此帮助"),
+            ],
+        ),
     ]
     parts = ["<b>📖 可用命令</b>"]
     for title, cmds in sections:
@@ -154,17 +193,21 @@ def handle_skip(kind: str, codes: list[str], remove: bool = False) -> str:
     _save_config(config)
     action = "恢复" if remove else "关闭"
     codes_str = " ".join(f"<code>{c}</code>" for c in changed)
-    return (f"✅ 已{action}{len(changed)} 只标的的{label}: {codes_str}\n"
-            f"当前不{label}: {len(cur)} 只")
+    return (
+        f"✅ 已{action}{len(changed)} 只标的的{label}: {codes_str}\n"
+        f"当前不{label}: {len(cur)} 只"
+    )
 
 
 def _engine_brief(engine_key: str) -> str:
     """获取引擎买卖标准简介（criterion 3）。"""
     try:
         if engine_key in ("percentile", "pct", "new"):
-            from src.analysis.percentile_engine import PercentileSignalFn
+            from ...analysis.percentile_engine import PercentileSignalFn
+
             return PercentileSignalFn().engine_brief()
-        from src.analysis.global_threshold_signal import GlobalThresholdSignalFn
+        from ...analysis.global_threshold_signal import GlobalThresholdSignalFn
+
         return GlobalThresholdSignalFn().engine_brief()
     except Exception:
         return ""
@@ -208,9 +251,11 @@ def handle_switch_optimizer(kind: str | None = None) -> str:
     _save_config(config)
 
     brief = _engine_brief(kind)
-    return (f"✅ 搜参引擎已切换: <b>{old} → {kind}</b>\n\n"
-            f"{brief}\n\n"
-            f"下次 02:00 cron 自动生效。手动搜参: <code>/optimize</code>")
+    return (
+        f"✅ 搜参引擎已切换: <b>{old} → {kind}</b>\n\n"
+        f"{brief}\n\n"
+        f"下次 02:00 cron 自动生效。手动搜参: <code>/optimize</code>"
+    )
 
 
 def handle_add(codes: list[str]) -> str:
@@ -237,9 +282,13 @@ def handle_add(codes: list[str]) -> str:
 
     lines = []
     if added:
-        lines.append(f"✅ 已添加 {len(added)} 只：{' '.join(f'<code>{c}</code>' for c in added)}")
+        lines.append(
+            f"✅ 已添加 {len(added)} 只：{' '.join(f'<code>{c}</code>' for c in added)}"
+        )
     if skipped:
-        lines.append(f"⏭ 已存在 {len(skipped)} 只：{' '.join(f'<code>{c}</code>' for c in skipped)}")
+        lines.append(
+            f"⏭ 已存在 {len(skipped)} 只：{' '.join(f'<code>{c}</code>' for c in skipped)}"
+        )
     lines.append(f"当前共 {len(stocks)} 只")
     return "\n".join(lines)
 
@@ -269,17 +318,21 @@ def handle_remove(codes: list[str]) -> str:
 
     lines = []
     if removed:
-        lines.append(f"✅ 已移除 {len(removed)} 只：{' '.join(f'<code>{c}</code>' for c in removed)}")
+        lines.append(
+            f"✅ 已移除 {len(removed)} 只：{' '.join(f'<code>{c}</code>' for c in removed)}"
+        )
     if not_found:
-        lines.append(f"❌ 未找到 {len(not_found)} 只：{' '.join(f'<code>{c}</code>' for c in not_found)}")
+        lines.append(
+            f"❌ 未找到 {len(not_found)} 只：{' '.join(f'<code>{c}</code>' for c in not_found)}"
+        )
     lines.append(f"当前共 {len(stocks)} 只")
     return "\n".join(lines)
 
 
 def handle_backtest(code: str, start: str, end: str) -> str:
     try:
-        from src.data.data_source import DataSource
-        from src.analysis.portfolio_strategy import TimingStrategyEngine
+        from ...data.data_source import DataSource
+        from ...analysis.portfolio_strategy import TimingStrategyEngine
 
         config = _load_config()
         ds = DataSource(config)
@@ -360,13 +413,16 @@ def handle_save(config_path=None) -> str:
     try:
         subprocess.run(
             ["git", "add", "config/config.yaml"],
-            cwd=repo, check=True, capture_output=True,
+            cwd=repo,
+            check=True,
+            capture_output=True,
             timeout=10,
         )
         subprocess.run(
-            ["git", "commit", "-m", "bot: watchlist updated via /save",
-             "--no-verify"],
-            cwd=repo, check=True, capture_output=True,
+            ["git", "commit", "-m", "bot: watchlist updated via /save", "--no-verify"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
             timeout=10,
         )
         logger.info("配置已提交到 git")
@@ -397,12 +453,15 @@ def _run_main(command_args: list[str], env_extra: dict | None = None) -> str:
         log_file = project_root / "logs" / "quant_system.log"
         log_fh = open(str(log_file), "a")
         subprocess.Popen(
-            cmd, cwd=str(project_root), env=env,
-            stdout=log_fh, stderr=log_fh,
+            cmd,
+            cwd=str(project_root),
+            env=env,
+            stdout=log_fh,
+            stderr=log_fh,
         )
         logger.info(f"后台进程已启动: {' '.join(cmd)}")
         return True
-    except Exception as e:
+    except Exception:
         logger.exception(f"后台进程启动失败: {cmd}")
         return False
 
@@ -447,7 +506,8 @@ def handle_schedule(action: str, task_id: str, time_str: str) -> str:
     """查看或修改调度时间。"""
     # 从 health server 全局实例获取 ScheduleManager
     try:
-        from src.health_server.core.global_instances import get_schedule_manager
+        from ...health_server.core.global_instances import get_schedule_manager
+
         mgr = get_schedule_manager()
     except Exception:
         return "❌ 调度管理器未启动"
@@ -532,12 +592,16 @@ def handle_reset_alerts(stock_code: str = "") -> str:
         for k in keys_to_delete:
             del alerts[k]
         data["alerts"] = alerts
-        state_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        state_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         return f"✅ 已重置 <code>{stock_code}</code> 的报警状态（清除 {len(keys_to_delete)} 条）"
     else:
         # 全部清除
         data["alerts"] = {}
-        state_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        state_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         return f"✅ 已重置所有报警状态（清除 {len(alerts)} 条）"
 
 
@@ -552,7 +616,7 @@ def _load_opt_config() -> dict:
     try:
         with open(OPT_CONSTRAINTS_PATH, "r", encoding="utf-8") as f:
             return yaml.safe_load(f)
-    except Exception as e:
+    except Exception:
         logger.exception(f"读取优化器配置失败: {OPT_CONSTRAINTS_PATH}")
         return {}
 
@@ -561,27 +625,63 @@ def _save_opt_config(config: dict) -> None:
     tmp = OPT_CONSTRAINTS_PATH.with_suffix(".yaml.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            yaml.dump(
+                config, f, allow_unicode=True, default_flow_style=False, sort_keys=False
+            )
         tmp.replace(OPT_CONSTRAINTS_PATH)
         logger.info(f"优化器配置已保存: {OPT_CONSTRAINTS_PATH}")
     except Exception as e:
         logger.exception(f"保存优化器配置失败: {e}")
 
 
-_MODE_LABELS = {"frac": "Fixed-Frac (固定比例买入)", "position_target": "Position-Target (仓位目标驱动)"}
+_MODE_LABELS = {
+    "frac": "Fixed-Frac (固定比例买入)",
+    "position_target": "Position-Target (仓位目标驱动)",
+    "simplified": "Simplified (简化搜参: 每次交易固定限额)",
+}
 
 _CONFIG_HELP = {
     "min_pos": ("min_avg_position_pct", "最低平均仓位%", "hard_constraints", 5, 50),
     "max_dd": ("max_drawdown_pct", "最大回撤% (负数)", "hard_constraints", -50, -5),
-    "max_trades": ("max_trades_per_month", "月最大交易次数", "hard_constraints", 1, 200),
-    "daily_adjust": ("max_daily_adjust", "日调仓上限 (Position-Target)", "position_model", 0.1, 1.0),
+    "max_trades": (
+        "max_trades_per_month",
+        "月最大交易次数",
+        "hard_constraints",
+        1,
+        200,
+    ),
+    "daily_adjust": (
+        "max_daily_adjust",
+        "日调仓上限 (Position-Target)",
+        "position_model",
+        0.1,
+        1.0,
+    ),
     "data_years": ("data_years", "回测数据年数", "walk_forward", 1, 10),
-    "confirm_days": ("buy_confirmation_days_ref", "买入确认天数", "position_model", 1, 5),
-    "frac_levels": ("frac_levels", "买入比例档位 (Fixed-Frac)", "discrete_search", None, None),
+    "confirm_days": (
+        "buy_confirmation_days_ref",
+        "买入确认天数",
+        "position_model",
+        1,
+        5,
+    ),
+    "frac_levels": (
+        "frac_levels",
+        "买入比例档位 (Fixed-Frac)",
+        "discrete_search",
+        None,
+        None,
+    ),
     "num_buy": ("num_buy_rules", "买入规则槽位数", "discrete_search", 1, 10),
     "num_sell": ("num_sell_rules", "卖出规则槽位数", "discrete_search", 1, 5),
     # 执行参数（统一月额度/手续费/本金）
-    "monthly_limit": ("monthly_buy_limit", "月买入额度", "execution_params", 1000, 200000),
+    "monthly_limit": (
+        "monthly_buy_limit",
+        "月买入额度",
+        "execution_params",
+        1000,
+        200000,
+    ),
     "commission": ("commission_rate", "手续费率", "execution_params", 0.001, 0.02),
     "init_capital": ("initial_capital", "初始本金", "execution_params", 10000, 1000000),
 }
@@ -599,6 +699,7 @@ def handle_mode(mode: str) -> str:
             "可用模式:",
             "  <code>/mode frac</code> — Fixed-Frac (每信号固定比例买入)",
             "  <code>/mode position</code> — Position-Target (仓位目标动态调整)",
+            "  <code>/mode simplified</code> — Simplified (每信号固定金额限额)",
         ]
         # Show current key params
         ds = cfg.get("discrete_search", {})
@@ -610,7 +711,9 @@ def handle_mode(mode: str) -> str:
             lines.append(f"  日调仓上限: {adj:.0%}  数据年: {wf.get('data_years', 5)}")
         else:
             fl = ds.get("frac_levels", [])
-            lines.append(f"  买入比例档位: {fl}  月交易上限: {hc.get('max_trades_per_month', 100)}")
+            lines.append(
+                f"  买入比例档位: {fl}  月交易上限: {hc.get('max_trades_per_month', 100)}"
+            )
         return "\n".join(lines)
 
     cfg.setdefault("discrete_search", {})["mode"] = mode
@@ -657,7 +760,9 @@ def handle_config(action: str, key: str, value: str) -> str:
         if section == "hard_constraints":
             cfg.setdefault("hard_constraints", {})[field] = val
         elif section == "position_model":
-            cfg.setdefault("discrete_search", {}).setdefault("position_model", {})[field] = val
+            cfg.setdefault("discrete_search", {}).setdefault("position_model", {})[
+                field
+            ] = val
         elif section == "walk_forward":
             cfg.setdefault("walk_forward", {})[field] = val
         elif section == "discrete_search":
@@ -667,7 +772,8 @@ def handle_config(action: str, key: str, value: str) -> str:
         _save_opt_config(cfg)
         # 刷新执行配置缓存（search/daily 两路径生效）
         try:
-            from src.analysis.execution_config import reload_execution_config
+            from ...analysis.execution_config import reload_execution_config
+
             reload_execution_config()
         except Exception:
             pass
@@ -711,12 +817,14 @@ def handle_config(action: str, key: str, value: str) -> str:
         lines.append(f"  日调仓上限: {pm.get('max_daily_adjust', 0.10):.0%}")
     else:
         lines.append(f"  买入比例档位: {ds.get('frac_levels', [])}")
-    lines.extend([
-        f"  买入槽位: {ds.get('num_buy_rules', 5)}  卖出槽位: {ds.get('num_sell_rules', 3)}",
-        "",
-        "修改: <code>/config set KEY VALUE</code>",
-        "可配置项: " + ", ".join(_CONFIG_HELP.keys()),
-    ])
+    lines.extend(
+        [
+            f"  买入槽位: {ds.get('num_buy_rules', 5)}  卖出槽位: {ds.get('num_sell_rules', 3)}",
+            "",
+            "修改: <code>/config set KEY VALUE</code>",
+            "可配置项: " + ", ".join(_CONFIG_HELP.keys()),
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -727,8 +835,9 @@ def handle_ref_date(date_str: str | None = None) -> str:
     有参数: 设置新基期并重置参考持仓（⚠️ 清空所有标的）
     参数 "confirm": 确认上次设置操作（防呆）
     """
-    from src.core.ref_portfolio import (
-        RefPortfolioManager, DEFAULT_INITIAL_CAPITAL,
+    from ...core.ref_portfolio import (
+        RefPortfolioManager,
+        DEFAULT_INITIAL_CAPITAL,
     )
 
     config = _load_config()
@@ -764,15 +873,20 @@ def handle_ref_date(date_str: str | None = None) -> str:
             if not mgr.is_initialized(pf):
                 continue
             any_init = True
-            lines.append(f"\n<b>{label}</b>: 现金 {pf.cash:,.2f} | "
-                         f"持仓 {len(pf.holdings)} 只 | 交易日 {pf.trading_days}")
+            lines.append(
+                f"\n<b>{label}</b>: 现金 {pf.cash:,.2f} | "
+                f"持仓 {len(pf.holdings)} 只 | 交易日 {pf.trading_days}"
+            )
             if pf.holdings:
                 for code, h in sorted(pf.holdings.items()):
-                    lines.append(f"  • <code>{code}</code> {h.shares}股 "
-                                 f"成本 {h.avg_cost:.2f}")
+                    lines.append(
+                        f"  • <code>{code}</code> {h.shares}股 成本 {h.avg_cost:.2f}"
+                    )
         if not any_init:
-            lines.append("\n📭 参考持仓未初始化"
-                         "（发送 <code>/ref_date YYYY-MM-DD</code> 开始跟踪）")
+            lines.append(
+                "\n📭 参考持仓未初始化"
+                "（发送 <code>/ref_date YYYY-MM-DD</code> 开始跟踪）"
+            )
         else:
             lines.append(
                 "\n⚠️ 发送 <code>/ref_date YYYY-MM-DD</code> 将<b>清空所有持仓</b>并重置。"
@@ -781,6 +895,7 @@ def handle_ref_date(date_str: str | None = None) -> str:
 
     # ── 设置新基期 ──
     from datetime import datetime as _dt
+
     try:
         _dt.strptime(date_str, "%Y-%m-%d")
     except ValueError:
@@ -790,8 +905,11 @@ def handle_ref_date(date_str: str | None = None) -> str:
     if not pending_date:
         total_holdings = 0
         total_cash = 0.0
-        for fname in ["data/ref_portfolio_a.yaml", "data/ref_portfolio_hk.yaml",
-                       "data/ref_portfolio_us.yaml"]:
+        for fname in [
+            "data/ref_portfolio_a.yaml",
+            "data/ref_portfolio_hk.yaml",
+            "data/ref_portfolio_us.yaml",
+        ]:
             mgr = RefPortfolioManager(file_path=fname)
             pf = mgr.load()
             if mgr.is_initialized(pf):

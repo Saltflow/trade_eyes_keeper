@@ -66,25 +66,21 @@ def handle_feishu_event(app: FeishuApp, headers: dict, body: dict) -> tuple[int,
         return 403, {"msg": "signature verification failed"}
 
     # 3. 提取消息
-    event = (body.get("event") or {})
+    event = body.get("event") or {}
     if not event:
         # 可能是 header.type 嵌套格式
         header = body.get("header", {})
         if header.get("event_type") == "im.message.receive_v1":
             event = body
 
-    event_type = body.get("header", {}).get("event_type") or body.get(
-        "type", ""
-    )
+    event_type = body.get("header", {}).get("event_type") or body.get("type", "")
     if "message" not in str(event_type):
         return 200, {"msg": "ignored"}
 
     message = event.get("event", {}).get("message") or event.get("message", {})
-    chat_id = (
-        message.get("chat_id")
-        or event.get("event", {}).get("sender", {}).get("sender_id", {})
-        .get("open_id", "")
-    )
+    chat_id = message.get("chat_id") or event.get("event", {}).get("sender", {}).get(
+        "sender_id", {}
+    ).get("open_id", "")
 
     if not chat_id:
         return 200, {"msg": "no chat_id"}
@@ -141,7 +137,9 @@ def handle_feishu_event(app: FeishuApp, headers: dict, body: dict) -> tuple[int,
     response = _dispatch(cmd)
     ok, msg = app.send_message(chat_id, response)
     if ok:
-        logger.info(f"飞书回复成功: chat={chat_id} cmd={cmd.cmd_type.name} len={len(response)}")
+        logger.info(
+            f"飞书回复成功: chat={chat_id} cmd={cmd.cmd_type.name} len={len(response)}"
+        )
     else:
         logger.error(f"飞书回复失败: chat={chat_id} msg={msg}")
     return 200, {"msg": "ok"}

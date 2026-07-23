@@ -14,14 +14,16 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
 
+import numpy as np
 import yaml
 
 logger = logging.getLogger(__name__)
 
 # 默认配置路径
-DEFAULT_PATH = Path(__file__).parent.parent.parent / "config" / "optimizer_constraints.yaml"
+DEFAULT_PATH = (
+    Path(__file__).parent.parent.parent / "config" / "optimizer_constraints.yaml"
+)
 
 
 class WalkForwardConfig:
@@ -33,7 +35,8 @@ class WalkForwardConfig:
         self.step_months: int = data.get("step_months", 3)
         self.num_windows: int = data.get("num_windows", 6)
         self.window_weights: list[float] = data.get(
-            "window_weights", [1.0] * self.num_windows,
+            "window_weights",
+            [1.0] * self.num_windows,
         )
         self.stability_penalty: float = data.get("stability_penalty", 0.5)
         # 验证窗口数：最后 N 个窗口不参与 wf_score 排序（留作样本外验证）
@@ -42,7 +45,11 @@ class WalkForwardConfig:
     @property
     def total_months_needed(self) -> int:
         """推算最少需要的总月数（训练期 + 测试期 + 最后一个窗口的偏移）"""
-        return self.train_months + self.test_months + (self.num_windows - 1) * self.step_months
+        return (
+            self.train_months
+            + self.test_months
+            + (self.num_windows - 1) * self.step_months
+        )
 
 
 class GeneticSearchConfig:
@@ -65,43 +72,87 @@ class DiscreteSearchConfig:
     """离散搜索空间配置"""
 
     def __init__(self, data: dict):
-        self.buy_builders: list[str] = data.get("buy_builders", [
-            "deviation_cross", "rsi_signal", "bollinger_signal",
-            "volume_spike", "deviation_absolute", "trend_follow", "none",
-        ])
+        self.buy_builders: list[str] = data.get(
+            "buy_builders",
+            [
+                "deviation_cross",
+                "rsi_signal",
+                "bollinger_signal",
+                "volume_spike",
+                "deviation_absolute",
+                "trend_follow",
+                "none",
+            ],
+        )
         self.threshold_levels: int = data.get("threshold_levels", 10)
         self.frac_levels: list[float] = data.get(
-            "frac_levels", [0.10, 0.15, 0.20, 0.25, 0.30, 0.40],
+            "frac_levels",
+            [0.10, 0.15, 0.20, 0.25, 0.30, 0.40],
         )
         self.num_buy_rules: int = data.get("num_buy_rules", 5)
 
         # 卖出规则
-        self.sell_builders: list[str] = data.get("sell_builders", [
-            "deviation_cross", "rsi_signal", "bollinger_signal",
-            "deviation_absolute", "trend_follow", "none",
-        ])
+        self.sell_builders: list[str] = data.get(
+            "sell_builders",
+            [
+                "deviation_cross",
+                "rsi_signal",
+                "bollinger_signal",
+                "deviation_absolute",
+                "trend_follow",
+                "none",
+            ],
+        )
         self.sell_frac_levels: list[float] = data.get(
-            "sell_frac_levels", [0.10, 0.20, 0.30, 0.40, 0.50],
+            "sell_frac_levels",
+            [0.10, 0.20, 0.30, 0.40, 0.50],
         )
         self.num_sell_rules: int = data.get("num_sell_rules", 3)
 
         # 仓位目标模型
         pm = data.get("position_model", {})
-        self.mode: str = data.get("mode", "frac")  # "frac" or "position_target"
+        self.mode: str = data.get("mode", "frac")  # "frac"/"position_target"/"simplified"
         self.position_slope_levels: int = pm.get("slope_levels", 20)
         self.position_bias_levels: int = pm.get("bias_levels", 20)
         self.max_daily_adjust: float = pm.get("max_daily_adjust", 0.10)
+
+        # 简化搜参（mode=simplified）：每条规则独立的交易限额（元）
+        ss = data.get("simplified_search", {})
+        self.buy_limit_levels: list[float] = ss.get(
+            "buy_limit_levels",
+            [5000.0, 10000.0, 20000.0, 30000.0, 50000.0],
+        )
+        self.sell_limit_levels: list[float] = ss.get(
+            "sell_limit_levels",
+            [5000.0, 10000.0, 20000.0, 30000.0, 50000.0],
+        )
 
     @property
     def use_position_target(self) -> bool:
         return self.mode == "position_target"
 
     @property
+    def use_simplified(self) -> bool:
+        return self.mode == "simplified"
+
+    @property
     def search_space_size(self) -> int:
         """估算搜索空间大小（总组合数）"""
-        buy_singles = len(self.buy_builders) * self.threshold_levels * len(self.frac_levels)
-        sell_singles = len(self.sell_builders) * self.threshold_levels * len(self.sell_frac_levels)
-        return (buy_singles ** self.num_buy_rules) * (sell_singles ** self.num_sell_rules)
+        if self.use_simplified:
+            buy_singles = (
+                len(self.buy_builders) * self.threshold_levels * len(self.buy_limit_levels)
+            )
+            sell_singles = (
+                len(self.sell_builders) * self.threshold_levels * len(self.sell_limit_levels)
+            )
+        else:
+            buy_singles = (
+                len(self.buy_builders) * self.threshold_levels * len(self.frac_levels)
+            )
+            sell_singles = (
+                len(self.sell_builders) * self.threshold_levels * len(self.sell_frac_levels)
+            )
+        return (buy_singles**self.num_buy_rules) * (sell_singles**self.num_sell_rules)
 
 
 class StrategyConstraints:
@@ -127,7 +178,9 @@ class StrategyConstraints:
 
         self.walk_forward = WalkForwardConfig(raw_config.get("walk_forward", {}))
         self.genetic_search = GeneticSearchConfig(raw_config.get("genetic_search", {}))
-        self.discrete_search = DiscreteSearchConfig(raw_config.get("discrete_search", {}))
+        self.discrete_search = DiscreteSearchConfig(
+            raw_config.get("discrete_search", {})
+        )
 
         # 业绩基准
         bc = raw_config.get("benchmarks", {})
@@ -175,7 +228,7 @@ class StrategyConstraints:
         for i, ws in enumerate(window_stats):
             if ws.max_drawdown_pct < self.max_drawdown_pct:
                 violations.append(
-                    f"窗口{i+1}最大回撤 {ws.max_drawdown_pct:.1f}% < {self.max_drawdown_pct:.1f}%",
+                    f"窗口{i + 1}最大回撤 {ws.max_drawdown_pct:.1f}% < {self.max_drawdown_pct:.1f}%",
                 )
 
         # 3. 训练-测试一致性检查
@@ -191,11 +244,11 @@ class StrategyConstraints:
         for i, ws in enumerate(window_stats):
             if ws.trades_per_month < self.min_trades_per_month:
                 violations.append(
-                    f"窗口{i+1} 月交易次数 {ws.trades_per_month:.1f} < {self.min_trades_per_month}",
+                    f"窗口{i + 1} 月交易次数 {ws.trades_per_month:.1f} < {self.min_trades_per_month}",
                 )
             if ws.trades_per_month > self.max_trades_per_month:
                 violations.append(
-                    f"窗口{i+1} 月交易次数 {ws.trades_per_month:.1f} > {self.max_trades_per_month}",
+                    f"窗口{i + 1} 月交易次数 {ws.trades_per_month:.1f} > {self.max_trades_per_month}",
                 )
 
         return len(violations) == 0, violations
@@ -280,7 +333,8 @@ def load_constraints(path: Path | str | None = None) -> StrategyConstraints:
     config_path = Path(path) if path else DEFAULT_PATH
     if not config_path.exists():
         logger.warning(
-            "约束配置文件 %s 不存在，使用默认值", config_path,
+            "约束配置文件 %s 不存在，使用默认值",
+            config_path,
         )
         return StrategyConstraints()
 
@@ -288,7 +342,3 @@ def load_constraints(path: Path | str | None = None) -> StrategyConstraints:
         raw = yaml.safe_load(f) or {}
 
     return StrategyConstraints(raw)
-
-
-# 惰性导入 numpy（避免模块级导入影响启动速度）
-import numpy as np

@@ -7,14 +7,11 @@
 
 import logging
 import pandas as pd
-import numpy as np
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, cast
 
-from ..data.cache_manager import CacheManager
 from ..data.technical_indicators import TechnicalIndicators
-from ..models.converters import dataframe_to_stock_price_data
 
 logger = logging.getLogger(__name__)
 
@@ -199,8 +196,7 @@ class StockDataFetcher:
                 )
             else:
                 logger.warning(
-                    f"股票 {stock_code} PE/PB 为空，无法计算 ROE "
-                    f"(PE={pe}, PB={pb})"
+                    f"股票 {stock_code} PE/PB 为空，无法计算 ROE (PE={pe}, PB={pb})"
                 )
 
         logger.info(
@@ -266,10 +262,7 @@ class StockDataFetcher:
                 if valuation_data.get("pb_ratio") is not None
                 else "None"
             )
-            logger.info(
-                f"股票 {stock_code} 估值指标: "
-                f"PE={pe_str}, PB={pb_str}"
-            )
+            logger.info(f"股票 {stock_code} 估值指标: PE={pe_str}, PB={pb_str}")
             return cast(Dict[str, Optional[float]], valuation_data)  # type: ignore
         else:
             logger.warning(f"股票 {stock_code} 未获取到估值指标数据")
@@ -316,8 +309,13 @@ class StockDataFetcher:
                     # 计算动量/波动率/成交量指标 (RSI/MACD/ADX/布林/量比)
                     try:
                         from ..analysis.indicator_library import (
-                            add_rsi, add_macd, add_adx, add_bollinger, add_volume_ratio,
+                            add_rsi,
+                            add_macd,
+                            add_adx,
+                            add_bollinger,
+                            add_volume_ratio,
                         )
+
                         stock_data = add_rsi(stock_data)
                         stock_data = add_macd(stock_data)
                         stock_data = add_adx(stock_data)
@@ -325,9 +323,7 @@ class StockDataFetcher:
                         stock_data = add_volume_ratio(stock_data)
                         logger.debug(f"股票 {stock_code} 技术指标计算完成")
                     except Exception as e:
-                        logger.warning(
-                            f"股票 {stock_code} 技术指标计算跳过: {e}"
-                        )
+                        logger.warning(f"股票 {stock_code} 技术指标计算跳过: {e}")
 
                     # 只保留最新一天的数据
                     latest_data = stock_data.iloc[-1:].copy()
@@ -344,14 +340,23 @@ class StockDataFetcher:
                                 )
                                 # 简报/盘中模式：用 QQ 实时行情补充当日数据
                                 if realtime_mode:
-                                    rt = self.web_crawler.fetch_realtime_quote(stock_code)
+                                    rt = self.web_crawler.fetch_realtime_quote(
+                                        stock_code
+                                    )
                                     if rt:
                                         logger.info(
                                             f"股票 {stock_code} 用QQ实时行情补充: "
                                             f"close={rt['close']:.2f} open={rt['open']:.2f}"
                                         )
                                         # 更新 latest_data 的价格字段
-                                        for field in ("open", "close", "high", "low", "volume", "amount"):
+                                        for field in (
+                                            "open",
+                                            "close",
+                                            "high",
+                                            "low",
+                                            "volume",
+                                            "amount",
+                                        ):
                                             if rt.get(field) is not None:
                                                 latest_data[field] = rt[field]
                                         # 更新日期为今天

@@ -88,10 +88,12 @@ class TestTemporalDrift:
 
     def test_multiple_params(self):
         """多个参数取平均 CV。"""
-        drift = compute_temporal_drift({
-            "buy_threshold": [-0.05, -0.05, -0.05],
-            "sell_threshold": [0.02, 0.10, 0.02],
-        })
+        drift = compute_temporal_drift(
+            {
+                "buy_threshold": [-0.05, -0.05, -0.05],
+                "sell_threshold": [0.02, 0.10, 0.02],
+            }
+        )
         # buy CV=0, sell CV高 → 均值在中间
         assert 0.0 < drift.avg_cv < 1.0
 
@@ -127,7 +129,10 @@ class TestBayesianUpdate:
         updated = bayesian_update(prior_mean, prior_std, new_samples)
         # 后验均值应该在先验和新样本均值之间
         sample_mean = np.mean(new_samples)
-        assert prior_mean < updated.mean < sample_mean or abs(updated.mean - sample_mean) < 0.01
+        assert (
+            prior_mean < updated.mean < sample_mean
+            or abs(updated.mean - sample_mean) < 0.01
+        )
 
     def test_update_reduces_std(self):
         """多次更新后方差应该减小（更确定）。"""
@@ -215,13 +220,15 @@ class TestDistributionPool:
         """持久化：保存后重新加载。"""
         path = tmp_path / "distributions.yaml"
         pool = StrategyDistributionPool(path)
-        pool.update([
-            {
-                "params": {"buy_1_t": -0.05},
-                "wf_scores": [6.0, 5.0, 5.5, 6.5, 5.5, 6.0],
-                "recent_return": 3.0,
-            },
-        ])
+        pool.update(
+            [
+                {
+                    "params": {"buy_1_t": -0.05},
+                    "wf_scores": [6.0, 5.0, 5.5, 6.5, 5.5, 6.0],
+                    "recent_return": 3.0,
+                },
+            ]
+        )
         pool.save()
 
         pool2 = StrategyDistributionPool(path)
@@ -232,36 +239,42 @@ class TestDistributionPool:
     def test_new_strategy_added(self, tmp_path):
         """不匹配任何已有分布 → 新增。"""
         pool = StrategyDistributionPool(tmp_path / "distributions.yaml")
-        pool.update([
-            {
-                "params": {"buy_1_t": -0.05},
-                "wf_scores": [6.0, 5.0, 5.5, 6.5, 5.5, 6.0],
-                "recent_return": 3.0,
-            },
-        ])
-        pool.update([
-            {
-                "params": {"buy_1_t": -0.20},  # 完全不同的参数
-                "wf_scores": [4.0, 3.0, 3.5, 4.5, 3.5, 4.0],
-                "recent_return": 1.0,
-            },
-        ])
+        pool.update(
+            [
+                {
+                    "params": {"buy_1_t": -0.05},
+                    "wf_scores": [6.0, 5.0, 5.5, 6.5, 5.5, 6.0],
+                    "recent_return": 3.0,
+                },
+            ]
+        )
+        pool.update(
+            [
+                {
+                    "params": {"buy_1_t": -0.20},  # 完全不同的参数
+                    "wf_scores": [4.0, 3.0, 3.5, 4.5, 3.5, 4.0],
+                    "recent_return": 1.0,
+                },
+            ]
+        )
         assert len(pool.distributions) == 2
 
     def test_top_n_sorted_by_score(self, tmp_path):
         """Top N 按综合评分排序。"""
         pool = StrategyDistributionPool(tmp_path / "distributions.yaml")
-        pool.update([
-            {
-                "params": {"buy_1_t": -0.05},
-                "wf_scores": [8.0, 7.0, 7.5, 8.5, 7.5, 8.0],
-                "recent_return": 5.0,
-            },
-            {
-                "params": {"buy_1_t": -0.15},
-                "wf_scores": [3.0, 2.0, 2.5, 3.5, 2.5, 3.0],
-                "recent_return": 1.0,
-            },
-        ])
+        pool.update(
+            [
+                {
+                    "params": {"buy_1_t": -0.05},
+                    "wf_scores": [8.0, 7.0, 7.5, 8.5, 7.5, 8.0],
+                    "recent_return": 5.0,
+                },
+                {
+                    "params": {"buy_1_t": -0.15},
+                    "wf_scores": [3.0, 2.0, 2.5, 3.5, 2.5, 3.0],
+                    "recent_return": 1.0,
+                },
+            ]
+        )
         top = pool.get_top_n(2)
         assert top[0].overall_score > top[1].overall_score

@@ -1,6 +1,6 @@
 """Telegram Bot 测试 — Mock API 层验证。"""
 
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from src.interactive.telegram_bot import TelegramBot
 

@@ -3,6 +3,7 @@
 在每次部署前运行，验证所有模块可导入、关键函数签名正确.
 不依赖外部数据——纯语法和导入检查.
 """
+
 import sys
 import os
 import importlib
@@ -53,12 +54,12 @@ def test_imports():
 # ── 2. ref_portfolio 基础操作 ──
 def test_ref_portfolio():
     from src.core.ref_portfolio import (
-        RefPortfolioManager, RefPortfolio, Holding, Trade,
+        RefPortfolioManager,
+        RefPortfolio,
     )
+
     pf = RefPortfolio()
-    check("RefPortfolio defaults", lambda: (
-        pf.cash == 100000.0 and pf.holdings == {}
-    ))
+    check("RefPortfolio defaults", lambda: pf.cash == 100000.0 and pf.holdings == {})
     d = pf.to_dict()
     pf2 = RefPortfolio.from_dict(d)
     check("RefPortfolio round-trip", lambda: pf2.cash == pf.cash)
@@ -78,11 +79,15 @@ def test_ref_portfolio():
 # ── 3. yaml_evaluator 可实例化 ──
 def test_yaml_evaluator():
     from src.analysis.yaml_evaluator import StrategyEvalReport
+
     r = StrategyEvalReport(group="a_share", label="A股")
     d = r.to_dict()
-    check("StrategyEvalReport.to_dict keys", lambda: (
-        "total_return" in d and "excess_return" in d and "benchmark_returns" in d
-    ))
+    check(
+        "StrategyEvalReport.to_dict keys",
+        lambda: (
+            "total_return" in d and "excess_return" in d and "benchmark_returns" in d
+        ),
+    )
 
 
 # ── 4. 关键函数签名检查 ──
@@ -91,35 +96,49 @@ def test_function_signatures():
 
     # evaluate_yaml_strategy should exist and accept key params
     from src.analysis.yaml_evaluator import evaluate_yaml_strategy
+
     sig = inspect.signature(evaluate_yaml_strategy)
-    check("evaluate_yaml_strategy has 'with_sensitivity'", lambda: (
-        "with_sensitivity" in sig.parameters
-    ))
+    check(
+        "evaluate_yaml_strategy has 'with_sensitivity'",
+        lambda: "with_sensitivity" in sig.parameters,
+    )
 
     # rebalance should accept fx_rate, force
     from src.core.ref_portfolio import RefPortfolioManager
+
     sig2 = inspect.signature(RefPortfolioManager.rebalance)
     check("rebalance has 'fx_rate'", lambda: "fx_rate" in sig2.parameters)
     check("rebalance has 'force'", lambda: "force" in sig2.parameters)
 
     # build_strategy_text_summary should exist
     from src.notification.email_notifier import build_strategy_text_summary
-    check("build_strategy_text_summary exists", lambda: callable(build_strategy_text_summary))
+
+    check(
+        "build_strategy_text_summary exists",
+        lambda: callable(build_strategy_text_summary),
+    )
 
     # EmailNotifier should have _build_ref_portfolio_html
     from src.notification.email_notifier import EmailNotifier
-    check("EmailNotifier._build_ref_portfolio_html exists",
-          lambda: hasattr(EmailNotifier, "_build_ref_portfolio_html"))
+
+    check(
+        "EmailNotifier._build_ref_portfolio_html exists",
+        lambda: hasattr(EmailNotifier, "_build_ref_portfolio_html"),
+    )
 
     # FeishuNotifier should have send_brief_report
     from src.notification.feishu_notifier import FeishuNotifier
-    check("FeishuNotifier.send_brief_report exists",
-          lambda: hasattr(FeishuNotifier, "send_brief_report"))
+
+    check(
+        "FeishuNotifier.send_brief_report exists",
+        lambda: hasattr(FeishuNotifier, "send_brief_report"),
+    )
 
 
 # ── 5. 命令处理 ──
 def test_commands():
     from src.interactive.command_parser import parse_command, RefDateCommand
+
     cmd = parse_command("/ref_date 2026-07-14")
     check("/ref_date parser", lambda: isinstance(cmd, RefDateCommand))
     check("/ref_date date_str", lambda: cmd.date_str == "2026-07-14")
@@ -128,6 +147,7 @@ def test_commands():
 # ── 6. main.py 关键符号存在 ──
 def test_main_symbols():
     import main
+
     check("main has run_daily_task", lambda: hasattr(main, "run_daily_task"))
     check("main has run_brief_report", lambda: hasattr(main, "run_brief_report"))
     # _eval_opt_lookback should return int > 0

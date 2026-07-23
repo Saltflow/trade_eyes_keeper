@@ -5,7 +5,6 @@ import threading
 import time
 import urllib.request
 
-import pytest
 
 from src.health_server.core.health_server import HealthServer
 

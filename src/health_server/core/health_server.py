@@ -40,6 +40,7 @@ class HealthServer:
     def start(self, daemon=True):
         """启动健康服务器"""
         try:
+
             def handler_factory(*args, **kwargs):
                 return HealthHandler(*args, health_server=self, **kwargs)
 
@@ -59,10 +60,12 @@ class HealthServer:
             key_file = Path(key_path)
             if cert_file.exists() and key_file.exists():
                 import ssl
+
                 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
                 ctx.load_cert_chain(str(cert_file), str(key_file))
                 self.server.socket = ctx.wrap_socket(
-                    self.server.socket, server_side=True,
+                    self.server.socket,
+                    server_side=True,
                 )
                 logger.info("SSL 已启用 (自签名证书)")
             else:
@@ -86,7 +89,7 @@ class HealthServer:
 
             # 启动内嵌调度器（替代外部 crontab）
             try:
-                from src.core.schedule_manager import ScheduleManager
+                from ...core.schedule_manager import ScheduleManager
                 from .global_instances import set_schedule_manager
 
                 config_path = Path("config/config.yaml")
@@ -121,6 +124,7 @@ class HealthServer:
     def _watchdog_step(self, max_failures=3):
         try:
             import urllib.request as ur
+
             url = f"http://127.0.0.1:{self.port}/health"
             req = ur.Request(url, headers={"User-Agent": "Watchdog/1.0"})
             resp = ur.urlopen(req, timeout=5)
@@ -134,9 +138,7 @@ class HealthServer:
             f"Watchdog: /health 自检失败 ({self._watchdog_failures}/{max_failures})"
         )
         if self._watchdog_failures >= max_failures:
-            logger.critical(
-                f"Watchdog: 连续 {max_failures} 次自检失败，强制退出"
-            )
+            logger.critical(f"Watchdog: 连续 {max_failures} 次自检失败，强制退出")
             os._exit(1)
 
     def get_status(self):
@@ -283,9 +285,7 @@ class HealthServer:
                 ):
                     ip_list.append(f"{public_ip} (公网)")
                 elif public_ip:
-                    logger.warning(
-                        f"IP检测服务返回非标准响应: {public_ip[:50]}..."
-                    )
+                    logger.warning(f"IP检测服务返回非标准响应: {public_ip[:50]}...")
             except Exception as e:
                 logger.debug(f"获取公网IP失败: {e}")
                 pass

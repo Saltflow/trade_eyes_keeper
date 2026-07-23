@@ -1,22 +1,21 @@
 """SignalFnSearchEngine — 把 SignalFn 适配成遗传搜索器的 StrategyEngine 插件。
 
 范围 A 核心桥接：让 PercentileSignalFn (以及任意 SignalFn) 真正进入遗传搜索。
-- "编码" 就是 Params（引擎自有参数空间的整数级别 dict）
-- evaluate_encoding: signal_fn.evaluate() → 共享流水线 simulate_portfolio/compute_metrics
-  → WindowStats（遗传搜索器可直接排序/约束）
-
-全局阈值引擎不使用本适配器（engine=None → 走旧向量化路径, criterion 1/2 逻辑零改动）。
+- encoding = Params（引擎自有参数空间的整数级别 dict）
+- evaluate_encoding: signal_fn.evaluate() → 阈值二值化 → FastEvaluator.evaluate()
+  → 统一模拟引擎 → WindowStats（统一产出：含季度持仓快照）
 """
+
 from __future__ import annotations
 
 import logging
-from collections import OrderedDict
 
 import numpy as np
 
 from .strategy_interface import StrategyEngine
 from .signal_functions import (
-    SignalFn, Params, simulate_portfolio, compute_metrics,
+    SignalFn,
+    Params,
 )
 from .optimizer_constraints import WindowStats
 
@@ -29,16 +28,26 @@ class SignalFnSearchEngine(StrategyEngine):
     encoding 类型 = Params（signal_fn.param_space 的整数级别 dict）。
     """
 
-    def __init__(self, signal_fn: SignalFn, initial_cash: float = 100000.0,
-                 lot_size: int = 100, monthly_limit: float | None = None,
-                 commission_rate: float | None = None):
+    def __init__(
+        self,
+        signal_fn: SignalFn,
+        initial_cash: float = 100000.0,
+        lot_size: int = 100,
+        monthly_limit: float | None = None,
+        commission_rate: float | None = None,
+    ):
         from .execution_config import get_execution_config
+
         cfg = get_execution_config()
         self.signal_fn = signal_fn
         self.initial_cash = initial_cash
         self.lot_size = lot_size
-        self.monthly_limit = monthly_limit if monthly_limit is not None else cfg.monthly_buy_limit
-        self.commission_rate = commission_rate if commission_rate is not None else cfg.commission_rate
+        self.monthly_limit = (
+            monthly_limit if monthly_limit is not None else cfg.monthly_buy_limit
+        )
+        self.commission_rate = (
+            commission_rate if commission_rate is not None else cfg.commission_rate
+        )
         self._rng = __import__("random").Random(42)
         self.fx_rate = 1.0  # 汇率乘数（优化器按组设定）
 
@@ -62,23 +71,22 @@ class SignalFnSearchEngine(StrategyEngine):
     # ── 评估：SignalFn.evaluate → 共享流水线 → WindowStats ──
 
     def evaluate_encoding(
-        self, encoding: Params, windows, ds_cfg, constraints,
-        evaluator, wf_manager,
+        self,
+        encoding: Params,
+        windows,
+        ds_cfg,
+        constraints,
+        evaluator,
+        wf_manager,
     ) -> tuple[list[WindowStats], float] | None:
         exec_p = self.signal_fn.execution_params(encoding)
         buy_th = float(exec_p.get("buy_threshold", 0.0))
         sell_th = float(exec_p.get("sell_threshold", 0.0))
         pos_frac = float(exec_p.get("position_frac", 0.15))
 
-        lot = getattr(evaluator, "lot_size", self.lot_size)
-        init_cash = getattr(evaluator, "initial_cash", self.initial_cash)
-        monthly = self.monthly_limit  # 搜参月额度（默认 100000，与旧 global 搜参一致）
-        comm = getattr(evaluator, "commission_rate", self.commission_rate)
-
         rf_rate = getattr(constraints, "risk_free_rate", 0.02)
-        codes = list(getattr(wf_manager, "stock_codes", []))
-
         all_stats: list[WindowStats] = []
+
         for w in windows:
             test_ind = wf_manager.build_matrices(w, "test")
             test_price = wf_manager.get_price_matrix(w, "test")
@@ -86,55 +94,48 @@ class SignalFnSearchEngine(StrategyEngine):
             if T == 0 or N == 0:
                 continue
 
-            # 评分矩阵 (T, N, 2) = [buy_scores, sell_scores]
+            # 评分矩阵 → boolean 信号
             scores = self.signal_fn.evaluate(encoding, test_ind)
-            buy_scores = np.ascontiguousarray(scores[:, :, 0], dtype=np.float64)
-            sell_scores = np.ascontiguousarray(scores[:, :, 1], dtype=np.float64)
-            price = np.ascontiguousarray(test_price, dtype=np.float64) * self.fx_rate
+            buy_scores = scores[:, :, 0]
+            sell_scores = scores[:, :, 1]
+            buy_signals = buy_scores > buy_th
+            sell_signals = sell_scores > sell_th
 
-            trace = simulate_portfolio(
-                buy_scores, sell_scores, price,
-                init_cash, buy_th, sell_th, pos_frac,
-                lot, monthly, comm,
-                dates=[""] * T,
-                stock_codes=codes[:N] if len(codes) >= N else [str(i) for i in range(N)],
-            )
-
-            # 基准序列（超额收益）
+            # 现金基准线（与 genetic_searcher 一致）
             train_ind = wf_manager.build_matrices(w, "train")
             rf_daily = rf_rate / 252.0
-            train_end_cash = init_cash * (1.0 + rf_daily) ** train_ind.shape[0]
-            benchmarks: OrderedDict = OrderedDict()
+            train_end_cash = evaluator.initial_cash * (1.0 + rf_daily) ** train_ind.shape[0]
+            cash_baseline = (
+                np.cumsum(np.ones(T) * train_end_cash * rf_daily) + train_end_cash
+            )
+
+            # 基准序列
+            from collections import OrderedDict
+
+            benchmark_series = OrderedDict()
             for bcode in getattr(constraints, "benchmark_codes", []):
                 if bcode == "risk_free":
-                    benchmarks["risk_free"] = (
-                        np.cumsum(np.ones(T) * train_end_cash * rf_daily) + train_end_cash
+                    benchmark_series["risk_free"] = (
+                        np.cumsum(np.ones(T) * train_end_cash * rf_daily)
+                        + train_end_cash
                     )
                 else:
                     bc = wf_manager.get_benchmark_price(bcode, w, "test")
                     if bc is not None and len(bc) == T and not np.isnan(bc[0]):
-                        benchmarks[bcode] = bc
+                        benchmark_series[bcode] = bc
 
-            metrics = compute_metrics(
-                trace, benchmark_series=benchmarks or None, risk_free_rate=rf_rate,
+            # 统一引擎评估
+            stats = evaluator.evaluate(
+                test_ind,
+                test_price,
+                cash_baseline,
+                buy_score_signals=buy_signals,
+                sell_score_signals=sell_signals,
+                buy_fracs=[pos_frac],
+                sell_fracs=[pos_frac],
+                benchmark_series=benchmark_series if benchmark_series else None,
             )
-
-            ws = WindowStats(
-                test_excess_return=metrics.test_excess_return,
-                max_drawdown_pct=metrics.max_drawdown_pct,
-                avg_position_pct=metrics.avg_position_pct,
-                sharpe_ratio=metrics.sharpe_ratio,
-                total_trades=metrics.total_trades,
-                test_months=getattr(constraints.walk_forward, "test_months", 9)
-                if hasattr(constraints, "walk_forward") else 9,
-                benchmark_returns=metrics.benchmark_returns,
-                strategy_return=metrics.strategy_return,
-                final_position_pct=metrics.final_position_pct,
-                final_shares=trace.final_shares,
-                final_cash=trace.final_cash,
-                cost_basis=trace.cost_basis,
-            )
-            all_stats.append(ws)
+            all_stats.append(stats)
 
         if not all_stats:
             return None
@@ -146,11 +147,13 @@ class SignalFnSearchEngine(StrategyEngine):
     def _compute_wf_score(stats_list: list[WindowStats], constraints) -> float:
         wf_cfg = getattr(constraints, "walk_forward", None)
         v_win = getattr(wf_cfg, "validation_windows", 0) if wf_cfg else 0
-        ranking = stats_list[:-v_win] if v_win > 0 and len(stats_list) > v_win else stats_list
+        ranking = (
+            stats_list[:-v_win] if v_win > 0 and len(stats_list) > v_win else stats_list
+        )
         returns = [s.test_excess_return for s in ranking]
         if not returns:
             return -float("inf")
-        weights = list(getattr(wf_cfg, "window_weights", []) or [])[:len(returns)]
+        weights = list(getattr(wf_cfg, "window_weights", []) or [])[: len(returns)]
         if sum(weights) > 0:
             weights = [x / sum(weights) for x in weights]
         else:

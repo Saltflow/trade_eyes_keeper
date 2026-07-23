@@ -17,15 +17,11 @@ from __future__ import annotations
 import logging
 import random
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
 from .optimizer_constraints import (
     StrategyConstraints,
-    WalkForwardConfig,
-    GeneticSearchConfig,
     DiscreteSearchConfig,
     WindowStats,
 )
@@ -42,9 +38,9 @@ logger = logging.getLogger(__name__)
 class StrategyEncoding:
     """策略的离散编码（买入+卖出+仓位目标）
 
-    买入规则: (builder_idx, threshold_level, frac_level) × num_buy_rules
-    卖出规则: (builder_idx, threshold_level, frac_level) × num_sell_rules
-    仓位控制: position_slope (0-19), position_bias (0-19)
+    买入/卖出规则各含 (builder, threshold, frac/limit) 三元组。
+    simplified 模式下 frac 槽位承载 buy_limits/sell_limits（元），
+    其余模式承载 buy_fracs/sell_fracs（比例索引）。
     """
 
     # 买入
@@ -60,6 +56,25 @@ class StrategyEncoding:
     # 仓位目标模型（可选，0=未启用）
     position_slope: int = 0
     position_bias: int = 0
+
+    # ── 简化模式专用：与 buy_fracs/sell_fracs 共享槽位 ──
+    # 为测试友好提供 buy_limits/sell_limits 别名
+    _buy_limits: list[int] | None = field(default=None, repr=False)
+    _sell_limits: list[int] | None = field(default=None, repr=False)
+
+    def __post_init__(self):
+        if self._buy_limits is not None:
+            self.buy_fracs = self._buy_limits
+        if self._sell_limits is not None:
+            self.sell_fracs = self._sell_limits
+
+    @property
+    def buy_limits(self) -> list[int]:
+        return self.buy_fracs
+
+    @property
+    def sell_limits(self) -> list[int]:
+        return self.sell_fracs
 
     @property
     def uses_position_target(self) -> bool:
@@ -78,19 +93,26 @@ class StrategyEncoding:
         """扁平化为一维列表（含仓位参数）"""
         result = []
         for i in range(self.n_buy_rules):
-            result.extend([self.buy_builders[i], self.buy_thresholds[i], self.buy_fracs[i]])
+            result.extend(
+                [self.buy_builders[i], self.buy_thresholds[i], self.buy_fracs[i]]
+            )
         for i in range(self.n_sell_rules):
-            result.extend([self.sell_builders[i], self.sell_thresholds[i], self.sell_fracs[i]])
+            result.extend(
+                [self.sell_builders[i], self.sell_thresholds[i], self.sell_fracs[i]]
+            )
         # 仓位目标参数（2维）
         result.extend([self.position_slope, self.position_bias])
         return result
 
     @classmethod
     def from_flat(
-        cls, flat: list[int], n_buy: int = 5, n_sell: int = 3,
+        cls,
+        flat: list[int],
+        n_buy: int = 5,
+        n_sell: int = 3,
     ) -> "StrategyEncoding":
         """从一维列表恢复"""
-        total_expected = n_buy * 3 + n_sell * 3 + 2
+        n_buy * 3 + n_sell * 3 + 2
         p = 0
         buy_builders = [flat[p + i * 3] for i in range(n_buy)]
         buy_thresholds = [flat[p + i * 3 + 1] for i in range(n_buy)]
@@ -104,26 +126,39 @@ class StrategyEncoding:
         pos_slope = flat[p] if len(flat) > p else 0
         pos_bias = flat[p + 1] if len(flat) > p + 1 else 0
         return cls(
-            buy_builders=buy_builders, buy_thresholds=buy_thresholds, buy_fracs=buy_fracs,
-            sell_builders=sell_builders, sell_thresholds=sell_thresholds, sell_fracs=sell_fracs,
-            position_slope=pos_slope, position_bias=pos_bias,
+            buy_builders=buy_builders,
+            buy_thresholds=buy_thresholds,
+            buy_fracs=buy_fracs,
+            sell_builders=sell_builders,
+            sell_thresholds=sell_thresholds,
+            sell_fracs=sell_fracs,
+            position_slope=pos_slope,
+            position_bias=pos_bias,
         )
 
-    def to_buy_params(self, ds_cfg: DiscreteSearchConfig) -> tuple[list[str], list[float], list[float]]:
+    def to_buy_params(
+        self, ds_cfg: DiscreteSearchConfig
+    ) -> tuple[list[str], list[float], list[float]]:
         """转换为 FastEvaluator 买入参数"""
         builder_names = [ds_cfg.buy_builders[i] for i in self.buy_builders]
-        threshold_vals = [i / (ds_cfg.threshold_levels - 1) if ds_cfg.threshold_levels > 1 else 0.0
-                          for i in self.buy_thresholds]
+        threshold_vals = [
+            i / (ds_cfg.threshold_levels - 1) if ds_cfg.threshold_levels > 1 else 0.0
+            for i in self.buy_thresholds
+        ]
         frac_vals = [ds_cfg.frac_levels[i] for i in self.buy_fracs]
         return builder_names, threshold_vals, frac_vals
 
-    def to_sell_params(self, ds_cfg: DiscreteSearchConfig) -> tuple[list[str], list[float], list[float]]:
+    def to_sell_params(
+        self, ds_cfg: DiscreteSearchConfig
+    ) -> tuple[list[str], list[float], list[float]]:
         """转换为 FastEvaluator 卖出参数"""
         if not self.sell_builders:
             return [], [], []
         builder_names = [ds_cfg.sell_builders[i] for i in self.sell_builders]
-        threshold_vals = [i / (ds_cfg.threshold_levels - 1) if ds_cfg.threshold_levels > 1 else 0.0
-                          for i in self.sell_thresholds]
+        threshold_vals = [
+            i / (ds_cfg.threshold_levels - 1) if ds_cfg.threshold_levels > 1 else 0.0
+            for i in self.sell_thresholds
+        ]
         frac_vals = [ds_cfg.sell_frac_levels[i] for i in self.sell_fracs]
         return builder_names, threshold_vals, frac_vals
 
@@ -131,8 +166,12 @@ class StrategyEncoding:
         """转换为 Position-Target 模式参数（slope, bias 浮点值）"""
         slope_min, slope_max = 0.5, 10.0
         bias_min, bias_max = -3.0, 3.0
-        slope = slope_min + (self.position_slope / max(ds_cfg.position_slope_levels - 1, 1)) * (slope_max - slope_min)
-        bias = bias_min + (self.position_bias / max(ds_cfg.position_bias_levels - 1, 1)) * (bias_max - bias_min)
+        slope = slope_min + (
+            self.position_slope / max(ds_cfg.position_slope_levels - 1, 1)
+        ) * (slope_max - slope_min)
+        bias = bias_min + (
+            self.position_bias / max(ds_cfg.position_bias_levels - 1, 1)
+        ) * (bias_max - bias_min)
         return slope, bias
 
     def clone(self) -> "StrategyEncoding":
@@ -147,10 +186,38 @@ class StrategyEncoding:
             position_bias=self.position_bias,
         )
 
+    def to_simplified_params(
+        self, ds_cfg: DiscreteSearchConfig, side: str = "buy"
+    ) -> tuple[list[str], list[float], list[float]]:
+        """simplified 模式：将索引映射为 builder_name / threshold / limit(元)。
+
+        Args:
+            ds_cfg: 含 buy_limit_levels / sell_limit_levels 的搜索配置
+            side: "buy" / "sell"
+
+        Returns:
+            (builder_names, threshold_vals, limit_vals)
+        """
+        if side == "sell":
+            builder_names = [ds_cfg.sell_builders[i] for i in self.sell_builders]
+            threshold_vals = [
+                i / max(ds_cfg.threshold_levels - 1, 1) for i in self.sell_thresholds
+            ]
+            limit_vals = [ds_cfg.sell_limit_levels[i] for i in self.sell_fracs]
+            return builder_names, threshold_vals, limit_vals
+        else:
+            builder_names = [ds_cfg.buy_builders[i] for i in self.buy_builders]
+            threshold_vals = [
+                i / max(ds_cfg.threshold_levels - 1, 1) for i in self.buy_thresholds
+            ]
+            limit_vals = [ds_cfg.buy_limit_levels[i] for i in self.buy_fracs]
+            return builder_names, threshold_vals, limit_vals
+
 
 # ════════════════════════════════════════════════════════════
 # 并行评估辅助（模块级，确保 Windows multiprocessing 可 pickle）
 # ════════════════════════════════════════════════════════════
+
 
 def _eval_encoding_worker(args: tuple) -> tuple[list, float] | None:
     """Pickle-safe worker: 在子进程中评估单个 StrategyEncoding。
@@ -164,17 +231,23 @@ def _eval_encoding_worker(args: tuple) -> tuple[list, float] | None:
     encoding_flat, window_data, ds_cfg_raw, c_raw, eval_kwargs, use_pt = args
 
     # 重建 encoding（Worker 进程无共享内存，需新建）
-    encoding = StrategyEncoding.from_flat(encoding_flat, n_buy=ds_cfg_raw['num_buy_rules'], n_sell=ds_cfg_raw['num_sell_rules'])
+    encoding = StrategyEncoding.from_flat(
+        encoding_flat,
+        n_buy=ds_cfg_raw["num_buy_rules"],
+        n_sell=ds_cfg_raw["num_sell_rules"],
+    )
 
     # 重建 DiscreteSearchConfig
     ds_cfg = DiscreteSearchConfig(ds_cfg_raw)
 
     # 重建 StrategyConstraints
     from .optimizer_constraints import StrategyConstraints
+
     constraints = StrategyConstraints(c_raw)
 
     # 重建 FastEvaluator
     from .fast_evaluator import FastEvaluator
+
     evaluator = FastEvaluator(**eval_kwargs)
 
     all_stats: list = []
@@ -188,31 +261,53 @@ def _eval_encoding_worker(args: tuple) -> tuple[list, float] | None:
 
         if use_pt and benchmarks:
             stats = evaluator.evaluate_position_target(
-                test_ind, test_price, cash_baseline,
-                buy_names, buy_thresh,
-                sell_names, sell_thresh,
-                position_slope=pos_slope, position_bias=pos_bias,
+                test_ind,
+                test_price,
+                cash_baseline,
+                buy_names,
+                buy_thresh,
+                sell_names,
+                sell_thresh,
+                position_slope=pos_slope,
+                position_bias=pos_bias,
                 benchmark_series=benchmarks,
             )
         elif use_pt:
             stats = evaluator.evaluate_position_target(
-                test_ind, test_price, cash_baseline,
-                buy_names, buy_thresh,
-                sell_names, sell_thresh,
-                position_slope=pos_slope, position_bias=pos_bias,
+                test_ind,
+                test_price,
+                cash_baseline,
+                buy_names,
+                buy_thresh,
+                sell_names,
+                sell_thresh,
+                position_slope=pos_slope,
+                position_bias=pos_bias,
             )
         elif benchmarks:
             stats = evaluator.evaluate(
-                test_ind, test_price, cash_baseline,
-                buy_names, buy_thresh, buy_fracs,
-                sell_names, sell_thresh, sell_fracs,
+                test_ind,
+                test_price,
+                cash_baseline,
+                buy_names,
+                buy_thresh,
+                buy_fracs,
+                sell_names,
+                sell_thresh,
+                sell_fracs,
                 benchmark_series=benchmarks,
             )
         else:
             stats = evaluator.evaluate(
-                test_ind, test_price, cash_baseline,
-                buy_names, buy_thresh, buy_fracs,
-                sell_names, sell_thresh, sell_fracs,
+                test_ind,
+                test_price,
+                cash_baseline,
+                buy_names,
+                buy_thresh,
+                buy_fracs,
+                sell_names,
+                sell_thresh,
+                sell_fracs,
             )
         all_stats.append(stats)
 
@@ -221,11 +316,17 @@ def _eval_encoding_worker(args: tuple) -> tuple[list, float] | None:
 
     # 计算 WF 得分（排除最后 validation_windows 个窗口，留作样本外验证）
     v_win = getattr(constraints.walk_forward, "validation_windows", 0)
-    ranking_stats = all_stats[:-v_win] if v_win > 0 and len(all_stats) > v_win else all_stats
+    ranking_stats = (
+        all_stats[:-v_win] if v_win > 0 and len(all_stats) > v_win else all_stats
+    )
     returns = [s.test_excess_return for s in ranking_stats]
-    weights = constraints.walk_forward.window_weights[:len(returns)]
+    weights = constraints.walk_forward.window_weights[: len(returns)]
     total_w = sum(weights)
-    weights = [w / total_w for w in weights] if total_w > 0 else [1.0 / len(returns)] * len(returns)
+    weights = (
+        [w / total_w for w in weights]
+        if total_w > 0
+        else [1.0 / len(returns)] * len(returns)
+    )
     mean_return = sum(r * w for r, w in zip(returns, weights))
     std_return = float(np.std(returns)) if len(returns) >= 2 else 0.0
     wf_score = mean_return - constraints.walk_forward.stability_penalty * std_return
@@ -291,19 +392,30 @@ class GeneticSearcher:
 
             # cash_baseline
             rf_daily = rf_rate / 252.0
-            train_end_cash = self.evaluator.initial_cash * (1.0 + rf_daily) ** train_ind.shape[0]
-            cash_baseline = np.cumsum(np.ones(T_test) * train_end_cash * rf_daily) + train_end_cash
+            train_end_cash = (
+                self.evaluator.initial_cash * (1.0 + rf_daily) ** train_ind.shape[0]
+            )
+            cash_baseline = (
+                np.cumsum(np.ones(T_test) * train_end_cash * rf_daily) + train_end_cash
+            )
 
             # benchmark_series
             benchmarks = OrderedDict()
             for bcode in self.constraints.benchmark_codes:
                 if bcode == "risk_free":
                     rr_daily = rf_rate / 252.0
-                    rf_series = np.cumsum(np.ones(T_test) * train_end_cash * rr_daily) + train_end_cash
+                    rf_series = (
+                        np.cumsum(np.ones(T_test) * train_end_cash * rr_daily)
+                        + train_end_cash
+                    )
                     benchmarks["risk_free"] = rf_series
                 else:
                     b_close = self.wf_manager.get_benchmark_price(bcode, w, "test")
-                    if b_close is not None and len(b_close) == T_test and not np.isnan(b_close[0]):
+                    if (
+                        b_close is not None
+                        and len(b_close) == T_test
+                        and not np.isnan(b_close[0])
+                    ):
                         benchmarks[bcode] = b_close
 
             data.append((test_ind, test_price, cash_baseline, benchmarks))
@@ -340,21 +452,51 @@ class GeneticSearcher:
         n_sell_builders = len(self.ds_cfg.sell_builders)
 
         buy_builders = [self._rng.randint(0, n_buy_builders - 1) for _ in range(n_buy)]
-        buy_thresholds = [self._rng.randint(0, self.ds_cfg.threshold_levels - 1) for _ in range(n_buy)]
-        buy_fracs = [self._rng.randint(0, len(self.ds_cfg.frac_levels) - 1) for _ in range(n_buy)]
+        buy_thresholds = [
+            self._rng.randint(0, self.ds_cfg.threshold_levels - 1) for _ in range(n_buy)
+        ]
+        if self.ds_cfg.use_simplified:
+            buy_fracs = [
+                self._rng.randint(0, len(self.ds_cfg.buy_limit_levels) - 1)
+                for _ in range(n_buy)
+            ]
+        else:
+            buy_fracs = [
+                self._rng.randint(0, len(self.ds_cfg.frac_levels) - 1)
+                for _ in range(n_buy)
+            ]
 
-        sell_builders = [self._rng.randint(0, n_sell_builders - 1) for _ in range(n_sell)]
-        sell_thresholds = [self._rng.randint(0, self.ds_cfg.threshold_levels - 1) for _ in range(n_sell)]
-        sell_fracs = [self._rng.randint(0, len(self.ds_cfg.sell_frac_levels) - 1) for _ in range(n_sell)]
+        sell_builders = [
+            self._rng.randint(0, n_sell_builders - 1) for _ in range(n_sell)
+        ]
+        sell_thresholds = [
+            self._rng.randint(0, self.ds_cfg.threshold_levels - 1)
+            for _ in range(n_sell)
+        ]
+        if self.ds_cfg.use_simplified:
+            sell_fracs = [
+                self._rng.randint(0, len(self.ds_cfg.sell_limit_levels) - 1)
+                for _ in range(n_sell)
+            ]
+        else:
+            sell_fracs = [
+                self._rng.randint(0, len(self.ds_cfg.sell_frac_levels) - 1)
+                for _ in range(n_sell)
+            ]
 
         # 仓位目标参数
         pos_slope = self._rng.randint(0, self.ds_cfg.position_slope_levels - 1)
         pos_bias = self._rng.randint(0, self.ds_cfg.position_bias_levels - 1)
 
         return StrategyEncoding(
-            buy_builders=buy_builders, buy_thresholds=buy_thresholds, buy_fracs=buy_fracs,
-            sell_builders=sell_builders, sell_thresholds=sell_thresholds, sell_fracs=sell_fracs,
-            position_slope=pos_slope, position_bias=pos_bias,
+            buy_builders=buy_builders,
+            buy_thresholds=buy_thresholds,
+            buy_fracs=buy_fracs,
+            sell_builders=sell_builders,
+            sell_thresholds=sell_thresholds,
+            sell_fracs=sell_fracs,
+            position_slope=pos_slope,
+            position_bias=pos_bias,
         )
 
     def _evaluate_strategy_wf(
@@ -369,8 +511,12 @@ class GeneticSearcher:
         """
         if self.engine is not None:
             result = self.engine.evaluate_encoding(
-                encoding, windows, self.ds_cfg, self.constraints,
-                self.evaluator, self.wf_manager,
+                encoding,
+                windows,
+                self.ds_cfg,
+                self.constraints,
+                self.evaluator,
+                self.wf_manager,
             )
             if result is not None:
                 return result
@@ -381,8 +527,12 @@ class GeneticSearcher:
         all_stats: list[WindowStats] = []
 
         use_pt = self.ds_cfg.use_position_target
+        use_simplified = self.ds_cfg.use_simplified
         if use_pt:
             pos_slope, pos_bias = encoding.to_position_params(self.ds_cfg)
+        if use_simplified:
+            _, _, buy_limits = encoding.to_simplified_params(self.ds_cfg, "buy")
+            _, _, sell_limits = encoding.to_simplified_params(self.ds_cfg, "sell")
 
         for w in windows:
             train_ind = self.wf_manager.build_matrices(w, "train")
@@ -395,40 +545,79 @@ class GeneticSearcher:
 
             rf_rate = getattr(self.constraints, "risk_free_rate", 0.02)
             rf_daily = rf_rate / 252.0
-            train_end_cash = self.evaluator.initial_cash * (1.0 + rf_daily) ** train_ind.shape[0]
-            cash_baseline = np.cumsum(
-                np.ones(T_test) * train_end_cash * rf_daily,
-            ) + train_end_cash
+            train_end_cash = (
+                self.evaluator.initial_cash * (1.0 + rf_daily) ** train_ind.shape[0]
+            )
+            cash_baseline = (
+                np.cumsum(
+                    np.ones(T_test) * train_end_cash * rf_daily,
+                )
+                + train_end_cash
+            )
 
             # 构造多基准序列
             from collections import OrderedDict
+
             benchmark_series = OrderedDict()
             rf_rate = getattr(self.constraints, "risk_free_rate", 0.02)
             for bcode in self.constraints.benchmark_codes:
                 if bcode == "risk_free":
                     # 用无风险利率构造等比序列
                     rr_daily = rf_rate / 252.0
-                    rf_series = np.cumsum(np.ones(T_test) * train_end_cash * rr_daily) + train_end_cash
+                    rf_series = (
+                        np.cumsum(np.ones(T_test) * train_end_cash * rr_daily)
+                        + train_end_cash
+                    )
                     benchmark_series["risk_free"] = rf_series
                 else:
                     b_close = self.wf_manager.get_benchmark_price(bcode, w, "test")
-                    if (b_close is not None and len(b_close) == T_test
-                            and not np.isnan(b_close[0])):
+                    if (
+                        b_close is not None
+                        and len(b_close) == T_test
+                        and not np.isnan(b_close[0])
+                    ):
                         benchmark_series[bcode] = b_close
 
             if use_pt:
                 stats = self.evaluator.evaluate_position_target(
-                    test_ind, test_price, cash_baseline,
-                    buy_names, buy_thresh,
-                    sell_names, sell_thresh,
-                    position_slope=pos_slope, position_bias=pos_bias,
+                    test_ind,
+                    test_price,
+                    cash_baseline,
+                    buy_names,
+                    buy_thresh,
+                    sell_names,
+                    sell_thresh,
+                    position_slope=pos_slope,
+                    position_bias=pos_bias,
                     benchmark_series=benchmark_series if benchmark_series else None,
+                )
+            elif use_simplified:
+                eval_kwargs = dict(
+                    buy_builders=buy_names,
+                    buy_thresholds=buy_thresh,
+                    buy_limits=buy_limits,
+                    sell_builders=sell_names,
+                    sell_thresholds=sell_thresh,
+                    sell_limits=sell_limits,
+                    benchmark_series=benchmark_series if benchmark_series else None,
+                )
+                stats = self.evaluator.evaluate(
+                    test_ind,
+                    test_price,
+                    cash_baseline,
+                    **eval_kwargs,
                 )
             else:
                 stats = self.evaluator.evaluate(
-                    test_ind, test_price, cash_baseline,
-                    buy_names, buy_thresh, buy_fracs,
-                    sell_names, sell_thresh, sell_fracs,
+                    test_ind,
+                    test_price,
+                    cash_baseline,
+                    buy_names,
+                    buy_thresh,
+                    buy_fracs,
+                    sell_names,
+                    sell_thresh,
+                    sell_fracs,
                     benchmark_series=benchmark_series if benchmark_series else None,
                 )
             all_stats.append(stats)
@@ -443,9 +632,11 @@ class GeneticSearcher:
 
         # 排除最后 validation_windows 个窗口（样本外验证，不参与排序）
         v_win = getattr(self.wf_cfg, "validation_windows", 0)
-        ranking = stats_list[:-v_win] if v_win > 0 and len(stats_list) > v_win else stats_list
+        ranking = (
+            stats_list[:-v_win] if v_win > 0 and len(stats_list) > v_win else stats_list
+        )
         returns = [s.test_excess_return for s in ranking]
-        weights = self.wf_cfg.window_weights[:len(returns)]
+        weights = self.wf_cfg.window_weights[: len(returns)]
 
         # 归一化权重
         if sum(weights) > 0:
@@ -476,7 +667,9 @@ class GeneticSearcher:
 
         logger.info(
             "[Phase1] 随机采样 %d 个策略（批次 %d），保留 Top %d",
-            n_samples, BATCH_SIZE, n_keep,
+            n_samples,
+            BATCH_SIZE,
+            n_keep,
         )
 
         # 预提取窗口数据（并行 worker 共用）
@@ -507,8 +700,16 @@ class GeneticSearcher:
                 i = total_evaluated
                 result = batch_results[j]
                 if result is None:
-                    if use_strict and i >= 2000 and len(scored) == 0 and not auto_switched:
-                        logger.warning("[Phase1] 前 %d 个策略全部未通过严格约束，自动放宽为仅检查最大回撤", i)
+                    if (
+                        use_strict
+                        and i >= 2000
+                        and len(scored) == 0
+                        and not auto_switched
+                    ):
+                        logger.warning(
+                            "[Phase1] 前 %d 个策略全部未通过严格约束，自动放宽为仅检查最大回撤",
+                            i,
+                        )
                         use_strict = False
                         auto_switched = True
                     continue
@@ -516,7 +717,9 @@ class GeneticSearcher:
                 stats, wf_score = result
 
                 if use_strict:
-                    passes, violations = self.constraints.check_hard_constraints(stats, wf_score)
+                    passes, violations = self.constraints.check_hard_constraints(
+                        stats, wf_score
+                    )
                 else:
                     passes = all(
                         ws.max_drawdown_pct >= self.constraints.max_drawdown_pct
@@ -525,38 +728,60 @@ class GeneticSearcher:
                     violations = []
 
                 if not passes:
-                    if use_strict and i >= 2000 and len(scored) == 0 and not auto_switched:
-                        logger.warning("[Phase1] 前 %d 个策略全部未通过严格约束，自动放宽为仅检查最大回撤", i)
+                    if (
+                        use_strict
+                        and i >= 2000
+                        and len(scored) == 0
+                        and not auto_switched
+                    ):
+                        logger.warning(
+                            "[Phase1] 前 %d 个策略全部未通过严格约束，自动放宽为仅检查最大回撤",
+                            i,
+                        )
                         use_strict = False
                         auto_switched = True
                     elif i > 2000 and i % 5000 == 0:
-                        logger.debug("[Phase1] %d/%d: 未通过约束 (%s)", i, n_samples, "; ".join(violations[:3]) if violations else "仅回撤")
+                        logger.debug(
+                            "[Phase1] %d/%d: 未通过约束 (%s)",
+                            i,
+                            n_samples,
+                            "; ".join(violations[:3]) if violations else "仅回撤",
+                        )
                     continue
 
                 avg_sharpe = np.mean([s.sharpe_ratio for s in stats])
                 penalty = self.constraints.compute_soft_penalty(avg_sharpe)
                 adjusted_score = wf_score - penalty
 
-                scored.append(ScoredStrategy(
-                    encoding=encoding,
-                    window_stats=stats,
-                    wf_score=adjusted_score,
-                    avg_excess_return=np.mean([s.test_excess_return for s in stats]),
-                    avg_position=np.mean([s.avg_position_pct for s in stats]),
-                    avg_sharpe=avg_sharpe,
-                ))
+                scored.append(
+                    ScoredStrategy(
+                        encoding=encoding,
+                        window_stats=stats,
+                        wf_score=adjusted_score,
+                        avg_excess_return=np.mean(
+                            [s.test_excess_return for s in stats]
+                        ),
+                        avg_position=np.mean([s.avg_position_pct for s in stats]),
+                        avg_sharpe=avg_sharpe,
+                    )
+                )
 
             if (batch_idx + 1) % 4 == 0 or batch_idx == n_batches - 1:
                 logger.info(
                     "[Phase1] 批次 %d/%d 完成, 已评估 %d, 有效策略 %d",
-                    batch_idx + 1, n_batches, total_evaluated, len(scored),
+                    batch_idx + 1,
+                    n_batches,
+                    total_evaluated,
+                    len(scored),
                 )
 
         # 按得分排序
         scored.sort(key=lambda x: x.wf_score, reverse=True)
         logger.info(
             "[Phase1] 完成: %d 个有效策略 / %d 总采样 (严格模式=%s)",
-            len(scored), n_samples, "否" if auto_switched else "是",
+            len(scored),
+            n_samples,
+            "否" if auto_switched else "是",
         )
 
         return scored[:n_keep]
@@ -565,7 +790,9 @@ class GeneticSearcher:
     # Phase 2: 遗传优化
     # ════════════════════════════════════════════════════════
 
-    def _crossover(self, parent1: StrategyEncoding, parent2: StrategyEncoding) -> StrategyEncoding:
+    def _crossover(
+        self, parent1: StrategyEncoding, parent2: StrategyEncoding
+    ) -> StrategyEncoding:
         """均匀交叉：每条规则（买入+卖出）随机从父1或父2继承"""
         if self.engine is not None:
             return self.engine.crossover_encoding(parent1, parent2)
@@ -607,20 +834,33 @@ class GeneticSearcher:
                 mutant.buy_builders[i] = self._rng.randint(0, n_buy_builders - 1)
 
             if self._rng.random() < self.cfg.mutation_rate:
-                step = self._rng.randint(-self.cfg.mutation_threshold_step,
-                                         self.cfg.mutation_threshold_step)
-                mutant.buy_thresholds[i] = max(0, min(
-                    self.ds_cfg.threshold_levels - 1,
-                    mutant.buy_thresholds[i] + step,
-                ))
+                step = self._rng.randint(
+                    -self.cfg.mutation_threshold_step, self.cfg.mutation_threshold_step
+                )
+                mutant.buy_thresholds[i] = max(
+                    0,
+                    min(
+                        self.ds_cfg.threshold_levels - 1,
+                        mutant.buy_thresholds[i] + step,
+                    ),
+                )
 
             if self._rng.random() < self.cfg.mutation_rate:
-                step = self._rng.randint(-self.cfg.mutation_frac_step,
-                                         self.cfg.mutation_frac_step)
-                mutant.buy_fracs[i] = max(0, min(
-                    len(self.ds_cfg.frac_levels) - 1,
-                    mutant.buy_fracs[i] + step,
-                ))
+                step = self._rng.randint(
+                    -self.cfg.mutation_frac_step, self.cfg.mutation_frac_step
+                )
+                mutant.buy_fracs[i] = max(
+                    0,
+                    min(
+                        len(
+                            self.ds_cfg.buy_limit_levels
+                            if self.ds_cfg.use_simplified
+                            else self.ds_cfg.frac_levels
+                        )
+                        - 1,
+                        mutant.buy_fracs[i] + step,
+                    ),
+                )
 
         # 卖出规则变异
         for i in range(mutant.n_sell_rules):
@@ -628,34 +868,53 @@ class GeneticSearcher:
                 mutant.sell_builders[i] = self._rng.randint(0, n_sell_builders - 1)
 
             if self._rng.random() < self.cfg.mutation_rate:
-                step = self._rng.randint(-self.cfg.mutation_threshold_step,
-                                         self.cfg.mutation_threshold_step)
-                mutant.sell_thresholds[i] = max(0, min(
-                    self.ds_cfg.threshold_levels - 1,
-                    mutant.sell_thresholds[i] + step,
-                ))
+                step = self._rng.randint(
+                    -self.cfg.mutation_threshold_step, self.cfg.mutation_threshold_step
+                )
+                mutant.sell_thresholds[i] = max(
+                    0,
+                    min(
+                        self.ds_cfg.threshold_levels - 1,
+                        mutant.sell_thresholds[i] + step,
+                    ),
+                )
 
             if self._rng.random() < self.cfg.mutation_rate:
-                step = self._rng.randint(-self.cfg.mutation_frac_step,
-                                         self.cfg.mutation_frac_step)
-                mutant.sell_fracs[i] = max(0, min(
-                    len(self.ds_cfg.sell_frac_levels) - 1,
-                    mutant.sell_fracs[i] + step,
-                ))
+                step = self._rng.randint(
+                    -self.cfg.mutation_frac_step, self.cfg.mutation_frac_step
+                )
+                mutant.sell_fracs[i] = max(
+                    0,
+                    min(
+                        len(
+                            self.ds_cfg.sell_limit_levels
+                            if self.ds_cfg.use_simplified
+                            else self.ds_cfg.sell_frac_levels
+                        )
+                        - 1,
+                        mutant.sell_fracs[i] + step,
+                    ),
+                )
 
         # 仓位参数变异
         if self._rng.random() < self.cfg.mutation_rate:
             step = self._rng.randint(-2, 2)
-            mutant.position_slope = max(0, min(
-                self.ds_cfg.position_slope_levels - 1,
-                mutant.position_slope + step,
-            ))
+            mutant.position_slope = max(
+                0,
+                min(
+                    self.ds_cfg.position_slope_levels - 1,
+                    mutant.position_slope + step,
+                ),
+            )
         if self._rng.random() < self.cfg.mutation_rate:
             step = self._rng.randint(-2, 2)
-            mutant.position_bias = max(0, min(
-                self.ds_cfg.position_bias_levels - 1,
-                mutant.position_bias + step,
-            ))
+            mutant.position_bias = max(
+                0,
+                min(
+                    self.ds_cfg.position_bias_levels - 1,
+                    mutant.position_bias + step,
+                ),
+            )
 
         return mutant
 
@@ -685,7 +944,9 @@ class GeneticSearcher:
         for gen in range(n_gen):
             logger.info(
                 "[Phase2] 第 %d/%d 代: %d 个策略, 最佳得分 %.2f",
-                gen + 1, n_gen, len(current_pop),
+                gen + 1,
+                n_gen,
+                len(current_pop),
                 current_pop[0].wf_score if current_pop else -999,
             )
 
@@ -709,7 +970,7 @@ class GeneticSearcher:
             offspring: list[ScoredStrategy] = []
             BATCH_SZ = 500
             for bi in range(0, len(child_encodings), BATCH_SZ):
-                batch = child_encodings[bi:bi + BATCH_SZ]
+                batch = child_encodings[bi : bi + BATCH_SZ]
                 results = self._evaluate_batch_parallel(batch)
                 for j, child_enc in enumerate(batch):
                     r = results[j]
@@ -717,7 +978,9 @@ class GeneticSearcher:
                         continue
                     stats, wf_score = r
                     if strict_constraints:
-                        passes, _ = self.constraints.check_hard_constraints(stats, wf_score)
+                        passes, _ = self.constraints.check_hard_constraints(
+                            stats, wf_score
+                        )
                     else:
                         passes = all(
                             ws.max_drawdown_pct >= self.constraints.max_drawdown_pct
@@ -727,14 +990,18 @@ class GeneticSearcher:
                         continue
                     avg_sharpe = np.mean([s.sharpe_ratio for s in stats])
                     penalty = self.constraints.compute_soft_penalty(avg_sharpe)
-                    offspring.append(ScoredStrategy(
-                        encoding=child_enc,
-                        window_stats=stats,
-                        wf_score=wf_score - penalty,
-                        avg_excess_return=np.mean([s.test_excess_return for s in stats]),
-                        avg_position=np.mean([s.avg_position_pct for s in stats]),
-                        avg_sharpe=avg_sharpe,
-                    ))
+                    offspring.append(
+                        ScoredStrategy(
+                            encoding=child_enc,
+                            window_stats=stats,
+                            wf_score=wf_score - penalty,
+                            avg_excess_return=np.mean(
+                                [s.test_excess_return for s in stats]
+                            ),
+                            avg_position=np.mean([s.avg_position_pct for s in stats]),
+                            avg_sharpe=avg_sharpe,
+                        )
+                    )
 
             logger.debug("[Phase2] 后代评估完成: %d 个通过", len(offspring))
 
@@ -745,7 +1012,8 @@ class GeneticSearcher:
 
         logger.info(
             "[Phase2] 完成: 最终种群 %d, 最佳得分 %.2f, 均值超额 %.1f%%",
-            len(current_pop), current_pop[0].wf_score if current_pop else -999,
+            len(current_pop),
+            current_pop[0].wf_score if current_pop else -999,
             current_pop[0].avg_excess_return if current_pop else 0,
         )
 
@@ -760,6 +1028,7 @@ class GeneticSearcher:
 @dataclass(order=True)
 class ScoredStrategy:
     """已评估的策略 + 得分"""
+
     encoding: StrategyEncoding = field(compare=False)
     window_stats: list[WindowStats] = field(compare=False)
     wf_score: float = -float("inf")

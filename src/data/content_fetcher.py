@@ -13,14 +13,13 @@ from datetime import datetime
 from urllib.parse import urlparse
 import io
 import re
-from typing import Any
 
 # 预声明以便静态检查通过
 BeautifulSoup = None  # type: ignore
 
 # 尝试导入PDF解析库
 try:
-    import pdfplumber
+    import pdfplumber  # noqa: F401
 
     PDFPLUMBER_AVAILABLE = True
 except ImportError:

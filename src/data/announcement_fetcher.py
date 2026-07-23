@@ -24,7 +24,7 @@ except ImportError as e:
     CONTENT_FETCHER_AVAILABLE = False
     ContentFetcher = None  # type: ignore
     logger.warning(f"ContentFetcher不可用，内容抓取功能受限: {e}")
-    logger.debug(f"ContentFetcher import error details", exc_info=True)
+    logger.debug("ContentFetcher import error details", exc_info=True)
 
 try:
     from ..analysis.llm_analyzer import LLMAnalyzer
@@ -34,7 +34,7 @@ except ImportError as e:
     LLM_ANALYZER_AVAILABLE = False
     LLMAnalyzer = None  # type: ignore
     logger.warning(f"LLMAnalyzer不可用，LLM提取功能受限: {e}")
-    logger.debug(f"Import error details", exc_info=True)
+    logger.debug("Import error details", exc_info=True)
 
 
 class AnnouncementFetcher:

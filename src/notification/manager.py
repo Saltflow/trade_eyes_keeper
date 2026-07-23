@@ -4,7 +4,6 @@
 
 import logging
 
-from .base import BaseNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -56,21 +55,27 @@ class NotifierManager:
             try:
                 ch.send_from_session(session)
             except Exception as e:
-                logger.error(f"频道 {ch.__class__.__name__} send_from_session 失败: {e}")
+                logger.error(
+                    f"频道 {ch.__class__.__name__} send_from_session 失败: {e}"
+                )
 
     def send_daily_report_from_session(self, session) -> None:
         for ch in self._channels():
             try:
                 ch.send_daily_report_from_session(session)
             except Exception as e:
-                logger.error(f"频道 {ch.__class__.__name__} send_daily_report 失败: {e}")
+                logger.error(
+                    f"频道 {ch.__class__.__name__} send_daily_report 失败: {e}"
+                )
 
     def send_brief_report(self, session, report_config: dict) -> None:
         for ch in self._channels():
             try:
                 ch.send_brief_report(session, report_config)
             except Exception as e:
-                logger.error(f"频道 {ch.__class__.__name__} send_brief_report 失败: {e}")
+                logger.error(
+                    f"频道 {ch.__class__.__name__} send_brief_report 失败: {e}"
+                )
 
     def send_deployment_notification(
         self, status: str, version: str = "", summary: str = ""
@@ -89,8 +94,9 @@ class NotifierManager:
             return self.email.send_test_email()
         return False, "Email 频道未启用"
 
-    def send_optimizer_notification(self, report, group_name: str = "",
-                                     full_report: dict | None = None) -> None:
+    def send_optimizer_notification(
+        self, report, group_name: str = "", full_report: dict | None = None
+    ) -> None:
         """分发优化结果到所有频道。"""
         for ch in self._channels():
             try:

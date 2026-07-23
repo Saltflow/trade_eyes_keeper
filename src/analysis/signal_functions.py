@@ -1,30 +1,31 @@
 """搜参信号函数接口 + 共享流水线。
-    
+
 SignalFn = 唯一的替换点。共享流水线 (ScoreMatrix → Decisions → PortfolioTrace → EvalMetrics)
 对所有 SignalFn 实现都是一样的。
 
 验收标准 1: 默认 global 引擎输出版式不变的日报。
 验收标准 4: 旧路径已标记 deprecated 但仍可用。
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional
 
 import numpy as np
-import pandas as pd
 
 
 # ═══════════════════════════════════════════════════
 # 类型定义
 # ═══════════════════════════════════════════════════
 
+
 @dataclass
 class ParamDim:
     """单个参数维度。"""
+
     name: str
-    levels: int           # 离散级别数 (0..levels-1)
+    levels: int  # 离散级别数 (0..levels-1)
     lo: float = 0.0
     hi: float = 1.0
 
@@ -38,6 +39,7 @@ class ParamDim:
 @dataclass
 class ParamSpace:
     """参数搜索空间。"""
+
     dims: list[ParamDim]
 
     def total_levels(self) -> int:
@@ -52,14 +54,15 @@ class ParamSpace:
 
     def random(self, rng=None) -> "Params":
         r = rng or __import__("random")
-        return Params(values={
-            d.name: r.randint(0, max(d.levels - 1, 0)) for d in self.dims
-        })
+        return Params(
+            values={d.name: r.randint(0, max(d.levels - 1, 0)) for d in self.dims}
+        )
 
 
 @dataclass
 class Params:
     """一组具体的参数值。纯数据，可序列化到 YAML。"""
+
     values: dict[str, int]
     _engine: str = ""
 
@@ -81,8 +84,9 @@ class Params:
 @dataclass
 class PortfolioTrace:
     """组合仿真轨迹 — 所有引擎共用。"""
-    daily_values: np.ndarray       # (T,) 日净值
-    daily_dates: list[str]         # 日日期标签
+
+    daily_values: np.ndarray  # (T,) 日净值
+    daily_dates: list[str]  # 日日期标签
     total_trades: int
     avg_position_pct: float
     max_drawdown_pct: float
@@ -101,6 +105,7 @@ class PortfolioTrace:
 @dataclass
 class EvalMetrics:
     """评估指标 — 从 PortfolioTrace 提炼。"""
+
     excess_return_pct: float
     test_excess_return: float
     max_drawdown_pct: float
@@ -119,6 +124,7 @@ class EvalMetrics:
 # ═══════════════════════════════════════════════════
 # SignalFn — 唯一可替换的接口
 # ═══════════════════════════════════════════════════
+
 
 class SignalFn(ABC):
     """信号函数 —— 搜参唯一需要替换的组件。
@@ -146,7 +152,8 @@ class SignalFn(ABC):
 
     @abstractmethod
     def evaluate(
-        self, params: Params,
+        self,
+        params: Params,
         indicator_matrix: np.ndarray,  # (T, N, K)
     ) -> np.ndarray:
         """Params × Indicator → ScoreMatrix(T, N) = 每只标的每个时刻的评分。
@@ -173,8 +180,11 @@ class SignalFn(ABC):
         r = rng or __import__("random")
         child = {}
         for d in self.param_space.dims:
-            child[d.name] = p1.values.get(d.name, 0) if r.random() < 0.5 \
+            child[d.name] = (
+                p1.values.get(d.name, 0)
+                if r.random() < 0.5
                 else p2.values.get(d.name, 0)
+            )
         return Params(values=child, _engine=self.name)
 
     def mutate(self, params: Params, rate: float = 0.15, rng=None) -> Params:
@@ -234,6 +244,7 @@ class SignalFn(ABC):
 
 try:
     from numba import njit as _njit
+
     _HAS_NUMBA = True
 except Exception:  # pragma: no cover
     _HAS_NUMBA = False
@@ -241,6 +252,7 @@ except Exception:  # pragma: no cover
     def _njit(*args, **kwargs):
         def _wrap(fn):
             return fn
+
         if args and callable(args[0]):
             return args[0]
         return _wrap
@@ -248,9 +260,16 @@ except Exception:  # pragma: no cover
 
 @_njit(cache=True)
 def _score_sim_core(
-    buy_scores, sell_scores, price,
-    initial_cash, buy_threshold, sell_threshold,
-    position_frac, lot_size, monthly_limit, commission_rate,
+    buy_scores,
+    sell_scores,
+    price,
+    initial_cash,
+    buy_threshold,
+    sell_threshold,
+    position_frac,
+    lot_size,
+    monthly_limit,
+    commission_rate,
     q_interval,
 ):
     """numba JIT 决策仿真核心（纯数值, 季度快照存 numpy 数组）。"""
@@ -267,8 +286,8 @@ def _score_sim_core(
     q_shares = np.zeros((n_q, N), dtype=np.float64)
     q_cash = np.zeros(n_q, dtype=np.float64)
     q_nav = np.zeros(n_q, dtype=np.float64)
-    q_cb = np.zeros((n_q, N), dtype=np.float64)      # 季度时点成本基础快照
-    q_price = np.zeros((n_q, N), dtype=np.float64)   # 季度时点价格快照
+    q_cb = np.zeros((n_q, N), dtype=np.float64)  # 季度时点成本基础快照
+    q_price = np.zeros((n_q, N), dtype=np.float64)  # 季度时点价格快照
     q_count = 0
     month_spent = 0.0
 
@@ -288,7 +307,7 @@ def _score_sim_core(
         if t > 0 and t % q_interval == 0 and q_count < n_q:
             for i in range(N):
                 q_shares[q_count, i] = shares[i]
-                q_cb[q_count, i] = cb[i]           # 该时点累计成本
+                q_cb[q_count, i] = cb[i]  # 该时点累计成本
                 q_price[q_count, i] = price[t, i]  # 该时点价格
             q_cash[q_count] = cash
             q_nav[q_count] = nav
@@ -352,9 +371,19 @@ def _score_sim_core(
                 total_trades += 1
 
     avg_pos = pos_sum / pos_cnt if pos_cnt > 0 else 0.0
-    return (daily_vals, total_trades, avg_pos, shares, cash, cb,
-            q_shares[:q_count], q_cash[:q_count], q_nav[:q_count],
-            q_cb[:q_count], q_price[:q_count])
+    return (
+        daily_vals,
+        total_trades,
+        avg_pos,
+        shares,
+        cash,
+        cb,
+        q_shares[:q_count],
+        q_cash[:q_count],
+        q_nav[:q_count],
+        q_cb[:q_count],
+        q_price[:q_count],
+    )
 
 
 def score_to_decisions_numba(
@@ -372,14 +401,30 @@ def score_to_decisions_numba(
 ):
     """决策仿真（numba 核心 + Python 季度快照封装）。"""
     q_interval = 63
-    (daily_vals, total_trades, avg_pos, shares, cash, cb,
-     q_sh, q_ca, q_nav, q_cb, q_price) = _score_sim_core(
+    (
+        daily_vals,
+        total_trades,
+        avg_pos,
+        shares,
+        cash,
+        cb,
+        q_sh,
+        q_ca,
+        q_nav,
+        q_cb,
+        q_price,
+    ) = _score_sim_core(
         np.ascontiguousarray(buy_scores, dtype=np.float64),
         np.ascontiguousarray(sell_scores, dtype=np.float64),
         np.ascontiguousarray(price, dtype=np.float64),
-        float(initial_cash), float(buy_threshold), float(sell_threshold),
-        float(position_frac), int(lot_size), float(monthly_limit),
-        float(commission_rate), int(q_interval),
+        float(initial_cash),
+        float(buy_threshold),
+        float(sell_threshold),
+        float(position_frac),
+        int(lot_size),
+        float(monthly_limit),
+        float(commission_rate),
+        int(q_interval),
     )
     # numpy 季度数组 → list（保持原返回契约）
     q_shares_list = [q_sh[i].copy() for i in range(q_sh.shape[0])]
@@ -387,9 +432,20 @@ def score_to_decisions_numba(
     q_nav_list = [float(q_nav[i]) for i in range(q_nav.shape[0])]
     q_cb_list = [q_cb[i].copy() for i in range(q_cb.shape[0])]
     q_price_list = [q_price[i].copy() for i in range(q_price.shape[0])]
-    return (daily_vals, total_trades, float(avg_pos), shares, cash, cb,
-            q_shares_list, q_cash_list, q_nav_list, q_interval,
-            q_cb_list, q_price_list)
+    return (
+        daily_vals,
+        total_trades,
+        float(avg_pos),
+        shares,
+        cash,
+        cb,
+        q_shares_list,
+        q_cash_list,
+        q_nav_list,
+        q_interval,
+        q_cb_list,
+        q_price_list,
+    )
 
 
 def simulate_portfolio(
@@ -414,13 +470,32 @@ def simulate_portfolio(
     T, N = buy_scores.shape
     positions = np.zeros(N, dtype=np.float64)
 
-    daily_values, total_trades, avg_pos_pct, final_shares, final_cash, cost_basis, \
-        q_shares_list, q_cash_list, q_nav_list, q_interval, \
-        q_cb_list, q_price_list = score_to_decisions_numba(
-            buy_scores, sell_scores, price, positions, initial_cash,
-            buy_threshold, sell_threshold, position_frac, lot_size,
-            monthly_limit, commission_rate,
-        )
+    (
+        daily_values,
+        total_trades,
+        avg_pos_pct,
+        final_shares,
+        final_cash,
+        cost_basis,
+        q_shares_list,
+        q_cash_list,
+        q_nav_list,
+        q_interval,
+        q_cb_list,
+        q_price_list,
+    ) = score_to_decisions_numba(
+        buy_scores,
+        sell_scores,
+        price,
+        positions,
+        initial_cash,
+        buy_threshold,
+        sell_threshold,
+        position_frac,
+        lot_size,
+        monthly_limit,
+        commission_rate,
+    )
 
     # 构建季末持仓（用季度时点的成本/价格快照，避免时点错配）
     quarterly_holdings: list[dict] = []
@@ -431,26 +506,38 @@ def simulate_portfolio(
         for i, code in enumerate(stock_codes):
             sh = q_shares_list[qi][i]
             if sh > 0.5:
-                cbi = float(q_cb_arr[i])          # 该季度时点累计成本
-                px = float(q_px_arr[i])           # 该季度时点价格
+                cbi = float(q_cb_arr[i])  # 该季度时点累计成本
+                px = float(q_px_arr[i])  # 该季度时点价格
                 unit_cost = cbi / sh if cbi > 0 and sh > 0 else 0.0
                 mkt_val = sh * px
-                qpos.append({
-                    "code": code, "shares": round(float(sh), 1),
-                    "cost": round(unit_cost, 2),
-                    "price": round(px, 2),
-                    "value": round(mkt_val, 2),
-                    "pnl": round(mkt_val - cbi, 2) if cbi > 0 else 0.0,
-                    "pnl_pct": round((mkt_val / cbi - 1) * 100, 1) if cbi > 0 else 0.0,
-                })
-        qp = round(q_shares_list[qi].dot(q_px_arr) / max(q_nav_list[qi], 1.0) * 100, 1) if q_nav_list[qi] > 0 else 0.0
-        quarterly_holdings.append({
-            "quarter": qi + 1, "day": qi * q_interval,
-            "cash": round(float(q_cash_list[qi]), 2),
-            "nav": round(float(q_nav_list[qi]), 2),
-            "pos_pct": qp,
-            "positions": qpos,
-        })
+                qpos.append(
+                    {
+                        "code": code,
+                        "shares": round(float(sh), 1),
+                        "cost": round(unit_cost, 2),
+                        "price": round(px, 2),
+                        "value": round(mkt_val, 2),
+                        "pnl": round(mkt_val - cbi, 2) if cbi > 0 else 0.0,
+                        "pnl_pct": round((mkt_val / cbi - 1) * 100, 1)
+                        if cbi > 0
+                        else 0.0,
+                    }
+                )
+        qp = (
+            round(q_shares_list[qi].dot(q_px_arr) / max(q_nav_list[qi], 1.0) * 100, 1)
+            if q_nav_list[qi] > 0
+            else 0.0
+        )
+        quarterly_holdings.append(
+            {
+                "quarter": qi + 1,
+                "day": qi * q_interval,
+                "cash": round(float(q_cash_list[qi]), 2),
+                "nav": round(float(q_nav_list[qi]), 2),
+                "pos_pct": qp,
+                "positions": qpos,
+            }
+        )
 
     # 计算回报/回撤/夏普
     nav = daily_values
@@ -467,7 +554,11 @@ def simulate_portfolio(
         if len(rets) > 5 and np.std(rets, ddof=1) > 1e-10:
             sharpe = float(np.mean(rets) / np.std(rets, ddof=1) * np.sqrt(252))
 
-    final_pos_pct = float(np.dot(final_shares, price[-1]) / max(nav[-1], 1.0) * 100) if nav[-1] > 0 else 0.0
+    final_pos_pct = (
+        float(np.dot(final_shares, price[-1]) / max(nav[-1], 1.0) * 100)
+        if nav[-1] > 0
+        else 0.0
+    )
 
     return PortfolioTrace(
         daily_values=nav,
@@ -511,10 +602,9 @@ def compute_metrics(
             primary = next(iter(bench_returns))
             excess_return = strategy_return - bench_returns[primary]
 
-    pos_val = 0.0
     if trace.final_shares is not None and trace.composition:
         for i in range(len(trace.final_shares)):
-            sh = trace.final_shares[i]
+            trace.final_shares[i]
             if i < len(trace.composition):
                 pass
 

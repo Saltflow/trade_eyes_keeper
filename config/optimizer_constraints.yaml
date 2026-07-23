@@ -1,4 +1,4 @@
-benchmarks:
+﻿benchmarks:
   a_share:
   - '510880'
   - '510300'
@@ -90,7 +90,7 @@ discrete_search:
   - 0.4
   - 0.5
   num_sell_rules: 3
-  mode: position_target
+  mode: simplified
   position_model:
     slope_range:
     - 0.5
@@ -103,11 +103,27 @@ discrete_search:
     bias_step: 0.3
     bias_levels: 20
     max_daily_adjust: 0.4
+# ── 简化搜参（mode=simplified）──
+# buy_limits/sell_limits 替代 fracs，每条规则独立限额
+simplified_search:
+  buy_limit_levels:
+  - 10000
+  - 20000
+  - 30000
+  - 40000
+  - 50000
+  sell_limit_levels:
+  - 10000
+  - 20000
+  - 30000
+  - 40000
+  - 50000
 # ── 执行参数（搜参/日回报测统一从此读取，禁止代码写死）──
 execution_params:
   monthly_buy_limit: 15000
   initial_capital: 100000
   commission_rate: 0.005
+  min_holding_days: 30
   lot_sizes:
     a_share: 100
     hk: 100

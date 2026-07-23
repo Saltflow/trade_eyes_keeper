@@ -1,9 +1,8 @@
 """飞书开放平台应用客户端测试。"""
 
 import time
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-import pytest
 
 from src.interactive.feishu_app import FeishuApp
 

@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 TELEGRAM_API = "https://api.telegram.org"
 
 # emoji 着色
-UP = "\U0001f7e2"     # 🟢 上涨
-DOWN = "\U0001f534"   # 🔴 下跌
-FLAT = "\u26aa"       # ⚪ 持平/无数据
+UP = "\U0001f7e2"  # 🟢 上涨
+DOWN = "\U0001f534"  # 🔴 下跌
+FLAT = "\u26aa"  # ⚪ 持平/无数据
 
 
 class TelegramNotifier(BaseNotifier):
@@ -99,6 +99,7 @@ class TelegramNotifier(BaseNotifier):
         """发送搜参策略+今日信号+定增摘要（与邮件对齐）。"""
         try:
             from .email_notifier import build_strategy_text_summary
+
             summary = build_strategy_text_summary(session, markdown=False)
             if summary:
                 self._send(title, f"策略与信号\n<pre>{_esc(summary)}</pre>")
@@ -135,13 +136,15 @@ class TelegramNotifier(BaseNotifier):
         body = f"<b>状态</b>: {status}\n<b>版本</b>: {version}\n<b>概要</b>: {summary}"
         return self._send(title, body)
 
-    def send_optimizer_notification(self, report, group_name: str = "",
-                                     full_report: dict | None = None) -> None:
+    def send_optimizer_notification(
+        self, report, group_name: str = "", full_report: dict | None = None
+    ) -> None:
         from ..notification.email_notifier import build_optimizer_summary
 
         title = f"策略优化完成 · {group_name}" if group_name else "策略优化完成"
-        body = build_optimizer_summary(report, group_name, full_report,
-                                         include_charts=False)
+        body = build_optimizer_summary(
+            report, group_name, full_report, include_charts=False
+        )
         self._send(title, body)
 
     # ── 构建方法 ─────────────────────────────
@@ -159,7 +162,9 @@ class TelegramNotifier(BaseNotifier):
         lines = []
         for e in entries:
             close_str = f"{e['close']:.2f}" if e["close"] is not None else "-"
-            anchor_str = f"{e['anchor_val']:.2f}" if e["anchor_val"] is not None else "-"
+            anchor_str = (
+                f"{e['anchor_val']:.2f}" if e["anchor_val"] is not None else "-"
+            )
             if e["dev_pct"] is not None:
                 emoji = UP if e["dev_pct"] > 0 else DOWN if e["dev_pct"] < 0 else FLAT
             else:
@@ -184,10 +189,13 @@ class TelegramNotifier(BaseNotifier):
             if not s:
                 continue
             label = s.get("_label", gk)
-            hd = ", ".join(
-                f"<code>{h['code']}</code> {h['shares']}股"
-                for h in s["holdings"]
-            ) if s["holdings"] else "空仓"
+            hd = (
+                ", ".join(
+                    f"<code>{h['code']}</code> {h['shares']}股" for h in s["holdings"]
+                )
+                if s["holdings"]
+                else "空仓"
+            )
             lines.append(
                 f"{label}: 净值 {s['nav']:,.0f} | "
                 f"回报 {s['nav_return_pct']:+.1f}% | "
@@ -204,6 +212,7 @@ class TelegramNotifier(BaseNotifier):
             [(section_label, body), ...]
         """
         from .email_notifier import EmailNotifier
+
         today_date = datetime.now().date()
 
         # 过滤活跃标的
@@ -237,7 +246,11 @@ class TelegramNotifier(BaseNotifier):
 
             code = str(row.get("stock_code", ""))
             name = str(row.get("stock_name", code))
-            close_str = f"{close_price:.2f}" if close_price is not None and not pd.isna(close_price) else "-"
+            close_str = (
+                f"{close_price:.2f}"
+                if close_price is not None and not pd.isna(close_price)
+                else "-"
+            )
             dev_str = f"{dev_pct:+.2f}%" if dev_pct is not None else "-"
 
             pe = _fmt(row.get("pe_ratio"), ".2f")
@@ -251,13 +264,25 @@ class TelegramNotifier(BaseNotifier):
             adx = _fmt(row.get("adx"), ".1f")
 
             sort_key = dev_pct if dev_pct is not None else float("inf")
-            entries.append({
-                "sk": sort_key, "code": code, "name": name,
-                "close": close_str, "aname": anchor_name, "dev": dev_str,
-                "pe": pe, "pb": pb, "roe": roe, "div_y": div_yield,
-                "rsi": rsi, "macd_h": macd_hist, "vol_r": vol_ratio,
-                "boll": boll_pct_b, "adx": adx,
-            })
+            entries.append(
+                {
+                    "sk": sort_key,
+                    "code": code,
+                    "name": name,
+                    "close": close_str,
+                    "aname": anchor_name,
+                    "dev": dev_str,
+                    "pe": pe,
+                    "pb": pb,
+                    "roe": roe,
+                    "div_y": div_yield,
+                    "rsi": rsi,
+                    "macd_h": macd_hist,
+                    "vol_r": vol_ratio,
+                    "boll": boll_pct_b,
+                    "adx": adx,
+                }
+            )
 
         entries.sort(key=lambda x: x["sk"])
         if not entries:
@@ -269,7 +294,9 @@ class TelegramNotifier(BaseNotifier):
         lines = ["<pre>"]
         lines.append(f"{'代码':<10} {'收盘':>7} {'锚点':>7} {'偏离':>8} {'名称'}")
         for e in entries:
-            lines.append(f"{e['code']:<10} {e['close']:>7} {e['aname']:>7} {e['dev']:>8} {e['name'][:6]}")
+            lines.append(
+                f"{e['code']:<10} {e['close']:>7} {e['aname']:>7} {e['dev']:>8} {e['name'][:6]}"
+            )
         lines.append("</pre>")
         sections.append(("价格", "\n".join(lines)))
 
@@ -277,20 +304,25 @@ class TelegramNotifier(BaseNotifier):
         lines = ["<pre>"]
         lines.append(f"{'代码':<10} {'PE':>6} {'PB':>6} {'ROE%':>7} {'息%':>6}")
         for e in entries:
-            lines.append(f"{e['code']:<10} {e['pe']:>6} {e['pb']:>6} {e['roe']:>7} {e['div_y']:>6}")
+            lines.append(
+                f"{e['code']:<10} {e['pe']:>6} {e['pb']:>6} {e['roe']:>7} {e['div_y']:>6}"
+            )
         lines.append("</pre>")
         sections.append(("基本面", "\n".join(lines)))
 
         # 第三段：技术指标 — 只在有数据时显示
         has_tech = any(
-            e["rsi"] != "-" or e["adx"] != "-" or e["macd_h"] != "-"
-            for e in entries
+            e["rsi"] != "-" or e["adx"] != "-" or e["macd_h"] != "-" for e in entries
         )
         if has_tech:
             lines = ["<pre>"]
-            lines.append(f"{'代码':<10} {'RSI':>5} {'MACD_H':>8} {'VOL比':>6} {'ADX':>5} {'布林%':>7}")
+            lines.append(
+                f"{'代码':<10} {'RSI':>5} {'MACD_H':>8} {'VOL比':>6} {'ADX':>5} {'布林%':>7}"
+            )
             for e in entries:
-                lines.append(f"{e['code']:<10} {e['rsi']:>5} {e['macd_h']:>8} {e['vol_r']:>6} {e['adx']:>5} {e['boll']:>7}")
+                lines.append(
+                    f"{e['code']:<10} {e['rsi']:>5} {e['macd_h']:>8} {e['vol_r']:>6} {e['adx']:>5} {e['boll']:>7}"
+                )
             lines.append("</pre>")
             sections.append(("技术指标", "\n".join(lines)))
 

@@ -2,6 +2,7 @@
 Pytest configuration for stock quantitative system tests.
 This file is automatically discovered by pytest and runs before any tests.
 """
+
 import logging
 import os
 import sys
@@ -32,4 +33,3 @@ def _detach_stream_log_handlers():
             stream = getattr(h, "stream", None)
             if stream is not None and getattr(stream, "closed", False):
                 root.removeHandler(h)
-

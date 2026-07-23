@@ -11,6 +11,7 @@
 6. 手数取整 / 手续费 / 现金约束
 7. 分位归一评分 → 阈值决策
 """
+
 import os
 import sys
 
@@ -24,8 +25,19 @@ from analysis.signal_functions import simulate_portfolio  # noqa: E402
 INF = float("inf")
 
 
-def _sim(buy, sell, price, *, cash=100000.0, buy_th=0.5, sell_th=0.5,
-         frac=1.0, lot=1, monthly=INF, comm=0.0):
+def _sim(
+    buy,
+    sell,
+    price,
+    *,
+    cash=100000.0,
+    buy_th=0.5,
+    sell_th=0.5,
+    frac=1.0,
+    lot=1,
+    monthly=INF,
+    comm=0.0,
+):
     """便捷封装：单/多标的评分矩阵 → PortfolioTrace。"""
     buy = np.asarray(buy, dtype=np.float64)
     sell = np.asarray(sell, dtype=np.float64)
@@ -38,8 +50,18 @@ def _sim(buy, sell, price, *, cash=100000.0, buy_th=0.5, sell_th=0.5,
     dates = [f"d{i}" for i in range(T)]
     codes = [f"S{i}" for i in range(N)]
     return simulate_portfolio(
-        buy, sell, price, cash, buy_th, sell_th, frac, lot, monthly, comm,
-        dates, codes,
+        buy,
+        sell,
+        price,
+        cash,
+        buy_th,
+        sell_th,
+        frac,
+        lot,
+        monthly,
+        comm,
+        dates,
+        codes,
     )
 
 
@@ -149,8 +171,7 @@ class TestLotAndCommission:
 
     def test_no_buy_when_cash_insufficient(self):
         # 现金买不起1手 → 0交易
-        tr = _sim([1, 0], [0, 0], [10000.0, 10000.0], cash=5000.0,
-                  frac=1.0, lot=100)
+        tr = _sim([1, 0], [0, 0], [10000.0, 10000.0], cash=5000.0, frac=1.0, lot=100)
         assert tr.total_trades == 0
 
 
@@ -228,4 +249,5 @@ class TestQuarterlyCostBasisSnapshot:
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])

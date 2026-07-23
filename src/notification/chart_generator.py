@@ -26,6 +26,7 @@ try:
 
     # 设置中文字体（统一使用 portfolio_strategy 的平台感知检测）
     from ..utils.font_setup import setup_cjk_font
+
     setup_cjk_font()
 
     MATPLOTLIB_AVAILABLE = True
@@ -261,13 +262,20 @@ def _build_weekly_ohlc(
         return None
     try:
         import pandas as pd
+
         df = pd.DataFrame({"date": pd.to_datetime(nav_dates), "nav": nav_series})
-        df["week"] = df["date"].dt.isocalendar().apply(
-            lambda r: f"{int(r.year)}-W{int(r.week):02d}", axis=1)
+        df["week"] = (
+            df["date"]
+            .dt.isocalendar()
+            .apply(lambda r: f"{int(r.year)}-W{int(r.week):02d}", axis=1)
+        )
         grouped = df.groupby("week")["nav"]
         ohlc = {
             "labels": [],
-            "open": [], "high": [], "low": [], "close": [],
+            "open": [],
+            "high": [],
+            "low": [],
+            "close": [],
         }
         for week, group in grouped:
             ohlc["labels"].append(week)
@@ -296,6 +304,7 @@ def generate_candlestick_chart(weekly_ohlc: dict) -> tuple[str, bytes] | None:
 
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         from matplotlib.patches import Rectangle
@@ -319,10 +328,7 @@ def generate_candlestick_chart(weekly_ohlc: dict) -> tuple[str, bytes] | None:
     fig.patch.set_facecolor("#1a1a2e")
     ax.set_facecolor("#1a1a2e")
 
-    body_colors = [
-        "#27ae60" if closes[i] >= opens[i] else "#c0392b"
-        for i in range(n)
-    ]
+    body_colors = ["#27ae60" if closes[i] >= opens[i] else "#c0392b" for i in range(n)]
     for i in range(n):
         # 影线
         ax.plot([x[i], x[i]], [lows[i], highs[i]], color=body_colors[i], linewidth=1)
@@ -332,14 +338,23 @@ def generate_candlestick_chart(weekly_ohlc: dict) -> tuple[str, bytes] | None:
         body_h = body_hi - body_lo
         if body_h < 1e-6:
             body_h = max(0.001 * body_hi, 0.01)
-        rect = Rectangle((x[i] - width / 2, body_lo), width, body_h,
-                         facecolor=body_colors[i], edgecolor=body_colors[i],
-                         linewidth=0.5)
+        rect = Rectangle(
+            (x[i] - width / 2, body_lo),
+            width,
+            body_h,
+            facecolor=body_colors[i],
+            edgecolor=body_colors[i],
+            linewidth=0.5,
+        )
         ax.add_patch(rect)
 
-    ax.set_xticks(x[::max(1, n // 10)])
-    ax.set_xticklabels([labels[i] for i in range(0, n, max(1, n // 10))],
-                       rotation=45, fontsize=8, color="#cccccc")
+    ax.set_xticks(x[:: max(1, n // 10)])
+    ax.set_xticklabels(
+        [labels[i] for i in range(0, n, max(1, n // 10))],
+        rotation=45,
+        fontsize=8,
+        color="#cccccc",
+    )
     ax.tick_params(colors="#cccccc", labelsize=8)
     ax.set_ylabel("NAV", color="#cccccc")
     ax.set_title("Weekly NAV Candlestick", color="#ffffff", fontsize=12)

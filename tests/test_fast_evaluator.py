@@ -30,7 +30,7 @@ def _make_matrices(prices, deviations, opens=None):
     # [close, ma60, deviation, rsi, macd_hist, boll_pct_b, adx, vol_ratio]
     ind = np.zeros((T, 1, 8), dtype=np.float32)
     for t in range(T):
-        ind[t, 0, 0] = prices[t]   # close
+        ind[t, 0, 0] = prices[t]  # close
         ind[t, 0, 1] = prices[t] / (1 + deviations[t])  # ma60 = close / (1+dev)
         ind[t, 0, 2] = deviations[t]  # deviation
 
@@ -53,7 +53,9 @@ class TestBuyConfirmationDays:
 
         ev = FastEvaluator(buy_confirmation_days=3)
         stats = ev.evaluate(
-            ind, p_close, baseline,
+            ind,
+            p_close,
+            baseline,
             buy_builders=["deviation_absolute"],
             buy_thresholds=[0.125],  # t = 0.125 * -0.40 = -0.05
             buy_fracs=[0.5],
@@ -68,7 +70,9 @@ class TestBuyConfirmationDays:
 
         ev = FastEvaluator(buy_confirmation_days=3)
         stats = ev.evaluate(
-            ind, p_close, baseline,
+            ind,
+            p_close,
+            baseline,
             buy_builders=["deviation_absolute"],
             buy_thresholds=[0.125],
             buy_fracs=[0.5],
@@ -83,7 +87,9 @@ class TestBuyConfirmationDays:
 
         ev = FastEvaluator(buy_confirmation_days=3)
         stats = ev.evaluate(
-            ind, p_close, baseline,
+            ind,
+            p_close,
+            baseline,
             buy_builders=["deviation_absolute"],
             buy_thresholds=[0.125],
             buy_fracs=[0.5],
@@ -99,7 +105,9 @@ class TestBuyConfirmationDays:
 
         ev = FastEvaluator(buy_confirmation_days=3)
         stats = ev.evaluate(
-            ind, p_close, baseline,
+            ind,
+            p_close,
+            baseline,
             buy_builders=["deviation_absolute"],
             buy_thresholds=[0.125],
             buy_fracs=[0.5],
@@ -116,9 +124,11 @@ class TestSellSingleDay:
         devs = [0.0, -0.06, -0.06, -0.06, 0.06, 0.0]
         ind, p_close, p_open, baseline = _make_matrices(prices, devs)
 
-        ev = FastEvaluator(buy_confirmation_days=3)
+        ev = FastEvaluator(buy_confirmation_days=3, min_holding_days=0)
         stats = ev.evaluate(
-            ind, p_close, baseline,
+            ind,
+            p_close,
+            baseline,
             buy_builders=["deviation_absolute"],
             buy_thresholds=[0.125],
             buy_fracs=[0.5],
@@ -139,12 +149,11 @@ class TestWindowAveragePrice:
         devs = [0.0, 0.0, -0.06, -0.06, -0.06, 0.0]
         ind, p_close, p_open, baseline = _make_matrices(closes, devs, opens)
 
-        # 预期买入价 = avg(9.5, 9.4, 9.3, 9.5, 9.4, 9.3) = 9.40
-        expected_price = (9.5 + 9.4 + 9.3 + 9.5 + 9.4 + 9.3) / 6
-
         ev = FastEvaluator(buy_confirmation_days=3)
         stats = ev.evaluate(
-            ind, p_close, baseline,
+            ind,
+            p_close,
+            baseline,
             buy_builders=["deviation_absolute"],
             buy_thresholds=[0.125],
             buy_fracs=[1.0],  # 全仓买入方便验证
@@ -289,17 +298,21 @@ class TestPositionTargetSimulation:
         p_close = np.array(closes, dtype=np.float32).reshape(T, 1)
         p_open = np.array(opens, dtype=np.float32).reshape(T, 1)
 
-        values, trades, avg_pos, final_pos, shares, cash, cost = _simulate_position_target_python(
-            buy_signals, sell_signals,
-            p_close, p_open,
-            initial_cash=100000.0,
-            lot_size=1,
-            commission_rate=0.002,
-            position_slope=2.0,
-            position_bias=0.0,
-            max_daily_adjust=0.10,
-            buy_confirm_days=3,
-            sell_confirm_days=1,
+        values, trades, avg_pos, final_pos, shares, cash, cost = (
+            _simulate_position_target_python(
+                buy_signals,
+                sell_signals,
+                p_close,
+                p_open,
+                initial_cash=100000.0,
+                lot_size=1,
+                commission_rate=0.002,
+                position_slope=2.0,
+                position_bias=0.0,
+                max_daily_adjust=0.10,
+                buy_confirm_days=3,
+                sell_confirm_days=1,
+            )
         )
         # 应该发生了交易（至少1次买入）
         assert trades > 0
@@ -325,17 +338,21 @@ class TestPositionTargetSimulation:
         p_close = np.array(closes, dtype=np.float32).reshape(T, 1)
         p_open = np.array(opens, dtype=np.float32).reshape(T, 1)
 
-        values, trades, avg_pos, final_pos, shares, cash, cost = _simulate_position_target_python(
-            buy_signals, sell_signals,
-            p_close, p_open,
-            initial_cash=100000.0,
-            lot_size=1,
-            commission_rate=0.002,
-            position_slope=3.0,  # 足够敏感让全卖出时 target 掉到 5% 以下
-            position_bias=0.0,
-            max_daily_adjust=0.10,
-            buy_confirm_days=3,
-            sell_confirm_days=1,
+        values, trades, avg_pos, final_pos, shares, cash, cost = (
+            _simulate_position_target_python(
+                buy_signals,
+                sell_signals,
+                p_close,
+                p_open,
+                initial_cash=100000.0,
+                lot_size=1,
+                commission_rate=0.002,
+                position_slope=3.0,  # 足够敏感让全卖出时 target 掉到 5% 以下
+                position_bias=0.0,
+                max_daily_adjust=0.10,
+                buy_confirm_days=3,
+                sell_confirm_days=1,
+            )
         )
         assert trades >= 2  # 至少买入+卖出各1次
 
@@ -355,17 +372,21 @@ class TestPositionTargetSimulation:
         p_close = np.array(closes, dtype=np.float32).reshape(T, 1)
         p_open = np.array(opens, dtype=np.float32).reshape(T, 1)
 
-        values, trades, avg_pos, final_pos, shares, cash, cost = _simulate_position_target_python(
-            buy_signals, sell_signals,
-            p_close, p_open,
-            initial_cash=100000.0,
-            lot_size=1,
-            commission_rate=0.002,
-            position_slope=5.0,  # 陡峭斜率，target 会很大
-            position_bias=2.0,   # 偏激进
-            max_daily_adjust=0.10,
-            buy_confirm_days=3,
-            sell_confirm_days=1,
+        values, trades, avg_pos, final_pos, shares, cash, cost = (
+            _simulate_position_target_python(
+                buy_signals,
+                sell_signals,
+                p_close,
+                p_open,
+                initial_cash=100000.0,
+                lot_size=1,
+                commission_rate=0.002,
+                position_slope=5.0,  # 陡峭斜率，target 会很大
+                position_bias=2.0,  # 偏激进
+                max_daily_adjust=0.10,
+                buy_confirm_days=3,
+                sell_confirm_days=1,
+            )
         )
         # 验证每日净值变化不超 10%
         for t in range(1, len(values)):
@@ -393,17 +414,21 @@ class TestPositionTargetSimulation:
         p_close = np.tile(np.array(closes, dtype=np.float32).reshape(T, 1), (1, N))
         p_open = p_close.copy()
 
-        values, trades, avg_pos, final_pos, shares, cash, cost = _simulate_position_target_python(
-            buy_signals, sell_signals,
-            p_close, p_open,
-            initial_cash=100000.0,
-            lot_size=1,
-            commission_rate=0.002,
-            position_slope=2.0,
-            position_bias=0.0,
-            max_daily_adjust=0.10,
-            buy_confirm_days=3,
-            sell_confirm_days=1,
+        values, trades, avg_pos, final_pos, shares, cash, cost = (
+            _simulate_position_target_python(
+                buy_signals,
+                sell_signals,
+                p_close,
+                p_open,
+                initial_cash=100000.0,
+                lot_size=1,
+                commission_rate=0.002,
+                position_slope=2.0,
+                position_bias=0.0,
+                max_daily_adjust=0.10,
+                buy_confirm_days=3,
+                sell_confirm_days=1,
+            )
         )
         # 3只股票各有1次买入 → total trades = 3
         assert trades == 3, f"Expected 3 trades (one per stock), got {trades}"
@@ -425,17 +450,21 @@ class TestPositionTargetSimulation:
         p_close = np.array(closes, dtype=np.float32).reshape(T, 1)
         p_open = np.array(opens, dtype=np.float32).reshape(T, 1)
 
-        values, trades, avg_pos, final_pos, shares, cash, cost = _simulate_position_target_python(
-            buy_signals, sell_signals,
-            p_close, p_open,
-            initial_cash=100000.0,
-            lot_size=1,
-            commission_rate=0.002,
-            position_slope=2.0,
-            position_bias=0.0,
-            max_daily_adjust=0.10,
-            buy_confirm_days=3,
-            sell_confirm_days=1,
+        values, trades, avg_pos, final_pos, shares, cash, cost = (
+            _simulate_position_target_python(
+                buy_signals,
+                sell_signals,
+                p_close,
+                p_open,
+                initial_cash=100000.0,
+                lot_size=1,
+                commission_rate=0.002,
+                position_slope=2.0,
+                position_bias=0.0,
+                max_daily_adjust=0.10,
+                buy_confirm_days=3,
+                sell_confirm_days=1,
+            )
         )
         assert trades > 0
         # 验证价格合理（在 9.3-9.5 之间）

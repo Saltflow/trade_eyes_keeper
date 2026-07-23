@@ -58,6 +58,7 @@ class SchedulerManager:
             # 确定要执行的任务函数
             if self.task_function is None:
                 from main import run_daily_task  # noqa: F811
+
                 task_func = run_daily_task
             else:
                 task_func = self.task_function
@@ -88,14 +89,13 @@ class SchedulerManager:
                         brief_func = self.brief_function
                     else:
                         from main import run_brief_report  # noqa: F811
+
                         brief_func = run_brief_report
 
                     br_trigger = CronTrigger(
                         hour=br_hour, minute=br_minute, timezone=timezone
                     )
-                    br_task = functools.partial(
-                        brief_func, report_id=br_id
-                    )
+                    br_task = functools.partial(brief_func, report_id=br_id)
                     self.scheduler.add_job(
                         func=br_task,
                         trigger=br_trigger,
@@ -104,8 +104,7 @@ class SchedulerManager:
                         replace_existing=True,
                     )
                     logger.info(
-                        f"简报已注册: {br_label} "
-                        f"({br_hour:02d}:{br_minute:02d})"
+                        f"简报已注册: {br_label} ({br_hour:02d}:{br_minute:02d})"
                     )
                 except Exception as e:
                     logger.error(f"注册简报失败 ({br_label}): {e}")

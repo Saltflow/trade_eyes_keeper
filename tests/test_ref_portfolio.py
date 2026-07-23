@@ -13,7 +13,6 @@
 import os
 import sys
 import tempfile
-from datetime import date, datetime
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +24,7 @@ os.environ.setdefault("LOG_LEVEL", "ERROR")
 
 # ── 模拟 StrategyAlert ─────────────────────────────────────────
 
+
 @dataclass
 class MockAlert:
     stock_code: str
@@ -35,22 +35,32 @@ class MockAlert:
 
 
 def _buy_alert(code: str) -> MockAlert:
-    return MockAlert(stock_code=code, rule_id="buy_minus5",
-                     rule_label="跌破MA60 -5%", type="strategy_buy")
+    return MockAlert(
+        stock_code=code,
+        rule_id="buy_minus5",
+        rule_label="跌破MA60 -5%",
+        type="strategy_buy",
+    )
 
 
 def _sell_alert(code: str) -> MockAlert:
-    return MockAlert(stock_code=code, rule_id="sell_plus5",
-                     rule_label="突破MA60 +5%", type="strategy_sell")
+    return MockAlert(
+        stock_code=code,
+        rule_id="sell_plus5",
+        rule_label="突破MA60 +5%",
+        type="strategy_sell",
+    )
 
 
 # ── 数据模型测试 ───────────────────────────────────────────────
+
 
 class TestRefPortfolioModel:
     """RefPortfolio / Holding / Trade 数据模型。"""
 
     def test_default_portfolio(self):
         from src.core.ref_portfolio import RefPortfolio
+
         pf = RefPortfolio()
         assert pf.cash == 100000.0
         assert pf.initial_capital == 100000.0
@@ -61,6 +71,7 @@ class TestRefPortfolioModel:
 
     def test_nav_with_holdings(self):
         from src.core.ref_portfolio import RefPortfolio, Holding
+
         pf = RefPortfolio(cash=50000.0, initial_capital=100000.0)
         pf.holdings["601728"] = Holding(code="601728", shares=1000, avg_cost=10.0)
         nav = pf.nav({"601728": 12.0})
@@ -68,6 +79,7 @@ class TestRefPortfolioModel:
 
     def test_nav_return_pct(self):
         from src.core.ref_portfolio import RefPortfolio, Holding
+
         pf = RefPortfolio(cash=50000.0, initial_capital=100000.0)
         pf.holdings["601728"] = Holding(code="601728", shares=1000, avg_cost=10.0)
         ret = pf.nav_return_pct({"601728": 12.0})
@@ -75,15 +87,26 @@ class TestRefPortfolioModel:
 
     def test_to_dict_and_from_dict(self):
         from src.core.ref_portfolio import RefPortfolio, Holding, Trade
+
         pf = RefPortfolio(
-            inception_date="2026-07-14", cash=90000.0, initial_capital=100000.0,
-            trading_days=2, last_rebalance_date="2026-07-15",
+            inception_date="2026-07-14",
+            cash=90000.0,
+            initial_capital=100000.0,
+            trading_days=2,
+            last_rebalance_date="2026-07-15",
         )
         pf.holdings["601728"] = Holding(code="601728", shares=500, avg_cost=12.34)
-        pf.trade_log.append(Trade(
-            date="2026-07-14", code="601728", action="buy",
-            shares=500, price=12.34, cost=6170.0, reason="buy_minus5",
-        ))
+        pf.trade_log.append(
+            Trade(
+                date="2026-07-14",
+                code="601728",
+                action="buy",
+                shares=500,
+                price=12.34,
+                cost=6170.0,
+                reason="buy_minus5",
+            )
+        )
 
         d = pf.to_dict()
         restored = RefPortfolio.from_dict(d)
@@ -101,6 +124,7 @@ class TestRefPortfolioModel:
 
 # ── 持久化测试 ─────────────────────────────────────────────────
 
+
 class TestRefPortfolioPersistence:
     """加载/保存/重置。"""
 
@@ -115,6 +139,7 @@ class TestRefPortfolioPersistence:
 
     def test_load_empty_file(self):
         from src.core.ref_portfolio import RefPortfolioManager, RefPortfolio
+
         mgr = RefPortfolioManager(self._path)
         pf = mgr.load()
         assert isinstance(pf, RefPortfolio)
@@ -123,18 +148,31 @@ class TestRefPortfolioPersistence:
 
     def test_save_and_load_roundtrip(self):
         from src.core.ref_portfolio import (
-            RefPortfolioManager, RefPortfolio, Holding, Trade,
+            RefPortfolioManager,
+            RefPortfolio,
+            Holding,
+            Trade,
         )
+
         mgr = RefPortfolioManager(self._path)
         pf = RefPortfolio(
-            inception_date="2026-07-14", cash=80000.0, initial_capital=100000.0,
+            inception_date="2026-07-14",
+            cash=80000.0,
+            initial_capital=100000.0,
             trading_days=5,
         )
         pf.holdings["601728"] = Holding(code="601728", shares=200, avg_cost=10.5)
-        pf.trade_log.append(Trade(
-            date="2026-07-14", code="601728", action="buy",
-            shares=200, price=10.5, cost=2100.0, reason="buy_minus5",
-        ))
+        pf.trade_log.append(
+            Trade(
+                date="2026-07-14",
+                code="601728",
+                action="buy",
+                shares=200,
+                price=10.5,
+                cost=2100.0,
+                reason="buy_minus5",
+            )
+        )
         mgr.save(pf)
 
         loaded = mgr.load()
@@ -147,8 +185,11 @@ class TestRefPortfolioPersistence:
 
     def test_reset_clears_everything(self):
         from src.core.ref_portfolio import (
-            RefPortfolioManager, RefPortfolio, Holding,
+            RefPortfolioManager,
+            RefPortfolio,
+            Holding,
         )
+
         mgr = RefPortfolioManager(self._path)
         # 先创建一个有持仓的状态
         pf = RefPortfolio(inception_date="2026-01-01", cash=50000.0)
@@ -171,11 +212,13 @@ class TestRefPortfolioPersistence:
 
 # ── 调仓测试 ───────────────────────────────────────────────────
 
+
 class TestRebalance:
     """rebalance() 交易逻辑。"""
 
     def setup_method(self):
         from src.core.ref_portfolio import RefPortfolio
+
         self.pf = RefPortfolio(
             inception_date="2026-07-14",
             cash=100000.0,
@@ -187,9 +230,13 @@ class TestRebalance:
 
     def test_buy_creates_holding(self):
         from src.core.ref_portfolio import RefPortfolioManager
+
         mgr = RefPortfolioManager()
         new_pf, trades = mgr.rebalance(
-            self.pf, [_buy_alert("601728")], self.prices, "2026-07-15",
+            self.pf,
+            [_buy_alert("601728")],
+            self.prices,
+            "2026-07-15",
             monthly_buy_limit=50000,
         )
         assert "601728" in new_pf.holdings
@@ -204,9 +251,13 @@ class TestRebalance:
 
     def test_buy_deducts_cash_and_commission(self):
         from src.core.ref_portfolio import RefPortfolioManager
+
         mgr = RefPortfolioManager()
         new_pf, trades = mgr.rebalance(
-            self.pf, [_buy_alert("601728")], self.prices, "2026-07-15",
+            self.pf,
+            [_buy_alert("601728")],
+            self.prices,
+            "2026-07-15",
             monthly_buy_limit=50000,
         )
         expected_gross = 1600 * 12.0  # 19200
@@ -218,20 +269,29 @@ class TestRebalance:
     def test_buy_complies_with_lot_size(self):
         """买入股数必须是 lot_size 的整数倍。"""
         from src.core.ref_portfolio import RefPortfolioManager
+
         mgr = RefPortfolioManager()
         new_pf, trades = mgr.rebalance(
-            self.pf, [_buy_alert("601728")], self.prices, "2026-07-15",
+            self.pf,
+            [_buy_alert("601728")],
+            self.prices,
+            "2026-07-15",
             monthly_buy_limit=50000,
         )
         assert new_pf.holdings["601728"].shares % 100 == 0
 
     def test_buy_insufficient_cash_skips(self):
         from src.core.ref_portfolio import RefPortfolioManager, RefPortfolio
+
         mgr = RefPortfolioManager()
-        poor_pf = RefPortfolio(cash=50.0, initial_capital=100000.0,
-                               inception_date="2026-07-14")
+        poor_pf = RefPortfolio(
+            cash=50.0, initial_capital=100000.0, inception_date="2026-07-14"
+        )
         new_pf, trades = mgr.rebalance(
-            poor_pf, [_buy_alert("601728")], self.prices, "2026-07-15",
+            poor_pf,
+            [_buy_alert("601728")],
+            self.prices,
+            "2026-07-15",
         )
         assert len(trades) == 0  # 50 元不够一手
         assert new_pf.cash == 50.0
@@ -239,13 +299,18 @@ class TestRebalance:
     def test_buy_partial_fill_when_near_cash_limit(self):
         """现金刚好差一点 → 减一手重算。"""
         from src.core.ref_portfolio import RefPortfolioManager, RefPortfolio
+
         mgr = RefPortfolioManager()
         # 一手 = 12*100=1200 + 6 手续费 = 1206
         # 给 1300 现金 → 买 100 股
-        tight_pf = RefPortfolio(cash=1300.0, initial_capital=100000.0,
-                                inception_date="2026-07-14")
+        tight_pf = RefPortfolio(
+            cash=1300.0, initial_capital=100000.0, inception_date="2026-07-14"
+        )
         new_pf, trades = mgr.rebalance(
-            tight_pf, [_buy_alert("601728")], self.prices, "2026-07-15",
+            tight_pf,
+            [_buy_alert("601728")],
+            self.prices,
+            "2026-07-15",
         )
         if trades:  # 1300 够一手应该成交
             assert new_pf.holdings.get("601728", None)
@@ -254,14 +319,19 @@ class TestRebalance:
 
     def test_sell_reduces_holding(self):
         from src.core.ref_portfolio import RefPortfolioManager, Holding, RefPortfolio
+
         mgr = RefPortfolioManager()
-        pf = RefPortfolio(inception_date="2026-07-14", cash=50000.0,
-                          initial_capital=100000.0)
+        pf = RefPortfolio(
+            inception_date="2026-07-14", cash=50000.0, initial_capital=100000.0
+        )
         pf.holdings["601728"] = Holding(code="601728", shares=1000, avg_cost=10.0)
         prices = {"601728": 15.0}
 
         new_pf, trades = mgr.rebalance(
-            pf, [_sell_alert("601728")], prices, "2026-07-15",
+            pf,
+            [_sell_alert("601728")],
+            prices,
+            "2026-07-15",
         )
         # 卖出 25% = 250 shares → 向下取整手 → 200 shares
         assert new_pf.holdings["601728"].shares == 800
@@ -275,13 +345,17 @@ class TestRebalance:
     def test_sell_lot_size_rounding(self):
         """卖出手数必须是 lot_size 的整数倍。"""
         from src.core.ref_portfolio import RefPortfolioManager, Holding, RefPortfolio
+
         mgr = RefPortfolioManager()
         pf = RefPortfolio(inception_date="2026-07-14", cash=50000.0)
         pf.holdings["601728"] = Holding(code="601728", shares=150, avg_cost=10.0)
         # 150 * 0.25 = 37.5 → 向下取整到 0 (不足一手)
         prices = {"601728": 15.0}
         new_pf, trades = mgr.rebalance(
-            pf, [_sell_alert("601728")], prices, "2026-07-15",
+            pf,
+            [_sell_alert("601728")],
+            prices,
+            "2026-07-15",
         )
         # 不足一手不卖
         assert new_pf.holdings["601728"].shares == 150
@@ -289,9 +363,13 @@ class TestRebalance:
 
     def test_sell_no_holding_skips(self):
         from src.core.ref_portfolio import RefPortfolioManager
+
         mgr = RefPortfolioManager()
         new_pf, trades = mgr.rebalance(
-            self.pf, [_sell_alert("601728")], self.prices, "2026-07-15",
+            self.pf,
+            [_sell_alert("601728")],
+            self.prices,
+            "2026-07-15",
         )
         assert len(trades) == 0
         assert new_pf.cash == self.pf.cash
@@ -301,6 +379,7 @@ class TestRebalance:
     def test_same_stock_buy_sell_mutual_exclusion(self):
         """同一标的同日既有买又有卖信号 → 双方都取消。"""
         from src.core.ref_portfolio import RefPortfolioManager, Holding, RefPortfolio
+
         mgr = RefPortfolioManager()
         pf = RefPortfolio(inception_date="2026-07-14", cash=50000.0)
         pf.holdings["601728"] = Holding(code="601728", shares=500, avg_cost=10.0)
@@ -309,7 +388,8 @@ class TestRebalance:
         new_pf, trades = mgr.rebalance(
             pf,
             [_buy_alert("601728"), _sell_alert("601728")],
-            prices, "2026-07-15",
+            prices,
+            "2026-07-15",
         )
         assert len(trades) == 0
         assert new_pf.holdings["601728"].shares == 500  # unchanged
@@ -318,18 +398,26 @@ class TestRebalance:
 
     def test_weekend_no_trading(self):
         from src.core.ref_portfolio import RefPortfolioManager
+
         mgr = RefPortfolioManager()
         # 2026-07-18 is Saturday
         new_pf, trades = mgr.rebalance(
-            self.pf, [_buy_alert("601728")], self.prices, "2026-07-18",
+            self.pf,
+            [_buy_alert("601728")],
+            self.prices,
+            "2026-07-18",
         )
         assert len(trades) == 0
 
     def test_weekday_trading_allowed(self):
         from src.core.ref_portfolio import RefPortfolioManager
+
         mgr = RefPortfolioManager()
         new_pf, trades = mgr.rebalance(
-            self.pf, [_buy_alert("601728")], self.prices, "2026-07-15",
+            self.pf,
+            [_buy_alert("601728")],
+            self.prices,
+            "2026-07-15",
             monthly_buy_limit=50000,
         )
         assert len(trades) >= 1
@@ -339,13 +427,17 @@ class TestRebalance:
     def test_holdings_persist_across_rebalance(self):
         """持仓不会因为新一轮调仓而丢失（除非被卖出）。"""
         from src.core.ref_portfolio import RefPortfolioManager, Holding, RefPortfolio
+
         mgr = RefPortfolioManager()
         pf = RefPortfolio(inception_date="2026-07-14", cash=50000.0)
         pf.holdings["600938"] = Holding(code="600938", shares=300, avg_cost=8.0)
         prices = {"601728": 12.0, "600938": 9.0}
 
         new_pf, trades = mgr.rebalance(
-            pf, [_buy_alert("601728")], prices, "2026-07-15",
+            pf,
+            [_buy_alert("601728")],
+            prices,
+            "2026-07-15",
             monthly_buy_limit=50000,
         )
         # 600938 still there
@@ -358,19 +450,26 @@ class TestRebalance:
 
     def test_trade_log_appended(self):
         from src.core.ref_portfolio import RefPortfolioManager
+
         mgr = RefPortfolioManager()
         pf = self.pf
         assert len(pf.trade_log) == 0
 
         new_pf, trades1 = mgr.rebalance(
-            pf, [_buy_alert("601728")], self.prices, "2026-07-15",
+            pf,
+            [_buy_alert("601728")],
+            self.prices,
+            "2026-07-15",
             monthly_buy_limit=50000,
         )
         assert len(new_pf.trade_log) == 1
 
         prices2 = {"601728": 14.0}
         new_pf2, trades2 = mgr.rebalance(
-            new_pf, [_sell_alert("601728")], prices2, "2026-07-16",
+            new_pf,
+            [_sell_alert("601728")],
+            prices2,
+            "2026-07-16",
         )
         assert len(new_pf2.trade_log) == 2
 
@@ -378,28 +477,36 @@ class TestRebalance:
 
     def test_trading_days_increments(self):
         from src.core.ref_portfolio import RefPortfolioManager
+
         mgr = RefPortfolioManager()
         pf = self.pf
         assert pf.trading_days == 0
 
         new_pf, _ = mgr.rebalance(
-            pf, [_buy_alert("601728")], self.prices, "2026-07-15",
+            pf,
+            [_buy_alert("601728")],
+            self.prices,
+            "2026-07-15",
             monthly_buy_limit=50000,
         )
         assert new_pf.trading_days == 1
 
         # 同一天再次调仓 → 不增加
         new_pf2, _ = mgr.rebalance(
-            new_pf, [_buy_alert("600938")],
-            {"601728": 12.0, "600938": 8.0}, "2026-07-15",
+            new_pf,
+            [_buy_alert("600938")],
+            {"601728": 12.0, "600938": 8.0},
+            "2026-07-15",
             monthly_buy_limit=50000,
         )
         assert new_pf2.trading_days == 1
 
         # 新一天 → 增加
         new_pf3, _ = mgr.rebalance(
-            new_pf2, [_buy_alert("600938")],
-            {"601728": 12.0, "600938": 8.0}, "2026-07-16",
+            new_pf2,
+            [_buy_alert("600938")],
+            {"601728": 12.0, "600938": 8.0},
+            "2026-07-16",
             monthly_buy_limit=50000,
         )
         assert new_pf3.trading_days == 2
@@ -407,17 +514,24 @@ class TestRebalance:
 
 # ── 状态摘要测试 ───────────────────────────────────────────────
 
+
 class TestGetStatus:
     """get_status() 返回字段完整性。"""
 
     def test_status_has_required_fields(self):
         from src.core.ref_portfolio import (
-            RefPortfolioManager, RefPortfolio, Holding,
+            RefPortfolioManager,
+            RefPortfolio,
+            Holding,
         )
+
         mgr = RefPortfolioManager()
         pf = RefPortfolio(
-            inception_date="2026-07-14", cash=80000.0, initial_capital=100000.0,
-            trading_days=3, last_rebalance_date="2026-07-16",
+            inception_date="2026-07-14",
+            cash=80000.0,
+            initial_capital=100000.0,
+            trading_days=3,
+            last_rebalance_date="2026-07-16",
         )
         pf.holdings["601728"] = Holding(code="601728", shares=200, avg_cost=10.0)
         prices = {"601728": 12.0}
@@ -436,6 +550,7 @@ class TestGetStatus:
 
     def test_status_no_prices_shows_cash_only(self):
         from src.core.ref_portfolio import RefPortfolioManager, RefPortfolio
+
         mgr = RefPortfolioManager()
         pf = RefPortfolio(cash=80000.0, initial_capital=100000.0)
         status = mgr.get_status(pf, None)
@@ -445,13 +560,16 @@ class TestGetStatus:
 
 # ── 初始化判断 ─────────────────────────────────────────────────
 
+
 class TestIsInitialized:
     def test_empty_not_initialized(self):
         from src.core.ref_portfolio import RefPortfolioManager, RefPortfolio
+
         mgr = RefPortfolioManager()
         assert not mgr.is_initialized(RefPortfolio())
 
     def test_with_date_is_initialized(self):
         from src.core.ref_portfolio import RefPortfolioManager, RefPortfolio
+
         mgr = RefPortfolioManager()
         assert mgr.is_initialized(RefPortfolio(inception_date="2026-07-14"))

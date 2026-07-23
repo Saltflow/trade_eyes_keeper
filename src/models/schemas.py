@@ -8,12 +8,14 @@ StockPriceData 展平为单一模型，消除 DataFrame ↔ 模型 转换丢字�
 import logging
 import math
 from pydantic import BaseModel, Field, validator
-from typing import TYPE_CHECKING, Optional as TypingOptional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    import pandas as pd
+
     from ..analysis.signal_scanner import ScanResult
 from datetime import datetime, date
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from enum import Enum
 
 logger = logging.getLogger(__name__)

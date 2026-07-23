@@ -6,10 +6,6 @@ Tests bug fixes for:
 """
 
 import pandas as pd
-import pytest
-
-from src.core.condition_checker import ConditionChecker
-from src.notification.email_notifier import EmailNotifier
 
 
 class TestNoneValueHandling:
@@ -17,12 +13,6 @@ class TestNoneValueHandling:
 
     def test_condition_checker_handles_none_anchor_value(self):
         """Test that condition_checker handles None anchor_value gracefully"""
-        config = {
-            "alerts": {"enabled": False},
-            "storage": {"cache_dir": "./cache"},
-        }
-        checker = ConditionChecker(config)
-
         # Create alert with None anchor_value
         alert = {
             "stock_code": "600000",

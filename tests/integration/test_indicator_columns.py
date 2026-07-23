@@ -38,7 +38,7 @@ class TestIndicatorColumnNames:
         from src.analysis import portfolio_strategy
 
         src = inspect.getsource(portfolio_strategy.PortfolioEvaluator.evaluate)
-        rsi_computed = 'rsi' in src and ('ewm' in src or 'diff' in src)
+        rsi_computed = "rsi" in src and ("ewm" in src or "diff" in src)
         rsi_checked = 'rsi" not in' in src or "rsi' not in" in src
 
         if not rsi_checked and not rsi_computed:

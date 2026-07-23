@@ -10,7 +10,6 @@ import requests
 from .command_parser import (
     AddCommand,
     BacktestCommand,
-    CommandType,
     ErrorCommand,
     HelpCommand,
     ListCommand,
@@ -67,7 +66,8 @@ class TelegramBot:
         url = f"{TELEGRAM_API}/bot{self.bot_token}/{method}"
         try:
             resp = requests.post(
-                url, data=params,
+                url,
+                data=params,
                 timeout=30 if method == "getUpdates" else 15,
                 proxies=self._proxies,
             )
@@ -86,13 +86,16 @@ class TelegramBot:
             return None
 
     def _send_message(self, chat_id, text: str) -> bool:
-        return self._api(
-            "sendMessage",
-            chat_id=str(chat_id),
-            text=text,
-            parse_mode="HTML",
-            disable_web_page_preview="true",
-        ) is not None
+        return (
+            self._api(
+                "sendMessage",
+                chat_id=str(chat_id),
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview="true",
+            )
+            is not None
+        )
 
     def _get_updates(self, offset: int) -> list[dict]:
         result = self._api("getUpdates", offset=offset, timeout=10)

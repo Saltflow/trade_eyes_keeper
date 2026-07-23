@@ -1,7 +1,5 @@
 """回测 handler 测试 — 验证不崩溃、输出含关键字段。"""
 
-import pytest
-
 from src.interactive.commands.handlers import handle_backtest
 
 

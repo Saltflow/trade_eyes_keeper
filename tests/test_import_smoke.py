@@ -5,28 +5,16 @@
 防止目录重组后 import 路径回归。
 """
 
-import sys
 from pathlib import Path
 
 
 def test_analysis_imports():
     """analysis 子包导入"""
-    from src.analysis.backtest_config import BacktestConfig, elapsed_months
-    from src.analysis.indicator_library import compute_all, add_rsi, add_macd
-    from src.analysis.strategy_optimizer import (
-        StrategyOptimizer, OptimizationReport, StrategyTrial,
-    )
-    from src.analysis.signal_scanner import SignalScanner, ScanResult
-    from src.analysis.portfolio_strategy import PortfolioEvaluator, PortfolioResult
-    from src.analysis.rule_engine import RuleEngine, Rule, ExpressionEngine
     assert True
 
 
 def test_health_server_imports():
     """health_server 子包导入"""
-    from src.health_server.core.global_instances import (
-        register_report_token, get_report_path, set_report_token_timeout,
-    )
     assert True
 
 

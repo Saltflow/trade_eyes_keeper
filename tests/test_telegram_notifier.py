@@ -1,7 +1,6 @@
 """Telegram 通知器 — 传输层 + 内容层测试"""
 
-import pytest
-from unittest.mock import Mock, patch, ANY
+from unittest.mock import Mock, patch
 
 from src.notification.telegram_notifier import TelegramNotifier
 
@@ -41,7 +40,8 @@ class TestTelegramTransport:
             {
                 "notification": {
                     "telegram": {
-                        "bot_token": "xxx", "chat_id": "yyy",
+                        "bot_token": "xxx",
+                        "chat_id": "yyy",
                     }
                 }
             }
@@ -57,14 +57,18 @@ class TestTelegramTransport:
             {
                 "notification": {
                     "telegram": {
-                        "bot_token": "xxx", "chat_id": "yyy",
+                        "bot_token": "xxx",
+                        "chat_id": "yyy",
                     }
                 }
             }
         )
         with patch("requests.post") as mock_post:
             mock_post.return_value.status_code = 200
-            mock_post.return_value.json.return_value = {"ok": False, "description": "chat not found"}
+            mock_post.return_value.json.return_value = {
+                "ok": False,
+                "description": "chat not found",
+            }
             ok, msg = notifier._send("标题", "正文")
             assert not ok
 
@@ -74,7 +78,8 @@ class TestTelegramTransport:
             {
                 "notification": {
                     "telegram": {
-                        "bot_token": "xxx", "chat_id": "yyy",
+                        "bot_token": "xxx",
+                        "chat_id": "yyy",
                     }
                 }
             }
@@ -90,7 +95,8 @@ class TestTelegramTransport:
             {
                 "notification": {
                     "telegram": {
-                        "bot_token": "xxx", "chat_id": "yyy",
+                        "bot_token": "xxx",
+                        "chat_id": "yyy",
                     }
                 }
             }
@@ -115,7 +121,8 @@ class TestTelegramContent:
             {
                 "notification": {
                     "telegram": {
-                        "bot_token": "xxx", "chat_id": "yyy",
+                        "bot_token": "xxx",
+                        "chat_id": "yyy",
                         "parse_mode": "HTML",
                     }
                 }
@@ -136,7 +143,8 @@ class TestTelegramContent:
             {
                 "notification": {
                     "telegram": {
-                        "bot_token": "xxx", "chat_id": "yyy",
+                        "bot_token": "xxx",
+                        "chat_id": "yyy",
                     }
                 }
             }
@@ -152,17 +160,30 @@ class TestTelegramContent:
 
 def _make_brief_df():
     import pandas as pd
-    return pd.DataFrame([
-        {
-            "stock_code": "601728", "stock_name": "中国电信",
-            "date": pd.Timestamp.today().normalize(),
-            "open": 5.70, "close": 5.76,
-            "ma60": 5.91, "wma20": 5.78, "wma30": 5.65, "wma50": 5.50,
-        },
-        {
-            "stock_code": "00883", "stock_name": "中海油",
-            "date": pd.Timestamp.today().normalize(),
-            "open": 18.50, "close": 18.62,
-            "ma60": 18.00, "wma20": 18.40, "wma30": 17.80, "wma50": 17.50,
-        },
-    ])
+
+    return pd.DataFrame(
+        [
+            {
+                "stock_code": "601728",
+                "stock_name": "中国电信",
+                "date": pd.Timestamp.today().normalize(),
+                "open": 5.70,
+                "close": 5.76,
+                "ma60": 5.91,
+                "wma20": 5.78,
+                "wma30": 5.65,
+                "wma50": 5.50,
+            },
+            {
+                "stock_code": "00883",
+                "stock_name": "中海油",
+                "date": pd.Timestamp.today().normalize(),
+                "open": 18.50,
+                "close": 18.62,
+                "ma60": 18.00,
+                "wma20": 18.40,
+                "wma30": 17.80,
+                "wma50": 17.50,
+            },
+        ]
+    )

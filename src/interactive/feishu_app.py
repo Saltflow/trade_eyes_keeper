@@ -25,15 +25,17 @@ class FeishuApp:
         self.verification_token = ic.get("verification_token") or os.getenv(
             "FEISHU_VERIFICATION_TOKEN", ""
         )
-        self.encrypt_key = ic.get("encrypt_key") or os.getenv(
-            "FEISHU_ENCRYPT_KEY", ""
-        )
+        self.encrypt_key = ic.get("encrypt_key") or os.getenv("FEISHU_ENCRYPT_KEY", "")
 
         allowed = ic.get("allowed_chat_ids", [])
         has_wildcard = any(str(cid).strip() == "*" for cid in allowed)
-        self.allowed_chat_ids = set(str(cid) for cid in allowed if cid and str(cid).strip())
+        self.allowed_chat_ids = set(
+            str(cid) for cid in allowed if cid and str(cid).strip()
+        )
         self._allow_all = has_wildcard or not bool(self.allowed_chat_ids)
-        self.gate = SecurityGate(self.allowed_chat_ids) if self.allowed_chat_ids else None
+        self.gate = (
+            SecurityGate(self.allowed_chat_ids) if self.allowed_chat_ids else None
+        )
         self.rate_limiter = RateLimiter(
             max_per_minute=ic.get("rate_limit_per_minute", 10)
         )
@@ -73,7 +75,10 @@ class FeishuApp:
             if not challenge:
                 return True
             # token 未配置时接受任意值，已配置时精确匹配
-            if not self.verification_token or body.get("token") == self.verification_token:
+            if (
+                not self.verification_token
+                or body.get("token") == self.verification_token
+            ):
                 return {"challenge": challenge}
         return True
 

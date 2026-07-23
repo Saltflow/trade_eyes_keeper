@@ -121,12 +121,26 @@ class TestCommandParser:
     def test_valid_codes_from_config(self):
         """config.yaml 里出现的所有代码格式都应通过验证。"""
         real_codes = [
-            "601728", "600938", "601985", "601919",  # 6-digit A-share
-            "512810", "513910", "588000", "000958",  # ETF
-            "515180", "508077", "180603",            # 混合
-            "GOOG", "VOO", "TQQQ", "UPRO",           # US tickers
-            "00883", "01816", "1355",                 # HK
-            "C38U.SI", "AJBU.SI",                     # Singapore
+            "601728",
+            "600938",
+            "601985",
+            "601919",  # 6-digit A-share
+            "512810",
+            "513910",
+            "588000",
+            "000958",  # ETF
+            "515180",
+            "508077",
+            "180603",  # 混合
+            "GOOG",
+            "VOO",
+            "TQQQ",
+            "UPRO",  # US tickers
+            "00883",
+            "01816",
+            "1355",  # HK
+            "C38U.SI",
+            "AJBU.SI",  # Singapore
         ]
         for code in real_codes:
             cmd = parse_command(f"/add {code}")

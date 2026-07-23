@@ -1,4 +1,5 @@
 """TDD: /ref_date 命令全链路测试。"""
+
 import sys
 import os
 
@@ -35,22 +36,30 @@ class TestRefDateHandler:
 
         if self._saved_config is not None:
             with open(handlers.CONFIG_PATH, "w", encoding="utf-8") as f:
-                yaml.dump(self._saved_config, f, allow_unicode=True,
-                          default_flow_style=False, sort_keys=False)
+                yaml.dump(
+                    self._saved_config,
+                    f,
+                    allow_unicode=True,
+                    default_flow_style=False,
+                    sort_keys=False,
+                )
 
     def test_show_unset(self):
         from src.interactive.commands.handlers import handle_ref_date
+
         r = handle_ref_date()
         assert "未设置" in r
 
     def test_set_and_show(self):
         from src.interactive.commands.handlers import handle_ref_date
+
         handle_ref_date("2026-07-14")
         r = handle_ref_date()
         assert "2026-07-14" in r
 
     def test_bad_date_rejected(self):
         from src.interactive.commands.handlers import handle_ref_date
+
         r = handle_ref_date("abc")
         assert "格式错误" in r
 
@@ -60,24 +69,30 @@ class TestRefDateCommandParser:
 
     def test_parse_with_date(self):
         from src.interactive.command_parser import (
-            parse_command, RefDateCommand,
+            parse_command,
+            RefDateCommand,
         )
+
         cmd = parse_command("/ref_date 2026-07-14")
         assert isinstance(cmd, RefDateCommand)
         assert cmd.date_str == "2026-07-14"
 
     def test_parse_no_date(self):
         from src.interactive.command_parser import (
-            parse_command, RefDateCommand,
+            parse_command,
+            RefDateCommand,
         )
+
         cmd = parse_command("/ref_date")
         assert isinstance(cmd, RefDateCommand)
         assert cmd.date_str is None
 
     def test_parse_empty_date(self):
         from src.interactive.command_parser import (
-            parse_command, RefDateCommand,
+            parse_command,
+            RefDateCommand,
         )
+
         cmd = parse_command("/ref_date   ")
         assert isinstance(cmd, RefDateCommand)
         assert cmd.date_str is None
@@ -92,15 +107,17 @@ class TestRefDateDispatch:
             parse_command,
         )
         from src.interactive.feishu_handler import _dispatch
+
         cmd = parse_command("/ref_date")
-        with patch("src.interactive.commands.handlers._load_config",
-                   return_value={"optimizer": {}}):
+        with patch(
+            "src.interactive.commands.handlers._load_config",
+            return_value={"optimizer": {}},
+        ):
             r = _dispatch(cmd)
         assert "参考持仓基期" in r
 
     def test_telegram_dispatch_import(self):
         """确认 Telegram bot 导入了 handle_ref_date 和 RefDateCommand。"""
-        from src.interactive.telegram_bot import logger  # 触发 import
         import src.interactive.telegram_bot as tb
 
         # assert handle_ref_date 在 handlers 导入列表中
@@ -109,4 +126,5 @@ class TestRefDateDispatch:
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])

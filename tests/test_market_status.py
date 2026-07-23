@@ -1,26 +1,28 @@
 """休市跳过逻辑测试 — 数据指纹比较。"""
 
 import pandas as pd
-from datetime import datetime
-from pathlib import Path
 
 from src.utils.market_status import is_market_closed, mark_pushed
 
 
 def _make_df(latest_date: str) -> pd.DataFrame:
     """构造最新日期为 latest_date 的 DataFrame。"""
-    return pd.DataFrame([
-        {"stock_code": "601728", "date": pd.Timestamp(latest_date), "close": 5.76},
-        {"stock_code": "GOOG", "date": pd.Timestamp(latest_date), "close": 370.0},
-    ])
+    return pd.DataFrame(
+        [
+            {"stock_code": "601728", "date": pd.Timestamp(latest_date), "close": 5.76},
+            {"stock_code": "GOOG", "date": pd.Timestamp(latest_date), "close": 370.0},
+        ]
+    )
 
 
 def _make_df_str_date(latest_date: str) -> pd.DataFrame:
     """构造 date 列为字符串类型的 DataFrame（模拟 session.get_all_dataframe 的实际行为）。"""
-    return pd.DataFrame([
-        {"stock_code": "601728", "date": latest_date, "close": 5.76},
-        {"stock_code": "GOOG", "date": latest_date, "close": 370.0},
-    ])
+    return pd.DataFrame(
+        [
+            {"stock_code": "601728", "date": latest_date, "close": 5.76},
+            {"stock_code": "GOOG", "date": latest_date, "close": 370.0},
+        ]
+    )
 
 
 class TestIsMarketClosed:
@@ -126,10 +128,16 @@ class TestStringDateColumn:
         """混合类型：一行 Timestamp 一行字符串。"""
         f = tmp_path / "last_pushed.txt"
         f.write_text("2026-06-16")
-        df = pd.DataFrame([
-            {"stock_code": "601728", "date": pd.Timestamp("2026-06-17"), "close": 5.76},
-            {"stock_code": "GOOG", "date": "2026-06-15", "close": 370.0},
-        ])
+        df = pd.DataFrame(
+            [
+                {
+                    "stock_code": "601728",
+                    "date": pd.Timestamp("2026-06-17"),
+                    "close": 5.76,
+                },
+                {"stock_code": "GOOG", "date": "2026-06-15", "close": 370.0},
+            ]
+        )
         # max() 会取较大的值，Timestamp > str 在 pandas 里可能出问题
         # is_market_closed 应该兼容处理
         assert is_market_closed(df, f) is False

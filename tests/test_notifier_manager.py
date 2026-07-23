@@ -1,6 +1,5 @@
 """NotifierManager — 编排层测试"""
 
-import pytest
 from unittest.mock import Mock, patch
 
 from src.notification.manager import NotifierManager
@@ -48,9 +47,11 @@ class TestNotifierManagerDispatch:
 
     def test_notify_all_calls_each_channel(self):
         """3 channel 全部启用 → 3 次 _send 各被调用"""
-        with patch("src.notification.email_notifier.EmailNotifier") as MockEmail, \
-             patch("src.notification.feishu_notifier.FeishuNotifier") as MockFeishu, \
-             patch("src.notification.telegram_notifier.TelegramNotifier") as MockTelegram:
+        with patch("src.notification.email_notifier.EmailNotifier") as MockEmail, patch(
+            "src.notification.feishu_notifier.FeishuNotifier"
+        ) as MockFeishu, patch(
+            "src.notification.telegram_notifier.TelegramNotifier"
+        ) as MockTelegram:
             mock_email = Mock()
             mock_feishu = Mock()
             mock_telegram = Mock()
@@ -70,19 +71,25 @@ class TestNotifierManagerDispatch:
             manager = NotifierManager(config)
             manager.send_deployment_notification("OK", "v1", "summary")
 
-            mock_email.send_deployment_notification.assert_called_once_with("OK", "v1", "summary")
+            mock_email.send_deployment_notification.assert_called_once_with(
+                "OK", "v1", "summary"
+            )
             mock_feishu.send_deployment_notification.assert_called_once()
             mock_telegram.send_deployment_notification.assert_called_once()
 
     def test_one_channel_fails_others_still_called(self):
         """1 channel 抛异常 → 其余 2 个正常完成"""
-        with patch("src.notification.email_notifier.EmailNotifier") as MockEmail, \
-             patch("src.notification.feishu_notifier.FeishuNotifier") as MockFeishu, \
-             patch("src.notification.telegram_notifier.TelegramNotifier") as MockTelegram:
+        with patch("src.notification.email_notifier.EmailNotifier") as MockEmail, patch(
+            "src.notification.feishu_notifier.FeishuNotifier"
+        ) as MockFeishu, patch(
+            "src.notification.telegram_notifier.TelegramNotifier"
+        ) as MockTelegram:
             mock_email = Mock()
             mock_telegram = Mock()
             mock_feishu = Mock()
-            mock_feishu.send_deployment_notification.side_effect = RuntimeError("feishu down")
+            mock_feishu.send_deployment_notification.side_effect = RuntimeError(
+                "feishu down"
+            )
             mock_telegram.send_deployment_notification.return_value = (True, "ok")
             MockEmail.return_value = mock_email
             MockFeishu.return_value = mock_feishu
@@ -104,8 +111,9 @@ class TestNotifierManagerDispatch:
 
     def test_send_from_session_dispatches_all(self):
         """send_from_session 分发给所有 channel"""
-        with patch("src.notification.email_notifier.EmailNotifier") as MockEmail, \
-             patch("src.notification.feishu_notifier.FeishuNotifier") as MockFeishu:
+        with patch("src.notification.email_notifier.EmailNotifier") as MockEmail, patch(
+            "src.notification.feishu_notifier.FeishuNotifier"
+        ) as MockFeishu:
             mock_email = Mock()
             mock_feishu = Mock()
             MockEmail.return_value = mock_email

@@ -134,9 +134,9 @@ class ConfigCommand:
 
 @dataclass
 class SkipCommand:
-    kind: str = "search"       # "search" / "signals"
-    codes: list[str] = None    # 标的列表
-    remove: bool = False       # True=恢复(移出skip), False=关闭(加入skip)
+    kind: str = "search"  # "search" / "signals"
+    codes: list[str] = None  # 标的列表
+    remove: bool = False  # True=恢复(移出skip), False=关闭(加入skip)
     cmd_type: CommandType = CommandType.SKIP
 
     def __post_init__(self):
@@ -146,9 +146,8 @@ class SkipCommand:
 
 @dataclass
 class SwitchOptimizerCommand:
-    kind: str | None = None    # None=列出可用引擎, str=切换到该引擎
+    kind: str | None = None  # None=列出可用引擎, str=切换到该引擎
     cmd_type: CommandType = CommandType.SWITCH_OPTIMIZER
-
 
 
 _STOCK_CODE_RE = re.compile(r"^[A-Za-z0-9]{1,8}(\.[A-Za-z]{1,4})?$")
@@ -272,9 +271,7 @@ def parse_command(text: str):
             return ScheduleCommand(action="view")
         task_id = parts[0].lower()
         if len(parts) < 2:
-            return ErrorCommand(
-                message=f"缺少时间。格式: /schedule {task_id} 20:00"
-            )
+            return ErrorCommand(message=f"缺少时间。格式: /schedule {task_id} 20:00")
         return ScheduleCommand(action="set", task_id=task_id, time_str=parts[1])
 
     if cmd_name == "alerts":
@@ -325,12 +322,12 @@ def parse_command(text: str):
 
     if cmd_name in ("skip", "unskip"):
         # /skip search 601985,000958   /skip signals 508091   /unskip search 601985
-        remove = (cmd_name == "unskip")
+        remove = cmd_name == "unskip"
         sub = args.strip().split(None, 1)
         if not sub or sub[0].lower() not in ("search", "signals", "signal"):
             return ErrorCommand(
-                message="格式: /skip search|signals 代码[,代码]  "
-                        "(/unskip 恢复)")
+                message="格式: /skip search|signals 代码[,代码]  (/unskip 恢复)"
+            )
         kind = "search" if sub[0].lower() == "search" else "signals"
         code_str = sub[1] if len(sub) > 1 else ""
         codes, err = _validate_codes(code_str)
@@ -346,6 +343,4 @@ def parse_command(text: str):
             return SwitchOptimizerCommand(kind=sub.lower())
         return ErrorCommand(message=f"未知引擎: {sub}。可用: global, percentile")
 
-    return ErrorCommand(
-        message=f"未知命令: /{cmd_name}。发送 /help 查看可用命令"
-    )
+    return ErrorCommand(message=f"未知命令: /{cmd_name}。发送 /help 查看可用命令")

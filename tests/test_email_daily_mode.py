@@ -7,39 +7,42 @@ Goal: daily report email should NOT contain alert/strategy-alert/backtest/
 old-portfolio sections. It SHOULD contain chart + fundamentals + search-strategy
 results + announcements.
 """
+
 import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 import pandas as pd
-import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 
 def _make_minimal_stock_data():
     """Build a minimal stock_data DataFrame for testing."""
-    return pd.DataFrame([
-        {
-            "stock_code": "601728",
-            "stock_name": "中国电信",
-            "open": 5.40,
-            "close": 5.38,
-            "high": 5.45,
-            "low": 5.35,
-            "ma60": 5.91,
-            "dividend_per_share": 0.25,
-            "dividend_yield": 4.65,
-            "pe_ratio": 12.3,
-            "pb_ratio": 1.4,
-            "roe": 11.8,
-        },
-    ])
+    return pd.DataFrame(
+        [
+            {
+                "stock_code": "601728",
+                "stock_name": "中国电信",
+                "open": 5.40,
+                "close": 5.38,
+                "high": 5.45,
+                "low": 5.35,
+                "ma60": 5.91,
+                "dividend_per_share": 0.25,
+                "dividend_yield": 4.65,
+                "pe_ratio": 12.3,
+                "pb_ratio": 1.4,
+                "roe": 11.8,
+            },
+        ]
+    )
 
 
 def _make_notifier():
     """Create a minimal EmailNotifier with temp archive dir."""
     import tempfile
+
     tmpdir = tempfile.mkdtemp()
     config = {
         "email": {
@@ -52,12 +55,15 @@ def _make_notifier():
         },
     }
     from notification.email_notifier import EmailNotifier
+
     notifier = EmailNotifier(config)
     # Mock _get_server_info to avoid network calls
-    notifier._get_server_info = MagicMock(return_value={
-        "hostname": "test-host",
-        "ip_address": "127.0.0.1",
-    })
+    notifier._get_server_info = MagicMock(
+        return_value={
+            "hostname": "test-host",
+            "ip_address": "127.0.0.1",
+        }
+    )
     return notifier
 
 
@@ -72,9 +78,7 @@ class TestDailyModeRemovesOldSections:
             stock_data=_make_minimal_stock_data(),
             daily_mode=True,
         )
-        assert "满足条件的股票" not in html, (
-            "daily_mode should suppress alert section"
-        )
+        assert "满足条件的股票" not in html, "daily_mode should suppress alert section"
 
     def test_no_strategy_alert_when_signal_scan_none(self):
         """No '策略报警' or '策略信号扫描' in daily mode (merged into strategy results)."""
@@ -91,6 +95,7 @@ class TestDailyModeRemovesOldSections:
         """Today's signals appear inside strategy_results_section, not as separate section."""
         from unittest.mock import MagicMock
         from src.analysis.portfolio_strategy import PortfolioResult
+
         notifier = _make_notifier()
 
         # Mock signal_scan with one alert
@@ -106,9 +111,14 @@ class TestDailyModeRemovesOldSections:
 
         # Mock portfolio_results
         pr = PortfolioResult(
-            name="max_return", group="a_share",
-            total_return=15.0, max_drawdown=-5.0, sharpe_ratio=0.8,
-            expected_position=50000, composition=["601728"], trade_count=10,
+            name="max_return",
+            group="a_share",
+            total_return=15.0,
+            max_drawdown=-5.0,
+            sharpe_ratio=0.8,
+            expected_position=50000,
+            composition=["601728"],
+            trade_count=10,
         )
         portfolio_results = {"a_share": {"max_return": pr}}
 
@@ -131,6 +141,7 @@ class TestDailyModeRemovesOldSections:
         """When signal_scan has no alerts, show '今日信号: 无触发'."""
         from unittest.mock import MagicMock
         from src.analysis.portfolio_strategy import PortfolioResult
+
         notifier = _make_notifier()
 
         mock_scan = MagicMock()
@@ -140,9 +151,14 @@ class TestDailyModeRemovesOldSections:
         mock_scan.divergence_warnings = []
 
         pr = PortfolioResult(
-            name="max_return", group="a_share",
-            total_return=15.0, max_drawdown=-5.0, sharpe_ratio=0.8,
-            expected_position=50000, composition=["601728"], trade_count=10,
+            name="max_return",
+            group="a_share",
+            total_return=15.0,
+            max_drawdown=-5.0,
+            sharpe_ratio=0.8,
+            expected_position=50000,
+            composition=["601728"],
+            trade_count=10,
         )
         portfolio_results = {"a_share": {"max_return": pr}}
 
@@ -185,11 +201,17 @@ class TestDailyModeKeepsEssentialSections:
     def test_has_strategy_results_when_portfolio_provided(self):
         """Search strategy results section should appear when portfolio_results given."""
         from src.analysis.portfolio_strategy import PortfolioResult
+
         notifier = _make_notifier()
         pr = PortfolioResult(
-            name="max_return", group="a_share",
-            total_return=15.0, max_drawdown=-5.0, sharpe_ratio=0.8,
-            expected_position=50000, composition=["601728"], trade_count=10,
+            name="max_return",
+            group="a_share",
+            total_return=15.0,
+            max_drawdown=-5.0,
+            sharpe_ratio=0.8,
+            expected_position=50000,
+            composition=["601728"],
+            trade_count=10,
         )
         portfolio_results = {"a_share": {"max_return": pr}}
         html = notifier._build_email_body(
@@ -213,11 +235,17 @@ class TestDailyModeKeepsEssentialSections:
     def test_top1_key_supported(self):
         """run_fixed 返回 'top1' 键应被支持（不再依赖 max_return）。"""
         from src.analysis.portfolio_strategy import PortfolioResult
+
         notifier = _make_notifier()
         pr = PortfolioResult(
-            name="top1", group="a_share",
-            total_return=15.0, max_drawdown=-5.0, sharpe_ratio=0.8,
-            expected_position=50000, composition=["601728"], trade_count=10,
+            name="top1",
+            group="a_share",
+            total_return=15.0,
+            max_drawdown=-5.0,
+            sharpe_ratio=0.8,
+            expected_position=50000,
+            composition=["601728"],
+            trade_count=10,
         )
         portfolio_results = {"a_share": {"top1": pr}}
         html = notifier._build_email_body(
@@ -232,20 +260,30 @@ class TestDailyModeKeepsEssentialSections:
     def test_yaml_test_return_shown_as_authority(self):
         """有 opt_data_map 时展示 YAML 测试期预估收益，而非评估 total_return。"""
         from src.analysis.portfolio_strategy import PortfolioResult
+
         notifier = _make_notifier()
         pr = PortfolioResult(
-            name="top1", group="a_share",
-            total_return=99.9, max_drawdown=-5.0, sharpe_ratio=0.8,
-            expected_position=50000, composition=["601728"], trade_count=10,
+            name="top1",
+            group="a_share",
+            total_return=99.9,
+            max_drawdown=-5.0,
+            sharpe_ratio=0.8,
+            expected_position=50000,
+            composition=["601728"],
+            trade_count=10,
         )
         portfolio_results = {"a_share": {"top1": pr}}
         opt_data_map = {
             "a_share": {
                 "timestamp": "2026-07-07T02:11:00",
-                "strategies": [{
-                    "test_return": 18.5, "test_drawdown": -8.0, "sharpe": 1.2,
-                    "params": {"_stocks": "601728", "_mode": "position_target"},
-                }],
+                "strategies": [
+                    {
+                        "test_return": 18.5,
+                        "test_drawdown": -8.0,
+                        "sharpe": 1.2,
+                        "params": {"_stocks": "601728", "_mode": "position_target"},
+                    }
+                ],
             },
             "non_a_share": None,
         }
@@ -296,6 +334,7 @@ class TestSendFromSessionPassesDailyMode:
         """_build_email_body must accept daily_mode parameter."""
         import inspect
         from notification.email_notifier import EmailNotifier
+
         sig = inspect.signature(EmailNotifier._build_email_body)
         assert "daily_mode" in sig.parameters, (
             "_build_email_body must have daily_mode parameter"
@@ -307,11 +346,18 @@ class TestValidationWinRate:
 
     def _make_result(self, nav, dates):
         from src.analysis.portfolio_strategy import PortfolioResult
+
         return PortfolioResult(
-            name="top1", group="a_share",
-            total_return=0.0, max_drawdown=0.0, sharpe_ratio=0.0,
-            expected_position=0, composition=[], trade_count=0,
-            nav_series=nav, nav_dates=dates,
+            name="top1",
+            group="a_share",
+            total_return=0.0,
+            max_drawdown=0.0,
+            sharpe_ratio=0.0,
+            expected_position=0,
+            composition=[],
+            trade_count=0,
+            nav_series=nav,
+            nav_dates=dates,
         )
 
     def _make_bench(self, dates, closes):
@@ -320,12 +366,15 @@ class TestValidationWinRate:
     def test_strategy_always_beats_benchmark_100pct(self):
         """策略每天都跑赢基准 → 胜率100%。"""
         from notification.email_notifier import EmailNotifier
-        dates = [f"2026-01-{i+1:02d}" for i in range(25)]
+
+        dates = [f"2026-01-{i + 1:02d}" for i in range(25)]
         # 策略持续上涨 100→150，基准平 100→100
         nav = [100 + i * 2 for i in range(25)]
         bench = self._make_bench(dates, [100.0] * 25)
         r = self._make_result(nav, dates)
-        wr, wins, total, vex = EmailNotifier._calc_validation_winrate(r, bench, months=9)
+        wr, wins, total, vex = EmailNotifier._calc_validation_winrate(
+            r, bench, months=9
+        )
         assert wr == 100.0
         assert wins == total
         assert vex > 0
@@ -333,11 +382,14 @@ class TestValidationWinRate:
     def test_strategy_always_loses_0pct(self):
         """策略持续跑输基准 → 胜率0%。"""
         from notification.email_notifier import EmailNotifier
-        dates = [f"2026-01-{i+1:02d}" for i in range(25)]
+
+        dates = [f"2026-01-{i + 1:02d}" for i in range(25)]
         nav = [100.0] * 25  # 策略平
         bench = self._make_bench(dates, [100 + i * 2 for i in range(25)])  # 基准涨
         r = self._make_result(nav, dates)
-        wr, wins, total, vex = EmailNotifier._calc_validation_winrate(r, bench, months=9)
+        wr, wins, total, vex = EmailNotifier._calc_validation_winrate(
+            r, bench, months=9
+        )
         assert wr == 0.0
         assert wins == 0
         assert vex < 0
@@ -345,7 +397,8 @@ class TestValidationWinRate:
     def test_no_benchmark_returns_none(self):
         """无基准数据 → 返回 None。"""
         from notification.email_notifier import EmailNotifier
-        dates = [f"2026-01-{i+1:02d}" for i in range(25)]
+
+        dates = [f"2026-01-{i + 1:02d}" for i in range(25)]
         r = self._make_result([100.0] * 25, dates)
         wr, wins, total, vex = EmailNotifier._calc_validation_winrate(r, None, months=9)
         assert wr is None

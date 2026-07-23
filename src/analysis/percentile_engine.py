@@ -3,6 +3,7 @@
 每只标的独立评估自身历史分位，加权求和打分，分数够高则触发买卖。
 松弛 H1-H3：标的自比较分位、历史分布窗口、参数空间缩小 3 个数量级。
 """
+
 from __future__ import annotations
 
 import random as _random
@@ -10,21 +11,31 @@ import numpy as np
 from typing import TYPE_CHECKING
 
 from .signal_functions import SignalFn, ParamDim, ParamSpace, Params
-from .fast_evaluator import IDX_ADX_PCT, IDX_RSI_PCT, IDX_DEVIATION_PCT, \
-    IDX_VOL_RATIO_PCT, IDX_MA200_DEV_PCT
+from .fast_evaluator import (
+    IDX_ADX_PCT,
+    IDX_RSI_PCT,
+    IDX_DEVIATION_PCT,
+    IDX_VOL_RATIO_PCT,
+    IDX_MA200_DEV_PCT,
+)
 
 if TYPE_CHECKING:
-    from .genetic_searcher import StrategyEncoding
-    from .optimizer_constraints import DiscreteSearchConfig
+    pass
 
 # 分位列索引
 PERCENTILE_COLUMNS = [
-    IDX_ADX_PCT, IDX_RSI_PCT, IDX_DEVIATION_PCT,
-    IDX_VOL_RATIO_PCT, IDX_MA200_DEV_PCT,
+    IDX_ADX_PCT,
+    IDX_RSI_PCT,
+    IDX_DEVIATION_PCT,
+    IDX_VOL_RATIO_PCT,
+    IDX_MA200_DEV_PCT,
 ]
 PERCENTILE_LABELS = [
-    "adx_pct", "rsi_pct", "deviation_pct",
-    "vol_ratio_pct", "ma200_dev_pct",
+    "adx_pct",
+    "rsi_pct",
+    "deviation_pct",
+    "vol_ratio_pct",
+    "ma200_dev_pct",
 ]
 # 分位信号 → 原始指标源列名（scan_signals 计算滚动分位用）
 PERCENTILE_SOURCES = {
@@ -91,7 +102,9 @@ class PercentileSignalFn(SignalFn):
         return self._space
 
     def evaluate(
-        self, params: Params, indicator_matrix: np.ndarray,
+        self,
+        params: Params,
+        indicator_matrix: np.ndarray,
     ) -> np.ndarray:
         T, N, K = indicator_matrix.shape
         buy_scores = np.zeros((T, N), dtype=np.float32)
@@ -119,7 +132,11 @@ class PercentileSignalFn(SignalFn):
         return np.stack([buy_scores, sell_scores], axis=-1).astype(np.float32)
 
     def to_human_readable(self, params) -> str:
-        vals = getattr(params, "values", params) if not isinstance(params, dict) else params
+        vals = (
+            getattr(params, "values", params)
+            if not isinstance(params, dict)
+            else params
+        )
         lines = ["分位评分策略 (PercentileSignalFn)"]
         for ci, lbl in enumerate(PERCENTILE_LABELS):
             tau = _decode_tau(vals.get(f"{lbl}_tau", 5))
@@ -137,6 +154,7 @@ class PercentileSignalFn(SignalFn):
     def _rolling_percentile(self, series, window: int = PCT_WINDOW) -> float | None:
         """最新值在过去 window 天内的分位排名 (0-1)。"""
         import numpy as _np
+
         vals = _np.asarray(series, dtype=float)
         vals = vals[~_np.isnan(vals)]
         if len(vals) < 20:
@@ -152,12 +170,13 @@ class PercentileSignalFn(SignalFn):
         与 walk_forward 分位口径一致：pct[t] = (#[t-win+1..t] <= v[t]) / win。
         """
         import numpy as _np
+
         a = _np.asarray(arr, dtype=float)
         T = len(a)
         out = _np.full(T, _np.nan, dtype=_np.float32)
         for t in range(T):
             lo = max(0, t - window + 1)
-            w = a[lo:t + 1]
+            w = a[lo : t + 1]
             valid = w[~_np.isnan(w)]
             if len(valid) < 20 or _np.isnan(a[t]):
                 continue
@@ -171,7 +190,12 @@ class PercentileSignalFn(SignalFn):
         净分 = 买分 - 卖分（[-1,1]），使买卖天然互斥。
         """
         import numpy as _np
-        vals = getattr(params, "values", params) if not isinstance(params, dict) else params
+
+        vals = (
+            getattr(params, "values", params)
+            if not isinstance(params, dict)
+            else params
+        )
         df = self._ensure_source_columns(hist_df)
         if df is None or df.empty:
             return _np.zeros(0), _np.zeros(0)
@@ -206,8 +230,11 @@ class PercentileSignalFn(SignalFn):
         分位 > tau 计入买入加权分，分位 < tau 计入卖出加权分；
         加权归一后与 τ_buy / τ_sell 比较。
         """
-        vals = getattr(params, "values", params) if not isinstance(params, dict) else params
-        import pandas as _pd
+        vals = (
+            getattr(params, "values", params)
+            if not isinstance(params, dict)
+            else params
+        )
 
         hist = self._ensure_source_columns(history)
         if hist is None:
@@ -251,17 +278,21 @@ class PercentileSignalFn(SignalFn):
 
         out: list[dict] = []
         if net > buy_th:
-            out.append({
-                "side": "buy",
-                "label": f"分位评分买入 (net {net:.2f}>{buy_th:.2f})",
-                "detail": " | ".join(buy_hits[:3]) if buy_hits else "强看涨信号",
-            })
+            out.append(
+                {
+                    "side": "buy",
+                    "label": f"分位评分买入 (net {net:.2f}>{buy_th:.2f})",
+                    "detail": " | ".join(buy_hits[:3]) if buy_hits else "强看涨信号",
+                }
+            )
         elif net < -sell_th:
-            out.append({
-                "side": "sell",
-                "label": f"分位评分卖出 (net {net:.2f}<-{sell_th:.2f})",
-                "detail": " | ".join(sell_hits[:3]) if sell_hits else "强看跌信号",
-            })
+            out.append(
+                {
+                    "side": "sell",
+                    "label": f"分位评分卖出 (net {net:.2f}<-{sell_th:.2f})",
+                    "detail": " | ".join(sell_hits[:3]) if sell_hits else "强看跌信号",
+                }
+            )
         return out
 
     @staticmethod
@@ -272,6 +303,7 @@ class PercentileSignalFn(SignalFn):
         这里兜底计算所有分位源指标。
         """
         import pandas as _pd
+
         if history is None or not isinstance(history, _pd.DataFrame) or history.empty:
             return None
         if "close" not in history.columns:
@@ -292,6 +324,7 @@ class PercentileSignalFn(SignalFn):
         # rsi (14-period Wilder)
         if "rsi" not in df.columns:
             import numpy as _np
+
             delta = close.diff()
             gain = delta.clip(lower=0)
             loss = (-delta).clip(lower=0)
@@ -302,6 +335,7 @@ class PercentileSignalFn(SignalFn):
         # adx (14-period)
         if "adx" not in df.columns:
             import numpy as _np
+
             high = df.get("high", close).astype(float)
             low = df.get("low", close).astype(float)
             prev_close = close.shift(1)
@@ -312,15 +346,27 @@ class PercentileSignalFn(SignalFn):
             up = high.diff()
             down = (-low).diff()
             atr = tr.ewm(alpha=1 / 14, adjust=False).mean()
-            plus_di = 100 * (up.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean() / atr.replace(0, _np.nan))
-            minus_di = 100 * (down.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean() / atr.replace(0, _np.nan))
-            dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, _np.nan)
+            plus_di = 100 * (
+                up.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+                / atr.replace(0, _np.nan)
+            )
+            minus_di = 100 * (
+                down.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+                / atr.replace(0, _np.nan)
+            )
+            dx = (
+                100 * abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, _np.nan)
+            )
             adx_series = _pd.Series(dx, index=df.index)
+
             def _wilder_smooth(s, period):
                 result = s.copy()
                 for i in range(period, len(result)):
-                    result.iloc[i] = (result.iloc[i - 1] * (period - 1) + result.iloc[i]) / period
+                    result.iloc[i] = (
+                        result.iloc[i - 1] * (period - 1) + result.iloc[i]
+                    ) / period
                 return result
+
             df["adx"] = _wilder_smooth(adx_series, 14)
         # vol_ratio (20-day)
         if "vol_ratio" not in df.columns:
@@ -331,7 +377,11 @@ class PercentileSignalFn(SignalFn):
 
     def describe_rules(self, params) -> dict:
         """把分位参数翻译成买卖规则名称（带权重的信号即为激活规则）。"""
-        vals = getattr(params, "values", params) if not isinstance(params, dict) else params
+        vals = (
+            getattr(params, "values", params)
+            if not isinstance(params, dict)
+            else params
+        )
         buy_th = _decode_tau(vals.get("buy_score_thresh", 5))
         sell_th = _decode_tau(vals.get("sell_score_thresh", 5))
         active = []
@@ -355,7 +405,11 @@ class PercentileSignalFn(SignalFn):
         )
 
     def execution_params(self, params) -> dict:
-        vals = getattr(params, "values", params) if not isinstance(params, dict) else params
+        vals = (
+            getattr(params, "values", params)
+            if not isinstance(params, dict)
+            else params
+        )
         return {
             "buy_threshold": _decode_tau(vals.get("buy_score_thresh", 5)),
             "sell_threshold": _decode_tau(vals.get("sell_score_thresh", 5)),
@@ -363,8 +417,13 @@ class PercentileSignalFn(SignalFn):
         }
 
     def sensitivity_check(
-        self, params, buy_scores, sell_scores, price,
-        initial_cash=100000.0, monthly_limit=15000.0,
+        self,
+        params,
+        buy_scores,
+        sell_scores,
+        price,
+        initial_cash=100000.0,
+        monthly_limit=15000.0,
     ) -> list[dict]:
         """参数敏感性验证：扰动买卖阈值 ±2 级别，看收益是否脆。
 
@@ -372,21 +431,33 @@ class PercentileSignalFn(SignalFn):
             [{"key": "buy_score_thresh -2", "orig_lvl": 5, "new_lvl": 3,
               "ret": +10.2, "orig_ret": +10.2, "drop_pct": 0.0}, ...]
         """
-        import numpy as _np
         from .signal_functions import simulate_portfolio
-        vals = getattr(params, "values", params) if not isinstance(params, dict) else params
+
+        vals = (
+            getattr(params, "values", params)
+            if not isinstance(params, dict)
+            else params
+        )
         buy_lvl = int(vals.get("buy_score_thresh", 5))
         sell_lvl = int(vals.get("sell_score_thresh", 5))
-        pos_lvl = int(vals.get("position_frac", 2))
+        int(vals.get("position_frac", 2))
         max_buy = TAU_LEVELS - 1
         max_sell = TAU_LEVELS - 1
 
         # 基准收益
         ex = self.execution_params(vals)
         base_tr = simulate_portfolio(
-            buy_scores, sell_scores, price, initial_cash,
-            ex["buy_threshold"], ex["sell_threshold"], ex["position_frac"],
-            100, monthly_limit, 0.002, [""] * buy_scores.shape[0],
+            buy_scores,
+            sell_scores,
+            price,
+            initial_cash,
+            ex["buy_threshold"],
+            ex["sell_threshold"],
+            ex["position_frac"],
+            100,
+            monthly_limit,
+            0.002,
+            [""] * buy_scores.shape[0],
             ["X"] * buy_scores.shape[1],
         )
         base_ret = base_tr.total_return_pct
@@ -402,17 +473,29 @@ class PercentileSignalFn(SignalFn):
             st = ex["sell_threshold"]
             pf = ex["position_frac"]
             tr = simulate_portfolio(
-                buy_scores, sell_scores, price, initial_cash,
-                bt, st, pf, 100, monthly_limit, 0.002,
-                [""] * buy_scores.shape[0], ["X"] * buy_scores.shape[1],
+                buy_scores,
+                sell_scores,
+                price,
+                initial_cash,
+                bt,
+                st,
+                pf,
+                100,
+                monthly_limit,
+                0.002,
+                [""] * buy_scores.shape[0],
+                ["X"] * buy_scores.shape[1],
             )
-            results.append({
-                "key": f"buy_score_thresh {delta:+d}",
-                "orig_lvl": buy_lvl, "new_lvl": nl,
-                "ret": round(tr.total_return_pct, 2),
-                "orig_ret": round(base_ret, 2),
-                "drop_pct": round(base_ret - tr.total_return_pct, 2),
-            })
+            results.append(
+                {
+                    "key": f"buy_score_thresh {delta:+d}",
+                    "orig_lvl": buy_lvl,
+                    "new_lvl": nl,
+                    "ret": round(tr.total_return_pct, 2),
+                    "orig_ret": round(base_ret, 2),
+                    "drop_pct": round(base_ret - tr.total_return_pct, 2),
+                }
+            )
         # 扰动卖出阈值
         for delta in (-2, -1, 1, 2):
             nl = max(0, min(sell_lvl + delta, max_sell))
@@ -422,29 +505,47 @@ class PercentileSignalFn(SignalFn):
             st = _decode_tau(nl)
             pf = ex["position_frac"]
             tr = simulate_portfolio(
-                buy_scores, sell_scores, price, initial_cash,
-                bt, st, pf, 100, monthly_limit, 0.002,
-                [""] * buy_scores.shape[0], ["X"] * buy_scores.shape[1],
+                buy_scores,
+                sell_scores,
+                price,
+                initial_cash,
+                bt,
+                st,
+                pf,
+                100,
+                monthly_limit,
+                0.002,
+                [""] * buy_scores.shape[0],
+                ["X"] * buy_scores.shape[1],
             )
-            results.append({
-                "key": f"sell_score_thresh {delta:+d}",
-                "orig_lvl": sell_lvl, "new_lvl": nl,
-                "ret": round(tr.total_return_pct, 2),
-                "orig_ret": round(base_ret, 2),
-                "drop_pct": round(base_ret - tr.total_return_pct, 2),
-            })
+            results.append(
+                {
+                    "key": f"sell_score_thresh {delta:+d}",
+                    "orig_lvl": sell_lvl,
+                    "new_lvl": nl,
+                    "ret": round(tr.total_return_pct, 2),
+                    "orig_ret": round(base_ret, 2),
+                    "drop_pct": round(base_ret - tr.total_return_pct, 2),
+                }
+            )
         return results
 
     def random_perturbations(
-        self, params, n: int = 10, rng=None,
+        self,
+        params,
+        n: int = 10,
+        rng=None,
     ) -> list:
         """生成 n 组随机扰动的参数副本（每维随机偏移 ±1~3 级别）。
 
         用于参数敏感性评估：最差表现衡量过拟合风险。
         """
-        import random as _random
         r = rng or _random.Random()
-        vals = getattr(params, "values", params) if not isinstance(params, dict) else params
+        vals = (
+            getattr(params, "values", params)
+            if not isinstance(params, dict)
+            else params
+        )
         copies: list[dict] = []
         max_levels = {d.name: d.levels - 1 for d in self.param_space.dims}
         for _ in range(n):
@@ -459,18 +560,27 @@ class PercentileSignalFn(SignalFn):
         return copies
 
     def cross_day_volatility(
-        self, params, buy_scores, sell_scores, price,
+        self,
+        params,
+        buy_scores,
+        sell_scores,
+        price,
         lookback_days: int = 5,
-        initial_cash=100000.0, monthly_limit=15000.0,
+        initial_cash=100000.0,
+        monthly_limit=15000.0,
     ) -> dict:
         """跨天波动率：过去 N 天每前移 1 天跑一遍回测，记录收益波动。
 
         Returns:
             {"returns": [r_N, r_{N-1}, ...], "min": -3.5, "max": 5.2, "range": 8.7}
         """
-        import numpy as _np
         from .signal_functions import simulate_portfolio
-        vals = getattr(params, "values", params) if not isinstance(params, dict) else params
+
+        vals = (
+            getattr(params, "values", params)
+            if not isinstance(params, dict)
+            else params
+        )
         ex = self.execution_params(vals)
         T = buy_scores.shape[0]
         returns = []
@@ -482,9 +592,17 @@ class PercentileSignalFn(SignalFn):
             ss = sell_scores[:cutoff]
             pr = price[:cutoff]
             tr = simulate_portfolio(
-                bs, ss, pr, initial_cash,
-                ex["buy_threshold"], ex["sell_threshold"], ex["position_frac"],
-                100, monthly_limit, 0.005, [""] * cutoff,
+                bs,
+                ss,
+                pr,
+                initial_cash,
+                ex["buy_threshold"],
+                ex["sell_threshold"],
+                ex["position_frac"],
+                100,
+                monthly_limit,
+                0.005,
+                [""] * cutoff,
                 [f"S{i}" for i in range(buy_scores.shape[1])],
             )
             returns.append(round(tr.total_return_pct, 2))

@@ -3,18 +3,21 @@
 import numpy as np
 import pandas as pd
 import pytest
-from unittest.mock import patch, MagicMock, PropertyMock
-from pathlib import Path
 import yaml
 
 from src.analysis.strategy_optimizer import (
-    StrategyOptimizer, StrategyTrial, OptimizationReport,
-    CONDITION_BUILDERS, BUY_BUILDERS, SELL_BUILDERS,
+    StrategyOptimizer,
+    StrategyTrial,
+    OptimizationReport,
+    CONDITION_BUILDERS,
+    BUY_BUILDERS,
+    SELL_BUILDERS,
     build_condition,
 )
 
 
 # ── 构建器测试 ──
+
 
 class TestSignalBuilders:
     def test_all_builders_defined(self):
@@ -85,12 +88,18 @@ class TestSignalBuilders:
 
 # ── 数据类测试 ──
 
+
 class TestStrategyTrial:
     def test_fitness_returns_train_return(self):
         t = StrategyTrial(
-            params={}, rules=[], train_return=5.0, train_drawdown=-2.0,
-            test_return=8.0, test_drawdown=-3.0,
-            sharpe=1.5, trade_count=10,
+            params={},
+            rules=[],
+            train_return=5.0,
+            train_drawdown=-2.0,
+            test_return=8.0,
+            test_drawdown=-3.0,
+            sharpe=1.5,
+            trade_count=10,
         )
         assert t.fitness == 5.0
 
@@ -98,8 +107,10 @@ class TestStrategyTrial:
 class TestOptimizationReport:
     def test_default_fields(self):
         r = OptimizationReport(
-            report_id="test", group="a_share",
-            timestamp="2026-01-01", iterations=10,
+            report_id="test",
+            group="a_share",
+            timestamp="2026-01-01",
+            iterations=10,
         )
         assert r.top_strategies == []
         assert r.convergence == []
@@ -109,6 +120,7 @@ class TestOptimizationReport:
 
 # ── Optimizer 核心测试 ──
 
+
 @pytest.fixture
 def mock_optimizer_yaml(tmp_path):
     """Create a minimal optimizer.yaml in a temp dir"""
@@ -116,27 +128,37 @@ def mock_optimizer_yaml(tmp_path):
         "strategy_template": {
             "rules": {
                 "buy_1": {
-                    "type": "buy", "priority": 1, "label": "买入1",
+                    "type": "buy",
+                    "priority": 1,
+                    "label": "买入1",
                     "builders": ["deviation_cross", "rsi_signal", "none"],
                     "budget_pool": "buy",
                 },
                 "buy_2": {
-                    "type": "buy", "priority": 2, "label": "买入2",
+                    "type": "buy",
+                    "priority": 2,
+                    "label": "买入2",
                     "builders": ["volume_spike", "none"],
                     "budget_pool": "buy",
                 },
                 "sell_1": {
-                    "type": "sell", "priority": 3, "label": "卖出1",
+                    "type": "sell",
+                    "priority": 3,
+                    "label": "卖出1",
                     "builders": ["deviation_cross", "none"],
                     "budget_pool": "sell",
                 },
                 "sell_2": {
-                    "type": "sell", "priority": 4, "label": "卖出2",
+                    "type": "sell",
+                    "priority": 4,
+                    "label": "卖出2",
                     "builders": ["none"],
                     "budget_pool": "sell",
                 },
                 "sell_3": {
-                    "type": "sell", "priority": 5, "label": "卖出3",
+                    "type": "sell",
+                    "priority": 5,
+                    "label": "卖出3",
                     "builders": ["none"],
                     "budget_pool": "sell",
                 },
@@ -170,14 +192,16 @@ def sample_stocks_data():
     dates = pd.date_range("2024-01-01", periods=n, freq="B")
 
     def make_df(trend):
-        df = pd.DataFrame({
-            "date": dates,
-            "open": trend + np.random.randn(n) * 0.2,
-            "high": trend + np.abs(np.random.randn(n)) * 2,
-            "low": trend - np.abs(np.random.randn(n)) * 2,
-            "close": np.maximum(trend, 1),
-            "volume": np.random.randint(1000, 50000, n),
-        })
+        df = pd.DataFrame(
+            {
+                "date": dates,
+                "open": trend + np.random.randn(n) * 0.2,
+                "high": trend + np.abs(np.random.randn(n)) * 2,
+                "low": trend - np.abs(np.random.randn(n)) * 2,
+                "close": np.maximum(trend, 1),
+                "volume": np.random.randint(1000, 50000, n),
+            }
+        )
         df["high"] = df[["high", "close", "open"]].max(axis=1)
         df["low"] = df[["low", "close", "open"]].min(axis=1)
         return df
@@ -188,7 +212,8 @@ def sample_stocks_data():
 class TestOptimizerInit:
     def test_loads_optimizer_yaml(self, sample_stocks_data, mock_optimizer_yaml):
         opt = StrategyOptimizer(
-            sample_stocks_data, "a_share",
+            sample_stocks_data,
+            "a_share",
             template_path=str(mock_optimizer_yaml),
         )
         assert opt.group == "a_share"
@@ -197,7 +222,8 @@ class TestOptimizerInit:
 
     def test_get_rule_specs_order(self, sample_stocks_data, mock_optimizer_yaml):
         opt = StrategyOptimizer(
-            sample_stocks_data, "a_share",
+            sample_stocks_data,
+            "a_share",
             template_path=str(mock_optimizer_yaml),
         )
         specs = opt._get_rule_specs()
@@ -207,7 +233,8 @@ class TestOptimizerInit:
 
     def test_build_dimensions(self, sample_stocks_data, mock_optimizer_yaml):
         opt = StrategyOptimizer(
-            sample_stocks_data, "a_share",
+            sample_stocks_data,
+            "a_share",
             template_path=str(mock_optimizer_yaml),
         )
         dims = opt._build_dimensions(["000001", "600036"])
@@ -216,32 +243,45 @@ class TestOptimizerInit:
 
     def test_params_to_rules(self, sample_stocks_data, mock_optimizer_yaml):
         opt = StrategyOptimizer(
-            sample_stocks_data, "a_share",
+            sample_stocks_data,
+            "a_share",
             template_path=str(mock_optimizer_yaml),
         )
         # Generate a param vector: buy_1(0,0.5,0.2) buy_2(0,0.3,0.1) sell_1(0,0.6,0.2) sell_2(0,0,0.1) sell_3(0,0,0.1) + 2 stock flags(1,0)
         param_vec = [
-            0, 0.5, 0.2,  # buy_1: deviation_cross[0], t=0.5, frac=0.2
-            0, 0.3, 0.1,  # buy_2: volume_spike[0], t=0.3, frac=0.1
-            0, 0.6, 0.2,  # sell_1: deviation_cross[0], t=0.6, frac=0.2
-            0, 0.0, 0.1,  # sell_2: none[0], t=0, frac=0.1
-            0, 0.0, 0.1,  # sell_3: none[0], t=0, frac=0.1
-            1.0, 0.0,     # include 000001, exclude 600036
+            0,
+            0.5,
+            0.2,  # buy_1: deviation_cross[0], t=0.5, frac=0.2
+            0,
+            0.3,
+            0.1,  # buy_2: volume_spike[0], t=0.3, frac=0.1
+            0,
+            0.6,
+            0.2,  # sell_1: deviation_cross[0], t=0.6, frac=0.2
+            0,
+            0.0,
+            0.1,  # sell_2: none[0], t=0, frac=0.1
+            0,
+            0.0,
+            0.1,  # sell_3: none[0], t=0, frac=0.1
+            1.0,
+            0.0,  # include 000001, exclude 600036
         ]
         # Call _build_dimensions first to set _num_rule_dims
         opt._build_dimensions(["000001", "600036"])
-        rules, included = opt._params_to_rules(
-            param_vec, ["000001", "600036"]
-        )
+        rules, included = opt._params_to_rules(param_vec, ["000001", "600036"])
         assert len(rules) == 5
         assert "000001" in included
         assert "600036" not in included
 
     def test_prefilter_builders_preserves_none(
-        self, sample_stocks_data, mock_optimizer_yaml,
+        self,
+        sample_stocks_data,
+        mock_optimizer_yaml,
     ):
         opt = StrategyOptimizer(
-            sample_stocks_data, "a_share",
+            sample_stocks_data,
+            "a_share",
             template_path=str(mock_optimizer_yaml),
         )
         opt.indicators = sample_stocks_data  # mock indicator data
@@ -250,21 +290,30 @@ class TestOptimizerInit:
         assert "none" in sell
 
     def test_print_report_produces_string(
-        self, sample_stocks_data, mock_optimizer_yaml,
+        self,
+        sample_stocks_data,
+        mock_optimizer_yaml,
     ):
         opt = StrategyOptimizer(
-            sample_stocks_data, "a_share",
+            sample_stocks_data,
+            "a_share",
             template_path=str(mock_optimizer_yaml),
         )
         report = OptimizationReport(
-            report_id="test", group="a_share",
-            timestamp="2026-01-01", iterations=10,
+            report_id="test",
+            group="a_share",
+            timestamp="2026-01-01",
+            iterations=10,
             top_strategies=[
                 StrategyTrial(
                     params={"_stocks": "000001"},
-                    rules=[], train_return=5.0, train_drawdown=-2.0,
-                    test_return=8.0, test_drawdown=-3.0,
-                    sharpe=1.5, trade_count=10,
+                    rules=[],
+                    train_return=5.0,
+                    train_drawdown=-2.0,
+                    test_return=8.0,
+                    test_drawdown=-3.0,
+                    sharpe=1.5,
+                    trade_count=10,
                 )
             ],
         )
@@ -276,7 +325,8 @@ class TestOptimizerInit:
 class TestEdgeCases:
     def test_empty_stocks_data_graceful(self, mock_optimizer_yaml):
         opt = StrategyOptimizer(
-            {}, "a_share",
+            {},
+            "a_share",
             template_path=str(mock_optimizer_yaml),
         )
         specs = opt._get_rule_specs()
@@ -284,7 +334,8 @@ class TestEdgeCases:
 
     def test_single_builder_rule(self, sample_stocks_data, mock_optimizer_yaml):
         opt = StrategyOptimizer(
-            sample_stocks_data, "a_share",
+            sample_stocks_data,
+            "a_share",
             template_path=str(mock_optimizer_yaml),
         )
         dims = opt._build_dimensions(["000001"])

@@ -16,12 +16,10 @@ import logging
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 from pydantic import BaseModel, Field
 
-import numpy as np
 import yaml
 
 from .indicator_library import compute_all
@@ -37,6 +35,7 @@ def _make_signal_fn(engine_name: str):
     if engine_name in ("percentile", "pct", "new"):
         try:
             from .percentile_engine import PercentileSignalFn
+
             return PercentileSignalFn()
         except Exception as e:
             logger.warning(f"构造 PercentileSignalFn 失败: {e}")
@@ -50,6 +49,7 @@ def _params_from_yaml(params: dict):
     优化器可能把级别值序列化为字符串（'4'），这里统一转 int。
     """
     from .signal_functions import Params
+
     vals = {}
     for k, v in params.items():
         if k.startswith("_"):
@@ -66,11 +66,22 @@ def _params_from_yaml(params: dict):
                 pass  # 非数值字符串（如 builder 名），跳过
     return Params(values=vals, _engine=params.get("_engine", ""))
 
+
 # 策略规则中可能引用的指标（用于解析）
 _KNOWN_INDICATORS = {
-    "rsi", "vol_ratio", "boll_pct_b", "boll_upper", "boll_lower",
-    "adx", "macd_hist", "macd", "macd_signal", "atr",
-    "deviation", "ma60", "close",
+    "rsi",
+    "vol_ratio",
+    "boll_pct_b",
+    "boll_upper",
+    "boll_lower",
+    "adx",
+    "macd_hist",
+    "macd",
+    "macd_signal",
+    "atr",
+    "deviation",
+    "ma60",
+    "close",
 }
 
 # 指标中文标头
@@ -131,6 +142,7 @@ class SignalScanner:
     def _find_latest(self, group: str) -> Path | None:
         """找到最新的策略结果 YAML（精确匹配 group，排除 non_ 前缀混淆）"""
         import re
+
         candidates = sorted(
             self.results_dir.glob("*.yaml"),
             key=lambda p: p.stat().st_mtime,
@@ -151,7 +163,12 @@ class SignalScanner:
         with open(path, encoding="utf-8") as f:
             raw = f.read()
         # 清洗 numpy 标签（老文件可能有残留）
-        raw = re.sub(r"!!python/object/apply:numpy\.core\.multiarray\.scalar\s*\n\s*- &id\d+.*?(?=\n\w)", "", raw, flags=re.DOTALL)
+        raw = re.sub(
+            r"!!python/object/apply:numpy\.core\.multiarray\.scalar\s*\n\s*- &id\d+.*?(?=\n\w)",
+            "",
+            raw,
+            flags=re.DOTALL,
+        )
         raw = re.sub(r"\s*- !!binary \|[^\n]*\n\s+[A-Za-z0-9+/=\n]+", " 0.0", raw)
 
         try:
@@ -211,7 +228,7 @@ class SignalScanner:
         stock_min = max(3, n // 2 + 1)
 
         consensus_buy = [s for s, c in buy_counts.most_common() if c >= buy_min]
-        consensus_sell = [s for s, c in sell_counts.most_common() if c >= sell_min]
+        [s for s, c in sell_counts.most_common() if c >= sell_min]
         consensus_stocks = [s for s, c in stock_counts.most_common() if c >= stock_min]
 
         # 共识指标 = 买入信号引用的指标
@@ -225,9 +242,17 @@ class SignalScanner:
                     )
         # 过滤：只保留 ≥2 个策略中出现的共识信号关联指标
         # 简化：直接用所有引用过的指标
-        consensus_indicators = sorted(all_indicators & {
-            "rsi", "vol_ratio", "boll_pct_b", "adx", "macd_hist", "deviation",
-        })
+        consensus_indicators = sorted(
+            all_indicators
+            & {
+                "rsi",
+                "vol_ratio",
+                "boll_pct_b",
+                "adx",
+                "macd_hist",
+                "deviation",
+            }
+        )
 
         return ConsensusReport(
             buy_signal_counts=dict(buy_counts),
@@ -263,16 +288,25 @@ class SignalScanner:
         all_codes = self._get_stock_codes(stocks_data)
         # 按 group 过滤标的：a_share 用二分，hk/us 用细分组
         from .portfolio_strategy import (
-            _detect_stock_group, _detect_fine_group, get_skip_signals,
+            _detect_stock_group,
+            _detect_fine_group,
+            get_skip_signals,
         )
+
         # 跳过 skip_signals 标的（仅盯盘，不显示策略信号）
         skip_sig = get_skip_signals(getattr(session, "config", {}) or {})
         if group in ("hk", "us"):
-            stock_codes = [c for c in all_codes
-                           if _detect_fine_group(c) == group and c not in skip_sig]
+            stock_codes = [
+                c
+                for c in all_codes
+                if _detect_fine_group(c) == group and c not in skip_sig
+            ]
         else:
-            stock_codes = [c for c in all_codes
-                           if _detect_stock_group(c) == group and c not in skip_sig]
+            stock_codes = [
+                c
+                for c in all_codes
+                if _detect_stock_group(c) == group and c not in skip_sig
+            ]
 
         if not historical or not stock_codes:
             return result
@@ -356,7 +390,9 @@ class SignalScanner:
                                 )
                             )
                     except Exception as e:
-                        logger.debug(f"{code} 规则 {r.get('id','?')} 评估失败 (非致命): {e}")
+                        logger.debug(
+                            f"{code} 规则 {r.get('id', '?')} 评估失败 (非致命): {e}"
+                        )
 
         return result
 
@@ -370,7 +406,9 @@ class SignalScanner:
             if col is not None:
                 codes = [str(c) for c in col.tolist() if pd.notna(c)]
         elif isinstance(stocks_data, (list, dict)):
-            items = stocks_data.values() if isinstance(stocks_data, dict) else stocks_data
+            items = (
+                stocks_data.values() if isinstance(stocks_data, dict) else stocks_data
+            )
             for item in items:
                 # StockPriceData (Pydantic) → .stock_code
                 code = getattr(item, "stock_code", None)
@@ -410,9 +448,20 @@ class SignalScanner:
             row = df.iloc[-1]
             vals: dict[str, float] = {}
             for col in df.columns:
-                if col in ("date", "open", "high", "low", "volume", "amount",
-                           "stock_code", "stock_name", "amplitude", "change_pct",
-                           "change", "turnover"):
+                if col in (
+                    "date",
+                    "open",
+                    "high",
+                    "low",
+                    "volume",
+                    "amount",
+                    "stock_code",
+                    "stock_name",
+                    "amplitude",
+                    "change_pct",
+                    "change",
+                    "turnover",
+                ):
                     continue
                 v = row.get(col)
                 if v is not None and not (isinstance(v, float) and pd.isna(v)):
@@ -453,9 +502,9 @@ class SignalScanner:
             if "deviation" not in hist_df.columns and "close" in hist_df.columns:
                 hist_df = hist_df.copy()
                 hist_df["ma60"] = hist_df["close"].rolling(60, min_periods=1).mean()
-                hist_df["deviation"] = (
-                    hist_df["close"] - hist_df["ma60"]
-                ) / hist_df["ma60"]
+                hist_df["deviation"] = (hist_df["close"] - hist_df["ma60"]) / hist_df[
+                    "ma60"
+                ]
             prev = hist_df.iloc[-2].get("deviation")
             if prev is not None and not (isinstance(prev, float) and pd.isna(prev)):
                 ctx["prev_deviation"] = float(prev)
@@ -500,9 +549,9 @@ class SignalScanner:
             }
             如果没有任何优化结果或数据，返回 None。
         """
-        from .portfolio_strategy import PortfolioEvaluator, PortfolioResult
+        from .portfolio_strategy import PortfolioEvaluator
         from .backtest_config import (
-            make_default_optimizer_config, BacktestConfig,
+            make_default_optimizer_config,
         )
         from .rule_engine import Rule
         from .indicator_library import compute_all
@@ -529,11 +578,15 @@ class SignalScanner:
         if not selected:
             # fallback: 取同组前 10 只，不分组的 session 取全部前 10
             if group == "a_share":
-                group_stocks = [s for s in stocks
-                                if s.isdigit() or s.replace(".", "").isdigit()]
+                group_stocks = [
+                    s for s in stocks if s.isdigit() or s.replace(".", "").isdigit()
+                ]
             else:
-                group_stocks = [s for s in stocks
-                                if not (s.isdigit() or s.replace(".", "").isdigit())]
+                group_stocks = [
+                    s
+                    for s in stocks
+                    if not (s.isdigit() or s.replace(".", "").isdigit())
+                ]
             selected = group_stocks[:10] if group_stocks else stocks[:10]
 
         # 构建 Rule 对象
@@ -555,7 +608,7 @@ class SignalScanner:
                 )
                 rules.append(rule)
             except Exception as e:
-                logger.warning(f"规则 {r_dict.get('id','?')} 解析失败: {e}")
+                logger.warning(f"规则 {r_dict.get('id', '?')} 解析失败: {e}")
 
         if not rules:
             return None
@@ -599,9 +652,7 @@ class SignalScanner:
             "benchmarks": benchmarks,
         }
 
-    def _compute_benchmarks(
-        self, stock_codes: list[str], config
-    ) -> dict[str, float]:
+    def _compute_benchmarks(self, stock_codes: list[str], config) -> dict[str, float]:
         """计算基准 ETF 买持超额收益: (末价 - 初价)/初价 - 无风险收益。
 
         不做时间线约束 — 买持就是从第一天拿到最后一天。
@@ -612,6 +663,7 @@ class SignalScanner:
             return results
 
         from .backtest_config import BacktestConfig
+
         bcfg = config if isinstance(config, BacktestConfig) else BacktestConfig()
         rf_rate = bcfg.rf_rate
 

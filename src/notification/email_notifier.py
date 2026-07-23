@@ -6,11 +6,11 @@
 import logging
 import smtplib
 import ssl
+import numpy as np
 import pandas as pd
 import socket
 import platform
 import subprocess
-from html import escape
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
@@ -40,8 +40,6 @@ def _fmt(v, unit="", fmt_spec=".2f"):
         return f"{v:{fmt_spec}}{unit}"
     return f"{v:{fmt_spec}}"
 
-
-from .base import BaseNotifier
 
 # ... (keep all existing imports and code)
 
@@ -109,17 +107,19 @@ def build_brief_entries(stock_data, today) -> list[dict]:
                     anchor_name = "ma60"
                     anchor_val = ma60_v
 
-        entries.append({
-            "code": code,
-            "name": name,
-            "close": close_price,
-            "open": open_price,
-            "anchor_name": anchor_name,
-            "anchor_val": anchor_val,
-            "dev_pct": dev_pct,
-            "dev_str": f"{dev_pct:+.2f}%" if dev_pct is not None else "-",
-            "sort_key": dev_pct if dev_pct is not None else float("inf"),
-        })
+        entries.append(
+            {
+                "code": code,
+                "name": name,
+                "close": close_price,
+                "open": open_price,
+                "anchor_name": anchor_name,
+                "anchor_val": anchor_val,
+                "dev_pct": dev_pct,
+                "dev_str": f"{dev_pct:+.2f}%" if dev_pct is not None else "-",
+                "sort_key": dev_pct if dev_pct is not None else float("inf"),
+            }
+        )
 
     entries.sort(key=lambda x: x["sort_key"])
     return entries
@@ -147,7 +147,9 @@ def build_strategy_suggestions(stock_data, today=None) -> dict | None:
     from pathlib import Path
     from datetime import datetime
 
-    today_date = today.date() if hasattr(today, "date") else (today or datetime.now().date())
+    today_date = (
+        today.date() if hasattr(today, "date") else (today or datetime.now().date())
+    )
 
     # 空数据直接返回
     if stock_data is None or stock_data.empty or "close" not in stock_data.columns:
@@ -156,8 +158,11 @@ def build_strategy_suggestions(stock_data, today=None) -> dict | None:
     # 找最新 A 股优化结果
     opt_dir = Path("data/optimizer")
     yaml_files = sorted(
-        [f for f in opt_dir.glob("*_a_share_strategies.yaml")
-         if "non_a_share" not in f.name],
+        [
+            f
+            for f in opt_dir.glob("*_a_share_strategies.yaml")
+            if "non_a_share" not in f.name
+        ],
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
@@ -166,6 +171,7 @@ def build_strategy_suggestions(stock_data, today=None) -> dict | None:
     try:
         with open(yaml_files[0], "r", encoding="utf-8") as f:
             import yaml
+
             data = yaml.safe_load(f)
         strategies = data.get("strategies", [])
         if not strategies:
@@ -252,22 +258,41 @@ def build_strategy_suggestions(stock_data, today=None) -> dict | None:
                     t = 10 + (1.0 - t_raw) * 30
                     triggered = not np.isnan(rsi) and rsi < t
                 elif signal == "deep_value":
-                    dev200 = float(df.loc[row.name, "ma200_dev"]) if "ma200_dev" in df.columns else np.nan
-                    slope = float(df.loc[row.name, "ma60_slope"]) if "ma60_slope" in df.columns else np.nan
+                    dev200 = (
+                        float(df.loc[row.name, "ma200_dev"])
+                        if "ma200_dev" in df.columns
+                        else np.nan
+                    )
+                    slope = (
+                        float(df.loc[row.name, "ma60_slope"])
+                        if "ma60_slope" in df.columns
+                        else np.nan
+                    )
                     t = -0.05 + t_raw * (-0.35)
                     triggered = (
-                        not np.isnan(dev200) and not np.isnan(slope)
-                        and dev200 <= t and slope > -0.005
+                        not np.isnan(dev200)
+                        and not np.isnan(slope)
+                        and dev200 <= t
+                        and slope > -0.005
                     )
                 elif signal == "absolute_discount":
-                    pct_ath = float(df.loc[row.name, "pct_from_ath"]) if "pct_from_ath" in df.columns else np.nan
+                    pct_ath = (
+                        float(df.loc[row.name, "pct_from_ath"])
+                        if "pct_from_ath" in df.columns
+                        else np.nan
+                    )
                     t = -0.10 + t_raw * (-0.60)
                     triggered = not np.isnan(pct_ath) and pct_ath <= t
                 elif signal == "trend_follow":
                     adx = float(row.get("adx", np.nan))
                     macd = float(row.get("macd_hist", np.nan))
                     t = 15 + t_raw * 25
-                    triggered = not np.isnan(adx) and not np.isnan(macd) and adx > t and macd > 0
+                    triggered = (
+                        not np.isnan(adx)
+                        and not np.isnan(macd)
+                        and adx > t
+                        and macd > 0
+                    )
                 elif signal == "volume_spike":
                     vr = float(row.get("vol_ratio", np.nan))
                     t = 1.2 + t_raw * 2.8
@@ -280,15 +305,17 @@ def build_strategy_suggestions(stock_data, today=None) -> dict | None:
                 continue
 
             if triggered:
-                active_signals.append(f"{signal}({frac*100:.0f}%)")
+                active_signals.append(f"{signal}({frac * 100:.0f}%)")
 
-        entries.append({
-            "code": code,
-            "name": name,
-            "close": round(c, 2),
-            "signals": active_signals,
-            "signal_count": len(active_signals),
-        })
+        entries.append(
+            {
+                "code": code,
+                "name": name,
+                "close": round(c, 2),
+                "signals": active_signals,
+                "signal_count": len(active_signals),
+            }
+        )
 
     # 排序：有信号的排前面
     entries.sort(key=lambda x: (-x["signal_count"], x["code"]))
@@ -308,7 +335,9 @@ def build_strategy_suggestions(stock_data, today=None) -> dict | None:
     text_parts = []
     for e in entries:
         sigs = ", ".join(e["signals"]) if e["signals"] else "—"
-        text_parts.append(f"{e['code']:<8} {e['name'][:6]:<6} {e['close']:>7.2f}  {sigs}")
+        text_parts.append(
+            f"{e['code']:<8} {e['name'][:6]:<6} {e['close']:>7.2f}  {sigs}"
+        )
 
     active_count = sum(1 for e in entries if e["signals"])
     return {
@@ -348,12 +377,17 @@ def _build_signal_label_map(group: str = "a_share") -> dict[str, str]:
     """
     try:
         import yaml
+
         opt_dir = Path("data/optimizer")
-        is_non_a = (group == "non_a_share")
+        is_non_a = group == "non_a_share"
         yaml_files = sorted(
-            [f for f in opt_dir.glob(f"*_{group}_strategies.yaml")
-             if ("non_a_share" in f.name) == is_non_a],
-            key=lambda p: p.stat().st_mtime, reverse=True,
+            [
+                f
+                for f in opt_dir.glob(f"*_{group}_strategies.yaml")
+                if ("non_a_share" in f.name) == is_non_a
+            ],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
         )
         if not yaml_files:
             return {}
@@ -368,10 +402,7 @@ def _build_signal_label_map(group: str = "a_share") -> dict[str, str]:
             if not k.endswith("_signal"):
                 continue
             idx = k.split("_")[1]  # "buy_1_signal" → "1"
-            rule_id = (
-                f"buy_{idx}" if k.startswith("buy")
-                else f"sell_{idx}"
-            )
+            rule_id = f"buy_{idx}" if k.startswith("buy") else f"sell_{idx}"
             label_map[rule_id] = SIGNAL_NAMES.get(v, v)
         logger.debug(f"Signal label map: {label_map}")
         return label_map
@@ -380,8 +411,9 @@ def _build_signal_label_map(group: str = "a_share") -> dict[str, str]:
         return {}
 
 
-def _readable_signal(code: str, rule_label: str, map_a: dict, map_hk: dict,
-                     map_us: dict = None) -> str:
+def _readable_signal(
+    code: str, rule_label: str, map_a: dict, map_hk: dict, map_us: dict = None
+) -> str:
     """按标的所属细分组把 rule_id(如 buy_1) 翻译成信号名(如 趋势跟踪)。
 
     A股/港股/美股各用自己的 YAML 映射 — 三组信号名可能都不同。
@@ -422,14 +454,20 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
         "hk": getattr(session, "opt_data_hk", None) or opt_n,
         "us": getattr(session, "opt_data_us", None) or opt_n,
     }
-    benchmark = getattr(session, "_historical", {}) or {}
-
     lines: list[str] = []
 
     # 策略引擎名（新/旧引擎一目了然）
-    first_yaml = yaml_by_group.get("a_share") or yaml_by_group.get("hk") or yaml_by_group.get("us")
+    first_yaml = (
+        yaml_by_group.get("a_share")
+        or yaml_by_group.get("hk")
+        or yaml_by_group.get("us")
+    )
     if first_yaml:
-        engine_id = (first_yaml.get("strategies") or [{}])[0].get("params", {}).get("_engine", "global")
+        engine_id = (
+            (first_yaml.get("strategies") or [{}])[0]
+            .get("params", {})
+            .get("_engine", "global")
+        )
         engine_names = {"percentile": "分位评分", "global": "全局阈值"}
         engine_label = engine_names.get(engine_id, engine_id)
         ts_raw = first_yaml.get("timestamp", "")[:16].replace("T", " ")
@@ -464,6 +502,7 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
             qh = getattr(r, "quarterly_holdings", None) or []
             cash_pcts = [(100 - q["pos_pct"]) for q in qh if q.get("nav", 0) > 0]
             avg_cash = sum(cash_pcts) / len(cash_pcts) if cash_pcts else None
+            near_empty = avg_cash is not None and avg_cash >= 90
             comp = getattr(r, "composition", [])
 
             # 基准收益（来自统一回测报告）
@@ -477,12 +516,16 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
                 total_ret = g_top.get("total_return")
             if test_ret is not None:
                 if total_ret is not None:
-                    head = (f"{b}{gl}{b} 验证期涨幅 {total_ret:+.1f}% "
-                            f"(超额{test_ret:+.1f}%)"
-                            f"  最大回撤 {test_dd:.1f}%  夏普 {g_sharpe:.2f}")
+                    head = (
+                        f"{b}{gl}{b} 验证期涨幅 {total_ret:+.1f}% "
+                        f"(超额{test_ret:+.1f}%)"
+                        f"  最大回撤 {test_dd:.1f}%  夏普 {g_sharpe:.2f}"
+                    )
                 else:
-                    head = (f"{b}{gl}{b} 预估收益(测试期超额,近9月) {test_ret:+.1f}%"
-                            f"  回撤 {test_dd:.1f}%  夏普 {g_sharpe:.2f}")
+                    head = (
+                        f"{b}{gl}{b} 预估收益(测试期超额,近9月) {test_ret:+.1f}%"
+                        f"  回撤 {test_dd:.1f}%  夏普 {g_sharpe:.2f}"
+                    )
             else:
                 tr = getattr(r, "total_return", 0)
                 head = f"{b}{gl}{b} 收益 {tr:+.1f}%"
@@ -491,8 +534,7 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
             lines.append(head)
             if wr_parts:
                 lines.append(
-                    "  验证期胜率(任意日买入持有到期跑赢): "
-                    + " | ".join(wr_parts)
+                    "  验证期胜率(任意日买入持有到期跑赢): " + " | ".join(wr_parts)
                 )
             elif near_empty:
                 lines.append("  验证期胜率: —（近乎空仓，无有效交易，胜率不适用）")
@@ -503,7 +545,6 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
 
             # 买卖规则明细（从 YAML params 翻译；分位引擎无 _signal 则读 rules）
             params = g_top.get("params", {})
-            engine = params.get("_engine", "global")
             buy_rules, sell_rules = [], []
             has_signal_params = any(k.endswith("_signal") for k in params)
             if has_signal_params:
@@ -520,7 +561,7 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
                     if t is not None:
                         extra += f" 阈值{float(t):.2f}"
                     if frac is not None:
-                        extra += f" 仓位{float(frac)*100:.0f}%"
+                        extra += f" 仓位{float(frac) * 100:.0f}%"
                     if k.startswith("buy"):
                         buy_rules.append(f"买{idx}:{name}{extra}")
                     else:
@@ -548,7 +589,9 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
                         f"({p.get('pnl_pct', 0):+.0f}%)"
                         for p in qpos[:8]
                     )
-                    lines.append(f"  期末持仓(Q{last_q.get('quarter','?')}): {pos_str}")
+                    lines.append(
+                        f"  期末持仓(Q{last_q.get('quarter', '?')}): {pos_str}"
+                    )
             lines.append("")
 
     # ── 今日信号 ──
@@ -620,9 +663,12 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
     return "\n".join(lines).rstrip()
 
 
-def build_optimizer_summary(report, group_name: str = "",
-                            full_report: dict | None = None,
-                            include_charts: bool = True) -> str:
+def build_optimizer_summary(
+    report,
+    group_name: str = "",
+    full_report: dict | None = None,
+    include_charts: bool = True,
+) -> str:
     """将 OptimizationReport + 完整回测报告格式化为 HTML 摘要。
 
     full_report 非空时追加：日回报测指标 / 季末持仓 / 敏感性 / 波动率。
@@ -630,44 +676,30 @@ def build_optimizer_summary(report, group_name: str = "",
     """
     lines = ["<b>策略优化完成</b>"]
     if group_name:
-        label = {"a_share": "A股", "hk": "港股", "us": "美股",
-                 "non_a_share": "非A股"}.get(group_name, group_name)
+        label = {
+            "a_share": "A股",
+            "hk": "港股",
+            "us": "美股",
+            "non_a_share": "非A股",
+        }.get(group_name, group_name)
         lines.append(f"分组: {label}")
     lines.append(
-        f"耗时: {report.elapsed_seconds:.0f}s  |  "
-        f"评估: {report.iterations} 策略"
+        f"耗时: {report.elapsed_seconds:.0f}s  |  评估: {report.iterations} 策略"
     )
 
     if not report.top_strategies and not full_report:
         return "\n".join(lines) + "\n(无有效策略)"
 
-    SIGNAL_NAMES = {
-        "deviation_cross": "偏离穿越",
-        "deviation_absolute": "偏离达标",
-        "rsi_signal": "RSI超卖",
-        "bollinger_signal": "布林低位",
-        "volume_spike": "放量异动",
-        "trend_follow": "趋势跟踪",
-        "sell_deviation_cross": "偏离穿越(卖)",
-        "sell_deviation_absolute": "偏离达标(卖)",
-        "sell_rsi_signal": "RSI超买",
-        "sell_bollinger_signal": "布林高位",
-        "sell_trend_follow": "趋势反转",
-        "none": "无",
-    }
-
     if report.top_strategies:
         lines.append("")
         for i, t in enumerate(report.top_strategies[:3]):
-            lines.append(f"<b>策略 #{i+1}</b>")
+            lines.append(f"<b>策略 #{i + 1}</b>")
             lines.append(
                 f"  收益 {t.test_return:+.1f}%  回撤 {t.test_drawdown:.1f}%  "
                 f"夏普 {t.sharpe:.2f}  交易 {t.trade_count}笔"
             )
             lines.append(f"  <pre>{t.strategy_description}</pre>")
-        lines.append(
-            f'完整结果: data/optimizer/{report.report_id}.yaml'
-        )
+        lines.append(f"完整结果: data/optimizer/{report.report_id}.yaml")
 
     if full_report:
         lines.append("")
@@ -675,27 +707,33 @@ def build_optimizer_summary(report, group_name: str = "",
         rc = "#27ae60" if full_report["total_return"] >= 0 else "#c0392b"
         lines.append(
             f'收益 <span style="color:{rc}">{full_report["total_return"]:+.1f}%</span>'
-            f' (超额 {full_report.get("excess_return") or full_report["total_return"]:+.1f}%)'
-            f'  回撤 {full_report["dd"]:.1f}%'
-            f'  夏普 {full_report["sharpe"]:.2f}'
-            f'  交易 {full_report["trades"]}笔'
-            f'  仓位 {full_report["position"]:.0f}%'
+            f" (超额 {full_report.get('excess_return') or full_report['total_return']:+.1f}%)"
+            f"  回撤 {full_report['dd']:.1f}%"
+            f"  夏普 {full_report['sharpe']:.2f}"
+            f"  交易 {full_report['trades']}笔"
+            f"  仓位 {full_report['position']:.0f}%"
         )
 
         # 参数摘要
         params = full_report.get("params", {})
         if params:
             pi = []
-            for lbl in ("adx_pct", "rsi_pct", "deviation_pct", "vol_ratio_pct", "ma200_dev_pct"):
+            for lbl in (
+                "adx_pct",
+                "rsi_pct",
+                "deviation_pct",
+                "vol_ratio_pct",
+                "ma200_dev_pct",
+            ):
                 tau = params.get(f"{lbl}_tau")
                 w = params.get(f"{lbl}_w")
                 if tau is not None and w is not None:
                     pi.append(f"τ={tau:.2f} w={w:.2f}")
             lines.append(f"  信号: {' | '.join(pi)}")
             lines.append(
-                f"  买阈 τ_buy={params.get('tau_buy','?'):.2f}"
-                f"  卖阈 τ_sell={params.get('tau_sell','?'):.2f}"
-                f"  仓位比 {params.get('pos_frac','?'):.2f}"
+                f"  买阈 τ_buy={params.get('tau_buy', '?'):.2f}"
+                f"  卖阈 τ_sell={params.get('tau_sell', '?'):.2f}"
+                f"  仓位比 {params.get('pos_frac', '?'):.2f}"
             )
 
         # 季末持仓
@@ -710,8 +748,8 @@ def build_optimizer_summary(report, group_name: str = "",
                     for p in qpos[:8]
                 )
                 lines.append(
-                    f"  期末持仓(Q{last_q.get('quarter','?')} "
-                    f"仓位{last_q.get('pos_pct',0):.0f}%): {pos_str}"
+                    f"  期末持仓(Q{last_q.get('quarter', '?')} "
+                    f"仓位{last_q.get('pos_pct', 0):.0f}%): {pos_str}"
                 )
 
         # 参数敏感性
@@ -720,13 +758,13 @@ def build_optimizer_summary(report, group_name: str = "",
             lines.append("")
             lines.append("<b>━━━ 参数敏感性 (10版随机扰动) ━━━</b>")
             lines.append(
-                f'  最优版 {sens["base_ret"]:+.1f}%'
-                f' → 最差版 {sens["worst_ret"]:+.1f}%'
-                f' (降幅 {sens["drop_pct"]:.1f}pp)'
+                f"  最优版 {sens['base_ret']:+.1f}%"
+                f" → 最差版 {sens['worst_ret']:+.1f}%"
+                f" (降幅 {sens['drop_pct']:.1f}pp)"
             )
             lines.append(
-                f'  10版范围 [{sens["ret_range"][0]:+.1f}%, '
-                f'{sens["ret_range"][1]:+.1f}%]'
+                f"  10版范围 [{sens['ret_range'][0]:+.1f}%, "
+                f"{sens['ret_range'][1]:+.1f}%]"
             )
 
         # 跨天波动率
@@ -735,8 +773,8 @@ def build_optimizer_summary(report, group_name: str = "",
             lines.append("")
             lines.append("<b>━━━ 跨天波动率 (近5交易日) ━━━</b>")
             lines.append(
-                f'  最低 {vol["min"]:+.1f}% / 最高 {vol["max"]:+.1f}%'
-                f'  (波幅 {vol["range"]:.1f}pp)'
+                f"  最低 {vol['min']:+.1f}% / 最高 {vol['max']:+.1f}%"
+                f"  (波幅 {vol['range']:.1f}pp)"
             )
 
         # 周K 蜡烛图（邮件用 CID，飞书跳过）
@@ -803,7 +841,8 @@ class EmailNotifier(BaseNotifier):
             timeout = config.get("health_server", {}).get(
                 "report_token_timeout_minutes", 30
             )
-            from src.health_server.core.global_instances import set_report_token_timeout
+            from ..health_server.core.global_instances import set_report_token_timeout
+
             set_report_token_timeout(timeout)
         except Exception as e:
             logger.debug(f"设置 token 超时失败: {e}")
@@ -850,13 +889,18 @@ class EmailNotifier(BaseNotifier):
             portfolio_chart_dict = None
             if portfolio_results:
                 try:
-                    from src.analysis.portfolio_strategy import generate_portfolio_chart
+                    from ..analysis.portfolio_strategy import generate_portfolio_chart
+
                     portfolio_chart_dict = generate_portfolio_chart(
                         portfolio_results,
                         benchmark_data=historical_data,
                     )
                     n_charts = len(portfolio_chart_dict) if portfolio_chart_dict else 0
-                    logger.info(f"投资组合图表生成: {n_charts}张" if n_charts else "投资组合图表跳过")
+                    logger.info(
+                        f"投资组合图表生成: {n_charts}张"
+                        if n_charts
+                        else "投资组合图表跳过"
+                    )
                 except Exception as e:
                     logger.error(f"投资组合图表生成失败: {e}")
 
@@ -868,7 +912,11 @@ class EmailNotifier(BaseNotifier):
             pdf_bytes = None
             try:
                 pdf_bytes = self._generate_daily_pdf(
-                    session, alert_stocks, signal_scan, backtest, stock_data,
+                    session,
+                    alert_stocks,
+                    signal_scan,
+                    backtest,
+                    stock_data,
                 )
                 if pdf_bytes:
                     logger.info("日报 PDF 生成成功 (%d bytes)", len(pdf_bytes))
@@ -890,16 +938,24 @@ class EmailNotifier(BaseNotifier):
                 daily_mode=True,
                 opt_data_map=opt_data_map,
                 placements=getattr(session, "placements", None),
+                eval_cache=getattr(session, "_yaml_eval_cache", None),
             )
 
             # ── 参考持仓 ──
             from datetime import date as _dt_date
+
             ref_html = self._build_ref_portfolio_html(session, _dt_date.today())
             if ref_html:
                 body += ref_html
 
             # 发送邮件（PDF 作为附件）
-            self._send_email(subject, body, chart_png_bytes=chart_png_bytes, portfolio_chart_dict=portfolio_chart_dict, pdf_bytes=pdf_bytes)
+            self._send_email(
+                subject,
+                body,
+                chart_png_bytes=chart_png_bytes,
+                portfolio_chart_dict=portfolio_chart_dict,
+                pdf_bytes=pdf_bytes,
+            )
 
             logger.info(
                 f"邮件任务完成 ({self.receiver_email}) "
@@ -942,7 +998,8 @@ class EmailNotifier(BaseNotifier):
             portfolio_chart_dict = None
             if portfolio_results:
                 try:
-                    from src.analysis.portfolio_strategy import generate_portfolio_chart
+                    from ..analysis.portfolio_strategy import generate_portfolio_chart
+
                     portfolio_chart_dict = generate_portfolio_chart(
                         portfolio_results,
                         benchmark_data=historical_data,
@@ -958,7 +1015,11 @@ class EmailNotifier(BaseNotifier):
             pdf_bytes = None
             try:
                 pdf_bytes = self._generate_daily_pdf(
-                    session, [], signal_scan, backtest, stock_data,
+                    session,
+                    [],
+                    signal_scan,
+                    backtest,
+                    stock_data,
                 )
             except Exception as e:
                 logger.warning("日报 PDF 生成失败: %s", e)
@@ -977,16 +1038,23 @@ class EmailNotifier(BaseNotifier):
                 daily_mode=True,
                 opt_data_map=opt_data_map,
                 placements=getattr(session, "placements", None),
+                eval_cache=getattr(session, "_yaml_eval_cache", None),
             )
 
             # ── 参考持仓 ──
             from datetime import date as _dt_date
+
             ref_html = self._build_ref_portfolio_html(session, _dt_date.today())
             if ref_html:
                 body += ref_html
 
             # 发送邮件
-            self._send_email(subject, body, portfolio_chart_dict=portfolio_chart_dict, pdf_bytes=pdf_bytes)
+            self._send_email(
+                subject,
+                body,
+                portfolio_chart_dict=portfolio_chart_dict,
+                pdf_bytes=pdf_bytes,
+            )
 
             logger.info(f"每日报告邮件任务完成 ({self.receiver_email}) (来自Session)")
 
@@ -1027,19 +1095,39 @@ class EmailNotifier(BaseNotifier):
             html += '<table style="border-collapse:collapse;width:100%;margin:10px 0;font-size:12px" cellpadding="6" cellspacing="0" border="0">\n'
             html += '<tr style="background:#34495e;color:#fff"><th>标的</th><th>规则</th><th>条件</th><th>当前值</th><th>来源</th></tr>\n'
             for a in alerts[:12]:
-                code = a.stock_code if hasattr(a, "stock_code") else a.get("stock_code", "?")
-                label = a.rule_label if hasattr(a, "rule_label") else a.get("rule_label", "?")
-                cond = a.condition_str if hasattr(a, "condition_str") else a.get("condition", "?")
-                cv = a.current_value if hasattr(a, "current_value") else a.get("current_value", "-")
-                rank = a.strategy_rank if hasattr(a, "strategy_rank") else a.get("strategy_rank", "?")
+                code = (
+                    a.stock_code
+                    if hasattr(a, "stock_code")
+                    else a.get("stock_code", "?")
+                )
+                label = (
+                    a.rule_label
+                    if hasattr(a, "rule_label")
+                    else a.get("rule_label", "?")
+                )
+                cond = (
+                    a.condition_str
+                    if hasattr(a, "condition_str")
+                    else a.get("condition", "?")
+                )
+                cv = (
+                    a.current_value
+                    if hasattr(a, "current_value")
+                    else a.get("current_value", "-")
+                )
+                rank = (
+                    a.strategy_rank
+                    if hasattr(a, "strategy_rank")
+                    else a.get("strategy_rank", "?")
+                )
                 html += (
                     f'<tr style="background:#e8f6f3">'
-                    f'<td>[策略] {code}</td>'
-                    f'<td>{label}</td>'
+                    f"<td>[策略] {code}</td>"
+                    f"<td>{label}</td>"
                     f'<td style="font-size:11px">{cond[:60]}</td>'
-                    f'<td>{cv}</td>'
-                    f'<td>Rank {rank}</td>'
-                    f'</tr>\n'
+                    f"<td>{cv}</td>"
+                    f"<td>Rank {rank}</td>"
+                    f"</tr>\n"
                 )
             html += "</table>\n"
         else:
@@ -1052,18 +1140,27 @@ class EmailNotifier(BaseNotifier):
             html += '<table style="border-collapse:collapse;width:auto;margin:10px 0;font-size:12px" cellpadding="6" cellspacing="0" border="0">\n'
             header = '<tr style="background:#34495e;color:#fff"><th>标的</th>'
             for ind in ind_cols:
-                label = {"rsi": "RSI", "vol_ratio": "量比", "boll_pct_b": "布林%B",
-                         "adx": "ADX", "macd_hist": "MACD柱", "deviation": "偏差%",
-                         "atr": "ATR"}.get(ind, ind)
+                label = {
+                    "rsi": "RSI",
+                    "vol_ratio": "量比",
+                    "boll_pct_b": "布林%B",
+                    "adx": "ADX",
+                    "macd_hist": "MACD柱",
+                    "deviation": "偏差%",
+                    "atr": "ATR",
+                }.get(ind, ind)
                 header += f"<th>{label}</th>"
             header += "</tr>\n"
             html += header
 
             # 按标的在报警池内优先排序
             consensus_stocks = set(consensus.consensus_stocks or [])
-            sorted_codes = sorted(snapshot.keys(),
-                                  key=lambda c: (0 if c in strategy_codes else
-                                                 1 if c in consensus_stocks else 2))
+            sorted_codes = sorted(
+                snapshot.keys(),
+                key=lambda c: (
+                    0 if c in strategy_codes else 1 if c in consensus_stocks else 2
+                ),
+            )
 
             for code in sorted_codes[:20]:
                 vals = snapshot.get(code, {})
@@ -1072,7 +1169,7 @@ class EmailNotifier(BaseNotifier):
                     v = vals.get(ind)
                     if v is not None:
                         if ind == "deviation":
-                            html += f"<td>{v*100:.1f}%</td>"
+                            html += f"<td>{v * 100:.1f}%</td>"
                         else:
                             html += f"<td>{v:.2f}</td>"
                     else:
@@ -1104,7 +1201,7 @@ class EmailNotifier(BaseNotifier):
             if not bt:
                 continue
             label = group_labels.get(group, group)
-            html += f"<p><strong>{label} — 基于最新优化策略 (Rank {bt.get('strategy_rank','?')})</strong></p>\n"
+            html += f"<p><strong>{label} — 基于最新优化策略 (Rank {bt.get('strategy_rank', '?')})</strong></p>\n"
             html += '<table style="border-collapse:collapse;width:100%;margin:8px 0;font-size:12px" cellpadding="6" cellspacing="0" border="0">\n'
             html += '<tr style="background:#34495e;color:#fff"><th>指标</th><th>全期</th><th>观察0-6m</th><th>部署6-12m</th><th>验证12-24m</th></tr>\n'
 
@@ -1128,22 +1225,30 @@ class EmailNotifier(BaseNotifier):
                     return f"{v:.3f}"
                 return str(v)
 
-            html += (f"<tr><td>超额收益</td><td>{total_excess_col}</td>"
-                     f"<td>{_pval(phases.get('observe'), 'excess_return')}</td>"
-                     f"<td>{_pval(phases.get('deploy'), 'excess_return')}</td>"
-                     f"<td>{_pval(phases.get('test'), 'excess_return')}</td></tr>\n")
-            html += (f"<tr><td>最大回撤</td><td>{dd}</td>"
-                     f"<td>{_pval(phases.get('observe'), 'max_drawdown')}</td>"
-                     f"<td>{_pval(phases.get('deploy'), 'max_drawdown')}</td>"
-                     f"<td>{_pval(phases.get('test'), 'max_drawdown')}</td></tr>\n")
-            html += (f"<tr><td>Sharpe</td><td>{sp}</td>"
-                     f"<td>{_pval(phases.get('observe'), 'sharpe_ratio')}</td>"
-                     f"<td>{_pval(phases.get('deploy'), 'sharpe_ratio')}</td>"
-                     f"<td>{_pval(phases.get('test'), 'sharpe_ratio')}</td></tr>\n")
-            html += (f"<tr><td>交易次数</td><td>{trades}</td>"
-                     f"<td>{getattr(phases.get('observe'), 'trade_count', '-')}</td>"
-                     f"<td>{getattr(phases.get('deploy'), 'trade_count', '-')}</td>"
-                     f"<td>{getattr(phases.get('test'), 'trade_count', '-')}</td></tr>\n")
+            html += (
+                f"<tr><td>超额收益</td><td>{total_excess_col}</td>"
+                f"<td>{_pval(phases.get('observe'), 'excess_return')}</td>"
+                f"<td>{_pval(phases.get('deploy'), 'excess_return')}</td>"
+                f"<td>{_pval(phases.get('test'), 'excess_return')}</td></tr>\n"
+            )
+            html += (
+                f"<tr><td>最大回撤</td><td>{dd}</td>"
+                f"<td>{_pval(phases.get('observe'), 'max_drawdown')}</td>"
+                f"<td>{_pval(phases.get('deploy'), 'max_drawdown')}</td>"
+                f"<td>{_pval(phases.get('test'), 'max_drawdown')}</td></tr>\n"
+            )
+            html += (
+                f"<tr><td>Sharpe</td><td>{sp}</td>"
+                f"<td>{_pval(phases.get('observe'), 'sharpe_ratio')}</td>"
+                f"<td>{_pval(phases.get('deploy'), 'sharpe_ratio')}</td>"
+                f"<td>{_pval(phases.get('test'), 'sharpe_ratio')}</td></tr>\n"
+            )
+            html += (
+                f"<tr><td>交易次数</td><td>{trades}</td>"
+                f"<td>{getattr(phases.get('observe'), 'trade_count', '-')}</td>"
+                f"<td>{getattr(phases.get('deploy'), 'trade_count', '-')}</td>"
+                f"<td>{getattr(phases.get('test'), 'trade_count', '-')}</td></tr>\n"
+            )
 
             # 基准对比
             bm = bt.get("benchmarks", {})
@@ -1161,9 +1266,11 @@ class EmailNotifier(BaseNotifier):
 
             stocks = bt.get("stocks", [])
             if stocks:
-                html += (f"<p style='font-size:12px;color:#888'>入选标的: "
-                         f"{', '.join(stocks[:8])}"
-                         f"{' +' + str(len(stocks)-8) if len(stocks)>8 else ''}</p>\n")
+                html += (
+                    f"<p style='font-size:12px;color:#888'>入选标的: "
+                    f"{', '.join(stocks[:8])}"
+                    f"{' +' + str(len(stocks) - 8) if len(stocks) > 8 else ''}</p>\n"
+                )
 
         return html
 
@@ -1182,6 +1289,7 @@ class EmailNotifier(BaseNotifier):
             return None, None, None, None
         try:
             import pandas as pd
+
             # 验证期 = 最近 months 月 ≈ months*21 交易日
             v_len = min(len(nav), months * 21)
             cut = len(nav) - v_len
@@ -1236,7 +1344,7 @@ class EmailNotifier(BaseNotifier):
             return None, None, None
         try:
             v_len = min(len(nav), months * 21)
-            v_nav = nav[len(nav) - v_len:]
+            v_nav = nav[len(nav) - v_len :]
             daily_rf = (1 + annual_rate) ** (1 / 252) - 1
             s_final = v_nav[-1]
             wins = total = 0
@@ -1271,9 +1379,7 @@ class EmailNotifier(BaseNotifier):
         try:
             if stock_data is not None and hasattr(stock_data, "iterrows"):
                 for _, row in stock_data.iterrows():
-                    name_map[str(row.get("stock_code", ""))] = row.get(
-                        "stock_name", ""
-                    )
+                    name_map[str(row.get("stock_code", ""))] = row.get("stock_name", "")
         except Exception:
             pass
 
@@ -1292,20 +1398,20 @@ class EmailNotifier(BaseNotifier):
             price_str = f"{issue_price:.2f}元" if issue_price else "—"
             pct_str = f"{pct:.2f}%" if pct is not None else "—"
             rows += (
-                f'<tr>'
+                f"<tr>"
                 f'<td style="padding:8px">{code}</td>'
                 f'<td style="padding:8px">{name}</td>'
                 f'<td style="text-align:right;padding:8px">{num_str}</td>'
                 f'<td style="text-align:right;padding:8px">{pct_str}</td>'
                 f'<td style="text-align:right;padding:8px">{price_str}</td>'
                 f'<td style="text-align:right;padding:8px">{unlock}</td>'
-                f'</tr>\n'
+                f"</tr>\n"
             )
 
         return (
             '<tr><td style="padding:16px 24px 4px;border-bottom:2px solid #ecf0f1">'
             '<div style="font-size:15px;font-weight:600;color:#2c3e50">'
-            '未解禁定增</div></td></tr>\n'
+            "未解禁定增</div></td></tr>\n"
             '<tr><td style="padding:8px 24px 16px">'
             '<table role="presentation" style="width:100%;border-collapse:collapse;'
             'font-size:12px;table-layout:fixed;word-break:break-all" cellpadding="6" cellspacing="0" border="0">\n'
@@ -1316,14 +1422,19 @@ class EmailNotifier(BaseNotifier):
             '<th style="text-align:right;padding:8px">占总股本</th>'
             '<th style="text-align:right;padding:8px">定增价格</th>'
             '<th style="text-align:right;padding:8px">解禁时间</th>'
-            '</tr></thead>\n<tbody>\n'
-            f'{rows}'
-            '</tbody></table></td></tr>\n'
+            "</tr></thead>\n<tbody>\n"
+            f"{rows}"
+            "</tbody></table></td></tr>\n"
         )
 
     def _build_strategy_results_section(
-        self, portfolio_results, opt_data=None, signal_scan=None,
-        opt_data_map=None, benchmark_data=None,
+        self,
+        portfolio_results,
+        opt_data=None,
+        signal_scan=None,
+        opt_data_map=None,
+        benchmark_data=None,
+        eval_cache=None,
     ) -> str:
         """构建搜参策略结果段（策略规则 + 今日信号 + 回测指标 + 季末持仓）。
 
@@ -1359,7 +1470,9 @@ class EmailNotifier(BaseNotifier):
         }
 
         lines: list[str] = []
-        lines.append('<div style="margin-top:30px;border-top:2px solid #2c3e50;padding-top:16px">')
+        lines.append(
+            '<div style="margin-top:30px;border-top:2px solid #2c3e50;padding-top:16px">'
+        )
 
         # 策略引擎名 + 搜参日期（新/旧引擎一目了然）
         engine_label = ""
@@ -1388,8 +1501,7 @@ class EmailNotifier(BaseNotifier):
             params = top_strategy.get("params", {})
             buy_rules: list[str] = []
             sell_rules: list[str] = []
-            has_signal_params = any(
-                k.endswith("_signal") for k in params)
+            has_signal_params = any(k.endswith("_signal") for k in params)
             if has_signal_params:
                 for k, v in sorted(params.items()):
                     if not k.endswith("_signal"):
@@ -1404,7 +1516,7 @@ class EmailNotifier(BaseNotifier):
                     if t is not None:
                         extra += f" 阈值{float(t):.2f}"
                     if frac is not None:
-                        extra += f" 仓位{float(frac)*100:.0f}%"
+                        extra += f" 仓位{float(frac) * 100:.0f}%"
                     if k.startswith("buy"):
                         buy_rules.append(f"买{idx}:{name}{extra}")
                     else:
@@ -1418,28 +1530,30 @@ class EmailNotifier(BaseNotifier):
                     elif r.get("type") == "sell":
                         sell_rules.append(label)
 
-            strategy_label = top_strategy.get(
-                "strategy_description",
-                top_strategy.get("_mode", "搜索最优"),
-            )
             mode = params.get("_mode", "?")
-            lines.append('<div style="background:#f0f4ff;border:1px solid #c8d6ff;'
-                         'border-radius:6px;padding:12px;margin:10px 0">')
+            lines.append(
+                '<div style="background:#f0f4ff;border:1px solid #c8d6ff;'
+                'border-radius:6px;padding:12px;margin:10px 0">'
+            )
             lines.append(
                 '<p style="margin:0;font-weight:600;color:#1565c0">'
-                f'Top1 策略 ({mode} 模式)</p>'
+                f"Top1 策略 ({mode} 模式)</p>"
             )
             if buy_rules:
-                lines.append('<p style="margin:6px 0 2px"><b>买入:</b> '
-                             f'{" | ".join(buy_rules)}</p>')
+                lines.append(
+                    '<p style="margin:6px 0 2px"><b>买入:</b> '
+                    f"{' | '.join(buy_rules)}</p>"
+                )
             if sell_rules:
-                lines.append('<p style="margin:2px 0 0"><b>卖出:</b> '
-                             f'{" | ".join(sell_rules)}</p>')
+                lines.append(
+                    '<p style="margin:2px 0 0"><b>卖出:</b> '
+                    f"{' | '.join(sell_rules)}</p>"
+                )
             lines.append("</div>")
         else:
             lines.append(
                 '<p style="color:#888;margin:10px 0">'
-                '（未找到优化器策略，使用 confg 默认均线规则）</p>'
+                "（未找到优化器策略，使用 confg 默认均线规则）</p>"
             )
 
         # 今日信号（从 SignalScanner 结果取，和日报/简报同一套数据）
@@ -1457,7 +1571,7 @@ class EmailNotifier(BaseNotifier):
                 signal_codes.add(code)
             lines.append(
                 f'<p style="margin:0 0 6px;font-weight:600;color:#1a5276">'
-                f'今日信号 ({len(alerts)} 条 / {len(signal_codes)} 只标的)</p>'
+                f"今日信号 ({len(alerts)} 条 / {len(signal_codes)} 只标的)</p>"
             )
             lines.append(
                 '<table style="font-size:12px;border-collapse:collapse;width:100%;table-layout:fixed;word-break:break-all">'
@@ -1466,8 +1580,12 @@ class EmailNotifier(BaseNotifier):
                 '<th style="width:45%">当前值</th></tr>'
             )
             map_a = _build_signal_label_map("a_share")
-            map_hk = _build_signal_label_map("hk") or _build_signal_label_map("non_a_share")
-            map_us = _build_signal_label_map("us") or _build_signal_label_map("non_a_share")
+            map_hk = _build_signal_label_map("hk") or _build_signal_label_map(
+                "non_a_share"
+            )
+            map_us = _build_signal_label_map("us") or _build_signal_label_map(
+                "non_a_share"
+            )
             for a in alerts[:30]:
                 code = getattr(a, "stock_code", None) or (
                     a.get("stock_code", "?") if isinstance(a, dict) else "?"
@@ -1480,17 +1598,17 @@ class EmailNotifier(BaseNotifier):
                     a.get("current_value", "-") if isinstance(a, dict) else "-"
                 )
                 lines.append(
-                    f'<tr><td>{code}</td><td>{readable}</td><td>{cv}</td></tr>'
+                    f"<tr><td>{code}</td><td>{readable}</td><td>{cv}</td></tr>"
                 )
             lines.append("</table></div>")
         else:
-            lines.append(
-                '<p style="color:#888;margin:8px 0">今日信号: 无触发</p>'
-            )
+            lines.append('<p style="color:#888;margin:8px 0">今日信号: 无触发</p>')
 
         # 组合结果 (PortfolioEvaluator 实盘评估) — 只展示 Top1 (max_return)
         group_labels = {
-            "a_share": "A股组合", "hk": "港股组合", "us": "美股组合",
+            "a_share": "A股组合",
+            "hk": "港股组合",
+            "us": "美股组合",
             "non_a_share": "非A股组合",
         }
         for group_key, group_label in group_labels.items():
@@ -1507,10 +1625,10 @@ class EmailNotifier(BaseNotifier):
             )
 
             # ── 统一回测报告优先，回退 YAML test_return（兼容旧 YAML）──
-            eval_cache = getattr(session, "_yaml_eval_cache", {}) or {}
-            er = eval_cache.get(group_key, {}) or {}
-            g_yaml = (opt_data_map.get(group_key)
-                      or opt_data_map.get("non_a_share") or {})
+            er = (eval_cache or {}).get(group_key, {}) or {}
+            g_yaml = (
+                opt_data_map.get(group_key) or opt_data_map.get("non_a_share") or {}
+            )
             g_top = (g_yaml.get("strategies") or [{}])[0]
             total_ret = er.get("total_return")
             test_ret = er.get("excess_return")
@@ -1522,9 +1640,7 @@ class EmailNotifier(BaseNotifier):
             comp = getattr(r, "composition", [])
             qh = getattr(r, "quarterly_holdings", None) or []
             # 平均现金仓位（从季末持仓算 avg(cash/nav)）
-            cash_pcts = [
-                (100 - q["pos_pct"]) for q in qh if q.get("nav", 0) > 0
-            ]
+            cash_pcts = [(100 - q["pos_pct"]) for q in qh if q.get("nav", 0) > 0]
             avg_cash = sum(cash_pcts) / len(cash_pcts) if cash_pcts else None
 
             # ── 基准收益（来自统一回测报告）──
@@ -1544,32 +1660,32 @@ class EmailNotifier(BaseNotifier):
                     summary = (
                         '<div style="border:1px solid #ddd;padding:10px;'
                         'margin:6px 0;border-radius:5px;background:#f0f7ff">'
-                        f'<b>验证期涨幅 '
+                        f"<b>验证期涨幅 "
                         f'<span style="color:{trc}">{total_ret:+.1f}%</span>'
                         f' (超额<span style="color:{rc}">{test_ret:+.1f}%</span>)</b> &nbsp; '
-                        f'最大回撤 {test_dd:.1f}% &nbsp; '
-                        f'夏普 {g_sharpe:.2f} &nbsp; '
+                        f"最大回撤 {test_dd:.1f}% &nbsp; "
+                        f"夏普 {g_sharpe:.2f} &nbsp; "
                     )
                 else:
                     summary = (
                         '<div style="border:1px solid #ddd;padding:10px;'
                         'margin:6px 0;border-radius:5px;background:#f0f7ff">'
-                        f'<b>预估收益(测试期超额, 近9月, 不参与排序)</b> '
+                        f"<b>预估收益(测试期超额, 近9月, 不参与排序)</b> "
                         f'<span style="color:{rc}">{test_ret:+.1f}%</span> &nbsp; '
-                        f'回撤 {test_dd:.1f}% &nbsp; '
-                        f'夏普 {g_sharpe:.2f} &nbsp; '
+                        f"回撤 {test_dd:.1f}% &nbsp; "
+                        f"夏普 {g_sharpe:.2f} &nbsp; "
                     )
                 if avg_cash is not None:
-                    summary += f'平均现金仓位 {avg_cash:.0f}% &nbsp; '
+                    summary += f"平均现金仓位 {avg_cash:.0f}% &nbsp; "
                 # 验证期胜率（三基线）
                 if wr_parts:
                     summary += (
-                        f'<br><b>验证期胜率</b>(任意一天买入持有到期跑赢): '
+                        "<br><b>验证期胜率</b>(任意一天买入持有到期跑赢): "
                         + " | ".join(wr_parts)
                     )
-                summary += f'<br><span style="color:#888;font-size:11px">'
-                summary += f'搜参时间 {ts} · 成分: '
-                summary += f'{", ".join(comp) if comp else "—"}</span>'
+                summary += '<br><span style="color:#888;font-size:11px">'
+                summary += f"搜参时间 {ts} · 成分: "
+                summary += f"{', '.join(comp) if comp else '—'}</span>"
                 lines.append(summary)
             else:
                 # YAML 无测试收益时回退展示评估值
@@ -1580,8 +1696,8 @@ class EmailNotifier(BaseNotifier):
                     '<div style="border:1px solid #ddd;padding:10px;'
                     'margin:6px 0;border-radius:5px;background:#fafafa">'
                     f'收益 <span style="color:{rc}">{tr:+.1f}%</span> &nbsp; '
-                    f'回撤 {dd:.1f}% &nbsp; 成分: '
-                    f'{", ".join(comp) if comp else "—"}'
+                    f"回撤 {dd:.1f}% &nbsp; 成分: "
+                    f"{', '.join(comp) if comp else '—'}"
                 )
 
             # 季末持仓明细
@@ -1590,9 +1706,9 @@ class EmailNotifier(BaseNotifier):
                     '<table style="font-size:11px;border-collapse:collapse;'
                     'width:100%;margin-top:6px;table-layout:fixed;word-break:break-all">'
                     '<tr style="background:#34495e;color:#fff">'
-                    '<th>Q</th><th>代码</th><th>持股</th>'
-                    '<th>成本</th><th>现价</th><th>市值</th>'
-                    '<th>盈亏</th><th>盈亏%</th></tr>'
+                    "<th>Q</th><th>代码</th><th>持股</th>"
+                    "<th>成本</th><th>现价</th><th>市值</th>"
+                    "<th>盈亏</th><th>盈亏%</th></tr>"
                 )
                 for q in qh:
                     qn = q["quarter"]
@@ -1602,8 +1718,8 @@ class EmailNotifier(BaseNotifier):
                     qpos = q.get("positions", [])
                     if not qpos:
                         lines.append(
-                            f'<tr><td>Q{qn}</td>'
-                            f'<td colspan=7>空仓 (nav={qnv:.0f})</td></tr>'
+                            f"<tr><td>Q{qn}</td>"
+                            f"<td colspan=7>空仓 (nav={qnv:.0f})</td></tr>"
                         )
                     for pos in qpos:
                         code = pos["code"]
@@ -1615,18 +1731,18 @@ class EmailNotifier(BaseNotifier):
                         pp = pos["pnl_pct"]
                         color = "#27ae60" if pn >= 0 else "#c0392b"
                         lines.append(
-                            f'<tr><td>Q{qn}</td><td>{code}</td>'
-                            f'<td>{sh:.0f}股</td>'
-                            f'<td>{cb:.2f}</td><td>{px:.2f}</td>'
-                            f'<td>{vl:.0f}</td>'
+                            f"<tr><td>Q{qn}</td><td>{code}</td>"
+                            f"<td>{sh:.0f}股</td>"
+                            f"<td>{cb:.2f}</td><td>{px:.2f}</td>"
+                            f"<td>{vl:.0f}</td>"
                             f'<td style="color:{color}">{pn:+.0f}</td>'
                             f'<td style="color:{color}">{pp:+.1f}%</td></tr>'
                         )
                     if qpos:
                         lines.append(
-                            f'<tr><td>Q{qn}</td>'
-                            f'<td colspan=4>现金: {qcs:.0f}</td>'
-                            f'<td colspan=3>仓位: {qp:.0f}%</td></tr>'
+                            f"<tr><td>Q{qn}</td>"
+                            f"<td colspan=4>现金: {qcs:.0f}</td>"
+                            f"<td colspan=3>仓位: {qp:.0f}%</td></tr>"
                         )
                 lines.append("</table>")
             lines.append("</div>")  # close card
@@ -1813,6 +1929,7 @@ class EmailNotifier(BaseNotifier):
         daily_mode=False,
         opt_data_map=None,
         placements=None,
+        eval_cache=None,
     ):
         """
         构建邮件正文（完整版：表格 + 公告 + 图表）
@@ -2124,23 +2241,35 @@ class EmailNotifier(BaseNotifier):
             pos = "color:#27ae60;text-align:right"
             neg = "color:#c0392b;text-align:right"
             neut = "text-align:right"
-            diff_style = pos if close_ma60_diff is not None and close_ma60_diff >= 0 else neg if close_ma60_diff is not None else neut
-            pct_style = pos if close_ma60_pct is not None and close_ma60_pct >= 0 else neg if close_ma60_pct is not None else neut
+            diff_style = (
+                pos
+                if close_ma60_diff is not None and close_ma60_diff >= 0
+                else neg
+                if close_ma60_diff is not None
+                else neut
+            )
+            pct_style = (
+                pos
+                if close_ma60_pct is not None and close_ma60_pct >= 0
+                else neg
+                if close_ma60_pct is not None
+                else neut
+            )
             if daily_mode:
                 # 日报模式：精简价格行（去掉 MA60/偏离/状态）
                 all_rows_price += (
-                    f'<tr>'
-                    f'<td>{stock_code}</td>'
+                    f"<tr>"
+                    f"<td>{stock_code}</td>"
                     f'<td style="{neut}">{open_price_str}</td>'
                     f'<td style="{neut}">{close_price_str}</td>'
                     f'<td style="{neut}">{high_price_str}</td>'
                     f'<td style="{neut}">{low_price_str}</td>'
-                    f'</tr>'
+                    f"</tr>"
                 )
             else:
                 all_rows_price += (
-                    f'<tr>'
-                    f'<td>{stock_code}</td>'
+                    f"<tr>"
+                    f"<td>{stock_code}</td>"
                     f'<td style="{neut}">{open_price_str}</td>'
                     f'<td style="{neut}">{close_price_str}</td>'
                     f'<td style="{neut}">{high_price_str}</td>'
@@ -2148,20 +2277,20 @@ class EmailNotifier(BaseNotifier):
                     f'<td style="{neut}">{ma60_str}</td>'
                     f'<td style="{diff_style}">{close_ma60_diff_str}</td>'
                     f'<td style="{pct_style}">{close_ma60_pct_str}</td>'
-                    f'<td>{status}</td>'
-                    f'</tr>'
+                    f"<td>{status}</td>"
+                    f"</tr>"
                 )
 
             # 基本面指标行
             all_rows_fundamental += (
-                f'<tr>'
-                f'<td>{stock_code}</td>'
+                f"<tr>"
+                f"<td>{stock_code}</td>"
                 f'<td style="{neut}">{dividend_per_share_str}</td>'
                 f'<td style="{neut}">{dividend_yield_str}</td>'
                 f'<td style="{neut}">{pe_ratio_str}</td>'
                 f'<td style="{neut}">{pb_ratio_str}</td>'
                 f'<td style="{neut}">{roe_str}</td>'
-                f'</tr>'
+                f"</tr>"
             )
 
         # 4. 构建公告部分
@@ -2264,14 +2393,20 @@ class EmailNotifier(BaseNotifier):
         strategy_results_section = ""
         if portfolio_results:
             strategy_results_section = self._build_strategy_results_section(
-                portfolio_results, opt_data, signal_scan=signal_scan,
-                opt_data_map=opt_data_map, benchmark_data=historical_data,
+                portfolio_results,
+                opt_data,
+                signal_scan=signal_scan,
+                opt_data_map=opt_data_map,
+                benchmark_data=historical_data,
+                eval_cache=eval_cache,
             )
 
         # 6c. 构建投资组合策略分析部分（旧版，日报模式跳过避免与搜参段重复）
         portfolio_section = ""
         if portfolio_results and not daily_mode:
-            portfolio_section = self._build_portfolio_section(portfolio_results, portfolio_chart_dict)
+            portfolio_section = self._build_portfolio_section(
+                portfolio_results, portfolio_chart_dict
+            )
 
         # 7. 走势图表（由调用方生成，通过 chart_png_bytes 传入，使用 CID 内嵌）
         chart_section = ""
@@ -2289,11 +2424,17 @@ class EmailNotifier(BaseNotifier):
         # 7b. 投资组合走势图（chart002=A股, chart003=港股, chart004=美股, chart005=非A兼容）
         portfolio_chart_section = ""
         if portfolio_chart_dict:
-            cid_map = {"a_share": "chart002", "hk": "chart003",
-                       "us": "chart004", "non_a_share": "chart005"}
+            cid_map = {
+                "a_share": "chart002",
+                "hk": "chart003",
+                "us": "chart004",
+                "non_a_share": "chart005",
+            }
             group_titles = {
-                "a_share": "A股投资组合净值走势", "hk": "港股投资组合净值走势",
-                "us": "美股投资组合净值走势", "non_a_share": "非A股投资组合净值走势",
+                "a_share": "A股投资组合净值走势",
+                "hk": "港股投资组合净值走势",
+                "us": "美股投资组合净值走势",
+                "non_a_share": "非A股投资组合净值走势",
             }
             for group_key in ("a_share", "hk", "us", "non_a_share"):
                 if group_key in portfolio_chart_dict:
@@ -2397,14 +2538,18 @@ class EmailNotifier(BaseNotifier):
             if optimizer_dir.exists():
                 a_r = sorted(
                     optimizer_dir.glob("*_a_share_report.html"),
-                    key=lambda p: p.stat().st_mtime, reverse=True,
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
                 )
                 nona_r = sorted(
                     optimizer_dir.glob("*_non_a_share_report.html"),
-                    key=lambda p: p.stat().st_mtime, reverse=True,
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
                 )
                 if a_r or nona_r:
-                    from src.health_server.core.global_instances import register_report_token
+                    from ..health_server.core.global_instances import (
+                        register_report_token,
+                    )
 
                     hc = self.config.get("health_server", {})
                     server_ip = hc.get("public_ip", "")
@@ -2414,20 +2559,29 @@ class EmailNotifier(BaseNotifier):
                     if not server_ip:
                         try:
                             import urllib.request
-                            ip_url = hc.get(
-                                "ip_detect_url", "https://ifconfig.me"
-                            )
+
+                            ip_url = hc.get("ip_detect_url", "https://ifconfig.me")
                             server_ip = (
                                 urllib.request.urlopen(ip_url, timeout=5)
-                                .read().decode("utf-8").strip()
+                                .read()
+                                .decode("utf-8")
+                                .strip()
                             )
                         except Exception as e:
                             logger.debug(f"IP检测服务失败: {e}")
                             fi = self._get_server_info().get("ip_address", "localhost")
-                            for p in fi.replace("(优先)","").replace("(","").replace(")","").split(","):
+                            for p in (
+                                fi.replace("(优先)", "")
+                                .replace("(", "")
+                                .replace(")", "")
+                                .split(",")
+                            ):
                                 s = p.strip().split()[0] if p.strip() else ""
-                                if s and not s.startswith(("172.","10.","192.168.","127.")):
-                                    server_ip = s; break
+                                if s and not s.startswith(
+                                    ("172.", "10.", "192.168.", "127.")
+                                ):
+                                    server_ip = s
+                                    break
                             if server_ip == "localhost":
                                 server_ip = fi.split(",")[0].strip().split()[0]
 
@@ -2440,12 +2594,12 @@ class EmailNotifier(BaseNotifier):
                         links_html += (
                             f'<a href="{proto}://{server_ip}:{port}/report/{token}" '
                             f'style="color:#2980b9;text-decoration:none">'
-                            f'{label}</a> &nbsp;'
+                            f"{label}</a> &nbsp;"
                         )
                     if links_html:
                         report_link = (
                             f'<tr><td style="padding:8px 16px;color:#7f8c8d;font-size:13px">'
-                            f'交互报告: {links_html}'
+                            f"交互报告: {links_html}"
                             f'<span style="font-size:11px">(30分钟)</span></td></tr>'
                         )
         except Exception as e:
@@ -2791,8 +2945,12 @@ class EmailNotifier(BaseNotifier):
             dev = (close - value) / value * 100.0
             if _in_alert_range(dev):
                 candidates.append(
-                    (name, round(float(value), 2), round(dev, 2),
-                     WINDOW_PRIORITY.get(name, 999))
+                    (
+                        name,
+                        round(float(value), 2),
+                        round(dev, 2),
+                        WINDOW_PRIORITY.get(name, 999),
+                    )
                 )
 
         if not candidates:
@@ -2876,8 +3034,12 @@ class EmailNotifier(BaseNotifier):
         if signal_scan and signal_scan.alerts:
             alerts = signal_scan.alerts
             map_a = _build_signal_label_map("a_share")
-            map_hk = _build_signal_label_map("hk") or _build_signal_label_map("non_a_share")
-            map_us = _build_signal_label_map("us") or _build_signal_label_map("non_a_share")
+            map_hk = _build_signal_label_map("hk") or _build_signal_label_map(
+                "non_a_share"
+            )
+            map_us = _build_signal_label_map("us") or _build_signal_label_map(
+                "non_a_share"
+            )
             strat_html = (
                 "<h3>策略信号</h3>"
                 f"<p>共 {len(alerts)} 条策略告警</p>"
@@ -2912,9 +3074,7 @@ class EmailNotifier(BaseNotifier):
                 else "—"
             )
             anchor_str = (
-                f"{entry['anchor_val']:.2f}"
-                if entry["anchor_val"] is not None
-                else "-"
+                f"{entry['anchor_val']:.2f}" if entry["anchor_val"] is not None else "-"
             )
             dev_color = "#27ae60" if (entry["dev_pct"] or 0) >= 0 else "#c0392b"
             html_row = (
@@ -2951,7 +3111,15 @@ class EmailNotifier(BaseNotifier):
 
     # ────────────────────────────────────
 
-    def _send_email(self, subject, body, chart_png_bytes=None, portfolio_chart_dict=None, pdf_bytes=None, candlestick_png=None):
+    def _send_email(
+        self,
+        subject,
+        body,
+        chart_png_bytes=None,
+        portfolio_chart_dict=None,
+        pdf_bytes=None,
+        candlestick_png=None,
+    ):
         """
         发送邮件
 
@@ -2998,7 +3166,9 @@ class EmailNotifier(BaseNotifier):
                 if chart_png_bytes:
                     image = MIMEImage(chart_png_bytes, "png")
                     image.add_header("Content-ID", "<chart001>")
-                    image.add_header("Content-Disposition", "inline", filename="chart.png")
+                    image.add_header(
+                        "Content-Disposition", "inline", filename="chart.png"
+                    )
                     inner.attach(image)
                     logger.info("告警走势图以 CID chart001 嵌入邮件")
 
@@ -3006,22 +3176,30 @@ class EmailNotifier(BaseNotifier):
                 if candlestick_png:
                     cs_img = MIMEImage(candlestick_png, "png")
                     cs_img.add_header("Content-ID", "<candlestick>")
-                    cs_img.add_header("Content-Disposition", "inline",
-                                      filename="candlestick.png")
+                    cs_img.add_header(
+                        "Content-Disposition", "inline", filename="candlestick.png"
+                    )
                     inner.attach(cs_img)
                     logger.info("周K蜡烛图以 CID candlestick 嵌入邮件")
 
                 # 添加投资组合走势图（CID: chart002=A股, chart003=非A股）
                 if portfolio_chart_dict:
-                    cid_map = {"a_share": "chart002", "hk": "chart003",
-                               "us": "chart004", "non_a_share": "chart005"}
+                    cid_map = {
+                        "a_share": "chart002",
+                        "hk": "chart003",
+                        "us": "chart004",
+                        "non_a_share": "chart005",
+                    }
                     for group_key, png_bytes in portfolio_chart_dict.items():
                         if png_bytes and group_key in cid_map:
                             cid = cid_map[group_key]
                             img = MIMEImage(png_bytes, "png")
                             img.add_header("Content-ID", f"<{cid}>")
-                            img.add_header("Content-Disposition", "inline",
-                                           filename=f"portfolio_{group_key}.png")
+                            img.add_header(
+                                "Content-Disposition",
+                                "inline",
+                                filename=f"portfolio_{group_key}.png",
+                            )
                             inner.attach(img)
                             logger.info(f"投资组合走势图以 CID {cid} 嵌入邮件")
             else:
@@ -3033,12 +3211,14 @@ class EmailNotifier(BaseNotifier):
             # 如有 PDF 附件，外层包 MIMEMultipart("mixed")
             if pdf_bytes:
                 from email.mime.application import MIMEApplication
+
                 msg = MIMEMultipart("mixed")
                 msg.policy = policy.default
                 msg.attach(inner)
                 pdf_part = MIMEApplication(pdf_bytes, "pdf")
-                pdf_part.add_header("Content-Disposition", "attachment",
-                                    filename="日报.pdf")
+                pdf_part.add_header(
+                    "Content-Disposition", "attachment", filename="日报.pdf"
+                )
                 msg.attach(pdf_part)
                 logger.info("日报 PDF 已附加到邮件")
             else:
@@ -3147,8 +3327,9 @@ class EmailNotifier(BaseNotifier):
             logger.error(f"发送部署通知邮件失败: {msg}")
             return False, msg
 
-    def send_optimizer_notification(self, report, group_name: str = "",
-                                     full_report: dict | None = None) -> None:
+    def send_optimizer_notification(
+        self, report, group_name: str = "", full_report: dict | None = None
+    ) -> None:
         """发送优化结果邮件。含完整回测报告（日回报测+敏感性+波动率）。"""
         body = build_optimizer_summary(report, group_name, full_report)
         subject = f"策略优化完成 · {group_name}" if group_name else "策略优化完成"
@@ -3200,7 +3381,10 @@ class EmailNotifier(BaseNotifier):
     # ── 日报 PDF 生成 ──
 
     def _chart_deviation_timeline(
-        self, signal_scan, backtest, base64=True,
+        self,
+        signal_scan,
+        backtest,
+        base64=True,
     ) -> str:
         """
         偏离度 30 日折线图: 取偏离绝对值最大的 5 只标的 + 触发信号的标的，
@@ -3209,16 +3393,17 @@ class EmailNotifier(BaseNotifier):
         Returns:
             base64 PNG 字符串 或 HTML <img> 标签
         """
-        import io, base64
+        import io
+        import base64
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         from ..utils.font_setup import setup_cjk_font
 
         setup_cjk_font()
 
-        snapshot = (getattr(signal_scan, "indicator_snapshot", {})
-                    if signal_scan else {})
+        snapshot = getattr(signal_scan, "indicator_snapshot", {}) if signal_scan else {}
         if not snapshot:
             return ""
 
@@ -3242,8 +3427,16 @@ class EmailNotifier(BaseNotifier):
         # 这里只能从最近 60 天的历史中提取 deviation
         # 简化: 用 snapshot 做单点标注
         fig, ax = plt.subplots(figsize=(6.5, 2.2), dpi=120)
-        colors = ["#2d8a56", "#c9a84c", "#2980b9", "#c0392b",
-                  "#8e44ad", "#e67e22", "#1abc9c", "#34495e"]
+        colors = [
+            "#2d8a56",
+            "#c9a84c",
+            "#2980b9",
+            "#c0392b",
+            "#8e44ad",
+            "#e67e22",
+            "#1abc9c",
+            "#34495e",
+        ]
 
         for i, code in enumerate(top5):
             vals = snapshot.get(code, {})
@@ -3253,13 +3446,27 @@ class EmailNotifier(BaseNotifier):
             label = f"{code[-4:]} {d:+.1f}%"
             x_pos = d + (0.5 if d >= 0 else -0.5)
             ha = "left" if d >= 0 else "right"
-            ax.text(x_pos, i, label, va="center", ha=ha, fontsize=7,
-                    color=color, fontweight="bold")
+            ax.text(
+                x_pos,
+                i,
+                label,
+                va="center",
+                ha=ha,
+                fontsize=7,
+                color=color,
+                fontweight="bold",
+            )
 
         # 买入阈值虚线
         ax.axvline(x=-0.5, color="#888", linestyle="--", linewidth=0.6, alpha=0.5)
-        ax.text(-0.5, len(top5)-0.3, " 买入阈值 -0.5%", fontsize=6,
-                color="#888", va="bottom")
+        ax.text(
+            -0.5,
+            len(top5) - 0.3,
+            " 买入阈值 -0.5%",
+            fontsize=6,
+            color="#888",
+            va="bottom",
+        )
 
         ax.set_yticks(range(len(top5)))
         ax.set_yticklabels([c[-4:] for c in top5], fontsize=7)
@@ -3272,8 +3479,7 @@ class EmailNotifier(BaseNotifier):
 
         plt.tight_layout(pad=0.5)
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=120, bbox_inches="tight",
-                    facecolor="white")
+        fig.savefig(buf, format="png", dpi=120, bbox_inches="tight", facecolor="white")
         plt.close(fig)
         buf.seek(0)
 
@@ -3283,19 +3489,35 @@ class EmailNotifier(BaseNotifier):
         return buf.read()
 
     def _generate_daily_pdf(
-        self, session, alert_stocks, signal_scan, backtest, stock_data,
+        self,
+        session,
+        alert_stocks,
+        signal_scan,
+        backtest,
+        stock_data,
     ) -> bytes | None:
         """生成日报 PDF（xelatex 编译 LaTeX 模板），返回 bytes"""
-        import tempfile, subprocess, os, io, re
+        import tempfile
+        import subprocess
+        import os
+        import re
 
         try:
             # 1. 图表 PNG
-            chart_buf = self._chart_deviation_timeline(signal_scan, backtest, base64=False)
+            chart_buf = self._chart_deviation_timeline(
+                signal_scan, backtest, base64=False
+            )
             chart_path = None
             if chart_buf and not isinstance(chart_buf, str):
                 fd, chart_path = tempfile.mkstemp(suffix=".png", prefix="chart_")
                 with open(fd, "wb") as f:
-                    data = chart_buf if isinstance(chart_buf, bytes) else chart_buf.getvalue() if hasattr(chart_buf, 'getvalue') else chart_buf
+                    data = (
+                        chart_buf
+                        if isinstance(chart_buf, bytes)
+                        else chart_buf.getvalue()
+                        if hasattr(chart_buf, "getvalue")
+                        else chart_buf
+                    )
                     f.write(data)
                 chart_section = f"\\includegraphics[width=\\textwidth]{{{chart_path}}}"
             else:
@@ -3307,7 +3529,14 @@ class EmailNotifier(BaseNotifier):
             # ── LaTeX 转义函数 (必须在使用前定义) ──
             def _esc(s):
                 """LaTeX 转义"""
-                return str(s).replace("&", "\\&").replace("%", "\\%").replace("#", "\\#").replace("$", "\\$").replace("_", "\\_")
+                return (
+                    str(s)
+                    .replace("&", "\\&")
+                    .replace("%", "\\%")
+                    .replace("#", "\\#")
+                    .replace("$", "\\$")
+                    .replace("_", "\\_")
+                )
 
             buy_count = len(sa)
             bt_a = backtest.get("a_share", {}) if backtest else {}
@@ -3335,24 +3564,24 @@ class EmailNotifier(BaseNotifier):
                 code = getattr(a, "stock_code", "?")
                 label = _esc(getattr(a, "rule_label", "?"))
                 cv = _esc(str(getattr(a, "current_value", "—")))
-                trigger_lines.append(
-                    f"\\textbf{{{_esc(code)}}} & {label} & {cv} \\\\"
-                )
+                trigger_lines.append(f"\\textbf{{{_esc(code)}}} & {label} & {cv} \\\\")
             trigger_section = (
-                "\\begin{tabular}{lll}\n" +
-                "\\textbf{标的} & \\textbf{信号规则} & \\textbf{当前值}\\\\\n" +
-                "\n".join(trigger_lines) +
-                "\n\\end{tabular}"
-                if trigger_lines else
-                "{\\color{gray}\\small 今日无触发信号}"
+                "\\begin{tabular}{lll}\n"
+                + "\\textbf{标的} & \\textbf{信号规则} & \\textbf{当前值}\\\\\n"
+                + "\n".join(trigger_lines)
+                + "\n\\end{tabular}"
+                if trigger_lines
+                else "{\\color{gray}\\small 今日无触发信号}"
             )
 
             # 4. 表: 合并 indicator_snapshot + fundamentals
-            snapshot = (getattr(signal_scan, "indicator_snapshot", {})
-                        if signal_scan else {})
-            consensus = (getattr(signal_scan, "consensus", None)
-                         if signal_scan else None)
-            cons_inds = consensus.consensus_indicators if consensus else ["deviation", "rsi"]
+            snapshot = (
+                getattr(signal_scan, "indicator_snapshot", {}) if signal_scan else {}
+            )
+            consensus = getattr(signal_scan, "consensus", None) if signal_scan else None
+            cons_inds = (
+                consensus.consensus_indicators if consensus else ["deviation", "rsi"]
+            )
             fundamentals = {}
             if stock_data is not None and hasattr(stock_data, "iterrows"):
                 for _, row in stock_data.iterrows():
@@ -3363,9 +3592,15 @@ class EmailNotifier(BaseNotifier):
                     pb = row.get("pb_ratio")
                     dy = row.get("dividend_yield")
                     fundamentals[code] = {
-                        "pe": f"{pe:.1f}" if pe is not None and not pd.isna(pe) else "—",
-                        "pb": f"{pb:.2f}" if pb is not None and not pd.isna(pb) else "—",
-                        "dy": f"{dy:.2f}" if dy is not None and not pd.isna(dy) else "—",
+                        "pe": f"{pe:.1f}"
+                        if pe is not None and not pd.isna(pe)
+                        else "—",
+                        "pb": f"{pb:.2f}"
+                        if pb is not None and not pd.isna(pb)
+                        else "—",
+                        "dy": f"{dy:.2f}"
+                        if dy is not None and not pd.isna(dy)
+                        else "—",
                     }
 
             header_cols = ["标的"] + cons_inds + ["息\\%", "PE", "PB", "信号"]
@@ -3375,8 +3610,12 @@ class EmailNotifier(BaseNotifier):
             alert_codes = set(getattr(a, "stock_code", "") for a in sa)
 
             a_codes = sorted(
-                [c for c in snapshot if (c.isdigit() and len(c) == 6) or c.replace(".", "").isdigit()],
-                key=lambda c: (abs(snapshot[c].get("deviation", 0) or 0)),
+                [
+                    c
+                    for c in snapshot
+                    if (c.isdigit() and len(c) == 6) or c.replace(".", "").isdigit()
+                ],
+                key=lambda c: abs(snapshot[c].get("deviation", 0) or 0),
                 reverse=True,
             )
             for code in a_codes:
@@ -3388,7 +3627,7 @@ class EmailNotifier(BaseNotifier):
                     if v is None:
                         cells.append("—")
                     elif ind == "deviation":
-                        cells.append(f"{v*100:+.1f}\\%")
+                        cells.append(f"{v * 100:+.1f}\\%")
                     else:
                         cells.append(f"{v:.2f}")
                 fund = fundamentals.get(code, {})
@@ -3401,13 +3640,11 @@ class EmailNotifier(BaseNotifier):
 
             nona_codes = sorted(
                 [c for c in snapshot if c not in a_codes],
-                key=lambda c: (abs(snapshot[c].get("deviation", 0) or 0)),
+                key=lambda c: abs(snapshot[c].get("deviation", 0) or 0),
                 reverse=True,
             )
             if nona_codes:
-                table_rows += (
-                    f"\\multicolumn{{{len(header_cols)}}}{{l}}{{\\color{{navy}}\\textbf{{境外 · {len(nona_codes)} 只}}}}\\\\\n"
-                )
+                table_rows += f"\\multicolumn{{{len(header_cols)}}}{{l}}{{\\color{{navy}}\\textbf{{境外 · {len(nona_codes)} 只}}}}\\\\\n"
             for code in nona_codes:
                 vals = snapshot.get(code, {})
                 sig = "●" if code in alert_codes else ""
@@ -3417,7 +3654,7 @@ class EmailNotifier(BaseNotifier):
                     if v is None:
                         cells.append("—")
                     elif ind == "deviation":
-                        cells.append(f"{v*100:+.1f}\\%")
+                        cells.append(f"{v * 100:+.1f}\\%")
                     else:
                         cells.append(f"{v:.2f}")
                 fund = fundamentals.get(code, {})
@@ -3432,11 +3669,8 @@ class EmailNotifier(BaseNotifier):
                 "\\small\n"
                 "\\rowcolors{2}{white}{stripe}\n"
                 f"\\begin{{tabular}}{{{col_fmt}}}\n"
-                "\\toprule\n"
-                + " & ".join(header_cols) + " \\\\\n"
-                "\\midrule\n"
-                + table_rows +
-                "\\bottomrule\n"
+                "\\toprule\n" + " & ".join(header_cols) + " \\\\\n"
+                "\\midrule\n" + table_rows + "\\bottomrule\n"
                 "\\end{tabular}"
             )
 
@@ -3480,7 +3714,7 @@ class EmailNotifier(BaseNotifier):
                             latex_lines.append("\\begin{itemize}")
                             in_list = True
                         item = stripped[2:]
-                        item = re.sub(r'\*\*(.+?)\*\*', r'\\textbf{\1}', item)
+                        item = re.sub(r"\*\*(.+?)\*\*", r"\\textbf{\1}", item)
                         latex_lines.append(f"  \\item {item}")
                     elif stripped.startswith("---"):
                         latex_lines.append("\\vspace{4pt}\\hrule\\vspace{4pt}")
@@ -3490,7 +3724,7 @@ class EmailNotifier(BaseNotifier):
                     elif stripped.startswith("|"):
                         if not in_table:
                             cols = stripped.count("|") - 1
-                            latex_lines.append(f"\\begin{{tabular}}{{{'l'*cols}}}")
+                            latex_lines.append(f"\\begin{{tabular}}{{{'l' * cols}}}")
                             latex_lines.append("\\toprule")
                             in_table = True
                         else:
@@ -3501,8 +3735,8 @@ class EmailNotifier(BaseNotifier):
                         latex_lines.append("\\end{tabular}")
                         in_table = False
                     elif stripped:
-                        item = re.sub(r'\*\*(.+?)\*\*', r'\\textbf{\1}', stripped)
-                        item = re.sub(r'\$(.+?)\$', r'$\1$', item)
+                        item = re.sub(r"\*\*(.+?)\*\*", r"\\textbf{\1}", stripped)
+                        item = re.sub(r"\$(.+?)\$", r"$\1$", item)
                         latex_lines.append(f"{item}\n")
                 if in_list:
                     latex_lines.append("\\end{itemize}")
@@ -3515,7 +3749,9 @@ class EmailNotifier(BaseNotifier):
             template = tex_path.read_text(encoding="utf-8").replace("\r\n", "\n")
 
             info = self._get_server_info()
-            html = template.replace("\\VAR{report_date}", datetime.now().strftime("%Y-%m-%d %A"))
+            html = template.replace(
+                "\\VAR{report_date}", datetime.now().strftime("%Y-%m-%d %A")
+            )
             html = html.replace("\\VAR{server_hostname}", info.get("hostname", ""))
             html = html.replace("\\VAR{kpi_buy}", kpi_buy)
             html = html.replace("\\VAR{kpi_a}", kpi_a)
@@ -3538,9 +3774,16 @@ class EmailNotifier(BaseNotifier):
 
                 for _ in range(2):  # 两次编译（交叉引用）
                     result = subprocess.run(
-                        ["xelatex", "-interaction=nonstopmode", "-output-directory",
-                         tmpdir, str(tex_file)],
-                        capture_output=True, text=True, timeout=60,
+                        [
+                            "xelatex",
+                            "-interaction=nonstopmode",
+                            "-output-directory",
+                            tmpdir,
+                            str(tex_file),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
                     )
                     if result.returncode != 0:
                         log_file = Path(tmpdir) / "report.log"
@@ -3548,11 +3791,13 @@ class EmailNotifier(BaseNotifier):
                         if log_file.exists():
                             lines = log_file.read_text(errors="replace").split("\n")
                             # 找第一个 "!" 错误行
-                            for i, l in enumerate(lines):
-                                if l.startswith("!"):
-                                    log_tail = "\\n".join(lines[max(0,i-1):i+5])
+                            for i, line_text in enumerate(lines):
+                                if line_text.startswith("!"):
+                                    log_tail = "\\n".join(lines[max(0, i - 1) : i + 5])
                                     break
-                        logger.warning("xelatex 编译问题: %s", log_tail or result.stderr[-200:])
+                        logger.warning(
+                            "xelatex 编译问题: %s", log_tail or result.stderr[-200:]
+                        )
 
                 pdf_file = Path(tmpdir) / "report.pdf"
                 if pdf_file.exists():
@@ -3562,7 +3807,10 @@ class EmailNotifier(BaseNotifier):
                 else:
                     log_file = Path(tmpdir) / "report.log"
                     if log_file.exists():
-                        logger.error("xelatex 日志: %s", log_file.read_text(errors="replace")[-500:])
+                        logger.error(
+                            "xelatex 日志: %s",
+                            log_file.read_text(errors="replace")[-500:],
+                        )
                     logger.error("xelatex 未产出 PDF")
                     return None
 

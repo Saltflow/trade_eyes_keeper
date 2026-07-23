@@ -12,6 +12,7 @@ from src.analysis.rule_engine import ExpressionEngine, Rule, RuleEngine
 # ExpressionEngine 测试
 # ════════════════════════════════════════════════════════
 
+
 class TestExpressionEngine:
     """表达式求值器测试"""
 
@@ -72,6 +73,7 @@ class TestExpressionEngine:
 # ════════════════════════════════════════════════════════
 # Rule 测试
 # ════════════════════════════════════════════════════════
+
 
 class TestRule:
     """规则数据类测试"""
@@ -134,6 +136,7 @@ class TestRule:
 # RuleEngine 测试
 # ════════════════════════════════════════════════════════
 
+
 class TestRuleEngine:
     """规则引擎核心测试"""
 
@@ -162,10 +165,16 @@ class TestRuleEngine:
     def test_single_rule_condition_met(self):
         """条件满足时触发"""
         rules = [
-            Rule(id="buy_1", label="buy跌破-5%", type="buy", priority=1, condition="deviation <= -0.05 and prev_deviation is not None "
-                 "and prev_deviation > -0.05",
-                 action_amount="min(5000, cash)",
-                 budget_pool="buy")
+            Rule(
+                id="buy_1",
+                label="buy跌破-5%",
+                type="buy",
+                priority=1,
+                condition="deviation <= -0.05 and prev_deviation is not None "
+                "and prev_deviation > -0.05",
+                action_amount="min(5000, cash)",
+                budget_pool="buy",
+            )
         ]
         engine = RuleEngine(rules)
         ctx = self._make_ctx(deviation=-0.06, prev_deviation=-0.02)
@@ -176,9 +185,15 @@ class TestRuleEngine:
     def test_single_rule_condition_not_met(self):
         """条件不满足时不触发"""
         rules = [
-            Rule(id="buy_1", label="", type="buy", priority=1, condition="deviation <= -0.05",
-                 action_amount="min(5000, cash)",
-                 budget_pool="buy")
+            Rule(
+                id="buy_1",
+                label="",
+                type="buy",
+                priority=1,
+                condition="deviation <= -0.05",
+                action_amount="min(5000, cash)",
+                budget_pool="buy",
+            )
         ]
         engine = RuleEngine(rules)
         ctx = self._make_ctx(deviation=-0.02)  # 未跌破-5%
@@ -190,9 +205,15 @@ class TestRuleEngine:
     def test_rule_locks_after_trigger(self):
         """规则触发后，后续同条件不再触发"""
         rules = [
-            Rule(id="buy_1", label="", type="buy", priority=1, condition="deviation <= -0.05",
-                 action_amount="min(5000, cash)",
-                 budget_pool="buy")
+            Rule(
+                id="buy_1",
+                label="",
+                type="buy",
+                priority=1,
+                condition="deviation <= -0.05",
+                action_amount="min(5000, cash)",
+                budget_pool="buy",
+            )
         ]
         engine = RuleEngine(rules)
         ctx = self._make_ctx(deviation=-0.06, prev_deviation=-0.02)
@@ -210,10 +231,16 @@ class TestRuleEngine:
     def test_rule_reset_re_enables(self):
         """满足重置条件后，规则重新可用"""
         rules = [
-            Rule(id="buy_1", label="", type="buy", priority=1, condition="deviation <= -0.05",
-                 action_amount="min(5000, cash)",
-                 budget_pool="buy",
-                 reset_when="deviation > 0")
+            Rule(
+                id="buy_1",
+                label="",
+                type="buy",
+                priority=1,
+                condition="deviation <= -0.05",
+                action_amount="min(5000, cash)",
+                budget_pool="buy",
+                reset_when="deviation > 0",
+            )
         ]
         engine = RuleEngine(rules)
 
@@ -237,12 +264,24 @@ class TestRuleEngine:
     def test_priority_ordering(self):
         """高优先级规则先执行"""
         rules = [
-            Rule(id="low", label="", type="buy", priority=10, condition="deviation <= -0.05",
-                 action_amount="100",
-                 budget_pool="buy"),
-            Rule(id="high", label="", type="buy", priority=1, condition="deviation <= -0.05",
-                 action_amount="500",
-                 budget_pool="buy"),
+            Rule(
+                id="low",
+                label="",
+                type="buy",
+                priority=10,
+                condition="deviation <= -0.05",
+                action_amount="100",
+                budget_pool="buy",
+            ),
+            Rule(
+                id="high",
+                label="",
+                type="buy",
+                priority=1,
+                condition="deviation <= -0.05",
+                action_amount="500",
+                budget_pool="buy",
+            ),
         ]
         engine = RuleEngine(rules)
         ctx = self._make_ctx(deviation=-0.06, prev_deviation=-0.02)
@@ -256,10 +295,16 @@ class TestRuleEngine:
     def test_buy_only_no_sell(self):
         """只有买入规则时绝不卖出"""
         rules = [
-            Rule(id="buy_1", label="", type="buy", priority=1, condition="deviation <= -0.05 and prev_deviation is not None "
-                 "and prev_deviation > -0.05",
-                 action_amount="min(5000, cash)",
-                 budget_pool="buy")
+            Rule(
+                id="buy_1",
+                label="",
+                type="buy",
+                priority=1,
+                condition="deviation <= -0.05 and prev_deviation is not None "
+                "and prev_deviation > -0.05",
+                action_amount="min(5000, cash)",
+                budget_pool="buy",
+            )
         ]
         engine = RuleEngine(rules)
 
@@ -270,8 +315,9 @@ class TestRuleEngine:
         assert results[0][0].type == "buy"
 
         # 卖出条件满足但没有卖出规则 → 不触发
-        ctx_sell = self._make_ctx(deviation=0.06, prev_deviation=0.02,
-                                  shares=100, position_value=1000)
+        ctx_sell = self._make_ctx(
+            deviation=0.06, prev_deviation=0.02, shares=100, position_value=1000
+        )
         results2 = engine.evaluate_day(ctx_sell)
         assert len(results2) == 0
 
@@ -280,12 +326,24 @@ class TestRuleEngine:
     def test_multiple_rules_same_day(self):
         """同一天多条规则命中，全部返回"""
         rules = [
-            Rule(id="buy_m5", label="", type="buy", priority=1, condition="deviation <= -0.05",
-                 action_amount="min(5000, cash)",
-                 budget_pool="buy"),
-            Rule(id="buy_m10", label="", type="buy", priority=2, condition="deviation <= -0.10",
-                 action_amount="min(5000, cash)",
-                 budget_pool="buy"),
+            Rule(
+                id="buy_m5",
+                label="",
+                type="buy",
+                priority=1,
+                condition="deviation <= -0.05",
+                action_amount="min(5000, cash)",
+                budget_pool="buy",
+            ),
+            Rule(
+                id="buy_m10",
+                label="",
+                type="buy",
+                priority=2,
+                condition="deviation <= -0.10",
+                action_amount="min(5000, cash)",
+                budget_pool="buy",
+            ),
         ]
         engine = RuleEngine(rules)
         # 跌到-12%，两条都触发
@@ -300,11 +358,13 @@ class TestRuleEngine:
 # 默认规则集测试
 # ════════════════════════════════════════════════════════
 
+
 class TestDefaultRules:
     """默认规则（与当前硬编码行为一致）"""
 
     def test_default_rules_exist(self):
         from src.analysis.rule_engine import get_default_rules
+
         rules = get_default_rules()
         assert len(rules) == 5  # 2 buy + 3 sell
         types = {r.type for r in rules}
@@ -314,15 +374,23 @@ class TestDefaultRules:
     def test_default_buy_minus5_trigger(self):
         """跌破-5%时触发默认买入"""
         from src.analysis.rule_engine import get_default_rules
+
         rules = get_default_rules()
         engine = RuleEngine(rules)
 
         ctx = {
-            "close": 9.5, "ma60": 10.0, "deviation": -0.05,
-            "prev_deviation": -0.02, "cash": 10000, "shares": 0,
-            "position_value": 0, "monthly_buy_used": 0,
-            "monthly_sell_used": 0, "monthly_buy_limit": 15000,
-            "monthly_sell_limit": 15000, "lot_size": 100,
+            "close": 9.5,
+            "ma60": 10.0,
+            "deviation": -0.05,
+            "prev_deviation": -0.02,
+            "cash": 10000,
+            "shares": 0,
+            "position_value": 0,
+            "monthly_buy_used": 0,
+            "monthly_sell_used": 0,
+            "monthly_buy_limit": 15000,
+            "monthly_sell_limit": 15000,
+            "lot_size": 100,
             "commission_rate": 0.002,
         }
         results = engine.evaluate_day(ctx)
@@ -332,15 +400,23 @@ class TestDefaultRules:
     def test_default_sell_plus5_trigger(self):
         """突破+5%时触发默认卖出（有持仓）"""
         from src.analysis.rule_engine import get_default_rules
+
         rules = get_default_rules()
         engine = RuleEngine(rules)
 
         ctx = {
-            "close": 10.5, "ma60": 10.0, "deviation": 0.05,
-            "prev_deviation": 0.02, "cash": 5000, "shares": 200,
-            "position_value": 2100, "monthly_buy_used": 0,
-            "monthly_sell_used": 0, "monthly_buy_limit": 15000,
-            "monthly_sell_limit": 15000, "lot_size": 100,
+            "close": 10.5,
+            "ma60": 10.0,
+            "deviation": 0.05,
+            "prev_deviation": 0.02,
+            "cash": 5000,
+            "shares": 200,
+            "position_value": 2100,
+            "monthly_buy_used": 0,
+            "monthly_sell_used": 0,
+            "monthly_buy_limit": 15000,
+            "monthly_sell_limit": 15000,
+            "lot_size": 100,
             "commission_rate": 0.002,
         }
         results = engine.evaluate_day(ctx)

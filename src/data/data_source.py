@@ -100,9 +100,7 @@ class DataSource:
                     )
                     # 不 return，继续执行下面的增量拉取逻辑
                 else:
-                    logger.info(
-                        f"{stock_code} 缓存范围覆盖但触发 bypass，强制刷新"
-                    )
+                    logger.info(f"{stock_code} 缓存范围覆盖但触发 bypass，强制刷新")
 
         # 2. 确定需要拉取的天数
         if (
@@ -127,9 +125,7 @@ class DataSource:
         if new_data is None or new_data.empty:
             if cached_df is not None and not cached_df.empty:
                 logger.warning(f"{stock_code} 拉取新数据失败, 返回缓存")
-                return cached_df[
-                    cached_df["date"] >= requested_start_ts
-                ]
+                return cached_df[cached_df["date"] >= requested_start_ts]
             return pd.DataFrame()
 
         # 4. 检测前复权修正（缓存 vs 新数据的重叠日期收盘价比对）
@@ -140,15 +136,11 @@ class DataSource:
                 if new_data is None or new_data.empty:
                     result = cached_df if cached_df is not None else pd.DataFrame()
                     if not result.empty:
-                        result = result[
-                            result["date"] >= requested_start_ts
-                        ]
+                        result = result[result["date"] >= requested_start_ts]
                     return result
                 # 全量覆盖写缓存（不复用旧缓存）
                 self._write_cache(stock_code, new_data)
-                return new_data[
-                    new_data["date"] >= requested_start_ts
-                ]
+                return new_data[new_data["date"] >= requested_start_ts]
 
         # 5. 合并缓存 + 新数据
         if cached_df is not None and not cached_df.empty:
@@ -164,9 +156,7 @@ class DataSource:
 
         # 6. 写缓存
         self._write_cache(stock_code, merged)
-        return merged[
-            merged["date"] >= requested_start_ts
-        ]
+        return merged[merged["date"] >= requested_start_ts]
 
     def fetch_raw_data(self, stock_code: str, days: int = 120) -> pd.DataFrame:
         """

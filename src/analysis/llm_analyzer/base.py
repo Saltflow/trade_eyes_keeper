@@ -6,13 +6,10 @@ LLM分析模块基础类
 import logging
 import json
 import hashlib
-import time
 from datetime import datetime
 import sys
 import io
-import re
 import requests
-from typing import Optional, Dict, Any, List
 from ...data.cache_manager import CacheManager
 
 # 猴子补丁：确保JSON序列化使用UTF-8编码，不转义非ASCII字符
@@ -243,7 +240,6 @@ class BaseLLMClient:
         Returns:
             str: 数据哈希值
         """
-        import hashlib
         import json
 
         if not data_row:

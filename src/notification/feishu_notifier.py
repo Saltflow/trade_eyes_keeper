@@ -6,7 +6,6 @@ import logging
 import os
 import unicodedata
 from datetime import datetime
-from pathlib import Path
 
 import pandas as pd
 import requests
@@ -80,6 +79,7 @@ class FeishuNotifier(BaseNotifier):
         # 搜参策略 + 今日信号 + 定增摘要（与日报对齐，告警模式也需展示）
         try:
             from ..notification.email_notifier import build_strategy_text_summary
+
             strat_body = build_strategy_text_summary(session, markdown=True)
             if strat_body:
                 self._send(f"{title} · 策略与信号", strat_body)
@@ -100,6 +100,7 @@ class FeishuNotifier(BaseNotifier):
         # 搜参策略 + 今日信号 + 定增摘要（与邮件对齐）
         try:
             from ..notification.email_notifier import build_strategy_text_summary
+
             strat_body = build_strategy_text_summary(session, markdown=True)
             if strat_body:
                 self._send(f"{title} · 策略与信号", strat_body)
@@ -135,29 +136,39 @@ class FeishuNotifier(BaseNotifier):
             extra.append(table)
         if signal_scan and signal_scan.alerts:
             from ..notification.email_notifier import (
-                _build_signal_label_map, _readable_signal,
+                _build_signal_label_map,
+                _readable_signal,
             )
+
             map_a = _build_signal_label_map("a_share")
-            map_hk = _build_signal_label_map("hk") or _build_signal_label_map("non_a_share")
-            map_us = _build_signal_label_map("us") or _build_signal_label_map("non_a_share")
+            map_hk = _build_signal_label_map("hk") or _build_signal_label_map(
+                "non_a_share"
+            )
+            map_us = _build_signal_label_map("us") or _build_signal_label_map(
+                "non_a_share"
+            )
             alert_lines = []
             for a in signal_scan.alerts[:8]:
                 code = getattr(a, "stock_code", "?")
                 raw = getattr(a, "rule_label", "?")
                 readable = _readable_signal(code, raw, map_a, map_hk, map_us)
                 alert_lines.append(f"  {code} {readable}")
-            extra.append({
-                "tag": "markdown",
-                "content": f"**策略信号** ({len(signal_scan.alerts)} 条)\n"
-                           + "\n".join(alert_lines),
-            })
+            extra.append(
+                {
+                    "tag": "markdown",
+                    "content": f"**策略信号** ({len(signal_scan.alerts)} 条)\n"
+                    + "\n".join(alert_lines),
+                }
+            )
 
         # ── 参考持仓（无论有无信号都展示）──
         ref_md = _build_ref_portfolio_markdown(session)
         if ref_md:
             extra.append({"tag": "markdown", "content": ref_md})
 
-        card = _build_interactive_card(title, summary, extra_elements=extra if extra else None)
+        card = _build_interactive_card(
+            title, summary, extra_elements=extra if extra else None
+        )
         payload = {"msg_type": "interactive", "card": card}
         ok, msg = self._send_card(payload)
         if not ok:
@@ -202,20 +213,23 @@ class FeishuNotifier(BaseNotifier):
         body = f"**状态**: {status}\n**版本**: {version}\n**概要**: {summary}"
         return self._send(title, body)
 
-    def send_optimizer_notification(self, report, group_name: str = "",
-                                     full_report: dict | None = None) -> None:
+    def send_optimizer_notification(
+        self, report, group_name: str = "", full_report: dict | None = None
+    ) -> None:
         from ..notification.email_notifier import build_optimizer_summary
 
         title = f"策略优化完成 · {group_name}" if group_name else "策略优化完成"
-        body = build_optimizer_summary(report, group_name, full_report,
-                                         include_charts=False)
+        body = build_optimizer_summary(
+            report, group_name, full_report, include_charts=False
+        )
         self._send(title, body)
-
 
     # ── 辅助 ──────────────────────────────────
 
     @staticmethod
-    def _build_report_sections(stock_data, alerts=None, alert_only: bool = False) -> list:
+    def _build_report_sections(
+        stock_data, alerts=None, alert_only: bool = False
+    ) -> list:
         """构建飞书日报分段，按价格/基本面/技术指标拆成多张卡片。
 
         每段返回 (label, markdown_body, extra_elements)，
@@ -235,8 +249,10 @@ class FeishuNotifier(BaseNotifier):
             empty_text = "本次没有可展示的活跃标的。"
 
         summary = [f"{title} · {today.strftime('%Y-%m-%d %H:%M')}", ""]
-        summary.append(f"活跃标的 **{len(entries)}**"
-                       + (f" · 告警 **{len(alert_codes)}**" if alert_codes else ""))
+        summary.append(
+            f"活跃标的 **{len(entries)}**"
+            + (f" · 告警 **{len(alert_codes)}**" if alert_codes else "")
+        )
 
         if not entries:
             summary.extend(["", empty_text])
@@ -249,8 +265,7 @@ class FeishuNotifier(BaseNotifier):
             + _color_md(worst["dev"], False)
         )
         summary.append(
-            f"最大涨 `{best['code']}` {best['name']} "
-            + _color_md(best["dev"], True)
+            f"最大涨 `{best['code']}` {best['name']} " + _color_md(best["dev"], True)
         )
 
         # ── 价格段：原生表格（偏离红绿着色）──
@@ -263,14 +278,18 @@ class FeishuNotifier(BaseNotifier):
         ]
         price_rows = [
             {
-                "code": e["code"], "name": e["name"], "close": e["close"],
+                "code": e["code"],
+                "name": e["name"],
+                "close": e["close"],
                 "anchor": e["anchor"],
                 "dev": _color_md(e["dev"], (e.get("dev_sort") or 0) >= 0),
             }
             for e in entries
         ]
-        price_extra = [{"tag": "markdown", "content": "**价格 / 锚点偏离**"},
-                       _build_native_table(price_cols, price_rows)]
+        price_extra = [
+            {"tag": "markdown", "content": "**价格 / 锚点偏离**"},
+            _build_native_table(price_cols, price_rows),
+        ]
         sections = [("价格", "\n".join(summary), price_extra)]
 
         # ── 基本面段 ──
@@ -282,8 +301,13 @@ class FeishuNotifier(BaseNotifier):
             ("roe", "ROE%", "right", "text"),
         ]
         fund_rows = [
-            {"code": e["code"], "div_y": e["div_y"], "pe": e["pe"],
-             "pb": e["pb"], "roe": e["roe"]}
+            {
+                "code": e["code"],
+                "div_y": e["div_y"],
+                "pe": e["pe"],
+                "pb": e["pb"],
+                "roe": e["roe"],
+            }
             for e in entries
         ]
         fund_extra = [_build_native_table(fund_cols, fund_rows)]
@@ -300,8 +324,14 @@ class FeishuNotifier(BaseNotifier):
                 ("boll", "布林%", "right", "text"),
             ]
             tech_rows = [
-                {"code": e["code"], "rsi": e["rsi"], "macd_h": e["macd_h"],
-                 "vol_r": e["vol_r"], "adx": e["adx"], "boll": e["boll"]}
+                {
+                    "code": e["code"],
+                    "rsi": e["rsi"],
+                    "macd_h": e["macd_h"],
+                    "vol_r": e["vol_r"],
+                    "adx": e["adx"],
+                    "boll": e["boll"],
+                }
                 for e in entries
             ]
             tech_extra = [_build_native_table(tech_cols, tech_rows)]
@@ -362,23 +392,25 @@ def _collect_report_entries(stock_data, today) -> list[dict]:
 
         code = str(row.get("stock_code", ""))
         name = _short_text(str(row.get("stock_name", code)), 10)
-        entries.append({
-            "code": code,
-            "name": name,
-            "close": _fmt_num(close_price),
-            "anchor": anchor_name,
-            "dev": f"{dev_pct:+.2f}%" if dev_pct is not None else "-",
-            "dev_sort": dev_pct if dev_pct is not None else float("inf"),
-            "div_y": _fmt_num(row.get("dividend_yield")),
-            "pe": _fmt_num(row.get("pe_ratio")),
-            "pb": _fmt_num(row.get("pb_ratio")),
-            "roe": _fmt_num(row.get("roe")),
-            "rsi": _fmt_num(row.get("rsi"), ".1f"),
-            "macd_h": _fmt_num(row.get("macd_hist"), ".3f"),
-            "vol_r": _fmt_num(row.get("vol_ratio")),
-            "adx": _fmt_num(row.get("adx"), ".1f"),
-            "boll": _fmt_num(row.get("boll_pct_b")),
-        })
+        entries.append(
+            {
+                "code": code,
+                "name": name,
+                "close": _fmt_num(close_price),
+                "anchor": anchor_name,
+                "dev": f"{dev_pct:+.2f}%" if dev_pct is not None else "-",
+                "dev_sort": dev_pct if dev_pct is not None else float("inf"),
+                "div_y": _fmt_num(row.get("dividend_yield")),
+                "pe": _fmt_num(row.get("pe_ratio")),
+                "pb": _fmt_num(row.get("pb_ratio")),
+                "roe": _fmt_num(row.get("roe")),
+                "rsi": _fmt_num(row.get("rsi"), ".1f"),
+                "macd_h": _fmt_num(row.get("macd_hist"), ".3f"),
+                "vol_r": _fmt_num(row.get("vol_ratio")),
+                "adx": _fmt_num(row.get("adx"), ".1f"),
+                "boll": _fmt_num(row.get("boll_pct_b")),
+            }
+        )
 
     entries.sort(key=lambda x: x["dev_sort"])
     return entries
@@ -431,8 +463,7 @@ def _calc_column_widths(headers: list[str], rows: list[list[str]]) -> list[int]:
 
 def _format_table_row(values: list[str], widths: list[int]) -> str:
     padded = [
-        _pad_display_width(value, widths[idx])
-        for idx, value in enumerate(values)
+        _pad_display_width(value, widths[idx]) for idx, value in enumerate(values)
     ]
     return "  ".join(padded)
 
@@ -499,7 +530,8 @@ def _build_ref_portfolio_markdown(session) -> str:
         label = s.get("_label", gk)
         holdings_str = (
             ", ".join(f"{h['code']} {h['shares']}股" for h in s["holdings"])
-            if s["holdings"] else "空仓"
+            if s["holdings"]
+            else "空仓"
         )
         lines.append(
             f"{label}: 净值 {s['nav']:,.0f} | "
@@ -557,7 +589,9 @@ def _build_brief_strategy_table(sug: dict) -> dict | None:
     return _build_native_table(columns, rows)
 
 
-def _build_interactive_card(title: str, body: str, extra_elements: list[dict] | None = None) -> dict:
+def _build_interactive_card(
+    title: str, body: str, extra_elements: list[dict] | None = None
+) -> dict:
     """构建飞书交互卡片 JSON（schema 2.0，支持原生 table 组件）。"""
     elements = []
     if body:

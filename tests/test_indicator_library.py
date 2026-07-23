@@ -4,10 +4,19 @@ import numpy as np
 import pandas as pd
 import pytest
 from src.analysis.indicator_library import (
-    add_rsi, add_macd, add_atr, add_bollinger,
-    add_adx, add_volume_ratio, compute_all,
-    COL_RSI, COL_MACD, COL_ADX, COL_VOL_RATIO,
-    COL_BOLL_PCT_B, COL_ATR,
+    add_rsi,
+    add_macd,
+    add_atr,
+    add_bollinger,
+    add_adx,
+    add_volume_ratio,
+    compute_all,
+    COL_RSI,
+    COL_MACD,
+    COL_ADX,
+    COL_VOL_RATIO,
+    COL_BOLL_PCT_B,
+    COL_ATR,
 )
 
 
@@ -18,14 +27,16 @@ def sample_df():
     n = 200
     prices = 50 + np.cumsum(np.random.randn(n) * 0.5)
     prices = np.maximum(prices, 1)
-    df = pd.DataFrame({
-        "date": pd.date_range("2024-01-01", periods=n, freq="B"),
-        "open": prices + np.random.randn(n) * 0.2,
-        "high": prices + np.abs(np.random.randn(n)) * 1.5,
-        "low": prices - np.abs(np.random.randn(n)) * 1.5,
-        "close": prices,
-        "volume": np.random.randint(1000, 50000, n),
-    })
+    df = pd.DataFrame(
+        {
+            "date": pd.date_range("2024-01-01", periods=n, freq="B"),
+            "open": prices + np.random.randn(n) * 0.2,
+            "high": prices + np.abs(np.random.randn(n)) * 1.5,
+            "low": prices - np.abs(np.random.randn(n)) * 1.5,
+            "close": prices,
+            "volume": np.random.randint(1000, 50000, n),
+        }
+    )
     df["high"] = df[["high", "close", "open"]].max(axis=1)
     df["low"] = df[["low", "close", "open"]].min(axis=1)
     return df
@@ -41,9 +52,11 @@ class TestRSI:
 
     def test_rsi_oversold_after_continuous_losses(self):
         n = 50
-        df = pd.DataFrame({
-            "close": np.linspace(50, 30, n)  # steady decline
-        })
+        df = pd.DataFrame(
+            {
+                "close": np.linspace(50, 30, n)  # steady decline
+            }
+        )
         df = add_rsi(df, period=14)
         last_rsi = df[COL_RSI].iloc[-1]
         assert last_rsi < 30  # should be oversold
@@ -85,11 +98,13 @@ class TestATR:
 
     def test_atr_zero_for_flat_market(self):
         n = 30
-        df = pd.DataFrame({
-            "high": [10.0] * n,
-            "low": [10.0] * n,
-            "close": [10.0] * n,
-        })
+        df = pd.DataFrame(
+            {
+                "high": [10.0] * n,
+                "low": [10.0] * n,
+                "close": [10.0] * n,
+            }
+        )
         df = add_atr(df, period=14)
         # After the first flat period, ATR should be near 0
         last_atr = df[COL_ATR].iloc[-1]
@@ -143,7 +158,5 @@ class TestComputeAll:
             assert col in df.columns, f"Missing {col}"
 
     def test_compute_all_multi_stock(self, sample_df):
-        result = compute_all(
-            {"a": sample_df.copy(), "b": sample_df.copy()}
-        )
+        result = compute_all({"a": sample_df.copy(), "b": sample_df.copy()})
         assert len(result) == 2

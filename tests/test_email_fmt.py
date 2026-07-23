@@ -1,5 +1,5 @@
 """测试 _fmt() 函数: None/pd.NA → —，数值 → 格式化，零值 ≠ 缺失。"""
-import pytest
+
 import pandas as pd
 import sys
 from pathlib import Path
@@ -9,7 +9,6 @@ from notification.email_notifier import _fmt
 
 
 class TestFmtNoneSafety:
-
     def test_none_returns_dash(self):
         assert _fmt(None) == "—"
 
@@ -51,7 +50,9 @@ class TestNoOrZeroInRenderPaths:
 
     def test_no_vals_get_or_zero_in_table_cells(self):
         """HTML 和 LaTeX 表格单元格不再使用 vals.get(ind, 0) or 0"""
-        path = Path(__file__).parent.parent / "src" / "notification" / "email_notifier.py"
+        path = (
+            Path(__file__).parent.parent / "src" / "notification" / "email_notifier.py"
+        )
         src = path.read_text(encoding="utf-8")
         # 关键模式: 在渲染路径中的 or 0
         count = src.count("vals.get(ind, 0) or 0")
@@ -62,9 +63,9 @@ class TestNoOrZeroInRenderPaths:
 
     def test_no_bt_get_or_zero_in_kpi(self):
         """KPI 值不再使用 bt.get('key', 0) or 0"""
-        path = Path(__file__).parent.parent / "src" / "notification" / "email_notifier.py"
+        path = (
+            Path(__file__).parent.parent / "src" / "notification" / "email_notifier.py"
+        )
         src = path.read_text(encoding="utf-8")
         count = src.count('get("total_return", 0) or 0')
-        assert count == 0, (
-            f"still has {count} bt.get(total_return, 0) or 0 patterns"
-        )
+        assert count == 0, f"still has {count} bt.get(total_return, 0) or 0 patterns"

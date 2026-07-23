@@ -21,7 +21,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from pydantic import BaseModel
 
@@ -276,11 +275,7 @@ def get_default_rules() -> list[Rule]:
     买入重置: deviation 从 ≤0 穿越到 >0
     卖出重置: deviation 从 <0 穿越到 >0 或从 ≥0 穿越到 <0
     """
-    buy_reset = (
-        "deviation > 0 "
-        "and prev_deviation is not None "
-        "and prev_deviation <= 0"
-    )
+    buy_reset = "deviation > 0 and prev_deviation is not None and prev_deviation <= 0"
     sell_reset = (
         "(deviation < 0 "
         " and prev_deviation is not None "

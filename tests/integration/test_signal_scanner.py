@@ -7,7 +7,6 @@
 
 import pytest
 import pandas as pd
-from datetime import datetime
 
 
 @pytest.mark.integration
@@ -17,15 +16,18 @@ class TestSignalScannerWithIndicators:
     def _make_df_with_indicators(self, close_prices, extra_cols=None):
         """构造带基础列 + 可选指标列的 DataFrame"""
         n = len(close_prices)
-        df = pd.DataFrame({
-            "date": pd.date_range("2026-01-01", periods=n, freq="D"),
-            "open": [p * 0.99 for p in close_prices],
-            "high": [p * 1.02 for p in close_prices],
-            "low": [p * 0.98 for p in close_prices],
-            "close": close_prices,
-            "volume": [1000000] * n,
-            "ma60": [sum(close_prices[-60:]) / min(60, len(close_prices[-60:]))] * n,
-        })
+        df = pd.DataFrame(
+            {
+                "date": pd.date_range("2026-01-01", periods=n, freq="D"),
+                "open": [p * 0.99 for p in close_prices],
+                "high": [p * 1.02 for p in close_prices],
+                "low": [p * 0.98 for p in close_prices],
+                "close": close_prices,
+                "volume": [1000000] * n,
+                "ma60": [sum(close_prices[-60:]) / min(60, len(close_prices[-60:]))]
+                * n,
+            }
+        )
         if extra_cols:
             for col, values in extra_cols.items():
                 df[col] = values
@@ -39,17 +41,21 @@ class TestSignalScannerWithIndicators:
             pytest.skip(f"SignalScanner 导入失败: {e}")
 
         prices = [100.0 + i * 0.5 + (i % 20) * 2 for i in range(200)]
-        df = self._make_df_with_indicators(prices, extra_cols={
-            "rsi": [55.0] * 200,
-            "macd_hist": [0.1] * 200,
-            "boll_pct_b": [0.5] * 200,  # ← 信号扫描器用这个列名
-            "adx": [25.0] * 200,
-            "vol_ratio": [1.2] * 200,
-            "macd": [0.5] * 200,
-            "macd_signal": [0.4] * 200,
-        })
+        df = self._make_df_with_indicators(
+            prices,
+            extra_cols={
+                "rsi": [55.0] * 200,
+                "macd_hist": [0.1] * 200,
+                "boll_pct_b": [0.5] * 200,  # ← 信号扫描器用这个列名
+                "adx": [25.0] * 200,
+                "vol_ratio": [1.2] * 200,
+                "macd": [0.5] * 200,
+                "macd_signal": [0.4] * 200,
+            },
+        )
 
         from unittest.mock import Mock
+
         session = Mock()
         session.get_all_dataframe.return_value = df
         # scan() 需要 _historical 属性
@@ -64,7 +70,11 @@ class TestSignalScannerWithIndicators:
         except Exception as e:
             err = str(e)
             # 常见错误: name 'rsi' is not defined / 列不存在
-            if "not defined" in err or "column" in err.lower() or "not found" in err.lower():
+            if (
+                "not defined" in err
+                or "column" in err.lower()
+                or "not found" in err.lower()
+            ):
                 pytest.fail(
                     f"P1 BUG 确认: 信号扫描器在评估优化器产出条件时崩溃.\n"
                     f"错误: {err[:300]}.\n"

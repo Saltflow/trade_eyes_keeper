@@ -16,6 +16,7 @@ from src.notification.email_notifier import EmailNotifier
 # _pick_best_anchor 测试
 # ════════════════════════════════════════════════════════
 
+
 class TestPickBestAnchor:
     """锚点择优算法测试"""
 
@@ -139,6 +140,7 @@ class TestPickBestAnchor:
 # send_brief_report 测试
 # ════════════════════════════════════════════════════════
 
+
 class TestSendBriefReport:
     """简报邮件测试"""
 
@@ -148,41 +150,43 @@ class TestSendBriefReport:
         today = datetime.now()
         session = Mock()
         session.signal_scan = None  # 避免 Mock.alerts len() 报错
-        session.get_all_dataframe.return_value = pd.DataFrame([
-            {
-                "stock_code": "601728",
-                "stock_name": "中国电信",
-                "date": today,
-                "open": 5.70,
-                "close": 5.76,
-                "ma60": 5.91,
-                "wma20": 5.78,
-                "wma30": 5.65,
-                "wma50": 5.50,
-            },
-            {
-                "stock_code": "VOO",
-                "stock_name": "标普500",
-                "date": today,  # 今天 → 活跃
-                "open": 485.0,
-                "close": 486.5,
-                "ma60": 480.0,
-                "wma20": 485.0,
-                "wma30": 483.0,
-                "wma50": 478.0,
-            },
-            {
-                "stock_code": "00883",
-                "stock_name": "中海油",
-                "date": today,
-                "open": 18.50,
-                "close": 18.62,
-                "ma60": 18.00,
-                "wma20": 18.40,
-                "wma30": 17.80,
-                "wma50": 17.50,
-            },
-        ])
+        session.get_all_dataframe.return_value = pd.DataFrame(
+            [
+                {
+                    "stock_code": "601728",
+                    "stock_name": "中国电信",
+                    "date": today,
+                    "open": 5.70,
+                    "close": 5.76,
+                    "ma60": 5.91,
+                    "wma20": 5.78,
+                    "wma30": 5.65,
+                    "wma50": 5.50,
+                },
+                {
+                    "stock_code": "VOO",
+                    "stock_name": "标普500",
+                    "date": today,  # 今天 → 活跃
+                    "open": 485.0,
+                    "close": 486.5,
+                    "ma60": 480.0,
+                    "wma20": 485.0,
+                    "wma30": 483.0,
+                    "wma50": 478.0,
+                },
+                {
+                    "stock_code": "00883",
+                    "stock_name": "中海油",
+                    "date": today,
+                    "open": 18.50,
+                    "close": 18.62,
+                    "ma60": 18.00,
+                    "wma20": 18.40,
+                    "wma30": 17.80,
+                    "wma50": 17.50,
+                },
+            ]
+        )
         return session
 
     def test_trading_day_filter_excludes_old_data(self, mock_session):
@@ -246,9 +250,7 @@ class TestSendBriefReport:
         session.get_all_dataframe.return_value = pd.DataFrame()
         notifier = EmailNotifier({"email": {}})
         with patch.object(notifier, "_send_email") as mock_send:
-            notifier.send_brief_report(
-                session, {"id": "test", "label": "空测试"}
-            )
+            notifier.send_brief_report(session, {"id": "test", "label": "空测试"})
             assert mock_send.called
 
     def test_rows_sorted_by_deviation_ascending(self):
@@ -256,46 +258,46 @@ class TestSendBriefReport:
         session = Mock()
         session.signal_scan = None  # 避免 Mock.alerts len() 报错
         today = datetime.now()
-        session.get_all_dataframe.return_value = pd.DataFrame([
-            {
-                "stock_code": "A",
-                "stock_name": "涨最多",
-                "date": today,
-                "open": 10.0,
-                "close": 10.8,   # ma60=10.0 → +8%  (5,10) 区间内
-                "ma60": 10.0,
-                "wma20": None,
-                "wma30": None,
-                "wma50": None,
-            },
-            {
-                "stock_code": "B",
-                "stock_name": "跌最多",
-                "date": today,
-                "open": 10.0,
-                "close": 8.5,    # ma60=10.0 → -15%  (<-10) 区间内
-                "ma60": 10.0,
-                "wma20": None,
-                "wma30": None,
-                "wma50": None,
-            },
-            {
-                "stock_code": "C",
-                "stock_name": "微跌",
-                "date": today,
-                "open": 10.0,
-                "close": 9.2,    # ma60=10.0 → -8%  (-10,-5) 区间内
-                "ma60": 10.0,
-                "wma20": None,
-                "wma30": None,
-                "wma50": None,
-            },
-        ])
+        session.get_all_dataframe.return_value = pd.DataFrame(
+            [
+                {
+                    "stock_code": "A",
+                    "stock_name": "涨最多",
+                    "date": today,
+                    "open": 10.0,
+                    "close": 10.8,  # ma60=10.0 → +8%  (5,10) 区间内
+                    "ma60": 10.0,
+                    "wma20": None,
+                    "wma30": None,
+                    "wma50": None,
+                },
+                {
+                    "stock_code": "B",
+                    "stock_name": "跌最多",
+                    "date": today,
+                    "open": 10.0,
+                    "close": 8.5,  # ma60=10.0 → -15%  (<-10) 区间内
+                    "ma60": 10.0,
+                    "wma20": None,
+                    "wma30": None,
+                    "wma50": None,
+                },
+                {
+                    "stock_code": "C",
+                    "stock_name": "微跌",
+                    "date": today,
+                    "open": 10.0,
+                    "close": 9.2,  # ma60=10.0 → -8%  (-10,-5) 区间内
+                    "ma60": 10.0,
+                    "wma20": None,
+                    "wma30": None,
+                    "wma50": None,
+                },
+            ]
+        )
         notifier = EmailNotifier({"email": {}})
         with patch.object(notifier, "_send_email") as mock_send:
-            notifier.send_brief_report(
-                session, {"id": "test", "label": "排序测试"}
-            )
+            notifier.send_brief_report(session, {"id": "test", "label": "排序测试"})
             body = mock_send.call_args[0][1]
             # 用完整的 <td>CODE</td> 定位，避免命中 HTML class/style 中的字母
             pos_b = body.find("<td>B</td>")  # 跌最多 -15% 应排第一
@@ -311,46 +313,45 @@ class TestSendBriefReport:
         session = Mock()
         session.signal_scan = None  # 避免 Mock.alerts len() 报错
         today = datetime.now()
-        session.get_all_dataframe.return_value = pd.DataFrame([
-            {
-                "stock_code": "Z",
-                "stock_name": "无锚点",
-                "date": today,
-                "open": 10.0,
-                "close": 10.0,
-                "ma60": None,
-                "wma20": None,
-                "wma30": None,
-                "wma50": None,
-            },
-            {
-                "stock_code": "B",
-                "stock_name": "跌",
-                "date": today,
-                "open": 10.0,
-                "close": 8.5,
-                "ma60": 10.0,
-                "wma20": None,
-                "wma30": None,
-                "wma50": None,
-            },
-        ])
+        session.get_all_dataframe.return_value = pd.DataFrame(
+            [
+                {
+                    "stock_code": "Z",
+                    "stock_name": "无锚点",
+                    "date": today,
+                    "open": 10.0,
+                    "close": 10.0,
+                    "ma60": None,
+                    "wma20": None,
+                    "wma30": None,
+                    "wma50": None,
+                },
+                {
+                    "stock_code": "B",
+                    "stock_name": "跌",
+                    "date": today,
+                    "open": 10.0,
+                    "close": 8.5,
+                    "ma60": 10.0,
+                    "wma20": None,
+                    "wma30": None,
+                    "wma50": None,
+                },
+            ]
+        )
         notifier = EmailNotifier({"email": {}})
         with patch.object(notifier, "_send_email") as mock_send:
-            notifier.send_brief_report(
-                session, {"id": "test", "label": "None排序测试"}
-            )
+            notifier.send_brief_report(session, {"id": "test", "label": "None排序测试"})
             body = mock_send.call_args[0][1]
             pos_b = body.find("<td>B</td>")
             pos_z = body.find("<td>Z</td>")
-            assert pos_b < pos_z, (
-                f"Expected B before Z, got B={pos_b}, Z={pos_z}"
-            )
+            assert pos_b < pos_z, f"Expected B before Z, got B={pos_b}, Z={pos_z}"
 
 
 # ════════════════════════════════════════════════════════
 # 集成: run_brief_report 测试
 # ════════════════════════════════════════════════════════
+
 
 class TestRunBriefReportIntegration:
     """run_brief_report 集成测试"""
@@ -358,16 +359,16 @@ class TestRunBriefReportIntegration:
     def test_weekend_skip(self):
         """周末跳过整个简报"""
         from main import run_brief_report
+
         # 用 MagicMock 替换 main.logging，避免 run_brief_report 的 logger
         # 调用写入 pytest 捕获流后被关闭引发 'I/O operation on closed file'
-        with patch("main.logging") as _mock_log, \
-                patch("main.load_config") as mock_config:
+        with patch("main.logging") as _mock_log, patch(
+            "main.load_config"
+        ) as mock_config:
             _mock_log.getLogger.return_value = MagicMock()
             mock_config.return_value = {
                 "scheduler": {
-                    "brief_reports": [
-                        {"id": "morning_snapshot", "label": "早盘简报"}
-                    ]
+                    "brief_reports": [{"id": "morning_snapshot", "label": "早盘简报"}]
                 },
                 "stocks": ["601728"],
             }

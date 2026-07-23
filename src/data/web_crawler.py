@@ -268,9 +268,7 @@ class StockWebCrawler:
                         self._fetch_from_yahoo,
                         self._fetch_from_qq_international,
                     ]
-                    logger.info(
-                        f"港股 {stock_code} 使用新浪港股+腾讯+雅虎数据源"
-                    )
+                    logger.info(f"港股 {stock_code} 使用新浪港股+腾讯+雅虎数据源")
         elif market == "a_share":
             # A股原有逻辑 — Eastmoney 已被 GFW 阻断，已移除
             if self._is_etf(stock_code):
@@ -1257,7 +1255,9 @@ class StockWebCrawler:
             items = content.split("~")
 
             if len(items) < 40:
-                logger.warning(f"QQ 实时行情 {stock_code} 返回字段不足 (len={len(items)})")
+                logger.warning(
+                    f"QQ 实时行情 {stock_code} 返回字段不足 (len={len(items)})"
+                )
                 return None
 
             # 字段映射（腾讯实时行情 API ~ 分隔）：
@@ -1375,11 +1375,13 @@ class StockWebCrawler:
                 except Exception as e:
                     if attempt == 0:
                         import time
+
                         time.sleep(0.5)
                         continue
                     logger.info(f"QQ 估值 {code} 失败: {e}")
                 if attempt == 0:
                     import time
+
                     time.sleep(0.5)
             return None
 
@@ -1400,9 +1402,7 @@ class StockWebCrawler:
                 response.raise_for_status()
                 data = response.json()
                 price = (
-                    data.get("quoteSummary", {})
-                    .get("result", [{}])[0]
-                    .get("price", {})
+                    data.get("quoteSummary", {}).get("result", [{}])[0].get("price", {})
                 )
                 pe = price.get("trailingPE")
                 pb = price.get("priceToBook")
@@ -1419,16 +1419,12 @@ class StockWebCrawler:
 
         for source_func in data_sources:
             try:
-                logger.info(
-                    f"估值: 尝试 {source_func.__name__} → {stock_code}"
-                )
+                logger.info(f"估值: 尝试 {source_func.__name__} → {stock_code}")
                 valuation_data = source_func(stock_code)
                 if valuation_data and any(
                     v is not None for v in valuation_data.values()
                 ):
-                    logger.info(
-                        f"估值: {source_func.__name__} {stock_code} OK"
-                    )
+                    logger.info(f"估值: {source_func.__name__} {stock_code} OK")
                     return valuation_data
             except Exception as e:
                 logger.warning(f"估值: {source_func.__name__} {stock_code} 失败: {e}")
@@ -1717,7 +1713,7 @@ class StockWebCrawler:
 
             # 选最近一次：按上市日期(或发行日期)降序取第一条
             def _row_date(r):
-                return (r.get("ISSUE_LISTING_DATE") or r.get("ISSUE_DATE") or "")
+                return r.get("ISSUE_LISTING_DATE") or r.get("ISSUE_DATE") or ""
 
             rows.sort(key=_row_date, reverse=True)
             row = rows[0]
@@ -1766,8 +1762,11 @@ class StockWebCrawler:
                 try:
                     d = _dt.strptime(listing_date, "%Y-%m-%d")
                     # 解禁 = 上市日 + 年数（近似按 365 天/年）
-                    unlock = d.replace(year=d.year + int(years)) if years == int(years) \
+                    unlock = (
+                        d.replace(year=d.year + int(years))
+                        if years == int(years)
                         else d + timedelta(days=int(years * 365))
+                    )
                     unlock_date = unlock.strftime("%Y-%m-%d")
                     is_locked = _dt.now() < unlock
                 except Exception:

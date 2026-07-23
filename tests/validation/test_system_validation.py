@@ -14,7 +14,6 @@ import random
 import pandas as pd
 import pytest
 from unittest.mock import patch, MagicMock
-from .conftest import random_stock_code, random_price_data
 
 
 class TestPriceRelationshipValidation:
@@ -25,7 +24,6 @@ class TestPriceRelationshipValidation:
         """创建ConditionChecker和Session实例"""
         from src.core.condition_checker import ConditionChecker
         from src.session.session_manager import SessionManager
-        from src.models.schemas import SessionContext
 
         config = {"stocks": []}
         checker = ConditionChecker(config)

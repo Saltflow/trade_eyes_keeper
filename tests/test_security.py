@@ -5,7 +5,6 @@
 """
 
 import pytest
-from unittest.mock import patch, MagicMock
 
 
 class TestOTPSecurity:
@@ -15,16 +14,16 @@ class TestOTPSecurity:
         """OTP 应使用 secrets.randbelow 而非 random.randint"""
         import inspect
         from src.health_server.auth.otp_manager import OTPManager
+
         # 检查生成方法源码
         src = inspect.getsource(OTPManager.generate)
         # 应使用 secrets 而非 random
-        assert "secrets" in src.lower(), (
-            "OTP生成应使用secrets模块 (而非random.randint)"
-        )
+        assert "secrets" in src.lower(), "OTP生成应使用secrets模块 (而非random.randint)"
 
     def test_otp_format_5_digits(self):
         """OTP 应为5位数字"""
         from src.health_server.auth.otp_manager import OTPManager
+
         mgr = OTPManager()
         code = mgr.generate("127.0.0.1")
         assert len(code) == 5
@@ -37,6 +36,7 @@ class TestExpressionEngineSecurity:
     def test_eval_no_builtins(self):
         """eval() 的 __builtins__ 应被禁用"""
         from src.analysis.rule_engine import ExpressionEngine
+
         engine = ExpressionEngine()
         # 尝试访问 __import__
         with pytest.raises(Exception):
@@ -45,6 +45,7 @@ class TestExpressionEngineSecurity:
     def test_eval_no_open(self):
         """eval() 应不能打开文件"""
         from src.analysis.rule_engine import ExpressionEngine
+
         engine = ExpressionEngine()
         with pytest.raises(Exception):
             engine.evaluate("open('/etc/passwd').read()", {})
@@ -52,6 +53,7 @@ class TestExpressionEngineSecurity:
     def test_eval_math_works(self):
         """eval() 应允许基本数学运算"""
         from src.analysis.rule_engine import ExpressionEngine
+
         engine = ExpressionEngine()
         # 基本比较应该工作
         result = engine.evaluate("1 + 1 == 2", {})
@@ -60,6 +62,7 @@ class TestExpressionEngineSecurity:
     def test_eval_deviation_condition(self):
         """典型的策略条件字符串应安全执行"""
         from src.analysis.rule_engine import ExpressionEngine
+
         engine = ExpressionEngine()
         ctx = {"deviation": -0.05, "prev_deviation": -0.02, "shares": 100}
         result = engine.evaluate(
@@ -75,8 +78,9 @@ class TestReportTokenSecurity:
     def test_register_and_get(self):
         """正常 token 注册和获取"""
         from src.health_server.core.global_instances import (
-            register_report_token, get_report_path,
+            register_report_token,
         )
+
         token = register_report_token("data/optimizer/test.html")
         assert len(token) == 12
         assert all(c in "0123456789abcdef" for c in token)
@@ -84,14 +88,17 @@ class TestReportTokenSecurity:
     def test_invalid_token_returns_none(self):
         """无效 token 应返回 None"""
         from src.health_server.core.global_instances import get_report_path
+
         assert get_report_path("invalid-token") is None
         assert get_report_path("GGGGGGGGGGGG") is None  # 非十六进制
 
     def test_path_traversal_blocked(self):
         """路径遍历应被拦截"""
         from src.health_server.core.global_instances import (
-            register_report_token, get_report_path,
+            register_report_token,
+            get_report_path,
         )
+
         # 注册一个合法 token, 但内部路径被篡改
         token = register_report_token("../etc/passwd")
         # get_report_path 应做 resolve().relative_to() 检查
@@ -101,8 +108,12 @@ class TestReportTokenSecurity:
     def test_expired_token_returns_none(self):
         """过期 token 应返回 None"""
         from src.health_server.core.global_instances import (
-            register_report_token, get_report_path, _report_tokens, _time,
+            register_report_token,
+            get_report_path,
+            _report_tokens,
+            _time,
         )
+
         token = register_report_token("data/optimizer/test.html")
         # 手动过期
         if token in _report_tokens:
@@ -117,6 +128,7 @@ class TestRateLimiter:
     def test_rate_limiter_allows_under_limit(self):
         """低于限制的请求应允许"""
         from src.health_server.auth.rate_limiter import RateLimiter
+
         rl = RateLimiter(requests_per_minute=10, window_seconds=60)
         for _ in range(9):
             assert rl.is_allowed("192.168.1.1") is True
@@ -124,6 +136,7 @@ class TestRateLimiter:
     def test_rate_limiter_blocks_over_limit(self):
         """超过限制的请求应拒绝"""
         from src.health_server.auth.rate_limiter import RateLimiter
+
         rl = RateLimiter(requests_per_minute=5, window_seconds=60)
         for _ in range(5):
             rl.is_allowed("192.168.1.1")
@@ -136,6 +149,7 @@ class TestSessionSecurity:
     def test_session_token_is_hex(self):
         """会话 token 应为十六进制随机字符串"""
         from src.health_server.auth.auth_session import AuthSessionManager
+
         mgr = AuthSessionManager(expiry_minutes=30)
         token = mgr.create("192.168.1.1")
         assert len(token) == 32
@@ -144,6 +158,7 @@ class TestSessionSecurity:
     def test_session_ip_bound(self):
         """会话应绑定到 IP"""
         from src.health_server.auth.auth_session import AuthSessionManager
+
         mgr = AuthSessionManager(expiry_minutes=30)
         token = mgr.create("192.168.1.1")
         valid, _ = mgr.validate(token, "192.168.1.1")

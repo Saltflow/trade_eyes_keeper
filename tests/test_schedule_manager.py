@@ -1,9 +1,5 @@
 """调度管理测试 — APScheduler 内嵌 health server。"""
 
-import time
-from pathlib import Path
-
-import pytest
 import yaml
 
 from src.core.schedule_manager import ScheduleManager
@@ -16,8 +12,18 @@ def _make_config(tmp_path):
             "run_time": "19:00",
             "timezone": "Asia/Shanghai",
             "brief_reports": [
-                {"id": "morning_snapshot", "label": "早盘", "run_time": "09:50", "enabled": True},
-                {"id": "afternoon_snapshot", "label": "收盘", "run_time": "14:30", "enabled": True},
+                {
+                    "id": "morning_snapshot",
+                    "label": "早盘",
+                    "run_time": "09:50",
+                    "enabled": True,
+                },
+                {
+                    "id": "afternoon_snapshot",
+                    "label": "收盘",
+                    "run_time": "14:30",
+                    "enabled": True,
+                },
             ],
         },
         "health_server": {"enabled": True, "host": "0.0.0.0", "port": 1934},

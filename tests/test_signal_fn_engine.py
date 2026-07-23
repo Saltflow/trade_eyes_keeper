@@ -3,6 +3,7 @@
 锁定 scope A 核心：分位引擎经此适配器真正参与搜索
 （evaluate() 被调用 → WindowStats），而非空壳。
 """
+
 import os
 import sys
 
@@ -20,42 +21,61 @@ def _mk_stocks(codes=("600001", "600002", "600003"), n=760, seed=1):
     for i, c in enumerate(codes):
         t = np.linspace(0, 0.4 + 0.1 * i, n) + rng.randn(n).cumsum() * 0.012
         close = 10 * np.exp(t)
-        out[c] = pd.DataFrame({
-            "date": dates, "open": close, "high": close * 1.01,
-            "low": close * 0.99, "close": close,
-            "volume": np.abs(rng.randn(n)) * 1e6 + 5e5,
-        })
+        out[c] = pd.DataFrame(
+            {
+                "date": dates,
+                "open": close,
+                "high": close * 1.01,
+                "low": close * 0.99,
+                "close": close,
+                "volume": np.abs(rng.randn(n)) * 1e6 + 5e5,
+            }
+        )
     return out
 
 
 def _constraints():
     from analysis.optimizer_constraints import StrategyConstraints
-    return StrategyConstraints({
-        "hard_constraints": {
-            "min_avg_position_pct": 0.0, "max_drawdown_pct": -99.0,
-            "max_return_std_pct": 100.0, "min_trades_per_month": 0,
-            "max_trades_per_month": 999,
-        },
-        "walk_forward": {"train_months": 12, "test_months": 6,
-                         "step_months": 3, "num_windows": 2},
-        "genetic_search": {
-            "phase1_random_samples": 30, "phase1_top_keep": 10,
-            "num_generations": 1, "population_size": 10, "offspring_size": 15,
-        },
-        "discrete_search": {"num_buy_rules": 3},
-    })
+
+    return StrategyConstraints(
+        {
+            "hard_constraints": {
+                "min_avg_position_pct": 0.0,
+                "max_drawdown_pct": -99.0,
+                "max_return_std_pct": 100.0,
+                "min_trades_per_month": 0,
+                "max_trades_per_month": 999,
+            },
+            "walk_forward": {
+                "train_months": 12,
+                "test_months": 6,
+                "step_months": 3,
+                "num_windows": 2,
+            },
+            "genetic_search": {
+                "phase1_random_samples": 30,
+                "phase1_top_keep": 10,
+                "num_generations": 1,
+                "population_size": 10,
+                "offspring_size": 15,
+            },
+            "discrete_search": {"num_buy_rules": 3},
+        }
+    )
 
 
 class TestAdapterEncodingOps:
     def test_param_count_matches_space(self):
         from analysis.signal_fn_engine import SignalFnSearchEngine
         from analysis.percentile_engine import PercentileSignalFn
+
         eng = SignalFnSearchEngine(PercentileSignalFn())
         assert eng.param_count() == 13  # 5×(tau+w)+buy+sell+frac
 
     def test_random_crossover_mutate(self):
         from analysis.signal_fn_engine import SignalFnSearchEngine
         from analysis.percentile_engine import PercentileSignalFn
+
         eng = SignalFnSearchEngine(PercentileSignalFn())
         p1 = eng.random_encoding(None)
         p2 = eng.random_encoding(None)
@@ -68,6 +88,7 @@ class TestAdapterEncodingOps:
     def test_human_readable(self):
         from analysis.signal_fn_engine import SignalFnSearchEngine
         from analysis.percentile_engine import PercentileSignalFn
+
         eng = SignalFnSearchEngine(PercentileSignalFn())
         h = eng.to_human_readable(eng.random_encoding(None), None)
         assert "分位评分" in h
@@ -86,7 +107,10 @@ class TestAdapterEvaluatesViaSignalFn:
         stocks = _mk_stocks()
         constraints = _constraints()
         wf = WalkForwardManager(
-            stocks, train_months=12, test_months=6, step_months=3,
+            stocks,
+            train_months=12,
+            test_months=6,
+            step_months=3,
             num_windows=2,
         )
         windows = list(wf.iter_windows())
@@ -95,8 +119,12 @@ class TestAdapterEvaluatesViaSignalFn:
         params = eng.random_encoding(None)
 
         result = eng.evaluate_encoding(
-            params, windows, constraints.discrete_search, constraints,
-            evaluator, wf,
+            params,
+            windows,
+            constraints.discrete_search,
+            constraints,
+            evaluator,
+            wf,
         )
         assert result is not None
         stats, score = result
@@ -116,7 +144,10 @@ class TestEndToEndPercentileSearch:
         constraints = _constraints()
         sfn = PercentileSignalFn()
         opt = StrategyOptimizerV2(
-            stocks, "a_share", engine=SignalFnSearchEngine(sfn), signal_fn=sfn,
+            stocks,
+            "a_share",
+            engine=SignalFnSearchEngine(sfn),
+            signal_fn=sfn,
         )
         opt.constraints = constraints
         opt.gs_cfg = constraints.genetic_search
@@ -138,4 +169,5 @@ class TestEndToEndPercentileSearch:
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])

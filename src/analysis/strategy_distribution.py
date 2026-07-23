@@ -46,9 +46,7 @@ def compute_long_term(wf_scores: list[float]) -> LongTermScore:
     )
 
 
-def compute_short_term_factor(
-    recent_return: float, long_term_mean: float
-) -> float:
+def compute_short_term_factor(recent_return: float, long_term_mean: float) -> float:
     """短期有效性: 最近1个月收益 / 长期均值，capped [0.5, 2.0]。"""
     if long_term_mean == 0:
         return 1.0
@@ -153,7 +151,7 @@ def bayesian_update(
         return UpdatedParam(prior_mean, prior_std)
 
     n = len(new_samples)
-    prior_var = prior_std ** 2
+    prior_var = prior_std**2
     sample_mean = float(np.mean(new_samples))
     sample_var = float(np.var(new_samples, ddof=1)) if n > 1 else prior_var
 
@@ -273,7 +271,9 @@ class StrategyDistributionPool:
             matched = False
             for dist in self.distributions:
                 if match_strategy(dist, new_params):
-                    self._update_distribution(dist, new_params, wf_scores, recent_return)
+                    self._update_distribution(
+                        dist, new_params, wf_scores, recent_return
+                    )
                     matched = True
                     break
 
@@ -351,7 +351,9 @@ class StrategyDistributionPool:
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            yaml.dump(
+                data, f, allow_unicode=True, default_flow_style=False, sort_keys=False
+            )
 
     def load(self) -> None:
         """从 YAML 加载。"""
@@ -362,8 +364,7 @@ class StrategyDistributionPool:
             with open(self.path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f)
             self.distributions = [
-                StrategyDistribution.from_dict(d)
-                for d in data.get("distributions", [])
+                StrategyDistribution.from_dict(d) for d in data.get("distributions", [])
             ]
         except Exception as e:
             logger.warning(f"加载策略分布失败: {e}")

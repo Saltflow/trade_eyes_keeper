@@ -3,6 +3,7 @@
 验收标准 4: 旧系统标记为 deprecated — 此实现包装原有 CONDITION_BUILDERS_FAST 注册表,
 保持每日输出与之前完全相同的逻辑。
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -11,16 +12,24 @@ from .signal_functions import SignalFn, ParamDim, ParamSpace, Params
 
 # 从 fast_evaluator 拿构建器清单（与旧系统一致）
 from .fast_evaluator import CONDITION_BUILDERS_FAST, _build_none
-from .optimizer_constraints import DiscreteSearchConfig
 
 GLOBAL_BUY_BUILDERS = [
-    "trend_follow", "deviation_absolute", "volume_spike",
-    "rsi_signal", "bollinger_signal",
-    "deviation_cross", "none",
+    "trend_follow",
+    "deviation_absolute",
+    "volume_spike",
+    "rsi_signal",
+    "bollinger_signal",
+    "deviation_cross",
+    "none",
 ]
 GLOBAL_SELL_BUILDERS = [
-    "deviation_cross", "rsi_signal", "bollinger_signal",
-    "deviation_absolute", "sell_overextended", "trend_follow", "none",
+    "deviation_cross",
+    "rsi_signal",
+    "bollinger_signal",
+    "deviation_absolute",
+    "sell_overextended",
+    "trend_follow",
+    "none",
 ]
 N_BUY = 5
 N_SELL = 3
@@ -119,13 +128,17 @@ class GlobalThresholdSignalFn(SignalFn):
         lines = ["全局阈值策略 (GlobalThresholdSignalFn — deprecated)"]
         for i in range(1, N_BUY + 1):
             idx = params.values.get(f"buy_idx_{i}", 0)
-            builder = GLOBAL_BUY_BUILDERS[min(idx % len(GLOBAL_BUY_BUILDERS), len(GLOBAL_BUY_BUILDERS) - 1)]
+            builder = GLOBAL_BUY_BUILDERS[
+                min(idx % len(GLOBAL_BUY_BUILDERS), len(GLOBAL_BUY_BUILDERS) - 1)
+            ]
             t_norm = params.decode(self._space.dims[(i - 1) * 3 + 1])
             frac = _decode_frac(params.values.get(f"buy_frac_{i}", 2))
             lines.append(f"  买{i}: {builder} t={t_norm:.2f} frac={frac:.2f}")
         for i in range(1, N_SELL + 1):
             idx = params.values.get(f"sell_idx_{i}", 0)
-            builder = GLOBAL_SELL_BUILDERS[min(idx % len(GLOBAL_SELL_BUILDERS), len(GLOBAL_SELL_BUILDERS) - 1)]
+            builder = GLOBAL_SELL_BUILDERS[
+                min(idx % len(GLOBAL_SELL_BUILDERS), len(GLOBAL_SELL_BUILDERS) - 1)
+            ]
             t_norm = params.decode(self._space.dims[(N_BUY + i - 1) * 3 + 1])
             frac = _decode_frac(params.values.get(f"sell_frac_{i}", 2))
             lines.append(f"  卖{i}: {builder} t={t_norm:.2f} frac={frac:.2f}")
@@ -140,7 +153,11 @@ class GlobalThresholdSignalFn(SignalFn):
 
     def describe_rules(self, params) -> dict:
         """从 YAML params (buy_N_signal) 翻译买卖规则名。"""
-        vals = getattr(params, "values", params) if not isinstance(params, dict) else params
+        vals = (
+            getattr(params, "values", params)
+            if not isinstance(params, dict)
+            else params
+        )
         buy, sell = [], []
         for k, v in vals.items():
             if k.endswith("_signal") and v and v != "none":

@@ -19,18 +19,15 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
 import yaml
 
 from .optimizer_constraints import (
-    StrategyConstraints,
-    WindowStats,
     load_constraints,
 )
-from .walk_forward import WalkForwardManager, create_walk_forward_manager
+from .walk_forward import WalkForwardManager
 from .fast_evaluator import FastEvaluator
 from .genetic_searcher import GeneticSearcher, ScoredStrategy, StrategyEncoding
 from .strategy_optimizer import (
@@ -39,10 +36,6 @@ from .strategy_optimizer import (
     build_condition,
     Rule,
 )
-from .backtest_config import (
-    BacktestConfig,
-    make_default_optimizer_config,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -50,31 +43,50 @@ logger = logging.getLogger(__name__)
 # 策略参数人话映射
 # builder → 简短中文名（与 email_notifier.SIGNAL_NAMES 对齐, 供 rule.label 使用）
 _GLOBAL_SIGNAL_NAMES = {
-    "deviation_cross": "偏离穿越", "deviation_absolute": "偏离达标",
-    "rsi_signal": "RSI超卖", "bollinger_signal": "布林低位",
-    "volume_spike": "放量异动", "trend_follow": "趋势跟踪",
-    "deep_value": "深度价值", "absolute_discount": "绝对折价",
-    "sell_overextended": "超涨卖出", "sell_deviation_cross": "偏离穿越(卖)",
-    "sell_rsi_signal": "RSI超买", "sell_bollinger_signal": "布林高位",
-    "sell_trend_follow": "趋势反转", "none": "无",
+    "deviation_cross": "偏离穿越",
+    "deviation_absolute": "偏离达标",
+    "rsi_signal": "RSI超卖",
+    "bollinger_signal": "布林低位",
+    "volume_spike": "放量异动",
+    "trend_follow": "趋势跟踪",
+    "deep_value": "深度价值",
+    "absolute_discount": "绝对折价",
+    "sell_overextended": "超涨卖出",
+    "sell_deviation_cross": "偏离穿越(卖)",
+    "sell_rsi_signal": "RSI超买",
+    "sell_bollinger_signal": "布林高位",
+    "sell_trend_follow": "趋势反转",
+    "none": "无",
 }
 
 _BUILDER_LABELS = {
-    "deviation_cross": lambda t, n=None: f"MA60偏离下穿 {-0.005 + t * (-0.295):.1%} 时买入",
+    "deviation_cross": lambda t, n=None: (
+        f"MA60偏离下穿 {-0.005 + t * (-0.295):.1%} 时买入"
+    ),
     "deviation_absolute": lambda t, n=None: f"MA60偏离 < {-t * 0.40:.0%} 时买入",
     "rsi_signal": lambda t, n=None: f"RSI < {10 + (1 - t) * 30:.0f} 时买入",
     "bollinger_signal": lambda t, n=None: f"布林%%B < {(1 - t) * 0.35:.2f} 时买入",
     "volume_spike": lambda t, n=None: f"量比 > {1.2 + t * 2.8:.1f} 时买入",
     "trend_follow": lambda t, n=None: f"ADX > {15 + t * 25:.0f} 且 MACD>0 时买入",
-    "absolute_discount": lambda t, n=None: f"距2年高点跌幅 > {-0.10 + t * (-0.60):.0%} 时买入",
-    "deep_value": lambda t, n=None: f"MA200偏离 < {-0.05 + t * (-0.35):.0%} 且趋势启稳时买入",
+    "absolute_discount": lambda t, n=None: (
+        f"距2年高点跌幅 > {-0.10 + t * (-0.60):.0%} 时买入"
+    ),
+    "deep_value": lambda t, n=None: (
+        f"MA200偏离 < {-0.05 + t * (-0.35):.0%} 且趋势启稳时买入"
+    ),
     "none": lambda t, n=None: "(未使用)",
-    "sell_deviation_cross": lambda t, n=None: f"MA60偏离上穿 {0.005 + t * 0.30:.1%} 时卖出",
+    "sell_deviation_cross": lambda t, n=None: (
+        f"MA60偏离上穿 {0.005 + t * 0.30:.1%} 时卖出"
+    ),
     "sell_deviation_absolute": lambda t, n=None: f"MA60偏离 > {t * 0.50:.0%} 时卖出",
     "sell_rsi_signal": lambda t, n=None: f"RSI > {60 + t * 30:.0f} 时卖出",
-    "sell_bollinger_signal": lambda t, n=None: f"布林%%B > {0.65 + t * 0.35:.2f} 时卖出",
+    "sell_bollinger_signal": lambda t, n=None: (
+        f"布林%%B > {0.65 + t * 0.35:.2f} 时卖出"
+    ),
     "sell_trend_follow": lambda t, n=None: f"ADX > {15 + t * 25:.0f} 且 MACD<0 时卖出",
-    "sell_overextended": lambda t, n=None: f"接近2年高点(差距<{-0.05 + t * 0.05:.0%})时卖出",
+    "sell_overextended": lambda t, n=None: (
+        f"接近2年高点(差距<{-0.05 + t * 0.05:.0%})时卖出"
+    ),
 }
 
 
@@ -135,6 +147,7 @@ class StrategyOptimizerV2:
             return {}
 
         from pathlib import Path
+
         cache_dir = Path("cache/data")
 
         # 延迟导入 DataSource（避免循环依赖）
@@ -146,6 +159,7 @@ class StrategyOptimizerV2:
                 return _ds
             from src.data.data_source import DataSource
             import yaml
+
             config_path = Path("config") / "config.yaml"
             with open(config_path, "r", encoding="utf-8") as f:
                 config = yaml.safe_load(f)
@@ -238,12 +252,14 @@ class StrategyOptimizerV2:
         windows = wf_mgr.iter_windows()
         logger.info(
             "[V2] Walk-Forward: %d 个窗口, %d 只股票 (%s)",
-            len(windows), wf_mgr.n_stocks,
+            len(windows),
+            wf_mgr.n_stocks,
             ", ".join(wf_mgr.stock_codes[:5]) + ("..." if wf_mgr.n_stocks > 5 else ""),
         )
 
         # ── 3. 快速评估器 ──
         from .execution_config import get_execution_config
+
         exec_cfg = get_execution_config()
         lot_size_map = exec_cfg.lot_sizes
         lot_size = lot_size_map.get(self.group, 100)
@@ -252,6 +268,7 @@ class StrategyOptimizerV2:
             monthly_buy_limit=exec_cfg.monthly_buy_limit,
             lot_size=lot_size,
             commission_rate=exec_cfg.commission_rate,
+            min_holding_days=exec_cfg.min_holding_days,
         )
 
         # ── 4. 遗传搜索 ──
@@ -259,7 +276,9 @@ class StrategyOptimizerV2:
         fx_map = exec_cfg.fx_rates
         if self.engine is not None and hasattr(self.engine, "fx_rate"):
             self.engine.fx_rate = fx_map.get(self.group, 1.0)
-        searcher = GeneticSearcher(self.constraints, wf_mgr, evaluator, engine=self.engine)
+        searcher = GeneticSearcher(
+            self.constraints, wf_mgr, evaluator, engine=self.engine
+        )
 
         logger.info(
             "[V2] Phase 1: 粗筛 %d 个随机策略",
@@ -269,7 +288,8 @@ class StrategyOptimizerV2:
         phase1_results = searcher.run_phase1(windows)
         logger.info(
             "[V2] Phase 1 完成: %d 个有效策略, 耗时 %.0fs",
-            len(phase1_results), time.time() - t1,
+            len(phase1_results),
+            time.time() - t1,
         )
 
         if not phase1_results:
@@ -284,7 +304,8 @@ class StrategyOptimizerV2:
 
         logger.info(
             "[V2] Phase 2: 遗传优化 %d 代, 种群 %d, 每代 %d 后代",
-            self.gs_cfg.num_generations, self.gs_cfg.population_size,
+            self.gs_cfg.num_generations,
+            self.gs_cfg.population_size,
             self.gs_cfg.offspring_size,
         )
         t2 = time.time()
@@ -296,7 +317,11 @@ class StrategyOptimizerV2:
 
         # ── 5. 构建 OptimizationReport ──
         report = self._build_report(
-            final_population, wf_mgr, windows, report_id, time.time() - t0,
+            final_population,
+            wf_mgr,
+            windows,
+            report_id,
+            time.time() - t0,
         )
 
         # ── 6. 保存结果 ──
@@ -307,6 +332,7 @@ class StrategyOptimizerV2:
         # ── 6b. 更新策略分布池（贝叶斯增量更新）──
         try:
             from .strategy_distribution import StrategyDistributionPool
+
             pool_path = save_dir / "strategy_distributions.yaml"
             pool = StrategyDistributionPool(pool_path)
 
@@ -315,7 +341,8 @@ class StrategyOptimizerV2:
             for t in report.top_strategies[:10]:
                 # 过滤掉元数据字段
                 clean_params = {
-                    k: float(v) for k, v in t.params.items()
+                    k: float(v)
+                    for k, v in t.params.items()
                     if not k.startswith("_") and isinstance(v, (int, float, str))
                 }
                 try:
@@ -323,11 +350,14 @@ class StrategyOptimizerV2:
                 except (ValueError, TypeError):
                     continue
 
-                search_results.append({
-                    "params": clean_params,
-                    "wf_scores": [t.test_return] * 6,  # V2 只有一个聚合得分，复制为6份
-                    "recent_return": t.test_return,
-                })
+                search_results.append(
+                    {
+                        "params": clean_params,
+                        "wf_scores": [t.test_return]
+                        * 6,  # V2 只有一个聚合得分，复制为6份
+                        "recent_return": t.test_return,
+                    }
+                )
 
             if search_results:
                 pool.update(search_results)
@@ -379,13 +409,12 @@ class StrategyOptimizerV2:
 
             # 完整约束检查（用于生成风险提示）
             _, violations = self.constraints.check_hard_constraints(
-                ss.window_stats, ss.wf_score,
+                ss.window_stats,
+                ss.wf_score,
             )
 
             # 转换为 Rule 列表（沿用 V1 格式）
-            is_signal_fn = (
-                self.signal_fn is not None and hasattr(ss.encoding, "values")
-            )
+            is_signal_fn = self.signal_fn is not None and hasattr(ss.encoding, "values")
             if is_signal_fn:
                 rules = self._signal_fn_to_rules(ss.encoding)
             else:
@@ -404,7 +433,6 @@ class StrategyOptimizerV2:
 
             # 收集基准收益 + 期末持仓（取最后窗口的数据）
             bench_info: dict[str, float] = {}
-            strat_ret: float = 0.0
             final_pos: float = 0.0
             final_cash_val: float = 0.0
             final_holdings: list[dict] = []
@@ -413,14 +441,16 @@ class StrategyOptimizerV2:
             if ss.window_stats:
                 if ss.window_stats[0].benchmark_returns:
                     bench_info = dict(ss.window_stats[0].benchmark_returns)
-                    strat_ret = ss.window_stats[0].strategy_return
+                    ss.window_stats[0].strategy_return
                 # 期末持仓
                 last_ws = ss.window_stats[-1]
                 if last_ws.final_shares is not None:
                     last_window = windows[-1] if windows else None
                     if last_window is not None:
                         final_prices = wf_mgr.get_price_matrix(last_window, "all")
-                        final_day_prices = final_prices[-1] if final_prices.shape[0] > 0 else None
+                        final_day_prices = (
+                            final_prices[-1] if final_prices.shape[0] > 0 else None
+                        )
                         codes = wf_mgr.stock_codes
                         if final_day_prices is not None:
                             shares_arr = last_ws.final_shares
@@ -435,7 +465,11 @@ class StrategyOptimizerV2:
                                     continue
                                 value = qty * px
                                 total_pos_val += value
-                                cb = float(cost_arr[i]) if cost_arr is not None and i < len(cost_arr) else 0.0
+                                cb = (
+                                    float(cost_arr[i])
+                                    if cost_arr is not None and i < len(cost_arr)
+                                    else 0.0
+                                )
                                 holding = {
                                     "code": codes[i],
                                     "shares": round(qty, 1),
@@ -445,20 +479,33 @@ class StrategyOptimizerV2:
                                     "cost_value": round(qty * cb, 2) if cb > 0 else 0.0,
                                 }
                                 final_holdings.append(holding)
-                            final_cash_val = round(float(last_ws.final_cash), 2) if last_ws.final_cash else 0.0
+                            final_cash_val = (
+                                round(float(last_ws.final_cash), 2)
+                                if last_ws.final_cash
+                                else 0.0
+                            )
                             total_nav = round(total_pos_val + final_cash_val, 2)
-                            final_pos = round(total_pos_val / total_nav * 100, 1) if total_nav > 0 else 0.0
+                            final_pos = (
+                                round(total_pos_val / total_nav * 100, 1)
+                                if total_nav > 0
+                                else 0.0
+                            )
 
             # 季度持仓明细 (取最后一个窗口，持仓最充分)
             quarterly: list[dict] = []
             last_ws_q = ss.window_stats[-1] if ss.window_stats else None
             if last_ws_q is not None and last_ws_q.quarter_shares is not None:
                 import numpy as np2
+
                 q_shares = last_ws_q.quarter_shares
                 q_cash = last_ws_q.quarter_cash
                 q_nav = last_ws_q.quarter_nav
                 q_prices = last_ws_q.quarter_prices
-                cost_arr_q = last_ws_q.cost_basis if last_ws_q.cost_basis is not None else np2.zeros(q_shares.shape[1])
+                cost_arr_q = (
+                    last_ws_q.cost_basis
+                    if last_ws_q.cost_basis is not None
+                    else np2.zeros(q_shares.shape[1])
+                )
                 codes = wf_mgr.stock_codes
                 N_Q = q_shares.shape[0] if q_shares.ndim >= 1 else 0
 
@@ -466,7 +513,9 @@ class StrategyOptimizerV2:
                 w_last = windows[-1] if windows else None
                 interval_days = 0
                 if w_last is not None:
-                    interval_days = max(1, (w_last.test_end_idx - w_last.test_start_idx) // max(N_Q, 1))
+                    interval_days = max(
+                        1, (w_last.test_end_idx - w_last.test_start_idx) // max(N_Q, 1)
+                    )
 
                 for qi in range(N_Q):
                     q_positions = []
@@ -481,26 +530,32 @@ class StrategyOptimizerV2:
                         value = qty * px
                         pos_val += value
                         cb = float(cost_arr_q[i])
-                        q_positions.append({
-                            "code": codes[i],
-                            "shares": round(qty, 1),
-                            "cost": round(cb, 2),
-                            "price": round(px, 2),
-                            "value": round(value, 2),
-                            "pnl": round((px - cb) * qty, 2) if cb > 0 else 0.0,
-                            "pnl_pct": round((px / cb - 1) * 100, 1) if cb > 0 else 0.0,
-                        })
+                        q_positions.append(
+                            {
+                                "code": codes[i],
+                                "shares": round(qty, 1),
+                                "cost": round(cb, 2),
+                                "price": round(px, 2),
+                                "value": round(value, 2),
+                                "pnl": round((px - cb) * qty, 2) if cb > 0 else 0.0,
+                                "pnl_pct": round((px / cb - 1) * 100, 1)
+                                if cb > 0
+                                else 0.0,
+                            }
+                        )
                     nav_val = float(q_nav[qi]) if q_nav.ndim >= 1 else 0.0
                     cash_val = float(q_cash[qi]) if q_cash.ndim >= 1 else 0.0
                     pos_pct = round(pos_val / nav_val * 100, 1) if nav_val > 0 else 0.0
-                    quarterly.append({
-                        "quarter": qi + 1,
-                        "day": (qi + 1) * interval_days,
-                        "cash": round(cash_val, 2),
-                        "nav": round(nav_val, 2),
-                        "pos_pct": pos_pct,
-                        "positions": q_positions,
-                    })
+                    quarterly.append(
+                        {
+                            "quarter": qi + 1,
+                            "day": (qi + 1) * interval_days,
+                            "cash": round(cash_val, 2),
+                            "nav": round(nav_val, 2),
+                            "pos_pct": pos_pct,
+                            "positions": q_positions,
+                        }
+                    )
             else:
                 quarterly = []
 
@@ -519,20 +574,32 @@ class StrategyOptimizerV2:
                     t = ss.encoding.buy_thresholds[j]
                     f = ss.encoding.buy_fracs[j]
                     builder_name = self.ds_cfg.buy_builders[b]
-                    params_summary[f"buy_{j+1}_signal"] = builder_name
-                    params_summary[f"buy_{j+1}_t"] = f"{t / (self.ds_cfg.threshold_levels - 1):.3f}" if self.ds_cfg.threshold_levels > 1 else "0.000"
+                    params_summary[f"buy_{j + 1}_signal"] = builder_name
+                    params_summary[f"buy_{j + 1}_t"] = (
+                        f"{t / (self.ds_cfg.threshold_levels - 1):.3f}"
+                        if self.ds_cfg.threshold_levels > 1
+                        else "0.000"
+                    )
                     if not use_pt:
-                        params_summary[f"buy_{j+1}_frac"] = f"{self.ds_cfg.frac_levels[f]:.3f}"
+                        params_summary[f"buy_{j + 1}_frac"] = (
+                            f"{self.ds_cfg.frac_levels[f]:.3f}"
+                        )
                 # 卖出
                 for j in range(ss.encoding.n_sell_rules):
                     b = ss.encoding.sell_builders[j]
                     t = ss.encoding.sell_thresholds[j]
                     f = ss.encoding.sell_fracs[j]
                     builder_name = self.ds_cfg.sell_builders[b]
-                    params_summary[f"sell_{j+1}_signal"] = builder_name
-                    params_summary[f"sell_{j+1}_t"] = f"{t / (self.ds_cfg.threshold_levels - 1):.3f}" if self.ds_cfg.threshold_levels > 1 else "0.000"
+                    params_summary[f"sell_{j + 1}_signal"] = builder_name
+                    params_summary[f"sell_{j + 1}_t"] = (
+                        f"{t / (self.ds_cfg.threshold_levels - 1):.3f}"
+                        if self.ds_cfg.threshold_levels > 1
+                        else "0.000"
+                    )
                     if not use_pt:
-                        params_summary[f"sell_{j+1}_frac"] = f"{self.ds_cfg.sell_frac_levels[f]:.3f}"
+                        params_summary[f"sell_{j + 1}_frac"] = (
+                            f"{self.ds_cfg.sell_frac_levels[f]:.3f}"
+                        )
                 # 仓位目标参数
                 if use_pt:
                     sl, bi = ss.encoding.to_position_params(self.ds_cfg)
@@ -565,10 +632,12 @@ class StrategyOptimizerV2:
                 quarterly_holdings=quarterly,
                 strategy_description=(
                     self.signal_fn.to_human_readable(ss.encoding)
-                    if self.signal_fn is not None and hasattr(ss.encoding, 'values')
-                    else (self.engine.to_human_readable(ss.encoding, self.ds_cfg)
-                          if self.engine is not None
-                          else self._format_strategy_description(ss.encoding, self.ds_cfg))
+                    if self.signal_fn is not None and hasattr(ss.encoding, "values")
+                    else (
+                        self.engine.to_human_readable(ss.encoding, self.ds_cfg)
+                        if self.engine is not None
+                        else self._format_strategy_description(ss.encoding, self.ds_cfg)
+                    )
                 ),
             )
             trials.append(trial)
@@ -596,7 +665,7 @@ class StrategyOptimizerV2:
             bn = ds_cfg.buy_builders[encoding.buy_builders[i]]
             tn = encoding.buy_thresholds[i] / max(ds_cfg.threshold_levels - 1, 1)
             label = _BUILDER_LABELS.get(bn, lambda t, n=None: bn)(tn, bn)
-            lines.append(f"  {i+1}. {label}")
+            lines.append(f"  {i + 1}. {label}")
         # 卖出规则
         lines.append("卖出条件:")
         has_sell = False
@@ -606,18 +675,20 @@ class StrategyOptimizerV2:
                 continue
             tn = encoding.sell_thresholds[i] / max(ds_cfg.threshold_levels - 1, 1)
             label = _BUILDER_LABELS.get(bn, lambda t, n=None: bn)(tn, bn)
-            lines.append(f"  {i+1}. {label}")
+            lines.append(f"  {i + 1}. {label}")
             has_sell = True
         if not has_sell:
             lines.append("  (无卖出规则)")
         # 仓位控制
         if ds_cfg.use_position_target:
             sl, bi = encoding.to_position_params(ds_cfg)
-            pm = ds_cfg.position_model if hasattr(ds_cfg, 'position_model') else {}
-            adj = getattr(ds_cfg, 'max_daily_adjust', 0.10)
+            pm = ds_cfg.position_model if hasattr(ds_cfg, "position_model") else {}
+            getattr(ds_cfg, "max_daily_adjust", 0.10)
             sl_str = f"敏感度={sl:.1f}" if sl else ""
-            bi_str = f"倾向={'保守' if bi<0 else '激进'}" if bi else ""
-            lines.append(f"仓位控制: {sl_str} {bi_str} 日调仓上限={pm.get('max_daily_adjust', 0.10):.0%}".strip())
+            bi_str = f"倾向={'保守' if bi < 0 else '激进'}" if bi else ""
+            lines.append(
+                f"仓位控制: {sl_str} {bi_str} 日调仓上限={pm.get('max_daily_adjust', 0.10):.0%}".strip()
+            )
         return "\n".join(lines)
 
     def _encoding_to_rules(self, encoding: StrategyEncoding) -> list[Rule]:
@@ -628,7 +699,11 @@ class StrategyOptimizerV2:
         # 买入规则
         for i in range(encoding.n_buy_rules):
             builder_name = self.ds_cfg.buy_builders[encoding.buy_builders[i]]
-            t_norm = encoding.buy_thresholds[i] / (self.ds_cfg.threshold_levels - 1) if self.ds_cfg.threshold_levels > 1 else 0.0
+            t_norm = (
+                encoding.buy_thresholds[i] / (self.ds_cfg.threshold_levels - 1)
+                if self.ds_cfg.threshold_levels > 1
+                else 0.0
+            )
             frac = self.ds_cfg.frac_levels[encoding.buy_fracs[i]]
 
             condition, reset_when = build_condition(builder_name, t_norm, "buy")
@@ -638,38 +713,48 @@ class StrategyOptimizerV2:
             else:
                 action = f"cash * {frac}"
 
-            rules.append(Rule(
-                id=f"buy_{i+1}",
-                label=_GLOBAL_SIGNAL_NAMES.get(builder_name, f"买入规则{i+1}"),
-                type="buy",
-                priority=i + 1,
-                condition=condition,
-                budget_pool="buy",
-                action_amount=action,
-                reset_when=reset_when,
-            ))
+            rules.append(
+                Rule(
+                    id=f"buy_{i + 1}",
+                    label=_GLOBAL_SIGNAL_NAMES.get(builder_name, f"买入规则{i + 1}"),
+                    type="buy",
+                    priority=i + 1,
+                    condition=condition,
+                    budget_pool="buy",
+                    action_amount=action,
+                    reset_when=reset_when,
+                )
+            )
 
         # 卖出规则
         for i in range(encoding.n_sell_rules):
             builder_name = self.ds_cfg.sell_builders[encoding.sell_builders[i]]
-            t_norm = encoding.sell_thresholds[i] / (self.ds_cfg.threshold_levels - 1) if self.ds_cfg.threshold_levels > 1 else 0.0
+            t_norm = (
+                encoding.sell_thresholds[i] / (self.ds_cfg.threshold_levels - 1)
+                if self.ds_cfg.threshold_levels > 1
+                else 0.0
+            )
             frac = self.ds_cfg.sell_frac_levels[encoding.sell_fracs[i]]
 
             condition, reset_when = build_condition(builder_name, t_norm, "sell")
 
-            rules.append(Rule(
-                id=f"sell_{i+1}",
-                label=_GLOBAL_SIGNAL_NAMES.get(f"sell_{builder_name}",
-                      _GLOBAL_SIGNAL_NAMES.get(builder_name, f"卖出规则{i+1}")),
-                type="sell",
-                priority=encoding.n_buy_rules + i + 1,
-                condition=condition,
-                budget_pool="sell",
-                action_fraction=frac if not use_pt else 0.0,
-                action_min=2500.0 if not use_pt else 0.0,
-                action_max=10000.0 if not use_pt else 0.0,
-                reset_when=reset_when,
-            ))
+            rules.append(
+                Rule(
+                    id=f"sell_{i + 1}",
+                    label=_GLOBAL_SIGNAL_NAMES.get(
+                        f"sell_{builder_name}",
+                        _GLOBAL_SIGNAL_NAMES.get(builder_name, f"卖出规则{i + 1}"),
+                    ),
+                    type="sell",
+                    priority=encoding.n_buy_rules + i + 1,
+                    condition=condition,
+                    budget_pool="sell",
+                    action_fraction=frac if not use_pt else 0.0,
+                    action_min=2500.0 if not use_pt else 0.0,
+                    action_max=10000.0 if not use_pt else 0.0,
+                    reset_when=reset_when,
+                )
+            )
 
         return rules
 
@@ -678,26 +763,30 @@ class StrategyOptimizerV2:
         desc = self.signal_fn.describe_rules(params)
         rules: list[Rule] = []
         for i, name in enumerate(desc.get("buy", []), 1):
-            rules.append(Rule(
-                id=f"buy_{i}",
-                label=name,
-                type="buy",
-                priority=i,
-                condition="__signal_fn__",  # 标记：由 signal_fn.scan_signals 判断
-                budget_pool="buy",
-                action_amount="position_target",
-            ))
+            rules.append(
+                Rule(
+                    id=f"buy_{i}",
+                    label=name,
+                    type="buy",
+                    priority=i,
+                    condition="__signal_fn__",  # 标记：由 signal_fn.scan_signals 判断
+                    budget_pool="buy",
+                    action_amount="position_target",
+                )
+            )
         n_buy = len(rules)
         for i, name in enumerate(desc.get("sell", []), 1):
-            rules.append(Rule(
-                id=f"sell_{i}",
-                label=name,
-                type="sell",
-                priority=n_buy + i,
-                condition="__signal_fn__",
-                budget_pool="sell",
-                action_fraction=0.0,
-            ))
+            rules.append(
+                Rule(
+                    id=f"sell_{i}",
+                    label=name,
+                    type="sell",
+                    priority=n_buy + i,
+                    condition="__signal_fn__",
+                    budget_pool="sell",
+                    action_fraction=0.0,
+                )
+            )
         return rules
 
     def _save_results(self, report: OptimizationReport, save_dir: Path):
@@ -734,9 +823,12 @@ class StrategyOptimizerV2:
                 "params": t.params,
                 "rules": [
                     {
-                        "id": r.id, "label": r.label, "type": r.type,
+                        "id": r.id,
+                        "label": r.label,
+                        "type": r.type,
                         "priority": r.priority,
-                        "condition": r.condition, "budget_pool": r.budget_pool,
+                        "condition": r.condition,
+                        "budget_pool": r.budget_pool,
                         "action_amount": r.action_amount,
                         "action_fraction": r.action_fraction,
                         "reset_when": r.reset_when,
@@ -749,7 +841,8 @@ class StrategyOptimizerV2:
         output["strategies"] = strategies
 
         with open(fname, "w", encoding="utf-8") as f:
-            yaml.dump(output, f, allow_unicode=True, default_flow_style=False,
-                      sort_keys=False)
+            yaml.dump(
+                output, f, allow_unicode=True, default_flow_style=False, sort_keys=False
+            )
 
         logger.info("[V2] 结果已保存到 %s", fname)

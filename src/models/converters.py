@@ -6,7 +6,7 @@ DataFrame ↔ StockPriceData 双向转换，无字段丢失
 """
 
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional
 import pandas as pd
 
 from .schemas import (

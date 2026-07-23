@@ -84,7 +84,6 @@ def set_report_token_timeout(minutes: int):
 
 def register_report_token(html_path):
     """注册报告 token（写入文件，跨进程共享），返回 token 字符串"""
-    import json as _json
     token = _uuid.uuid4().hex[:12]
     expiry = _time.time() + _report_token_timeout * 60
     _report_tokens[token] = (Path(html_path), expiry)
@@ -101,6 +100,7 @@ def _token_file() -> Path:
 def _sync_tokens_to_file():
     """将内存 token 表写入 JSON 文件"""
     import json as _json
+
     data = {}
     for token, (path, exp) in _report_tokens.items():
         data[token] = [str(path), exp]
@@ -114,6 +114,7 @@ def _sync_tokens_to_file():
 def _load_tokens_from_file():
     """从 JSON 文件加载 token 表到内存"""
     import json as _json
+
     tf = _token_file()
     if not tf.exists():
         return

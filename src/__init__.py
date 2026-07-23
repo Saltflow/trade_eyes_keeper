@@ -6,24 +6,29 @@
 
 def get_StockDataFetcher():
     from .core.data_fetcher import StockDataFetcher
+
     return StockDataFetcher
 
 
 def get_ConditionChecker():
     from .core.condition_checker import ConditionChecker
+
     return ConditionChecker
 
 
 def get_EmailNotifier():
     from .notification.email_notifier import EmailNotifier
+
     return EmailNotifier
 
 
 def get_NotifierManager():
     from .notification.manager import NotifierManager
+
     return NotifierManager
 
 
 def get_SchedulerManager():
     from .core.scheduler_manager import SchedulerManager
+
     return SchedulerManager

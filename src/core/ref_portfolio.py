@@ -14,7 +14,6 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
@@ -23,48 +22,52 @@ logger = logging.getLogger(__name__)
 # ── 常量 ──────────────────────────────────────────────────────
 DEFAULT_INITIAL_CAPITAL = 100000.0
 DEFAULT_COMMISSION_RATE = 0.005
-DEFAULT_BUY_AMOUNT = 5000.0          # 每次买入最大金额（已废弃）
-BUY_CASH_FRACTION = 0.20             # 每次买入占现金的比例
-MAX_BUY_AMOUNT = 50000.0             # 单次买入金额上限
-REF_MONTHLY_LIMIT = 50000.0          # 参考持仓月度买入上限（比搜参宽松）
-DEFAULT_SELL_FRACTION = 0.25         # 每次卖出最大比例
-BRIEF_WINDOWS = ("09:50", "14:30")   # 允许调仓的时间窗口
+DEFAULT_BUY_AMOUNT = 5000.0  # 每次买入最大金额（已废弃）
+BUY_CASH_FRACTION = 0.20  # 每次买入占现金的比例
+MAX_BUY_AMOUNT = 50000.0  # 单次买入金额上限
+REF_MONTHLY_LIMIT = 50000.0  # 参考持仓月度买入上限（比搜参宽松）
+DEFAULT_SELL_FRACTION = 0.25  # 每次卖出最大比例
+BRIEF_WINDOWS = ("09:50", "14:30")  # 允许调仓的时间窗口
 DATA_DIR = Path("data")
 PORTFOLIO_FILE = DATA_DIR / "ref_portfolio.yaml"
 
 
 # ── 数据模型 ──────────────────────────────────────────────────
 
+
 @dataclass
 class Holding:
     """单笔持仓"""
+
     code: str
     shares: int
-    avg_cost: float           # 每股平均成本（含手续费摊销）
+    avg_cost: float  # 每股平均成本（含手续费摊销）
 
 
 @dataclass
 class Trade:
     """单笔交易记录"""
-    date: str                 # YYYY-MM-DD
+
+    date: str  # YYYY-MM-DD
     code: str
-    action: str               # "buy" / "sell"
+    action: str  # "buy" / "sell"
     shares: int
-    price: float              # 成交单价
-    cost: float               # 总金额（买入为正，卖出为负）
-    reason: str               # 触发信号 rule_id
+    price: float  # 成交单价
+    cost: float  # 总金额（买入为正，卖出为负）
+    reason: str  # 触发信号 rule_id
     commission: float = 0.0
 
 
 @dataclass
 class RefPortfolio:
     """参考持仓完整状态"""
-    inception_date: str = ""           # 期初日期 YYYY-MM-DD
+
+    inception_date: str = ""  # 期初日期 YYYY-MM-DD
     cash: float = DEFAULT_INITIAL_CAPITAL
     initial_capital: float = DEFAULT_INITIAL_CAPITAL
-    trading_days: int = 0              # 有交易的交易日数
-    last_rebalance_date: str = ""      # 最近一次调仓日期
-    last_reset_date: str = ""          # 最近一次手动重置日期
+    trading_days: int = 0  # 有交易的交易日数
+    last_rebalance_date: str = ""  # 最近一次调仓日期
+    last_reset_date: str = ""  # 最近一次手动重置日期
     holdings: dict[str, Holding] = field(default_factory=dict)
     trade_log: list[Trade] = field(default_factory=list)
 
@@ -101,9 +104,13 @@ class RefPortfolio:
             },
             "trade_log": [
                 {
-                    "date": t.date, "code": t.code, "action": t.action,
-                    "shares": t.shares, "price": round(t.price, 4),
-                    "cost": round(t.cost, 2), "reason": t.reason,
+                    "date": t.date,
+                    "code": t.code,
+                    "action": t.action,
+                    "shares": t.shares,
+                    "price": round(t.price, 4),
+                    "cost": round(t.cost, 2),
+                    "reason": t.reason,
                     "commission": round(t.commission, 4),
                 }
                 for t in self.trade_log
@@ -123,19 +130,28 @@ class RefPortfolio:
         )
         for code, hd in (d.get("holdings") or {}).items():
             pf.holdings[code] = Holding(
-                code=code, shares=hd["shares"], avg_cost=hd["avg_cost"],
+                code=code,
+                shares=hd["shares"],
+                avg_cost=hd["avg_cost"],
             )
         for td in d.get("trade_log") or []:
-            pf.trade_log.append(Trade(
-                date=td["date"], code=td["code"], action=td["action"],
-                shares=td["shares"], price=td["price"], cost=td["cost"],
-                reason=td.get("reason", ""),
-                commission=td.get("commission", 0.0),
-            ))
+            pf.trade_log.append(
+                Trade(
+                    date=td["date"],
+                    code=td["code"],
+                    action=td["action"],
+                    shares=td["shares"],
+                    price=td["price"],
+                    cost=td["cost"],
+                    reason=td.get("reason", ""),
+                    commission=td.get("commission", 0.0),
+                )
+            )
         return pf
 
 
 # ── 管理器 ────────────────────────────────────────────────────
+
 
 class RefPortfolioManager:
     """参考持仓管理器：加载/保存/重置/调仓/Nav 计算。"""
@@ -168,8 +184,9 @@ class RefPortfolioManager:
         try:
             data = {"ref_portfolio": pf.to_dict()}
             tmp.write_text(
-                yaml.dump(data, allow_unicode=True, default_flow_style=False,
-                          sort_keys=False),
+                yaml.dump(
+                    data, allow_unicode=True, default_flow_style=False, sort_keys=False
+                ),
                 encoding="utf-8",
             )
             tmp.replace(self._file)
@@ -263,7 +280,7 @@ class RefPortfolioManager:
             return pf, []
 
         # ── 分类信号 ──
-        buy_signals = []   # (stock_code, rule_id)
+        buy_signals = []  # (stock_code, rule_id)
         sell_signals = []  # (stock_code, rule_id)
         skipped_alerts = 0
 
@@ -320,8 +337,9 @@ class RefPortfolioManager:
             trading_days=pf.trading_days,
             last_rebalance_date=pf.last_rebalance_date,
             last_reset_date=pf.last_reset_date,
-            holdings={k: Holding(v.code, v.shares, v.avg_cost)
-                      for k, v in pf.holdings.items()},
+            holdings={
+                k: Holding(v.code, v.shares, v.avg_cost) for k, v in pf.holdings.items()
+            },
             trade_log=list(pf.trade_log),
         )
         day_buy_total = 0.0
@@ -358,9 +376,14 @@ class RefPortfolioManager:
                 del new_pf.holdings[code]
 
             trade = Trade(
-                date=trade_date, code=code, action="sell",
-                shares=sell_shares, price=round(price, 4), cost=-gross,
-                reason=rid, commission=commission,
+                date=trade_date,
+                code=code,
+                action="sell",
+                shares=sell_shares,
+                price=round(price, 4),
+                cost=-gross,
+                reason=rid,
+                commission=commission,
             )
             trades.append(trade)
             new_pf.trade_log.append(trade)
@@ -378,7 +401,9 @@ class RefPortfolioManager:
             price = raw_price * fx_rate  # → CNY
             price_cny = price
 
-            max_amount = min(new_pf.cash * BUY_CASH_FRACTION, MAX_BUY_AMOUNT, new_pf.cash)
+            max_amount = min(
+                new_pf.cash * BUY_CASH_FRACTION, MAX_BUY_AMOUNT, new_pf.cash
+            )
             if max_amount <= 0:
                 logger.debug(f"参考持仓{tag} 买入跳过 {code}: 现金不足")
                 continue
@@ -433,13 +458,20 @@ class RefPortfolioManager:
                 h.avg_cost = total_cost_basis / h.shares if h.shares > 0 else price_cny
             else:
                 new_pf.holdings[code] = Holding(
-                    code=code, shares=buy_shares, avg_cost=price_cny,
+                    code=code,
+                    shares=buy_shares,
+                    avg_cost=price_cny,
                 )
 
             trade = Trade(
-                date=trade_date, code=code, action="buy",
-                shares=buy_shares, price=round(price_cny, 4), cost=gross,
-                reason=rid, commission=commission,
+                date=trade_date,
+                code=code,
+                action="buy",
+                shares=buy_shares,
+                price=round(price_cny, 4),
+                cost=gross,
+                reason=rid,
+                commission=commission,
             )
             trades.append(trade)
             new_pf.trade_log.append(trade)
@@ -452,8 +484,7 @@ class RefPortfolioManager:
         if trades:
             new_pf.last_rebalance_date = trade_date
             new_pf.trading_days = pf.trading_days + (
-                1 if (pf.last_rebalance_date or "")[:10] != trade_date[:10]
-                else 0
+                1 if (pf.last_rebalance_date or "")[:10] != trade_date[:10] else 0
             )
 
         logger.info(
@@ -493,13 +524,15 @@ class RefPortfolioManager:
         holdings_list = []
         for code, h in pf.holdings.items():
             p = prices.get(code, 0.0)
-            holdings_list.append({
-                "code": code,
-                "shares": h.shares,
-                "price": round(p, 2),
-                "market_value": round(h.shares * p, 2),
-                "avg_cost": round(h.avg_cost, 4),
-            })
+            holdings_list.append(
+                {
+                    "code": code,
+                    "shares": h.shares,
+                    "price": round(p, 2),
+                    "market_value": round(h.shares * p, 2),
+                    "avg_cost": round(h.avg_cost, 4),
+                }
+            )
 
         return {
             "inception_date": pf.inception_date,

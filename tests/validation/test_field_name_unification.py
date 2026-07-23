@@ -4,12 +4,9 @@
 """
 
 import pandas as pd
-import pytest
 
 from config import get_alerts_config
 from src.alerting.alert_engine import AlertEngine
-from src.alerting.alert_processor import AlertProcessor
-from src.core.condition_checker import ConditionChecker
 
 
 class TestFieldNameUnification:
@@ -63,9 +60,6 @@ class TestFieldNameUnification:
 
     def test_condition_checker_uses_low_price_directly(self):
         """测试condition_checker直接使用low_price字段"""
-        alerts_config = get_alerts_config("config/alerts.yaml")
-        processor = AlertProcessor(alerts_config, "./cache")
-
         # 创建alert字典（模拟alert_engine的输出）
         alert_from_engine = {
             "stock_code": "600000",
@@ -137,18 +131,8 @@ class TestFieldNameUnification:
 
     def test_no_field_mapping_required(self):
         """测试不需要字段映射（price → low_price）"""
-        # 模拟旧的alert_engine输出（使用"price"字段）
-        old_alert = {
-            "stock_code": "600000",
-            "anchor_name": "ma60",
-            "anchor_value": 6.0,
-            "price": 5.74,  # ← 旧的字段名
-            "percentage": -4.33,
-        }
-
-        # 旧的condition_checker需要映射
-        # old_price = old_alert.get("price")
-        # result = {"low_price": old_price}  # ← 需要映射
+        # 模拟旧的alert_engine输出（使用"price"字段）→ 注释掉避免未使用警告
+        # old_alert = {"stock_code": "600000", ..., "price": 5.74}
 
         # 新的alert_engine输出（使用"low_price"字段）
         new_alert = {

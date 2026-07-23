@@ -23,20 +23,24 @@ import pytest
 def synthetic_stocks_data():
     """生成 3 年 / 3 只股票的合成数据"""
     np.random.seed(42)
-    dates = pd.date_range("2023-01-01", periods=750, freq="B").strftime("%Y-%m-%d").tolist()
+    dates = (
+        pd.date_range("2023-01-01", periods=750, freq="B").strftime("%Y-%m-%d").tolist()
+    )
     stocks = {}
     for code in ["600001", "600002", "600003"]:
         # 模拟有趋势的价格
         trend = np.linspace(0, 0.3, 750) + np.random.randn(750).cumsum() * 0.01
         close = 10 * np.exp(trend)
-        df = pd.DataFrame({
-            "date": dates,
-            "open": close * (1 + np.random.randn(750) * 0.005),
-            "high": close * (1 + np.abs(np.random.randn(750) * 0.008)),
-            "low": close * (1 - np.abs(np.random.randn(750) * 0.008)),
-            "close": close,
-            "volume": np.abs(np.random.randn(750)) * 1e6 + 5e5,
-        })
+        df = pd.DataFrame(
+            {
+                "date": dates,
+                "open": close * (1 + np.random.randn(750) * 0.005),
+                "high": close * (1 + np.abs(np.random.randn(750) * 0.008)),
+                "low": close * (1 - np.abs(np.random.randn(750) * 0.008)),
+                "close": close,
+                "volume": np.abs(np.random.randn(750)) * 1e6 + 5e5,
+            }
+        )
         stocks[code] = df
     return stocks
 
@@ -48,17 +52,17 @@ def constraints_config():
 
     raw = {
         "hard_constraints": {
-            "min_avg_position_pct": 0.0,     # 放宽：允许空仓
-            "max_drawdown_pct": -99.0,       # 放宽：几乎不限制
-            "max_return_std_pct": 100.0,     # 放宽
-            "min_trades_per_month": 0,       # 放宽：允许无交易
-            "max_trades_per_month": 999,     # 放宽
+            "min_avg_position_pct": 0.0,  # 放宽：允许空仓
+            "max_drawdown_pct": -99.0,  # 放宽：几乎不限制
+            "max_return_std_pct": 100.0,  # 放宽
+            "min_trades_per_month": 0,  # 放宽：允许无交易
+            "max_trades_per_month": 999,  # 放宽
         },
         "walk_forward": {
-            "train_months": 6,               # 缩短训练期
-            "test_months": 3,                # 缩短测试期
+            "train_months": 6,  # 缩短训练期
+            "test_months": 3,  # 缩短测试期
             "step_months": 1,
-            "num_windows": 3,                # 减少窗口
+            "num_windows": 3,  # 减少窗口
         },
         "genetic_search": {
             "phase1_random_samples": 50,
@@ -68,7 +72,7 @@ def constraints_config():
             "offspring_size": 30,
         },
         "discrete_search": {
-            "num_buy_rules": 3,              # 减少规则数（加速）
+            "num_buy_rules": 3,  # 减少规则数（加速）
         },
     }
     return StrategyConstraints(raw)
@@ -84,6 +88,7 @@ class TestConstraintLoader:
 
     def test_default_values(self):
         from src.analysis.optimizer_constraints import StrategyConstraints
+
         c = StrategyConstraints({})
         assert c.min_avg_position_pct == 20.0
         assert c.max_drawdown_pct == -25.0
@@ -106,7 +111,6 @@ walk_forward:
   step_months: 2
   num_windows: 5
 """
-        import yaml
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(yaml_content)
             f.flush()
@@ -123,21 +127,26 @@ walk_forward:
         """测试硬性约束过滤"""
         from src.analysis.optimizer_constraints import StrategyConstraints, WindowStats
 
-        c = StrategyConstraints({
-            "hard_constraints": {
-                "min_avg_position_pct": 10.0,
-                "max_drawdown_pct": -20.0,
-                "max_return_std_pct": 5.0,
-                "min_trades_per_month": 1,
-                "max_trades_per_month": 5,
-            },
-        })
+        c = StrategyConstraints(
+            {
+                "hard_constraints": {
+                    "min_avg_position_pct": 10.0,
+                    "max_drawdown_pct": -20.0,
+                    "max_return_std_pct": 5.0,
+                    "min_trades_per_month": 1,
+                    "max_trades_per_month": 5,
+                },
+            }
+        )
 
         # 好的策略（全部通过）
         good_stats = [
             WindowStats(
-                test_excess_return=5.0, max_drawdown_pct=-5.0,
-                avg_position_pct=50.0, total_trades=9, test_months=3,
+                test_excess_return=5.0,
+                max_drawdown_pct=-5.0,
+                avg_position_pct=50.0,
+                total_trades=9,
+                test_months=3,
             ),
         ]
         passes, violations = c.check_hard_constraints(good_stats, 5.0)
@@ -147,8 +156,11 @@ walk_forward:
         # 坏策略（仓位太低）
         bad_stats = [
             WindowStats(
-                test_excess_return=0.0, max_drawdown_pct=-5.0,
-                avg_position_pct=5.0, total_trades=3, test_months=3,
+                test_excess_return=0.0,
+                max_drawdown_pct=-5.0,
+                avg_position_pct=5.0,
+                total_trades=3,
+                test_months=3,
             ),
         ]
         passes, violations = c.check_hard_constraints(bad_stats, 0.0)
@@ -157,12 +169,15 @@ walk_forward:
 
     def test_soft_penalty(self):
         from src.analysis.optimizer_constraints import StrategyConstraints
-        c = StrategyConstraints({
-            "soft_constraints": {
-                "min_sharpe": 0.5,
-                "sharpe_penalty_weight": 0.3,
-            },
-        })
+
+        c = StrategyConstraints(
+            {
+                "soft_constraints": {
+                    "min_sharpe": 0.5,
+                    "sharpe_penalty_weight": 0.3,
+                },
+            }
+        )
         # 夏普低于阈值
         penalty = c.compute_soft_penalty(0.2)
         assert penalty > 0
@@ -181,9 +196,13 @@ class TestWalkForwardManager:
 
     def test_creates_windows(self, synthetic_stocks_data):
         from src.analysis.walk_forward import WalkForwardManager
+
         mgr = WalkForwardManager(
             synthetic_stocks_data,
-            train_months=6, test_months=3, step_months=1, num_windows=3,
+            train_months=6,
+            test_months=3,
+            step_months=1,
+            num_windows=3,
         )
         windows = mgr.iter_windows()
         # 750天 ≈ 35个月，至少应生成3个窗口
@@ -195,9 +214,13 @@ class TestWalkForwardManager:
 
     def test_build_matrices(self, synthetic_stocks_data):
         from src.analysis.walk_forward import WalkForwardManager
+
         mgr = WalkForwardManager(
             synthetic_stocks_data,
-            train_months=6, test_months=3, step_months=1, num_windows=3,
+            train_months=6,
+            test_months=3,
+            step_months=1,
+            num_windows=3,
         )
         windows = mgr.iter_windows()
         if not windows:
@@ -213,9 +236,13 @@ class TestWalkForwardManager:
 
     def test_price_matrix(self, synthetic_stocks_data):
         from src.analysis.walk_forward import WalkForwardManager
+
         mgr = WalkForwardManager(
             synthetic_stocks_data,
-            train_months=6, test_months=3, step_months=1, num_windows=3,
+            train_months=6,
+            test_months=3,
+            step_months=1,
+            num_windows=3,
         )
         windows = mgr.iter_windows()
         if not windows:
@@ -237,10 +264,7 @@ class TestFastEvaluator:
     def test_signal_generation(self):
         """测试基本信号生成"""
         from src.analysis.fast_evaluator import (
-            FastEvaluator,
             _build_bollinger_signal,
-            _build_volume_spike,
-            _build_none,
         )
 
         T, N, K = 200, 3, 8
@@ -268,7 +292,9 @@ class TestFastEvaluator:
 
         ev = FastEvaluator(initial_cash=100000, monthly_buy_limit=999999)
         stats = ev.evaluate(
-            ind, price, cash_baseline,
+            ind,
+            price,
+            cash_baseline,
             ["bollinger_signal", "none", "none", "none", "none"],
             [0.5, 0.0, 0.0, 0.0, 0.0],
             [0.15, 0.0, 0.0, 0.0, 0.0],
@@ -320,15 +346,17 @@ class TestGeneticSearcher:
         from src.analysis.genetic_searcher import StrategyEncoding
         from src.analysis.optimizer_constraints import DiscreteSearchConfig
 
-        cfg = DiscreteSearchConfig({
-            "buy_builders": ["bollinger_signal", "none"],
-            "threshold_levels": 10,
-            "frac_levels": [0.05, 0.10],
-            "num_buy_rules": 3,
-            "sell_builders": ["sell_bollinger_signal", "none"],
-            "sell_frac_levels": [0.20, 0.50],
-            "num_sell_rules": 2,
-        })
+        cfg = DiscreteSearchConfig(
+            {
+                "buy_builders": ["bollinger_signal", "none"],
+                "threshold_levels": 10,
+                "frac_levels": [0.05, 0.10],
+                "num_buy_rules": 3,
+                "sell_builders": ["sell_bollinger_signal", "none"],
+                "sell_frac_levels": [0.20, 0.50],
+                "num_sell_rules": 2,
+            }
+        )
 
         enc = StrategyEncoding(
             buy_builders=[0, 1, 1],
@@ -351,14 +379,17 @@ class TestGeneticSearcher:
     def test_crossover(self, synthetic_stocks_data, constraints_config):
         """交叉操作不抛异常"""
         from src.analysis.genetic_searcher import (
-            GeneticSearcher, StrategyEncoding,
+            GeneticSearcher,
         )
         from src.analysis.walk_forward import WalkForwardManager
         from src.analysis.fast_evaluator import FastEvaluator
 
         wf_mgr = WalkForwardManager(
             synthetic_stocks_data,
-            train_months=6, test_months=3, step_months=1, num_windows=3,
+            train_months=6,
+            test_months=3,
+            step_months=1,
+            num_windows=3,
         )
         ev = FastEvaluator(initial_cash=100000, monthly_buy_limit=999999)
 
@@ -368,7 +399,9 @@ class TestGeneticSearcher:
         p2 = searcher._random_strategy()
         child = searcher._crossover(p1, p2)
 
-        assert len(child.buy_builders) == constraints_config.discrete_search.num_buy_rules
+        assert (
+            len(child.buy_builders) == constraints_config.discrete_search.num_buy_rules
+        )
 
     def test_mutation(self, synthetic_stocks_data, constraints_config):
         """变异操作不抛异常"""
@@ -378,7 +411,10 @@ class TestGeneticSearcher:
 
         wf_mgr = WalkForwardManager(
             synthetic_stocks_data,
-            train_months=6, test_months=3, step_months=1, num_windows=3,
+            train_months=6,
+            test_months=3,
+            step_months=1,
+            num_windows=3,
         )
         ev = FastEvaluator(initial_cash=100000, monthly_buy_limit=999999)
 

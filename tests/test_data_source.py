@@ -8,9 +8,8 @@ DataSource 缓存策略 + 复权验证 单元测试（TDD）
 
 import sys
 import os
-from datetime import datetime, timedelta
-from unittest.mock import patch, MagicMock
-import pytest
+from datetime import datetime
+from unittest.mock import patch
 import pandas as pd
 import pytz
 
@@ -52,36 +51,38 @@ class TestShouldBypassCache:
         """过 cutoff，缓存是昨天 → 必须 bypass"""
         mock_dt.now.return_value = datetime(2026, 5, 25, 15, 56, 0)
         ds = self._build_ds("15:55")
-        assert ds._should_bypass_cache(
-            cache_end_date=datetime(2026, 5, 24).date()
-        ) is True
+        assert (
+            ds._should_bypass_cache(cache_end_date=datetime(2026, 5, 24).date()) is True
+        )
 
     @patch("src.data.data_source.datetime")
     def test_after_cutoff_and_cache_is_today_no_bypass(self, mock_dt):
         """过 cutoff，缓存是今天 → 不 bypass"""
         mock_dt.now.return_value = datetime(2026, 5, 25, 15, 56, 0)
         ds = self._build_ds("15:55")
-        assert ds._should_bypass_cache(
-            cache_end_date=datetime(2026, 5, 25).date()
-        ) is False
+        assert (
+            ds._should_bypass_cache(cache_end_date=datetime(2026, 5, 25).date())
+            is False
+        )
 
     @patch("src.data.data_source.datetime")
     def test_before_cutoff_and_cache_not_today_no_bypass(self, mock_dt):
         """没过 cutoff，缓存是昨天 → 不 bypass"""
         mock_dt.now.return_value = datetime(2026, 5, 25, 15, 54, 0)
         ds = self._build_ds("15:55")
-        assert ds._should_bypass_cache(
-            cache_end_date=datetime(2026, 5, 24).date()
-        ) is False
+        assert (
+            ds._should_bypass_cache(cache_end_date=datetime(2026, 5, 24).date())
+            is False
+        )
 
     @patch("src.data.data_source.datetime")
     def test_no_cutoff_config_uses_default(self, mock_dt):
         """无 cutoff 配置时默认 15:55"""
         mock_dt.now.return_value = datetime(2026, 5, 25, 15, 56, 0)
         ds = DataSource({"scheduler": {}, "storage": {}})
-        assert ds._should_bypass_cache(
-            cache_end_date=datetime(2026, 5, 24).date()
-        ) is True
+        assert (
+            ds._should_bypass_cache(cache_end_date=datetime(2026, 5, 24).date()) is True
+        )
 
 
 class TestCheckForwardAdjustment:
@@ -152,9 +153,7 @@ class TestFetchStockDataCacheBehavior:
             ds, "_fetch_with_verify", return_value=fresh
         ) as mock_fetch, patch.object(
             ds, "_check_forward_adjustment", return_value=False
-        ), patch.object(
-            ds, "_write_cache", return_value=None
-        ):
+        ), patch.object(ds, "_write_cache", return_value=None):
             result = ds.fetch_stock_data("000001", days=30)
             # 新行为：即使缓存覆盖到今天，仍做增量拉取 + merge
             mock_fetch.assert_called_once()
@@ -179,9 +178,7 @@ class TestFetchStockDataCacheBehavior:
             ds, "_fetch_with_verify", return_value=fresh
         ) as mock_fetch, patch.object(
             ds, "_check_forward_adjustment", return_value=False
-        ), patch.object(
-            ds, "_write_cache", return_value=None
-        ):
+        ), patch.object(ds, "_write_cache", return_value=None):
             result = ds.fetch_stock_data("000001", days=30)
             # 应合并缓存+新数据，而不是直接返回缓存
             assert len(result) >= 6
@@ -213,7 +210,7 @@ class TestFetchStockDataCacheBehavior:
         ) as mock_fetch, patch.object(
             ds, "_write_cache", return_value=None
         ) as mock_write:
-            result = ds.fetch_stock_data("000001", days=30)
+            ds.fetch_stock_data("000001", days=30)
             # 应调用两次 _fetch_with_verify：增量 + 全量重拉
             assert mock_fetch.call_count == 2
             # 最终应写入全量数据
@@ -231,9 +228,7 @@ class TestFetchStockDataCacheBehavior:
 
         with patch.object(
             ds, "_read_cache", return_value=(cached, dates[0], dates[-1])
-        ), patch.object(
-            ds, "_fetch_with_verify", return_value=pd.DataFrame()
-        ):
+        ), patch.object(ds, "_fetch_with_verify", return_value=pd.DataFrame()):
             result = ds.fetch_stock_data("000001", days=30)
 
         assert not result.empty
@@ -259,9 +254,7 @@ class TestFetchStockDataCacheBehavior:
             ds, "_fetch_with_verify", return_value=fresh
         ) as mock_fetch, patch.object(
             ds, "_check_forward_adjustment", return_value=False
-        ), patch.object(
-            ds, "_write_cache", return_value=None
-        ):
+        ), patch.object(ds, "_write_cache", return_value=None):
             result = ds.fetch_stock_data("510880", days=30)
             mock_fetch.assert_called_once()
             assert len(result) >= 6
@@ -284,9 +277,7 @@ class TestFetchStockDataCacheBehavior:
             ds, "_fetch_with_verify", return_value=fresh
         ) as mock_fetch, patch.object(
             ds, "_check_forward_adjustment", return_value=False
-        ), patch.object(
-            ds, "_write_cache", return_value=None
-        ):
+        ), patch.object(ds, "_write_cache", return_value=None):
             result = ds.fetch_stock_data("000001", days=30)
 
         mock_fetch.assert_called_once()

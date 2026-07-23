@@ -190,7 +190,6 @@ class TestPortfolioOptimizer:
     def test_detect_groups_from_config(self):
         """从配置中正确检测分组"""
         config = {"stocks": ["601728", "600938", "GOOG", "VOO", "00883"]}
-        optimizer = PortfolioOptimizer(config)
         # 只测试分组逻辑
         groups = {"a_share": [], "non_a_share": []}
         for code in config["stocks"]:
@@ -262,20 +261,45 @@ class TestSignalFnEvaluation:
         dates = pd.date_range("2023-01-01", periods=n, freq="B")
         t = np.linspace(0, drift, n) + rng.randn(n).cumsum() * 0.012
         close = 10 * np.exp(t)
-        df = pd.DataFrame({
-            "date": dates.strftime("%Y-%m-%d"),
-            "open": close, "high": close * 1.01, "low": close * 0.99,
-            "close": close, "volume": np.abs(rng.randn(n)) * 1e6 + 5e5,
-        })
-        params = Params(values={
-            "adx_pct_tau": 5, "adx_pct_w": 3, "rsi_pct_tau": 4, "rsi_pct_w": 3,
-            "deviation_pct_tau": 6, "deviation_pct_w": 2, "vol_ratio_pct_tau": 5,
-            "vol_ratio_pct_w": 2, "ma200_dev_pct_tau": 3, "ma200_dev_pct_w": 3,
-            "buy_score_thresh": 1, "sell_score_thresh": 7, "position_frac": 2,
-        }, _engine="percentile")
-        rules = [Rule(id="buy_1", label="加权分位买入", type="buy", priority=1,
-                      condition="__signal_fn__", budget_pool="buy",
-                      action_amount="position_target")]
+        df = pd.DataFrame(
+            {
+                "date": dates.strftime("%Y-%m-%d"),
+                "open": close,
+                "high": close * 1.01,
+                "low": close * 0.99,
+                "close": close,
+                "volume": np.abs(rng.randn(n)) * 1e6 + 5e5,
+            }
+        )
+        params = Params(
+            values={
+                "adx_pct_tau": 5,
+                "adx_pct_w": 3,
+                "rsi_pct_tau": 4,
+                "rsi_pct_w": 3,
+                "deviation_pct_tau": 6,
+                "deviation_pct_w": 2,
+                "vol_ratio_pct_tau": 5,
+                "vol_ratio_pct_w": 2,
+                "ma200_dev_pct_tau": 3,
+                "ma200_dev_pct_w": 3,
+                "buy_score_thresh": 1,
+                "sell_score_thresh": 7,
+                "position_frac": 2,
+            },
+            _engine="percentile",
+        )
+        rules = [
+            Rule(
+                id="buy_1",
+                label="加权分位买入",
+                type="buy",
+                priority=1,
+                condition="__signal_fn__",
+                budget_pool="buy",
+                action_amount="position_target",
+            )
+        ]
         return {"600001": df}, PercentileSignalFn(), params, rules
 
     def test_uses_signal_fn_detection(self):
@@ -285,9 +309,18 @@ class TestSignalFnEvaluation:
 
     def test_no_signal_fn_when_rules_are_conditions(self):
         from src.analysis.rule_engine import Rule
+
         data, sfn, params, _ = self._pct_setup()
-        rules = [Rule(id="buy_1", label="x", type="buy", priority=1,
-                      condition="deviation <= -0.05", budget_pool="buy")]
+        rules = [
+            Rule(
+                id="buy_1",
+                label="x",
+                type="buy",
+                priority=1,
+                condition="deviation <= -0.05",
+                budget_pool="buy",
+            )
+        ]
         ev = PortfolioEvaluator(data, "a_share", rules=rules, signal_fn=sfn)
         assert ev._uses_signal_fn() is False
 
@@ -334,10 +367,12 @@ class TestPortfolioOptimizerSignalFnWiring:
     def test_optimizer_accepts_signal_fn(self):
         from src.analysis.percentile_engine import PercentileSignalFn
         from src.analysis.signal_functions import Params
+
         cfg = {"stocks": [], "portfolio_strategy": {}}
         p = Params(values={"adx_pct_w": 2}, _engine="percentile")
-        opt = PortfolioOptimizer(cfg, custom_rules=None,
-                                 signal_fn=PercentileSignalFn(), engine_params=p)
+        opt = PortfolioOptimizer(
+            cfg, custom_rules=None, signal_fn=PercentileSignalFn(), engine_params=p
+        )
         assert opt.signal_fn is not None
         assert opt.engine_params is p
 

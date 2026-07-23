@@ -16,12 +16,11 @@ import random
 import pandas as pd
 import pytest
 from datetime import datetime
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 # 导入要测试的模块
 from src.session.session_manager import SessionManager
-from src.models.schemas import SessionContext, StockPriceData, DataSource, AdjustmentType
-from src.models.converters import dataframe_to_stock_price_data
+from src.models.schemas import StockPriceData, DataSource, AdjustmentType
 from src.utils import (
     SessionDataSafetyError,
     clear_random_calls,
@@ -99,7 +98,6 @@ class TestSessionDataSafety:
         )
 
         # 临时patch掉测试文件检测
-        from unittest.mock import patch
 
         with patch(
             "utils.session_safety_check._is_caller_from_test", return_value=False
@@ -127,7 +125,6 @@ class TestSessionDataSafety:
         )
 
         # 临时patch掉测试文件检测
-        from unittest.mock import patch
 
         with patch(
             "utils.session_safety_check._is_caller_from_test", return_value=False

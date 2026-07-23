@@ -9,8 +9,7 @@
 
 import json
 import pandas as pd
-import pytest
-from unittest.mock import patch, Mock, MagicMock
+from unittest.mock import patch, MagicMock
 
 
 # ── 模拟新浪港股API响应 ──

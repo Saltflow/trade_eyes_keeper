@@ -19,7 +19,6 @@ import logging
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -41,11 +40,11 @@ logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════
 #  条件构建器池
-# 
+#
 #  每个构建器是一个 callable: (threshold: float, direction: str) → condition: str
 #  threshold 为归一化值 [0,1]，构建器内部映射到真实阈值。
 #  direction = "buy" | "sell"
-# 
+#
 #  构建器同时提供 reset_when 辅助函数。
 # ═══════════════════════════════════════════════════════════════════
 
@@ -175,12 +174,21 @@ CONDITION_BUILDERS: dict[str, dict] = {
 
 # 买入/卖出各自可用的构建器
 BUY_BUILDERS = [
-    "deviation_cross", "rsi_signal", "bollinger_signal",
-    "volume_spike", "deviation_absolute", "trend_follow", "none",
+    "deviation_cross",
+    "rsi_signal",
+    "bollinger_signal",
+    "volume_spike",
+    "deviation_absolute",
+    "trend_follow",
+    "none",
 ]
 SELL_BUILDERS = [
-    "deviation_cross", "rsi_signal", "bollinger_signal",
-    "deviation_absolute", "trend_follow", "none",
+    "deviation_cross",
+    "rsi_signal",
+    "bollinger_signal",
+    "deviation_absolute",
+    "trend_follow",
+    "none",
 ]
 
 
@@ -211,7 +219,9 @@ class StrategyTrial(BaseModel):
     benchmark_returns: dict[str, float] = Field(default_factory=dict)  # 全部基准收益
     strategy_return: float = 0.0  # 策略绝对收益
     final_position_pct: float = 0.0  # 期末仓位率
-    final_holdings: list[dict] = Field(default_factory=list)  # [{code, shares, price, value, pct, cost}]
+    final_holdings: list[dict] = Field(
+        default_factory=list
+    )  # [{code, shares, price, value, pct, cost}]
     final_cash: float = 0.0  # 期末现金
     total_nav: float = 0.0  # 期末总资产
     quarterly_holdings: list[dict] = Field(default_factory=list)
@@ -236,7 +246,9 @@ class OptimizationReport(BaseModel):
     all_train_returns: list[float] = Field(default_factory=list)
     elapsed_seconds: float = 0.0
     best_params: dict = Field(default_factory=dict)
-    benchmarks: dict[str, float] = Field(default_factory=dict)  # 基准名称 → 测试超额收益
+    benchmarks: dict[str, float] = Field(
+        default_factory=dict
+    )  # 基准名称 → 测试超额收益
 
 
 class StrategyOptimizer:
@@ -286,20 +298,31 @@ class StrategyOptimizer:
         """买就满仓、永不卖出"""
         return [
             Rule(
-                id="bn_buy", label="满仓买入", type="buy", priority=1,
-                condition="True", budget_pool="buy",
+                id="bn_buy",
+                label="满仓买入",
+                type="buy",
+                priority=1,
+                condition="True",
+                budget_pool="buy",
                 action_amount="cash * 0.95",
                 reset_when="False",
             ),
             Rule(
-                id="bn_sell", label="禁止卖出", type="sell", priority=2,
-                condition="False", budget_pool="sell",
-                action_fraction=0.0, reset_when="True",
+                id="bn_sell",
+                label="禁止卖出",
+                type="sell",
+                priority=2,
+                condition="False",
+                budget_pool="sell",
+                action_fraction=0.0,
+                reset_when="True",
             ),
         ]
 
     def _compute_benchmarks(
-        self, stock_codes: list[str], test_config: "BacktestConfig",
+        self,
+        stock_codes: list[str],
+        test_config: "BacktestConfig",
     ) -> dict[str, float]:
         """对各基准 ETF 运行满仓持有策略，返回 {名称: 测试超额收益%}"""
         if not self.benchmark_data:
@@ -312,7 +335,9 @@ class StrategyOptimizer:
             evalr = PortfolioEvaluator(single_data, self.group)
             evalr.rules = bench_rules
             # 合并指标（和主策略共用同一套）
-            ind_for_bench = {code: self.indicators.get(code, df)} if self.indicators else None
+            ind_for_bench = (
+                {code: self.indicators.get(code, df)} if self.indicators else None
+            )
             try:
                 result = evalr.evaluate(
                     [code],
@@ -372,16 +397,32 @@ class StrategyOptimizer:
                 prev_dev = None
                 for i in range(1, len(df)):
                     row = df.iloc[i]
-                    prev_row = df.iloc[i - 1]
+                    df.iloc[i - 1]
                     ctx = {
                         "close": float(row.get("close", 0)),
                         "deviation": float(row.get("deviation", 0) or 0),
                         "prev_deviation": prev_dev,
-                        "rsi": float(row.get("rsi", 50) if pd.notna(row.get("rsi")) else 50),
-                        "vol_ratio": float(row.get("vol_ratio", 1.0) if pd.notna(row.get("vol_ratio")) else 1.0),
-                        "boll_pct_b": float(row.get("boll_pct_b", 0.5) if pd.notna(row.get("boll_pct_b")) else 0.5),
-                        "macd_hist": float(row.get("macd_hist", 0) if pd.notna(row.get("macd_hist")) else 0),
-                        "adx": float(row.get("adx", 20) if pd.notna(row.get("adx")) else 20),
+                        "rsi": float(
+                            row.get("rsi", 50) if pd.notna(row.get("rsi")) else 50
+                        ),
+                        "vol_ratio": float(
+                            row.get("vol_ratio", 1.0)
+                            if pd.notna(row.get("vol_ratio"))
+                            else 1.0
+                        ),
+                        "boll_pct_b": float(
+                            row.get("boll_pct_b", 0.5)
+                            if pd.notna(row.get("boll_pct_b"))
+                            else 0.5
+                        ),
+                        "macd_hist": float(
+                            row.get("macd_hist", 0)
+                            if pd.notna(row.get("macd_hist"))
+                            else 0
+                        ),
+                        "adx": float(
+                            row.get("adx", 20) if pd.notna(row.get("adx")) else 20
+                        ),
                         "shares": 0,
                         "ma60": float(row.get("ma60", 0) or 0),
                     }
@@ -425,8 +466,10 @@ class StrategyOptimizer:
 
         logger.info(
             "[PreFilter] 买入 %d→%d, 卖出 %d→%d",
-            len(BUY_BUILDERS), len(keep_buy),
-            len(SELL_BUILDERS), len(keep_sell),
+            len(BUY_BUILDERS),
+            len(keep_buy),
+            len(SELL_BUILDERS),
+            len(keep_sell),
         )
         return keep_buy, keep_sell
 
@@ -439,22 +482,25 @@ class StrategyOptimizer:
         """
         rules_config = self.opt_config.get("strategy_template", {}).get("rules", {})
         specs = []
-        for rule_id, cfg in sorted(rules_config.items(),
-                                   key=lambda x: x[1].get("priority", 99)):
+        for rule_id, cfg in sorted(
+            rules_config.items(), key=lambda x: x[1].get("priority", 99)
+        ):
             builders = cfg.get("builders", [])
             # 预筛选覆盖
             if self._filtered_buy_builders and cfg["type"] == "buy":
                 builders = self._filtered_buy_builders
             elif self._filtered_sell_builders and cfg["type"] == "sell":
                 builders = self._filtered_sell_builders
-            specs.append({
-                "id": rule_id,
-                "type": cfg["type"],
-                "priority": cfg.get("priority", 1),
-                "label": cfg.get("label", rule_id),
-                "builders": builders,
-                "budget_pool": cfg.get("budget_pool", cfg["type"]),
-            })
+            specs.append(
+                {
+                    "id": rule_id,
+                    "type": cfg["type"],
+                    "priority": cfg.get("priority", 1),
+                    "label": cfg.get("label", rule_id),
+                    "builders": builders,
+                    "budget_pool": cfg.get("budget_pool", cfg["type"]),
+                }
+            )
         return specs
 
     def _build_dimensions(self, stock_codes: list[str] | None = None) -> list:
@@ -475,15 +521,12 @@ class StrategyOptimizer:
                 continue
             # 1) 构建器选择（n=1 时退化为 [0,1] 避免 skopt 报错，实际只取 0）
             effective_n = max(n_builders, 2)
-            dims.append(Integer(0, effective_n - 1,
-                                name=f"{spec['id']}_builder"))
+            dims.append(Integer(0, effective_n - 1, name=f"{spec['id']}_builder"))
             # 2) 归一化阈值
-            dims.append(Real(t_range[0], t_range[1],
-                             name=f"{spec['id']}_threshold"))
+            dims.append(Real(t_range[0], t_range[1], name=f"{spec['id']}_threshold"))
             # 3) 仓位比例
             fr = buy_f if spec["type"] == "buy" else sell_f
-            dims.append(Real(fr[0], fr[1],
-                             name=f"{spec['id']}_frac"))
+            dims.append(Real(fr[0], fr[1], name=f"{spec['id']}_frac"))
             self._num_rule_dims += 3
 
         # 股票开关
@@ -493,9 +536,11 @@ class StrategyOptimizer:
 
         return dims
 
-    def _params_to_rules(self, param_vec: list[float],
-                         stock_codes: list[str] | None = None,
-                         ) -> tuple[list[Rule], list[str]]:
+    def _params_to_rules(
+        self,
+        param_vec: list[float],
+        stock_codes: list[str] | None = None,
+    ) -> tuple[list[Rule], list[str]]:
         """将参数向量转换为 Rule 列表 + 纳入的股票代码
 
         Returns:
@@ -533,9 +578,7 @@ class StrategyOptimizer:
                 priority=spec["priority"],
                 condition=condition,
                 budget_pool=spec["budget_pool"],
-                action_amount=(
-                    f"cash * {frac}" if spec["type"] == "buy" else None
-                ),
+                action_amount=(f"cash * {frac}" if spec["type"] == "buy" else None),
                 action_fraction=frac if spec["type"] == "sell" else None,
                 action_min=None,
                 action_max=None,
@@ -548,8 +591,7 @@ class StrategyOptimizer:
         if stock_codes and n_rule_dims < len(param_vec):
             stock_flags = param_vec[n_rule_dims:]
             included = [
-                code for code, flag in zip(stock_codes, stock_flags)
-                if flag >= 0.5
+                code for code, flag in zip(stock_codes, stock_flags) if flag >= 0.5
             ]
             if not included:
                 included = stock_codes[:1]  # 至少保留一只
@@ -579,8 +621,11 @@ class StrategyOptimizer:
             logger.info("[IndicatorLibrary] 计算 6 类指标...")
             t0 = time.time()
             self.indicators = compute_all(self.stocks_data)
-            logger.info("[IndicatorLibrary] 完成，%d 只股票，耗时 %.1fs",
-                        len(self.indicators), time.time() - t0)
+            logger.info(
+                "[IndicatorLibrary] 完成，%d 只股票，耗时 %.1fs",
+                len(self.indicators),
+                time.time() - t0,
+            )
 
         # 1b. 观测期预筛选：淘汰无信号的构建器
         self._prefilter_builders(stock_codes, observe_days=120)
@@ -588,9 +633,13 @@ class StrategyOptimizer:
         # 2. 构建搜索空间
         dimensions = self._build_dimensions(stock_codes)
         rule_specs = self._get_rule_specs()
-        logger.info("[StrategyOptimizer] 搜索空间: %d 维 (%d 规则 + %d 股票开关) | 迭代 %d 轮",
-                    len(dimensions), self._num_rule_dims,
-                    len(dimensions) - self._num_rule_dims, n_calls)
+        logger.info(
+            "[StrategyOptimizer] 搜索空间: %d 维 (%d 规则 + %d 股票开关) | 迭代 %d 轮",
+            len(dimensions),
+            self._num_rule_dims,
+            len(dimensions) - self._num_rule_dims,
+            n_calls,
+        )
 
         # 3. 评估器
         evaluator = PortfolioEvaluator(self.stocks_data, self.group)
@@ -628,7 +677,9 @@ class StrategyOptimizer:
                 best_fitness = fitness
                 logger.info(
                     "[BayesOpt] 新最优 | 部署超额 %.1f%% | 回撤 %.1f%% | 入选 %d 只",
-                    excess, dd, len(included),
+                    excess,
+                    dd,
+                    len(included),
                 )
 
             return -fitness  # gp_minimize 最小化
@@ -636,8 +687,11 @@ class StrategyOptimizer:
         # 5. 贝叶斯优化
         t0 = time.time()
         opt_result = gp_minimize(
-            objective, dimensions, n_calls=n_calls,
-            n_random_starts=n_random, verbose=False,
+            objective,
+            dimensions,
+            n_calls=n_calls,
+            n_random_starts=n_random,
+            verbose=False,
         )
         elapsed = time.time() - t0
         logger.info("[BayesOpt] 完成。%d 次评估，耗时 %.0fs", n_calls, elapsed)
@@ -671,27 +725,31 @@ class StrategyOptimizer:
                 builders = spec.get("builders", [])
                 # 单 builder 时 skopt 维度 [0,1] 可能给 1，clamp 到 0
                 b_idx = min(b_idx, len(builders) - 1) if builders else 0
-                b_name = builders[b_idx] if builders else CONDITION_BUILDERS["none"]["label"]
+                b_name = (
+                    builders[b_idx] if builders else CONDITION_BUILDERS["none"]["label"]
+                )
                 params_short[f"{spec['id']}_signal"] = b_name
-                params_short[f"{spec['id']}_t"] = f"{param_vec[p_idx+1]:.3f}"
-                params_short[f"{spec['id']}_frac"] = f"{param_vec[p_idx+2]:.3f}"
+                params_short[f"{spec['id']}_t"] = f"{param_vec[p_idx + 1]:.3f}"
+                params_short[f"{spec['id']}_frac"] = f"{param_vec[p_idx + 2]:.3f}"
                 p_idx += 3
 
             params_short["_stocks"] = ",".join(included[:5])
             if len(included) > 5:
-                params_short["_stocks"] += f" +{len(included)-5}"
+                params_short["_stocks"] += f" +{len(included) - 5}"
 
-            trials.append(StrategyTrial(
-                params=params_short,
-                rules=rules,
-                train_return=train_excess,
-                train_drawdown=train_dd,
-                test_return=test_ret,
-                test_drawdown=test_dd,
-                sharpe=result.sharpe_ratio,
-                trade_count=result.trade_count,
-                sub_periods=result.sub_periods,
-            ))
+            trials.append(
+                StrategyTrial(
+                    params=params_short,
+                    rules=rules,
+                    train_return=train_excess,
+                    train_drawdown=train_dd,
+                    test_return=test_ret,
+                    test_drawdown=test_dd,
+                    sharpe=result.sharpe_ratio,
+                    trade_count=result.trade_count,
+                    sub_periods=result.sub_periods,
+                )
+            )
 
         # 按测试期超额收益排序
         trials.sort(key=lambda t: t.test_return, reverse=True)
@@ -699,8 +757,10 @@ class StrategyOptimizer:
         top_trials = trials[:top_n]
 
         # 收敛曲线
-        convergence = [-opt_result.func_vals[:i].min()
-                       for i in range(1, len(opt_result.func_vals) + 1)]
+        convergence = [
+            -opt_result.func_vals[:i].min()
+            for i in range(1, len(opt_result.func_vals) + 1)
+        ]
         all_excess = [t[3] for t in all_trials]  # deploy excess
 
         report = OptimizationReport(
@@ -749,6 +809,7 @@ class StrategyOptimizer:
           - 验证期 (12-24月): 收益率 / 回撤 / 交易次数
         """
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         import matplotlib.ticker as mticker
@@ -761,7 +822,8 @@ class StrategyOptimizer:
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
         fig.suptitle(
             f"策略搜索报告 — {report.group} — {report.report_id}",
-            fontsize=14, fontweight="bold",
+            fontsize=14,
+            fontweight="bold",
         )
 
         # ══════ 图 1: 贝叶斯收敛 ══════
@@ -771,42 +833,64 @@ class StrategyOptimizer:
 
             # 散点: 所有评估点
             ax1.scatter(
-                x, report.all_train_returns,
-                c="steelblue", alpha=0.3, s=18, edgecolors="none",
+                x,
+                report.all_train_returns,
+                c="steelblue",
+                alpha=0.3,
+                s=18,
+                edgecolors="none",
                 label="每次评估",
             )
 
             # 最优适应度线
             if report.convergence and len(report.convergence) == n:
                 conv = report.convergence
-                ax1.plot(x, conv, color="darkred", linewidth=2,
-                         label="最优适应度")
+                ax1.plot(x, conv, color="darkred", linewidth=2, label="最优适应度")
 
             # 随机/贝叶斯分界
             rs = report.n_random_starts
             if rs and 0 < rs < n:
-                ax1.axvline(x=rs + 0.5, color="gray", linestyle="--",
-                            alpha=0.7, linewidth=1)
-                ax1.text(rs + 1, ax1.get_ylim()[1] * 0.95,
-                         "← 随机采样", fontsize=8, color="gray")
-                ax1.text(rs + 1, ax1.get_ylim()[1] * 0.88,
-                         "贝叶斯优化 →", fontsize=8, color="gray")
+                ax1.axvline(
+                    x=rs + 0.5, color="gray", linestyle="--", alpha=0.7, linewidth=1
+                )
+                ax1.text(
+                    rs + 1,
+                    ax1.get_ylim()[1] * 0.95,
+                    "← 随机采样",
+                    fontsize=8,
+                    color="gray",
+                )
+                ax1.text(
+                    rs + 1,
+                    ax1.get_ylim()[1] * 0.88,
+                    "贝叶斯优化 →",
+                    fontsize=8,
+                    color="gray",
+                )
 
             ax1.set_ylabel("部署期超额收益 (%)", fontsize=11)
             ax1.set_xlabel("迭代轮次", fontsize=11)
             ax1.legend(loc="lower right", fontsize=9)
             ax1.grid(True, alpha=0.3)
-            ax1.set_title("图 1: 贝叶斯收敛曲线 (训练期 0-12 月, 超额收益)", fontsize=12)
+            ax1.set_title(
+                "图 1: 贝叶斯收敛曲线 (训练期 0-12 月, 超额收益)", fontsize=12
+            )
 
         # ══════ 图 2: 最优策略 3 阶段分拆 ══════
         if report.top_strategies:
             best = report.top_strategies[0]
             sp = best.sub_periods or {}
 
-            phase_labels = {"observe": "观察期\n0-6月", "deploy": "部署期\n6-12月",
-                            "test": "验证期\n12-24月"}
-            phase_colors = {"observe": "#bbbbbb", "deploy": "#4c72b0",
-                            "test": "#55a868"}
+            phase_labels = {
+                "observe": "观察期\n0-6月",
+                "deploy": "部署期\n6-12月",
+                "test": "验证期\n12-24月",
+            }
+            phase_colors = {
+                "observe": "#bbbbbb",
+                "deploy": "#4c72b0",
+                "test": "#55a868",
+            }
 
             phases = ["observe", "deploy", "test"]
             returns = []
@@ -819,8 +903,14 @@ class StrategyOptimizer:
                 trades.append(m.trade_count if m else 0)
 
             x_pos = range(len(phases))
-            bars = ax2.bar(x_pos, returns, color=[phase_colors[p] for p in phases],
-                           edgecolor="#333333", linewidth=0.8, width=0.55)
+            ax2.bar(
+                x_pos,
+                returns,
+                color=[phase_colors[p] for p in phases],
+                edgecolor="#333333",
+                linewidth=0.8,
+                width=0.55,
+            )
 
             # 柱顶标注收益率 + 交易次数
             for i, (ret, dd, t) in enumerate(zip(returns, drawdowns, trades)):
@@ -830,14 +920,26 @@ class StrategyOptimizer:
                     label_text += f"  ({t}笔交易)"
                 va = "bottom" if ret >= 0 else "top"
                 y_pos = ret + (1 if ret >= 0 else -1)
-                ax2.text(i, y_pos, label_text, ha="center", va=va,
-                         fontsize=9, fontweight="bold")
+                ax2.text(
+                    i,
+                    y_pos,
+                    label_text,
+                    ha="center",
+                    va=va,
+                    fontsize=9,
+                    fontweight="bold",
+                )
                 # 标注最大回撤
                 if dd < 0:
-                    ax2.text(i, ret + (2 if ret >= 0 else -2),
-                             f"回撤 {dd:.1f}%",
-                             ha="center", va="top" if ret >= 0 else "bottom",
-                             fontsize=8, color="#c44e52")
+                    ax2.text(
+                        i,
+                        ret + (2 if ret >= 0 else -2),
+                        f"回撤 {dd:.1f}%",
+                        ha="center",
+                        va="top" if ret >= 0 else "bottom",
+                        fontsize=8,
+                        color="#c44e52",
+                    )
 
             ax2.set_xticks(list(x_pos))
             ax2.set_xticklabels([phase_labels[p] for p in phases], fontsize=10)
@@ -862,14 +964,18 @@ class StrategyOptimizer:
             bench_colors = {"沪深300": "#e8a838", "红利ETF": "#c44e52"}
             for i, (name, val) in enumerate(report.benchmarks.items()):
                 color = bench_colors.get(name, "#ffffff")
-                ax2.axhline(y=val, color=color, linestyle="--", linewidth=1,
-                            alpha=0.8)
-                ax2.text(2.35, val, f" {name} {val:+.1f}%",
-                         fontsize=8, color=color, va="center")
+                ax2.axhline(y=val, color=color, linestyle="--", linewidth=1, alpha=0.8)
+                ax2.text(
+                    2.35,
+                    val,
+                    f" {name} {val:+.1f}%",
+                    fontsize=8,
+                    color=color,
+                    va="center",
+                )
 
         fig.tight_layout(rect=[0, 0, 1, 0.95])
-        fig.savefig(str(output_path), dpi=150, bbox_inches="tight",
-                    facecolor="white")
+        fig.savefig(str(output_path), dpi=150, bbox_inches="tight", facecolor="white")
         plt.close(fig)
         logger.info("[ConvergencePlot] 已保存到 %s", output_path)
 
@@ -912,8 +1018,10 @@ class StrategyOptimizer:
                 sig = best.params.get(sig_key, "?")
                 t_val = best.params.get(t_key, "?")
                 f_val = best.params.get(f_key, "?")
-                lines.append(f"      [{spec['id']}] {sig}  |  t={t_val}  |  "
-                             f"{'买入' if spec['type']=='buy' else '卖出'}{f_val}")
+                lines.append(
+                    f"      [{spec['id']}] {sig}  |  t={t_val}  |  "
+                    f"{'买入' if spec['type'] == 'buy' else '卖出'}{f_val}"
+                )
             lines.append("")
             lines.append("  ★ 最优策略规则详情:")
             for rule in best.rules:
@@ -932,7 +1040,9 @@ class StrategyOptimizer:
             if len(set(test_ret)) < 2:
                 lines.append("      测试期收益率一致（可能无交易），跳过相关性计算")
             else:
-                corr = np.corrcoef(train_ret, test_ret)[0, 1] if len(train_ret) > 2 else 0
+                corr = (
+                    np.corrcoef(train_ret, test_ret)[0, 1] if len(train_ret) > 2 else 0
+                )
                 if np.isnan(corr) or np.isinf(corr):
                     corr = 0.0
                 lines.append(f"      训练-测试收益相关性: {corr:+.3f}")
@@ -946,8 +1056,14 @@ class StrategyOptimizer:
         if report.benchmarks:
             lines.append("  ★ 基准对比 (买入持有不动):")
             for name, val in report.benchmarks.items():
-                marker = "✓ 击败" if (report.top_strategies and 
-                    report.top_strategies[0].test_return > val) else "✗ 不及"
+                marker = (
+                    "✓ 击败"
+                    if (
+                        report.top_strategies
+                        and report.top_strategies[0].test_return > val
+                    )
+                    else "✗ 不及"
+                )
                 lines.append(f"      {name}: 测试超额 {val:+.2f}%  {marker}")
             lines.append("")
 
@@ -1009,8 +1125,9 @@ class StrategyOptimizer:
         output["strategies"] = strategies
 
         with open(fname, "w", encoding="utf-8") as f:
-            yaml.dump(output, f, allow_unicode=True, default_flow_style=False,
-                       sort_keys=False)
+            yaml.dump(
+                output, f, allow_unicode=True, default_flow_style=False, sort_keys=False
+            )
 
         logger.info("[StrategyOptimizer] 结果已保存到 %s", fname)
         return fname
@@ -1046,8 +1163,14 @@ class StrategyOptimizer:
         for k, v in (best_sp_data or {}).items():
             if hasattr(v, "label"):
                 d = {}
-                for f_name in ("label", "total_return", "max_drawdown",
-                               "sharpe_ratio", "trade_count", "excess_return"):
+                for f_name in (
+                    "label",
+                    "total_return",
+                    "max_drawdown",
+                    "sharpe_ratio",
+                    "trade_count",
+                    "excess_return",
+                ):
                     val = getattr(v, f_name, None)
                     if hasattr(val, "item"):
                         val = float(val.item())
@@ -1058,30 +1181,40 @@ class StrategyOptimizer:
 
         # 策略列表（可序列化）
         strats = []
-        for s in (report.top_strategies or []):
-            strats.append({
-                "train_return": round(float(getattr(s, "train_return", 0)), 4),
-                "test_return": round(float(getattr(s, "test_return", 0)), 4),
-                "test_drawdown": round(float(getattr(s, "test_drawdown", 0)), 4),
-                "sharpe": round(float(getattr(s, "sharpe", 0)), 4),
-                "trade_count": getattr(s, "trade_count", 0),
-                "params": getattr(s, "params", {}),
-                "rules": [
-                    {
-                        "id": r.id, "type": r.type, "priority": r.priority,
-                        "condition": r.condition, "action_amount": r.action_amount,
-                        "action_fraction": r.action_fraction, "reset_when": r.reset_when,
-                    }
-                    for r in (getattr(s, "rules", None) or [])
-                ],
-            })
+        for s in report.top_strategies or []:
+            strats.append(
+                {
+                    "train_return": round(float(getattr(s, "train_return", 0)), 4),
+                    "test_return": round(float(getattr(s, "test_return", 0)), 4),
+                    "test_drawdown": round(float(getattr(s, "test_drawdown", 0)), 4),
+                    "sharpe": round(float(getattr(s, "sharpe", 0)), 4),
+                    "trade_count": getattr(s, "trade_count", 0),
+                    "params": getattr(s, "params", {}),
+                    "rules": [
+                        {
+                            "id": r.id,
+                            "type": r.type,
+                            "priority": r.priority,
+                            "condition": r.condition,
+                            "action_amount": r.action_amount,
+                            "action_fraction": r.action_fraction,
+                            "reset_when": r.reset_when,
+                        }
+                        for r in (getattr(s, "rules", None) or [])
+                    ],
+                }
+            )
 
         pf_buy = len(self._filtered_buy_builders or BUY_BUILDERS)
         pf_sell = len(self._filtered_sell_builders or SELL_BUILDERS)
         data = {
-            "all_returns": [round(float(x), 4) for x in (report.all_train_returns or [])],
+            "all_returns": [
+                round(float(x), 4) for x in (report.all_train_returns or [])
+            ],
             "convergence": [round(float(x), 4) for x in (report.convergence or [])],
-            "random_line": (report.n_random_starts + 0.5) if report.n_random_starts else None,
+            "random_line": (report.n_random_starts + 0.5)
+            if report.n_random_starts
+            else None,
             "best_phases": phase_json,
             "strategies": strats,
             "benchmarks": report.benchmarks or {},
@@ -1096,7 +1229,7 @@ class StrategyOptimizer:
             "__ITERATIONS__": str(report.iterations),
             "__ELAPSED__": f"{report.elapsed_seconds:.0f}s",
             "__TEST_RET__": f"{best_ret:+.1f}",
-            "__TEST_COLOR__": ' red' if best_ret < 0 else '',
+            "__TEST_COLOR__": " red" if best_ret < 0 else "",
             "__DD__": f"{best_dd:.1f}",
             "__SHARPE__": f"{best_sp:.3f}",
             "__TRADES__": str(best_trades),

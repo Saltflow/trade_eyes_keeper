@@ -11,7 +11,6 @@ A股和非A股分开计算两组，每组产出3个优化组合（最高收益�
 """
 
 import logging
-from datetime import datetime, timedelta
 from typing import Optional
 
 import pandas as pd
@@ -35,7 +34,7 @@ MONTHLY_BUY_LIMIT = 15000.0
 MONTHLY_SELL_LIMIT = 15000.0
 INITIAL_CASH_PER_STOCK = 10000.0
 TOTAL_CAPITAL = 100000.0
-RISK_FREE_A = 0.02       # deprecated: 新代码应读 YAML market_config.risk_free_rate
+RISK_FREE_A = 0.02  # deprecated: 新代码应读 YAML market_config.risk_free_rate
 RISK_FREE_NON_A = 0.038  # deprecated: 新代码应读 YAML market_config.risk_free_rate
 MIN_TRADING_DAYS = 400
 MIN_EVAL_DAYS = 60
@@ -49,6 +48,7 @@ def _eval_lookback_days() -> int:
     """
     try:
         import yaml
+
         with open("config/optimizer_constraints.yaml", "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
         wf = raw.get("walk_forward", {}) or {}
@@ -56,6 +56,7 @@ def _eval_lookback_days() -> int:
         return int(months * 30.4375)  # 9 个月 ≈ 274 日历天
     except Exception:
         return 274  # default: 9 个月
+
 
 # ── 数据模型 ──
 
@@ -103,17 +104,18 @@ class SubPeriodMetrics(BaseModel):
 
 class PortfolioResult(BaseModel):
     """投资组合优化结果"""
-    name: str                # "max_return", "min_drawdown", "max_sharpe"
-    group: str               # "a_share", "non_a_share"
-    total_return: float      # 组合总收益率(%)
-    max_drawdown: float      # 最大回撤(% ,负值)
-    sharpe_ratio: float      # 夏普比率
-    expected_position: float # 期末持仓市值(元)
-    composition: list[str]   # 成分股列表
-    trade_count: int         # 总交易次数
+
+    name: str  # "max_return", "min_drawdown", "max_sharpe"
+    group: str  # "a_share", "non_a_share"
+    total_return: float  # 组合总收益率(%)
+    max_drawdown: float  # 最大回撤(% ,负值)
+    sharpe_ratio: float  # 夏普比率
+    expected_position: float  # 期末持仓市值(元)
+    composition: list[str]  # 成分股列表
+    trade_count: int  # 总交易次数
     stock_details: list[dict] = Field(default_factory=list)  # 各股详情
-    nav_series: list[float] = Field(default_factory=list)    # 组合净值序列
-    nav_dates: list[str] = Field(default_factory=list)       # 净值对应日期
+    nav_series: list[float] = Field(default_factory=list)  # 组合净值序列
+    nav_dates: list[str] = Field(default_factory=list)  # 净值对应日期
     sub_periods: dict[str, SubPeriodMetrics] = Field(default_factory=dict)  # 子区间指标
     quarterly_holdings: list[dict] = Field(default_factory=list)  # 季末持仓快照
 
@@ -305,31 +307,21 @@ class TimingStrategyEngine:
                         sell_shares = shares  # 清仓
                     else:
                         target_shares = (
-                            int(sell_min / close / self.lot_size)
-                            * self.lot_size
+                            int(sell_min / close / self.lot_size) * self.lot_size
                         )
-                        target_shares = max(
-                            self.lot_size, min(target_shares, shares)
-                        )
+                        target_shares = max(self.lot_size, min(target_shares, shares))
                         sell_shares = target_shares
                     sell_amount = sell_shares * close
 
                 # 约束2：不超过 sell_max
                 if sell_amount > sell_max:
-                    capped = (
-                        int(sell_max / close / self.lot_size)
-                        * self.lot_size
-                    )
-                    sell_shares = max(
-                        self.lot_size, min(capped, shares)
-                    )
+                    capped = int(sell_max / close / self.lot_size) * self.lot_size
+                    sell_shares = max(self.lot_size, min(capped, shares))
                     sell_amount = sell_shares * close
 
                 # 月度限额检查
                 current_month_sells = monthly_sells.get(month_key, 0.0)
-                remaining_sell = max(
-                    0, monthly_sell_limit - current_month_sells
-                )
+                remaining_sell = max(0, monthly_sell_limit - current_month_sells)
                 if remaining_sell <= 0:
                     return
 
@@ -337,8 +329,7 @@ class TimingStrategyEngine:
                 if sell_value < sell_amount:
                     ratio = sell_value / sell_amount
                     sell_shares = (
-                        int(int(shares * ratio) / self.lot_size)
-                        * self.lot_size
+                        int(int(shares * ratio) / self.lot_size) * self.lot_size
                     )
                     sell_shares = max(self.lot_size, sell_shares)
                     sell_value = sell_shares * close
@@ -361,10 +352,7 @@ class TimingStrategyEngine:
                         shares=sell_shares,
                         amount=sell_value - fee,
                         fee=fee,
-                        reason=(
-                            f"{reason_label} "
-                            f"(偏离={deviation * 100:.1f}%)"
-                        ),
+                        reason=(f"{reason_label} (偏离={deviation * 100:.1f}%)"),
                     )
                 )
 
@@ -374,16 +362,13 @@ class TimingStrategyEngine:
                     buy_amount = min(float(action_amount), cash)
                     # 月度限额检查
                     current_month_buys = monthly_buys.get(month_key, 0.0)
-                    remaining_buy = max(
-                        0, monthly_buy_limit - current_month_buys
-                    )
+                    remaining_buy = max(0, monthly_buy_limit - current_month_buys)
                     buy_amount = min(buy_amount, remaining_buy)
 
                     if buy_amount >= close * self.lot_size:
                         available = buy_amount * (1 - COMMISSION_RATE)
                         shares_to_buy = (
-                            int(available / close / self.lot_size)
-                            * self.lot_size
+                            int(available / close / self.lot_size) * self.lot_size
                         )
                         if shares_to_buy > 0:
                             cost = shares_to_buy * close
@@ -392,8 +377,7 @@ class TimingStrategyEngine:
                                 shares += shares_to_buy
                                 cash -= cost + fee
                                 monthly_buys[month_key] = (
-                                    monthly_buys.get(month_key, 0.0)
-                                    + cost + fee
+                                    monthly_buys.get(month_key, 0.0) + cost + fee
                                 )
                                 trade_log.append(
                                     TradeRecord(
@@ -522,8 +506,13 @@ class PortfolioEvaluator:
     对一组股票同时运行择时策略，应用月度限额约束，计算组合级指标。
     """
 
-    def __init__(self, stocks_data: dict[str, pd.DataFrame], group: str,
-                 rules: list[Rule] | None = None, signal_fn=None):
+    def __init__(
+        self,
+        stocks_data: dict[str, pd.DataFrame],
+        group: str,
+        rules: list[Rule] | None = None,
+        signal_fn=None,
+    ):
         """
         Args:
             stocks_data: {stock_code: DataFrame with date, close}
@@ -548,8 +537,12 @@ class PortfolioEvaluator:
         return getattr(self, "_engine_params", None)
 
     def _evaluate_signal_fn(
-        self, active_codes, backtest_config, indicators_data,
-        initial_capital, commission,
+        self,
+        active_codes,
+        backtest_config,
+        indicators_data,
+        initial_capital,
+        commission,
     ) -> "PortfolioResult":
         """分位/评分引擎日报回测：与优化器同一评分流水线。
 
@@ -563,9 +556,14 @@ class PortfolioEvaluator:
         if params is None:
             logger.warning("signal_fn 评估缺少 engine_params，回退空结果")
             return PortfolioResult(
-                name="", group=self.group, total_return=0.0, max_drawdown=0.0,
-                sharpe_ratio=0.0, expected_position=0.0,
-                composition=active_codes, trade_count=0,
+                name="",
+                group=self.group,
+                total_return=0.0,
+                max_drawdown=0.0,
+                sharpe_ratio=0.0,
+                expected_position=0.0,
+                composition=active_codes,
+                trade_count=0,
             )
 
         # 统一日期轴（并集，升序）
@@ -575,6 +573,7 @@ class PortfolioEvaluator:
         # 补齐分位源指标 (rsi/adx/vol_ratio)，deviation/ma200_dev 由引擎兜底
         try:
             from .indicator_library import compute_all
+
             computed = compute_all({c: self.stocks_data[c] for c in active_codes})
         except Exception as e:
             logger.warning(f"signal_fn 指标计算失败，仅用兜底列: {e}")
@@ -596,9 +595,14 @@ class PortfolioEvaluator:
         N = len(active_codes)
         if T == 0 or N == 0:
             return PortfolioResult(
-                name="", group=self.group, total_return=0.0, max_drawdown=0.0,
-                sharpe_ratio=0.0, expected_position=0.0,
-                composition=active_codes, trade_count=0,
+                name="",
+                group=self.group,
+                total_return=0.0,
+                max_drawdown=0.0,
+                sharpe_ratio=0.0,
+                expected_position=0.0,
+                composition=active_codes,
+                trade_count=0,
             )
         date_idx = {d: i for i, d in enumerate(dates)}
 
@@ -632,6 +636,7 @@ class PortfolioEvaluator:
         exec_p = self.signal_fn.execution_params(params)
         # 读取统一执行配置
         from .execution_config import get_execution_config
+
         exec_cfg = get_execution_config()
         monthly = exec_cfg.monthly_buy_limit
         fx_map = exec_cfg.fx_rates
@@ -640,27 +645,37 @@ class PortfolioEvaluator:
 
         # 手数 + 汇率：按标的细分组决定
         from .portfolio_strategy import _detect_fine_group
+
         fine_groups = {c: _detect_fine_group(str(c)) for c in active_codes}
-        main_fg = max(set(fine_groups.values()), key=lambda g: sum(1 for v in fine_groups.values() if v == g))
+        main_fg = max(
+            set(fine_groups.values()),
+            key=lambda g: sum(1 for v in fine_groups.values() if v == g),
+        )
         fx = fx_map.get(main_fg, 1.0)
         lot = lot_map.get(main_fg, 100)
         price = price * fx  # 汇率折算为 CNY 等价
 
         trace = simulate_portfolio(
-            buy_scores, sell_scores, price,
+            buy_scores,
+            sell_scores,
+            price,
             float(initial_capital),
             float(exec_p.get("buy_threshold", 0.0)),
             float(exec_p.get("sell_threshold", 0.0)),
             float(exec_p.get("position_frac", 0.15)),
-            lot, float(monthly), float(commission),
-            dates=dates, stock_codes=list(active_codes),
+            lot,
+            float(monthly),
+            float(commission),
+            dates=dates,
+            stock_codes=list(active_codes),
         )
 
         # 基准：本组价格基准（risk_free 兜底）用于超额收益
-        metrics = compute_metrics(trace, benchmark_series=None)
+        compute_metrics(trace, benchmark_series=None)
 
         return PortfolioResult(
-            name="", group=self.group,
+            name="",
+            group=self.group,
             total_return=trace.total_return_pct,
             max_drawdown=trace.max_drawdown_pct,
             sharpe_ratio=trace.sharpe_ratio,
@@ -693,9 +708,14 @@ class PortfolioEvaluator:
         """
         if not stock_codes:
             return PortfolioResult(
-                name="", group=self.group,
-                total_return=0.0, max_drawdown=0.0, sharpe_ratio=0.0,
-                expected_position=0.0, composition=[], trade_count=0,
+                name="",
+                group=self.group,
+                total_return=0.0,
+                max_drawdown=0.0,
+                sharpe_ratio=0.0,
+                expected_position=0.0,
+                composition=[],
+                trade_count=0,
             )
 
         # ── 参数确定 ──
@@ -709,17 +729,25 @@ class PortfolioEvaluator:
         active_codes = [c for c in stock_codes if c in self.stocks_data]
         if not active_codes:
             return PortfolioResult(
-                name="", group=self.group,
-                total_return=0.0, max_drawdown=0.0, sharpe_ratio=0.0,
-                expected_position=0.0, composition=stock_codes, trade_count=0,
+                name="",
+                group=self.group,
+                total_return=0.0,
+                max_drawdown=0.0,
+                sharpe_ratio=0.0,
+                expected_position=0.0,
+                composition=stock_codes,
+                trade_count=0,
             )
-        n = len(active_codes)
+        len(active_codes)
 
         # ── 分位/评分引擎路径：规则为 __signal_fn__ 时走评分流水线 ──
         if self._uses_signal_fn():
             return self._evaluate_signal_fn(
-                active_codes, backtest_config, indicators_data,
-                effective_initial_capital, effective_commission,
+                active_codes,
+                backtest_config,
+                indicators_data,
+                effective_initial_capital,
+                effective_commission,
             )
 
         # ── 共享状态 ──
@@ -743,13 +771,19 @@ class PortfolioEvaluator:
         daily_benchmark_navs: list[float] = []
         # 按 3 阶段分桶的净值序列 + 交易数（用于子区间指标和收敛图）
         phase_navs: dict[str, list[float]] = {
-            "observe": [], "deploy": [], "test": [],
+            "observe": [],
+            "deploy": [],
+            "test": [],
         }
         phase_dates: dict[str, list[str]] = {
-            "observe": [], "deploy": [], "test": [],
+            "observe": [],
+            "deploy": [],
+            "test": [],
         }
         phase_trade_count: dict[str, int] = {
-            "observe": 0, "deploy": 0, "test": 0,
+            "observe": 0,
+            "deploy": 0,
+            "test": 0,
         }
         quarterly_holdings: list[dict] = []
 
@@ -780,15 +814,30 @@ class PortfolioEvaluator:
                     ind_df["date"] = pd.to_datetime(ind_df["date"])
                     # 只合并指标列（排除 date/close/open 等已有列）
                     indicator_cols = [
-                        c for c in ind_df.columns
-                        if c not in ("date", "open", "close", "high", "low",
-                                     "volume", "amount", "amplitude", "change_pct",
-                                     "change", "turnover", "stock_code", "stock_name")
+                        c
+                        for c in ind_df.columns
+                        if c
+                        not in (
+                            "date",
+                            "open",
+                            "close",
+                            "high",
+                            "low",
+                            "volume",
+                            "amount",
+                            "amplitude",
+                            "change_pct",
+                            "change",
+                            "turnover",
+                            "stock_code",
+                            "stock_name",
+                        )
                     ]
                     if indicator_cols:
                         df = df.merge(
                             ind_df[["date"] + indicator_cols],
-                            on="date", how="left",
+                            on="date",
+                            how="left",
                         )
 
             # 兜底：merge 后关键指标仍缺失则内联计算
@@ -796,8 +845,8 @@ class PortfolioEvaluator:
                 delta = df["close"].diff()
                 gain = delta.clip(lower=0)
                 loss = (-delta).clip(lower=0)
-                avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
-                avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+                avg_gain = gain.ewm(alpha=1 / 14, adjust=False).mean()
+                avg_loss = loss.ewm(alpha=1 / 14, adjust=False).mean()
                 rs = avg_gain / avg_loss.replace(0, float("nan"))
                 df["rsi"] = 100.0 - 100.0 / (1.0 + rs)
             if "boll_pct_b" not in df.columns:
@@ -805,29 +854,36 @@ class PortfolioEvaluator:
                 upper = roll.mean() + 2 * roll.std()
                 lower = roll.mean() - 2 * roll.std()
                 boll_range = upper - lower
-                df["boll_pct_b"] = ((df["close"] - lower) / boll_range.replace(0, float("nan"))).clip(0, 1)
+                df["boll_pct_b"] = (
+                    (df["close"] - lower) / boll_range.replace(0, float("nan"))
+                ).clip(0, 1)
 
             # 兜底计算搜参策略需要的额外指标
             if "adx" not in df.columns:
                 # high/low 缺失时用 close 代替（ADX 退化但不崩）
                 high = df["high"] if "high" in df.columns else df["close"]
                 low = df["low"] if "low" in df.columns else df["close"]
-                tr = pd.concat([
-                    high - low,
-                    (high - df["close"].shift()).abs(),
-                    (low - df["close"].shift()).abs(),
-                ], axis=1).max(axis=1)
-                atr = tr.ewm(alpha=1/14, adjust=False).mean()
+                tr = pd.concat(
+                    [
+                        high - low,
+                        (high - df["close"].shift()).abs(),
+                        (low - df["close"].shift()).abs(),
+                    ],
+                    axis=1,
+                ).max(axis=1)
+                atr = tr.ewm(alpha=1 / 14, adjust=False).mean()
                 up = high.diff()
                 dn = -low.diff()
                 p_dm = up.where((up > 0) & (up > dn), 0.0)
                 n_dm = dn.where((dn > 0) & (dn > up), 0.0)
-                a_up = p_dm.ewm(alpha=1/14, adjust=False).mean()
-                a_dn = n_dm.ewm(alpha=1/14, adjust=False).mean()
+                a_up = p_dm.ewm(alpha=1 / 14, adjust=False).mean()
+                a_dn = n_dm.ewm(alpha=1 / 14, adjust=False).mean()
                 di_p = (a_up / atr.replace(0, float("nan"))) * 100
                 di_n = (a_dn / atr.replace(0, float("nan"))) * 100
-                dx = ((di_p - di_n).abs() / (di_p + di_n).replace(0, float("nan"))) * 100
-                df["adx"] = dx.ewm(alpha=1/14, adjust=False).mean()
+                dx = (
+                    (di_p - di_n).abs() / (di_p + di_n).replace(0, float("nan"))
+                ) * 100
+                df["adx"] = dx.ewm(alpha=1 / 14, adjust=False).mean()
 
             if "macd_hist" not in df.columns:
                 ema12 = df["close"].ewm(span=12, adjust=False).mean()
@@ -840,7 +896,11 @@ class PortfolioEvaluator:
                 df["ma200_dev"] = (df["close"] - ma200) / ma200.replace(0, float("nan"))
 
             if "ma60_slope" not in df.columns:
-                mv = df["ma60"] if "ma60" in df.columns else df["close"].rolling(60, min_periods=1).mean()
+                mv = (
+                    df["ma60"]
+                    if "ma60" in df.columns
+                    else df["close"].rolling(60, min_periods=1).mean()
+                )
                 df["ma60_slope"] = mv / mv.shift(20).replace(0, float("nan")) - 1.0
 
             if "pct_from_ath" not in df.columns:
@@ -866,11 +926,25 @@ class PortfolioEvaluator:
                 }
                 # 携带指标列到上下文
                 for col in df.columns:
-                    if col not in ("date", "open", "close", "high", "low",
-                                   "volume", "ma60", "deviation"):
+                    if col not in (
+                        "date",
+                        "open",
+                        "close",
+                        "high",
+                        "low",
+                        "volume",
+                        "ma60",
+                        "deviation",
+                    ):
                         val = row.get(col)
-                        if val is not None and not (isinstance(val, float) and pd.isna(val)):
-                            info[col] = float(val) if isinstance(val, (int, float, np.floating)) else val
+                        if val is not None and not (
+                            isinstance(val, float) and pd.isna(val)
+                        ):
+                            info[col] = (
+                                float(val)
+                                if isinstance(val, (int, float, np.floating))
+                                else val
+                            )
                 date_map[d][code] = info
 
         # ── 逐日模拟 ──
@@ -1017,8 +1091,10 @@ class PortfolioEvaluator:
 
             # ── 当日 NAV（缺数据标的用最后已知价，避免毛刺）──
             position_value = sum(
-                positions[c] * (
-                    day_prices.get(c) if day_prices.get(c) is not None
+                positions[c]
+                * (
+                    day_prices.get(c)
+                    if day_prices.get(c) is not None
                     else last_prices.get(c, 0)
                 )
                 for c in active_codes
@@ -1038,38 +1114,38 @@ class PortfolioEvaluator:
                     if positions[c] > 0:
                         px = day_prices.get(c) or last_prices.get(c, 0)
                         avg_cost = (
-                            cost_basis[c] / positions[c]
-                            if positions[c] > 0 else 0.0
+                            cost_basis[c] / positions[c] if positions[c] > 0 else 0.0
                         )
                         val = round(positions[c] * px, 2)
                         pnl = round(val - cost_basis[c], 2)
                         pnl_pct = round(
-                            pnl / cost_basis[c] * 100
-                            if cost_basis[c] > 0 else 0.0, 1
+                            pnl / cost_basis[c] * 100 if cost_basis[c] > 0 else 0.0, 1
                         )
-                        q_positions.append({
-                            "code": c,
-                            "shares": positions[c],
-                            "cost": round(avg_cost, 2),
-                            "price": round(px, 2),
-                            "value": val,
-                            "pnl": pnl,
-                            "pnl_pct": pnl_pct,
-                        })
-                q_pos_pct = round(
-                    (position_value / nav * 100) if nav > 0 else 0.0, 1
+                        q_positions.append(
+                            {
+                                "code": c,
+                                "shares": positions[c],
+                                "cost": round(avg_cost, 2),
+                                "price": round(px, 2),
+                                "value": val,
+                                "pnl": pnl,
+                                "pnl_pct": pnl_pct,
+                            }
+                        )
+                q_pos_pct = round((position_value / nav * 100) if nav > 0 else 0.0, 1)
+                quarterly_holdings.append(
+                    {
+                        "quarter": len(quarterly_holdings) + 1,
+                        "day": day_idx,
+                        "cash": round(cash, 2),
+                        "nav": round(nav, 2),
+                        "pos_pct": q_pos_pct,
+                        "positions": q_positions,
+                    }
                 )
-                quarterly_holdings.append({
-                    "quarter": len(quarterly_holdings) + 1,
-                    "day": day_idx,
-                    "cash": round(cash, 2),
-                    "nav": round(nav, 2),
-                    "pos_pct": q_pos_pct,
-                    "positions": q_positions,
-                })
 
             # ── 现金基准线（含无风险复利）──
-            cash_benchmark *= (1.0 + daily_rf)
+            cash_benchmark *= 1.0 + daily_rf
             daily_benchmark_navs.append(cash_benchmark)
 
             # ── 分阶段净值记录（3 阶段：观察/部署/验证）──
@@ -1099,9 +1175,7 @@ class PortfolioEvaluator:
             daily_rets = []
             for i in range(1, len(nav_list)):
                 if nav_list[i - 1] > 0:
-                    daily_rets.append(
-                        (nav_list[i] - nav_list[i - 1]) / nav_list[i - 1]
-                    )
+                    daily_rets.append((nav_list[i] - nav_list[i - 1]) / nav_list[i - 1])
             sp = 0.0
             if len(daily_rets) > 5:
                 excess = [r - risk_free / 252 for r in daily_rets]
@@ -1112,10 +1186,16 @@ class PortfolioEvaluator:
 
         if len(daily_navs) < 2:
             return PortfolioResult(
-                name="", group=self.group,
-                total_return=0.0, max_drawdown=0.0, sharpe_ratio=0.0,
-                expected_position=0.0, composition=stock_codes, trade_count=0,
-                nav_series=daily_navs, nav_dates=nav_dates,
+                name="",
+                group=self.group,
+                total_return=0.0,
+                max_drawdown=0.0,
+                sharpe_ratio=0.0,
+                expected_position=0.0,
+                composition=stock_codes,
+                trade_count=0,
+                nav_series=daily_navs,
+                nav_dates=nav_dates,
             )
 
         total_return, max_drawdown, sharpe = _calc_metrics(daily_navs)
@@ -1140,13 +1220,14 @@ class PortfolioEvaluator:
                     offset = observe_len
                 else:  # test
                     offset = observe_len + deploy_len
-                bench_slice = daily_benchmark_navs[offset:offset + n_phase]
+                bench_slice = daily_benchmark_navs[offset : offset + n_phase]
                 if len(bench_slice) >= 2:
                     bench_initial = bench_slice[0]
                     bench_final = bench_slice[-1]
                     bench_ret = (
                         (bench_final - bench_initial) / bench_initial * 100
-                        if bench_initial > 0 else 0.0
+                        if bench_initial > 0
+                        else 0.0
                     )
                 else:
                     bench_ret = 0.0
@@ -1163,13 +1244,14 @@ class PortfolioEvaluator:
                 )
 
         position_value = sum(
-            positions[c] * float(
-                self.stocks_data[c].iloc[-1]["close"]
-            ) for c in active_codes if positions[c] > 0
+            positions[c] * float(self.stocks_data[c].iloc[-1]["close"])
+            for c in active_codes
+            if positions[c] > 0
         )
 
         return PortfolioResult(
-            name="", group=self.group,
+            name="",
+            group=self.group,
             total_return=total_return,
             max_drawdown=max_drawdown,
             sharpe_ratio=sharpe,
@@ -1198,8 +1280,13 @@ class PortfolioOptimizer:
       3. 最佳夏普比 (max_sharpe)
     """
 
-    def __init__(self, config: dict, custom_rules: list | None = None,
-                 signal_fn=None, engine_params=None):
+    def __init__(
+        self,
+        config: dict,
+        custom_rules: list | None = None,
+        signal_fn=None,
+        engine_params=None,
+    ):
         """Args:
         config: 系统配置
         custom_rules: 自定义规则列表（如来自优化器 YAML），优先于 config 中的规则
@@ -1254,7 +1341,6 @@ class PortfolioOptimizer:
         ps_config = self.config.get("portfolio_strategy", {})
         lookback_days = ps_config.get("lookback_days") or _eval_lookback_days()
 
-
         # 加载自定义规则：构造参数优先 > config 配置
         custom_rules = self.custom_rules
         if custom_rules is None:
@@ -1300,16 +1386,20 @@ class PortfolioOptimizer:
                 results[group_name] = {}
                 continue
 
-            evaluator = PortfolioEvaluator(
-                group_data, group_name, rules=custom_rules
-            )
+            evaluator = PortfolioEvaluator(group_data, group_name, rules=custom_rules)
             codes = list(group_data.keys())
 
             results[group_name] = {
-                "max_return": self._greedy_search(codes, evaluator, "total_return", maximize=True),
+                "max_return": self._greedy_search(
+                    codes, evaluator, "total_return", maximize=True
+                ),
                 # max_drawdown 是负值(-X%)，越大(越接近0)代表回撤越小
-                "min_drawdown": self._greedy_search(codes, evaluator, "max_drawdown", maximize=True),
-                "max_sharpe": self._greedy_search(codes, evaluator, "sharpe_ratio", maximize=True),
+                "min_drawdown": self._greedy_search(
+                    codes, evaluator, "max_drawdown", maximize=True
+                ),
+                "max_sharpe": self._greedy_search(
+                    codes, evaluator, "sharpe_ratio", maximize=True
+                ),
             }
 
         return results
@@ -1337,7 +1427,6 @@ class PortfolioOptimizer:
         ps_config = self.config.get("portfolio_strategy", {})
         lookback_days = ps_config.get("lookback_days") or _eval_lookback_days()
 
-
         custom_rules = self.custom_rules
         if custom_rules is None:
             config_rules = ps_config.get("rules", None)
@@ -1348,7 +1437,9 @@ class PortfolioOptimizer:
         # 注意：不过滤 skip_search — 那只作用于搜参阶段；日报/验证期照常评估
         # （如上市不足搜参窗口的 ETF/REITs，验证期仍按策略规则交易）
         group_data_map: dict[str, dict[str, pd.DataFrame]] = {
-            "a_share": {}, "hk": {}, "us": {},
+            "a_share": {},
+            "hk": {},
+            "us": {},
         }
         for code in stocks:
             code_str = str(code)
@@ -1361,7 +1452,9 @@ class PortfolioOptimizer:
             # 日报评估门槛远低于搜参（60天即可算指标+告警），
             # 让新上市标的（如 REITs）也能参与验证期交易
             if len(data) < MIN_EVAL_DAYS:
-                logger.info(f"{code_str} 数据不足 {len(data)}<{MIN_EVAL_DAYS}，跳过日报评估")
+                logger.info(
+                    f"{code_str} 数据不足 {len(data)}<{MIN_EVAL_DAYS}，跳过日报评估"
+                )
                 continue
             group_data_map[group][code_str] = data
 
@@ -1377,7 +1470,9 @@ class PortfolioOptimizer:
                 continue
 
             evaluator = PortfolioEvaluator(
-                group_data, eval_group[group_name], rules=custom_rules,
+                group_data,
+                eval_group[group_name],
+                rules=custom_rules,
                 signal_fn=self.signal_fn,
             )
             if self.engine_params is not None:
@@ -1486,7 +1581,6 @@ class PortfolioOptimizer:
 # ── 投资组合图表生成 ──
 
 
-
 def generate_portfolio_chart(
     portfolio_results: dict,
     bollinger_window: int = 90,
@@ -1504,6 +1598,7 @@ def generate_portfolio_chart(
     """
 
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
@@ -1512,10 +1607,13 @@ def generate_portfolio_chart(
 
     # ── 设置中文字体 ──
     from ..utils.font_setup import setup_cjk_font
+
     setup_cjk_font()
 
     group_labels = {
-        "a_share": "A股投资组合", "hk": "港股投资组合", "us": "美股投资组合",
+        "a_share": "A股投资组合",
+        "hk": "港股投资组合",
+        "us": "美股投资组合",
         "non_a_share": "非A股投资组合",
     }
     output: dict[str, bytes] = {}
@@ -1552,8 +1650,15 @@ def generate_portfolio_chart(
             dt_arr = pd.date_range(end=pd.Timestamp.now(), periods=len(navs), freq="B")
 
         # 单条净值曲线
-        ax.plot(dt_arr, nav_arr, color="#2e7d32", linewidth=2.5,
-                alpha=0.9, label="Top1 策略", zorder=5)
+        ax.plot(
+            dt_arr,
+            nav_arr,
+            color="#2e7d32",
+            linewidth=2.5,
+            alpha=0.9,
+            label="Top1 策略",
+            zorder=5,
+        )
 
         # 布林带（30日 SMA ± 2σ 半透明填充）
         if len(nav_arr) >= 30:
@@ -1562,12 +1667,27 @@ def generate_portfolio_chart(
             std = pd.Series(nav_arr).rolling(window=window, min_periods=1).std()
             upper = (sma + 2 * std).bfill().values
             lower = (sma - 2 * std).bfill().values
-            ax.fill_between(dt_arr, lower, upper,
-                            alpha=0.15, color="#2e7d32", linewidth=0, zorder=1)
-            ax.plot(dt_arr, upper, color="#2e7d32",
-                    linewidth=1.0, alpha=0.4, linestyle="--", zorder=2)
-            ax.plot(dt_arr, lower, color="#2e7d32",
-                    linewidth=1.0, alpha=0.4, linestyle="--", zorder=2)
+            ax.fill_between(
+                dt_arr, lower, upper, alpha=0.15, color="#2e7d32", linewidth=0, zorder=1
+            )
+            ax.plot(
+                dt_arr,
+                upper,
+                color="#2e7d32",
+                linewidth=1.0,
+                alpha=0.4,
+                linestyle="--",
+                zorder=2,
+            )
+            ax.plot(
+                dt_arr,
+                lower,
+                color="#2e7d32",
+                linewidth=1.0,
+                alpha=0.4,
+                linestyle="--",
+                zorder=2,
+            )
 
         # 基准 ETF 曲线（港股/美股主基准都用 VOO，按需求不拆基准）
         benchmark_map = {
@@ -1596,9 +1716,16 @@ def generate_portfolio_chart(
             b_base = b_close[0] if b_close[0] > 0 else 1.0
             b_norm = b_close / b_base * 100
             b_dates = bdf["date"].to_numpy()
-            ax.plot(b_dates, b_norm, color=bench_colors[bi],
-                    linewidth=1.5, alpha=0.7, linestyle=bench_styles[bi],
-                    label=bcode, zorder=3)
+            ax.plot(
+                b_dates,
+                b_norm,
+                color=bench_colors[bi],
+                linewidth=1.5,
+                alpha=0.7,
+                linestyle=bench_styles[bi],
+                label=bcode,
+                zorder=3,
+            )
 
         # X轴
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))

@@ -3,12 +3,12 @@
 所有策略评估（搜参后报告、日报、任何消费者）统一走此模块。
 固定近9个月日历窗口，用 YAML 自带的 market_config 做基准对齐。
 """
+
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import yaml
@@ -45,17 +45,24 @@ class StrategyEvalReport:
 
     def to_dict(self) -> dict:
         return {
-            "group": self.group, "label": self.label,
-            "yaml_name": self.yaml_name, "engine": self.engine,
+            "group": self.group,
+            "label": self.label,
+            "yaml_name": self.yaml_name,
+            "engine": self.engine,
             "total_return": self.total_return,
             "excess_return": self.excess_return,
-            "dd": self.max_drawdown, "sharpe": self.sharpe,
-            "trades": self.trade_count, "position": self.position_pct,
+            "dd": self.max_drawdown,
+            "sharpe": self.sharpe,
+            "trades": self.trade_count,
+            "position": self.position_pct,
             "benchmark_returns": self.benchmark_returns,
             "primary_benchmark": self.primary_benchmark,
-            "params": self.params, "quarterly": self.quarterly,
-            "nav_series": self.nav_series, "nav_dates": self.nav_dates,
-            "sensitivity": self.sensitivity, "volatility": self.volatility,
+            "params": self.params,
+            "quarterly": self.quarterly,
+            "nav_series": self.nav_series,
+            "nav_dates": self.nav_dates,
+            "sensitivity": self.sensitivity,
+            "volatility": self.volatility,
             "candlestick_png": self.candlestick_png,
             "weekly_ohlc": self.weekly_ohlc,
         }
@@ -73,7 +80,10 @@ def evaluate_yaml_strategy(
     """对 YAML 策略做固定窗口回测。"""
     import pandas as pd
     from src.analysis.percentile_engine import (
-        PercentileSignalFn, _decode_tau, _decode_w, _decode_pos_frac,
+        PercentileSignalFn,
+        _decode_tau,
+        _decode_w,
+        _decode_pos_frac,
     )
     from src.analysis.signal_scanner import _params_from_yaml
     from src.analysis.signal_functions import simulate_portfolio, Params as _Params
@@ -133,6 +143,7 @@ def evaluate_yaml_strategy(
     sfn = PercentileSignalFn()
     ep = _params_from_yaml(params_dict)
     from src.analysis.indicator_library import compute_all
+
     computed = compute_all(stocks_data)
 
     per_code_bs, per_code_ss, per_code_pr = {}, {}, {}
@@ -148,7 +159,7 @@ def evaluate_yaml_strategy(
         all_dates.update(df["date"])
 
     dates_sorted = sorted(all_dates)
-    didx = {d: i for i, d in enumerate(dates_sorted)}
+    {d: i for i, d in enumerate(dates_sorted)}
     T = len(dates_sorted)
     N = len(stocks_data)
     buy_scores = np.zeros((T, N), dtype=np.float64)
@@ -169,16 +180,26 @@ def evaluate_yaml_strategy(
                 last = price[ti, j]
     price = np.nan_to_num(price, nan=0.0)
 
-    main_fg = max(set(_detect_fine_group(str(c)) for c in code_list),
-                  key=lambda g: sum(1 for c in code_list if _detect_fine_group(str(c)) == g))
+    max(
+        set(_detect_fine_group(str(c)) for c in code_list),
+        key=lambda g: sum(1 for c in code_list if _detect_fine_group(str(c)) == g),
+    )
     price_cny = price * fx_rate
 
     ex = sfn.execution_params(ep)
     trace = simulate_portfolio(
-        buy_scores, sell_scores, price_cny,
-        initial_capital, ex["buy_threshold"], ex["sell_threshold"],
-        ex["position_frac"], lot_size, monthly_limit, commission,
-        dates_sorted, code_list,
+        buy_scores,
+        sell_scores,
+        price_cny,
+        initial_capital,
+        ex["buy_threshold"],
+        ex["sell_threshold"],
+        ex["position_frac"],
+        lot_size,
+        monthly_limit,
+        commission,
+        dates_sorted,
+        code_list,
     )
 
     # 基准收益
@@ -218,7 +239,13 @@ def evaluate_yaml_strategy(
 
     vals = getattr(ep, "values", ep)
     decoded: dict[str, float] = {}
-    for lbl in ("adx_pct", "rsi_pct", "deviation_pct", "vol_ratio_pct", "ma200_dev_pct"):
+    for lbl in (
+        "adx_pct",
+        "rsi_pct",
+        "deviation_pct",
+        "vol_ratio_pct",
+        "ma200_dev_pct",
+    ):
         decoded[f"{lbl}_tau"] = round(_decode_tau(vals.get(f"{lbl}_tau", 5)), 2)
         decoded[f"{lbl}_w"] = round(_decode_w(vals.get(f"{lbl}_w", 2)), 2)
     decoded["tau_buy"] = round(_decode_tau(vals.get("buy_score_thresh", 5)), 2)
@@ -227,8 +254,10 @@ def evaluate_yaml_strategy(
 
     gl = {"a_share": "A股", "hk": "港股", "us": "美股"}
     report = StrategyEvalReport(
-        group=group, label=gl.get(group, group),
-        yaml_name=yaml_path.name, engine=engine_name,
+        group=group,
+        label=gl.get(group, group),
+        yaml_name=yaml_path.name,
+        engine=engine_name,
         total_return=round(trace.total_return_pct, 2),
         excess_return=round(excess, 2),
         max_drawdown=round(trace.max_drawdown_pct, 2),
@@ -249,31 +278,47 @@ def evaluate_yaml_strategy(
         for cp in copies:
             cp_ex = sfn.execution_params(_Params(values=cp, _engine="percentile"))
             tr = simulate_portfolio(
-                buy_scores, sell_scores, price_cny,
-                initial_capital, cp_ex["buy_threshold"], cp_ex["sell_threshold"],
-                cp_ex["position_frac"], lot_size, monthly_limit, commission,
-                dates_sorted, code_list,
+                buy_scores,
+                sell_scores,
+                price_cny,
+                initial_capital,
+                cp_ex["buy_threshold"],
+                cp_ex["sell_threshold"],
+                cp_ex["position_frac"],
+                lot_size,
+                monthly_limit,
+                commission,
+                dates_sorted,
+                code_list,
             )
             pert_rets.append(round(tr.total_return_pct, 2))
         if pert_rets:
             br = round(trace.total_return_pct, 2)
             wr = min(pert_rets)
             report.sensitivity = {
-                "worst_ret": wr, "drop_pct": round(br - wr, 2),
+                "worst_ret": wr,
+                "drop_pct": round(br - wr, 2),
                 "base_ret": br,
                 "ret_range": [round(min(pert_rets), 2), round(max(pert_rets), 2)],
             }
 
     if with_volatility:
         report.volatility = sfn.cross_day_volatility(
-            ep, buy_scores, sell_scores, price_cny,
-            lookback_days=5, initial_cash=initial_capital, monthly_limit=monthly_limit,
+            ep,
+            buy_scores,
+            sell_scores,
+            price_cny,
+            lookback_days=5,
+            initial_cash=initial_capital,
+            monthly_limit=monthly_limit,
         )
 
     if with_candlestick:
         from src.notification.chart_generator import (
-            _build_weekly_ohlc, generate_candlestick_chart,
+            _build_weekly_ohlc,
+            generate_candlestick_chart,
         )
+
         ohlc = _build_weekly_ohlc(report.nav_series, report.nav_dates)
         if ohlc:
             result = generate_candlestick_chart(ohlc)

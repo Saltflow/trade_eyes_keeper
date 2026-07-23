@@ -12,17 +12,18 @@
 
 import pytest
 import pandas as pd
-from datetime import datetime, timedelta
-from unittest.mock import patch
+from datetime import datetime
 
 
 # ════════════════════════════════════════════════════════
 # 工具
 # ════════════════════════════════════════════════════════
 
+
 def _make_crawler():
     """创建 StockWebCrawler 实例"""
     from src.data.web_crawler import StockWebCrawler
+
     return StockWebCrawler(config={"data_source": {"type": "web_crawler"}})
 
 
@@ -40,6 +41,7 @@ def _assert_recent(data: pd.DataFrame, code: str, source: str, max_days: int = 2
 # ════════════════════════════════════════════════════════
 # K线源
 # ════════════════════════════════════════════════════════
+
 
 @pytest.mark.smoke
 class TestKlineSources:
@@ -98,6 +100,7 @@ class TestKlineSources:
 # 估值源
 # ════════════════════════════════════════════════════════
 
+
 @pytest.mark.smoke
 class TestValuationSources:
     """估值数据源 (PE/PB)"""
@@ -106,7 +109,9 @@ class TestValuationSources:
         """QQ 估值源 A股 601728 返回 PE/PB"""
         crawler = _make_crawler()
         data = crawler.fetch_valuation_data("601728")
-        if data is None or (data.get("pe_ratio") is None and data.get("pb_ratio") is None):
+        if data is None or (
+            data.get("pe_ratio") is None and data.get("pb_ratio") is None
+        ):
             pytest.skip("QQ 估值 A股 返回全空")
         assert data.get("pe_ratio") is not None, f"PE 缺失: {data}"
         assert data.get("pb_ratio") is not None, f"PB 缺失: {data}"
@@ -116,7 +121,9 @@ class TestValuationSources:
         """QQ 估值源 ETF 512810 返回 PE/PB"""
         crawler = _make_crawler()
         data = crawler.fetch_valuation_data("512810")
-        if data is None or (data.get("pe_ratio") is None and data.get("pb_ratio") is None):
+        if data is None or (
+            data.get("pe_ratio") is None and data.get("pb_ratio") is None
+        ):
             pytest.skip("QQ 估值 ETF 返回全空")
         assert data.get("pe_ratio") is not None, f"PE 缺失: {data}"
         assert data.get("pb_ratio") is not None, f"PB 缺失: {data}"
@@ -126,6 +133,7 @@ class TestValuationSources:
 # 实时行情源
 # ════════════════════════════════════════════════════════
 
+
 @pytest.mark.smoke
 class TestRealtimeSources:
     """实时行情源 (QQ qt.gtimg.cn)"""
@@ -134,7 +142,9 @@ class TestRealtimeSources:
         """QQ 估值 API 可用 → 间接证明 QQ 实时行情连通 (A股)"""
         crawler = _make_crawler()
         data = crawler.fetch_valuation_data("601728")
-        if data is None or (data.get("pe_ratio") is None and data.get("pb_ratio") is None):
+        if data is None or (
+            data.get("pe_ratio") is None and data.get("pb_ratio") is None
+        ):
             pytest.skip("QQ 估值 A股 返回全空 (可能网络问题)")
         assert data.get("pb_ratio") is not None, "PB 缺失 (QQ API 不可达)"
 
@@ -161,6 +171,7 @@ class TestRealtimeSources:
 # 估值缺口 — xfail 跟踪（QQ+Yahoo 双源后应逐步转绿）
 # ════════════════════════════════════════════════════════
 
+
 @pytest.mark.smoke
 class TestValuationGaps:
     """非A股估值数据源（QQ+Yahoo 双源后港/美已修通）"""
@@ -169,15 +180,13 @@ class TestValuationGaps:
         """港股 00883 估值非空"""
         crawler = _make_crawler()
         data = crawler.fetch_valuation_data("00883")
-        assert data.get("pe_ratio") or data.get("pb_ratio"), \
-            "港股估值为空"
+        assert data.get("pe_ratio") or data.get("pb_ratio"), "港股估值为空"
 
     def test_valuation_us_has_data(self):
         """美股 GOOG 估值非空"""
         crawler = _make_crawler()
         data = crawler.fetch_valuation_data("GOOG")
-        assert data.get("pe_ratio") or data.get("pb_ratio"), \
-            "美股估值为空"
+        assert data.get("pe_ratio") or data.get("pb_ratio"), "美股估值为空"
 
     @pytest.mark.xfail(
         reason="新加坡估值: Yahoo 从国内可能 403, 无 QQ 源",
@@ -187,23 +196,47 @@ class TestValuationGaps:
         """新加坡 C38U.SI 估值非空"""
         crawler = _make_crawler()
         data = crawler.fetch_valuation_data("C38U.SI")
-        assert data.get("pe_ratio") or data.get("pb_ratio"), \
+        assert data.get("pe_ratio") or data.get("pb_ratio"), (
             "新加坡估值为空, Yahoo 可能 403"
+        )
 
 
 # ════════════════════════════════════════════════════════
 # 全量负载测试 — 估值源在真实负载下的表现
 # ════════════════════════════════════════════════════════
 
+
 @pytest.mark.smoke
 class TestValuationUnderLoad:
     """全量 26 只标的估值请求 — 验证降级链 + 退避 在负载下工作"""
 
     STOCKS = [
-        "601728", "600938", "601985", "601919", "600795", "601398",
-        "601088", "512810", "510880", "601818", "601390", "180603",
-        "508091", "513910", "588000", "000958", "515180", "508077",
-        "GOOG", "VOO", "TQQQ", "UPRO", "00883", "01816", "C38U.SI", "AJBU.SI",
+        "601728",
+        "600938",
+        "601985",
+        "601919",
+        "600795",
+        "601398",
+        "601088",
+        "512810",
+        "510880",
+        "601818",
+        "601390",
+        "180603",
+        "508091",
+        "513910",
+        "588000",
+        "000958",
+        "515180",
+        "508077",
+        "GOOG",
+        "VOO",
+        "TQQQ",
+        "UPRO",
+        "00883",
+        "01816",
+        "C38U.SI",
+        "AJBU.SI",
     ]
 
     def test_full_stock_list_valuation_at_least_half_ok(self):

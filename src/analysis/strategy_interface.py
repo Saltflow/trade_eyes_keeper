@@ -7,6 +7,7 @@ StrategyEngine 定义了 StrategyOptimizerV2 + GeneticSearcher 与具体策略
 - GlobalThresholdEngine：现有逻辑（buy_names/buy_thresh/buy_fracs）
 - PercentileScoringEngine：分位评分（τ+权重，每只标的独立分位）
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -16,7 +17,6 @@ if TYPE_CHECKING:
     from .genetic_searcher import StrategyEncoding
     from .fast_evaluator import FastEvaluator, WindowStats
     from .optimizer_constraints import StrategyConstraints, DiscreteSearchConfig
-    import numpy as np
 
 
 class StrategyEngine(ABC):
@@ -65,14 +65,18 @@ class StrategyEngine(ABC):
 
     @abstractmethod
     def crossover_encoding(
-        self, p1: "StrategyEncoding", p2: "StrategyEncoding",
+        self,
+        p1: "StrategyEncoding",
+        p2: "StrategyEncoding",
     ) -> "StrategyEncoding":
         """交叉两个编码。"""
         ...
 
     @abstractmethod
     def mutate_encoding(
-        self, encoding: "StrategyEncoding", ds_cfg,
+        self,
+        encoding: "StrategyEncoding",
+        ds_cfg,
     ) -> "StrategyEncoding":
         """变异一个编码。"""
         ...

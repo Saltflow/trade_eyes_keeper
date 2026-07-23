@@ -1,5 +1,7 @@
 """跨平台中文字体设置（matplotlib）"""
+
 import logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -14,9 +16,14 @@ def setup_cjk_font() -> bool:
     if system == "Windows":
         preferred = ["Microsoft YaHei", "SimHei", "KaiTi", "FangSong", "SimSun"]
     else:
-        preferred = ["Noto Sans CJK SC", "WenQuanYi Micro Hei",
-                     "Droid Sans Fallback", "Noto Sans CJK JP",
-                     "PingFang SC", "Heiti SC"]
+        preferred = [
+            "Noto Sans CJK SC",
+            "WenQuanYi Micro Hei",
+            "Droid Sans Fallback",
+            "Noto Sans CJK JP",
+            "PingFang SC",
+            "Heiti SC",
+        ]
 
     all_fonts = preferred + ["DejaVu Sans", "Arial", "sans-serif"]
     plt.rcParams["font.sans-serif"] = all_fonts
@@ -29,7 +36,6 @@ def setup_cjk_font() -> bool:
             logger.debug(f"CJK字体已设置: {pf} (platform={system})")
             return True
     logger.warning(
-        f"未找到CJK字体，图表中文可能显示为方块。"
-        f"可用字体: {sorted(available)[:20]}"
+        f"未找到CJK字体，图表中文可能显示为方块。可用字体: {sorted(available)[:20]}"
     )
     return False

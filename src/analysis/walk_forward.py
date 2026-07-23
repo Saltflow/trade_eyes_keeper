@@ -20,7 +20,7 @@ Walk-Forward 窗口管理器
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class WindowSlice:
     """单个 Walk-Forward 窗口的训练/测试切片"""
+
     window_id: int
 
     # 日期范围（便于调试和理解）
@@ -42,9 +43,9 @@ class WindowSlice:
 
     # 在统一日期数组中的索引范围（左闭右开）
     train_start_idx: int
-    train_end_idx: int          # exclusive
+    train_end_idx: int  # exclusive
     test_start_idx: int
-    test_end_idx: int           # exclusive
+    test_end_idx: int  # exclusive
 
     # 交易日计数
     train_days: int = 0
@@ -57,13 +58,23 @@ class WindowSlice:
 # 指标列索引常量（与构建器解耦，纯 numpy 索引）
 # 用途: 向量化信号生成时按索引读取矩阵切片
 INDICATOR_NAMES = [
-    "close", "ma60", "deviation",
-    "rsi", "macd_hist", "boll_pct_b",
-    "adx", "vol_ratio",
-    "pct_from_ath", "ma60_slope", "ma200_dev",
+    "close",
+    "ma60",
+    "deviation",
+    "rsi",
+    "macd_hist",
+    "boll_pct_b",
+    "adx",
+    "vol_ratio",
+    "pct_from_ath",
+    "ma60_slope",
+    "ma200_dev",
     # 分位列（252天滑动窗口分位排名，新增引擎 PercentileScoringEngine 使用）
-    "adx_pct", "rsi_pct", "deviation_pct",
-    "vol_ratio_pct", "ma200_dev_pct",
+    "adx_pct",
+    "rsi_pct",
+    "deviation_pct",
+    "vol_ratio_pct",
+    "ma200_dev_pct",
 ]
 INDICATOR_TO_IDX = {name: idx for idx, name in enumerate(INDICATOR_NAMES)}
 NUM_INDICATORS = len(INDICATOR_NAMES)
@@ -154,15 +165,19 @@ class WalkForwardManager:
             offset_months = w * self.step_months
 
             train_start = self._index_at_month(offset_months)
-            train_end   = self._index_at_month(offset_months + self.train_months)
-            test_start  = train_end
-            test_end    = self._index_at_month(offset_months + self.train_months + self.test_months)
+            train_end = self._index_at_month(offset_months + self.train_months)
+            test_start = train_end
+            test_end = self._index_at_month(
+                offset_months + self.train_months + self.test_months
+            )
 
             # 检查是否有足够数据
             if test_end > self.n_dates:
                 logger.debug(
                     "窗口%d 数据不足: test_end=%d > n_dates=%d，跳过",
-                    w, test_end, self.n_dates,
+                    w,
+                    test_end,
+                    self.n_dates,
                 )
                 break
 
@@ -170,10 +185,18 @@ class WalkForwardManager:
             dates = self._unified_dates
             ws = WindowSlice(
                 window_id=w,
-                train_start_date=dates[train_start] if 0 <= train_start < len(dates) else "?",
-                train_end_date=dates[train_end - 1] if 0 <= train_end - 1 < len(dates) else "?",
-                test_start_date=dates[test_start] if 0 <= test_start < len(dates) else "?",
-                test_end_date=dates[test_end - 1] if 0 <= test_end - 1 < len(dates) else "?",
+                train_start_date=dates[train_start]
+                if 0 <= train_start < len(dates)
+                else "?",
+                train_end_date=dates[train_end - 1]
+                if 0 <= train_end - 1 < len(dates)
+                else "?",
+                test_start_date=dates[test_start]
+                if 0 <= test_start < len(dates)
+                else "?",
+                test_end_date=dates[test_end - 1]
+                if 0 <= test_end - 1 < len(dates)
+                else "?",
                 train_start_idx=train_start,
                 train_end_idx=train_end,
                 test_start_idx=test_start,
@@ -187,7 +210,8 @@ class WalkForwardManager:
         if len(windows) < self.num_windows:
             logger.info(
                 "Walk-Forward: 实际生成 %d/%d 个窗口（数据不足）",
-                len(windows), self.num_windows,
+                len(windows),
+                self.num_windows,
             )
 
         return windows
@@ -200,7 +224,7 @@ class WalkForwardManager:
         """将基准 ETF 的收盘价对齐到统一日期轴。"""
         if not self._benchmark_dfs or not self._unified_dates:
             return
-        date_to_idx = {d: i for i, d in enumerate(self._unified_dates)}
+        {d: i for i, d in enumerate(self._unified_dates)}
         for code, bdf in self._benchmark_dfs.items():
             if bdf is None or bdf.empty:
                 continue
@@ -223,7 +247,10 @@ class WalkForwardManager:
             self._benchmark_aligned[code] = aligned
 
     def get_benchmark_price(
-        self, bench_code: str, window: "WindowSlice", phase: str = "test",
+        self,
+        bench_code: str,
+        window: "WindowSlice",
+        phase: str = "test",
     ) -> np.ndarray | None:
         """获取基准 ETF 在指定窗口的收盘价序列。
 
@@ -328,7 +355,9 @@ class WalkForwardManager:
             df["date_str"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
 
             # 构建该股票的指标矩阵
-            stock_mat = self._build_stock_matrix(df, code, indicators_data, date_to_idx, n_dates)
+            stock_mat = self._build_stock_matrix(
+                df, code, indicators_data, date_to_idx, n_dates
+            )
             if stock_mat is None:
                 continue
 
@@ -349,17 +378,24 @@ class WalkForwardManager:
 
         logger.info(
             "WalkForwardManager 就绪: %d 天, %d 只股票, %d 个指标",
-            n_dates, len(stock_list), NUM_INDICATORS,
+            n_dates,
+            len(stock_list),
+            NUM_INDICATORS,
         )
 
         # 检查天数是否足够
-        total_months_needed = self.train_months + self.test_months + \
-            (self.num_windows - 1) * self.step_months
+        total_months_needed = (
+            self.train_months
+            + self.test_months
+            + (self.num_windows - 1) * self.step_months
+        )
         total_days_needed = total_months_needed * 21  # 估算每月21个交易日
         if n_dates < total_days_needed:
             logger.warning(
                 "数据仅 %d 天，但 Walk-Forward 需要约 %d 天 (%d 个月)",
-                n_dates, total_days_needed, total_months_needed,
+                n_dates,
+                total_days_needed,
+                total_months_needed,
             )
 
     def _build_stock_matrix(
@@ -394,14 +430,19 @@ class WalkForwardManager:
         df["_ma60"] = close_series.rolling(window=60, min_periods=1).mean()
         df["_deviation"] = (close_series - df["_ma60"]) / df["_ma60"].replace(0, np.nan)
 
-        # 兜底计算缺失指标
+        # 兜底计算缺失指标（使用数据层统一函数）
         if "_rsi" not in df.columns:
-            df["_rsi"] = self._compute_rsi(close_series)
+            from src.data.technical_indicators import add_rsi
+            add_rsi(df)
+            df["_rsi"] = df["rsi"]
         if "_boll_pct_b" not in df.columns:
-            df["_boll_pct_b"] = self._compute_bollinger(close_series)
+            from src.data.technical_indicators import add_bollinger
+            add_bollinger(df)
+            df["_boll_pct_b"] = df["boll_pct_b"]
         if "_vol_ratio" not in df.columns:
-            vol_col = df_cols.get("volume", "volume")
-            df["_vol_ratio"] = self._compute_vol_ratio(df[vol_col].astype(float))
+            from src.data.technical_indicators import add_volume_ratio
+            add_volume_ratio(df)
+            df["_vol_ratio"] = df["vol_ratio"]
 
         # 兜底计算新增指标
         # pct_from_ath: 距2年高点的距离
@@ -434,18 +475,33 @@ class WalkForwardManager:
             matrix[idx, 2] = row.get("_deviation", np.nan)
             # 预计算指标：优先取传入的，再取兜底计算的
             for j, name in enumerate(INDICATOR_NAMES[3:8], 3):
-                col_name = f"_{name}" if not name.startswith("_") and name in df.columns else name
+                col_name = (
+                    f"_{name}"
+                    if not name.startswith("_") and name in df.columns
+                    else name
+                )
                 val = row.get(col_name, row.get(name, np.nan))
-                matrix[idx, j] = val if not (isinstance(val, float) and pd.isna(val)) else np.nan
+                matrix[idx, j] = (
+                    val if not (isinstance(val, float) and pd.isna(val)) else np.nan
+                )
             # 新增指标（索引 8-10）
-            for j, bare_name in enumerate(["pct_from_ath", "ma60_slope", "ma200_dev"], 8):
+            for j, bare_name in enumerate(
+                ["pct_from_ath", "ma60_slope", "ma200_dev"], 8
+            ):
                 val = row.get(f"_{bare_name}", row.get(bare_name, np.nan))
-                matrix[idx, j] = val if not (isinstance(val, float) and pd.isna(val)) else np.nan
+                matrix[idx, j] = (
+                    val if not (isinstance(val, float) and pd.isna(val)) else np.nan
+                )
 
         # 检查数据充足性
         valid_days = (~np.isnan(matrix[:, 0])).sum()
         if valid_days < self.min_trading_days:
-            logger.info("股票 %s 仅 %d 天数据(<%d)，跳过", code, valid_days, self.min_trading_days)
+            logger.info(
+                "股票 %s 仅 %d 天数据(<%d)，跳过",
+                code,
+                valid_days,
+                self.min_trading_days,
+            )
             return None
 
         # ── 累积分位计算（252天滑动窗口分位排名，新引擎使用）──
@@ -454,55 +510,25 @@ class WalkForwardManager:
         pct_matrix[:, :11] = matrix[:, :11]  # 复制前 11 列
         # 分位列定义: (目标列索引, 源列索引, 窗口大小)
         pct_defs = [
-            (11, 6, 252),   # adx_pct  ← adx
-            (12, 3, 252),   # rsi_pct  ← rsi
-            (13, 2, 252),   # deviation_pct ← deviation
-            (14, 7, 252),   # vol_ratio_pct ← vol_ratio
+            (11, 6, 252),  # adx_pct  ← adx
+            (12, 3, 252),  # rsi_pct  ← rsi
+            (13, 2, 252),  # deviation_pct ← deviation
+            (14, 7, 252),  # vol_ratio_pct ← vol_ratio
             (15, 10, 252),  # ma200_dev_pct ← ma200_dev
         ]
-        WINDOW_PCT = 252
         for dst_col, src_col, win in pct_defs:
             src = matrix[:, src_col]
             # 滑动窗口分位排名: pct[t] = (# values in [t-win+1, t] <= val[t]) / win
             for t in range(win, n_dates):
-                window_vals = src[t - win + 1:t + 1]
+                window_vals = src[t - win + 1 : t + 1]
                 valid = ~np.isnan(window_vals)
                 if not valid.any():
                     continue
-                pct_matrix[t, dst_col] = (
-                    (window_vals[valid] <= src[t]).sum()
-                ) / max(valid.sum(), 1)
+                pct_matrix[t, dst_col] = ((window_vals[valid] <= src[t]).sum()) / max(
+                    valid.sum(), 1
+                )
 
         return pct_matrix
-
-    @staticmethod
-    def _compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
-        """兜底 RSI 计算"""
-        delta = close.diff()
-        gain = delta.clip(lower=0)
-        loss = (-delta).clip(lower=0)
-        avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
-        avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        return 100.0 - 100.0 / (1.0 + rs)
-
-    @staticmethod
-    def _compute_bollinger(close: pd.Series, window: int = 20, num_std: float = 2.0) -> pd.Series:
-        """兜底布林带 %B 计算"""
-        ma = close.rolling(window=window, min_periods=1).mean()
-        std = close.rolling(window=window, min_periods=1).std()
-        upper = ma + num_std * std
-        lower = ma - num_std * std
-        bandwidth = upper - lower
-        pct_b = (close - lower) / bandwidth.replace(0, np.nan)
-        return pct_b.clip(0, 1)
-
-    @staticmethod
-    def _compute_vol_ratio(volume: pd.Series, window: int = 20) -> pd.Series:
-        """兜底量比计算"""
-        vol_ma = volume.rolling(window=window, min_periods=1).mean()
-        ratio = volume / vol_ma.replace(0, np.nan)
-        return ratio
 
     # ════════════════════════════════════════════════════════
     # 内部: 月索引计算

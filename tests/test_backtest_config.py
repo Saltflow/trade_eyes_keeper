@@ -1,8 +1,10 @@
 """tests for backtest_config.py"""
 
 from src.analysis.backtest_config import (
-    BacktestConfig, elapsed_months,
-    make_training_config, make_default_optimizer_config,
+    BacktestConfig,
+    elapsed_months,
+    make_training_config,
+    make_default_optimizer_config,
 )
 
 

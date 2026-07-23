@@ -26,7 +26,11 @@ class TestFeishuTransport:
     def test_send_posts_to_webhook_url(self):
         """构造有效 config → _send() → mock requests.post → 断言 URL 正确"""
         notifier = FeishuNotifier(
-            {"notification": {"feishu": {"webhook_url": "https://open.feishu.cn/hook/abc123"}}}
+            {
+                "notification": {
+                    "feishu": {"webhook_url": "https://open.feishu.cn/hook/abc123"}
+                }
+            }
         )
         with patch("requests.post") as mock_post:
             mock_post.return_value.status_code = 200
@@ -40,7 +44,14 @@ class TestFeishuTransport:
     def test_send_payload_has_msg_type_and_content(self):
         """断言 payload 含有 msg_type + content"""
         notifier = FeishuNotifier(
-            {"notification": {"feishu": {"webhook_url": "https://hook/xyz", "msg_type": "interactive"}}}
+            {
+                "notification": {
+                    "feishu": {
+                        "webhook_url": "https://hook/xyz",
+                        "msg_type": "interactive",
+                    }
+                }
+            }
         )
         with patch("requests.post") as mock_post:
             mock_post.return_value.status_code = 200
@@ -97,7 +108,14 @@ class TestFeishuContent:
         session.get_all_dataframe.return_value = _make_brief_df()
         session.signal_scan = None
         notifier = FeishuNotifier(
-            {"notification": {"feishu": {"webhook_url": "https://hook/test", "msg_type": "interactive"}}}
+            {
+                "notification": {
+                    "feishu": {
+                        "webhook_url": "https://hook/test",
+                        "msg_type": "interactive",
+                    }
+                }
+            }
         )
         with patch.object(notifier, "_send_card") as mock_send:
             mock_send.return_value = (True, "ok")
@@ -108,6 +126,7 @@ class TestFeishuContent:
             assert card.get("schema") == "2.0"
             # 卡片含原生 table 组件，且行数据含标的代码
             import json
+
             blob = json.dumps(card, ensure_ascii=False)
             assert "table" in blob
             assert "601728" in blob
@@ -124,7 +143,14 @@ class TestFeishuContent:
         session.backtest = None
         session.portfolio_results = None
         notifier = FeishuNotifier(
-            {"notification": {"feishu": {"webhook_url": "https://hook/test", "msg_type": "interactive"}}}
+            {
+                "notification": {
+                    "feishu": {
+                        "webhook_url": "https://hook/test",
+                        "msg_type": "interactive",
+                    }
+                }
+            }
         )
         with patch.object(notifier, "_send") as mock_send:
             mock_send.return_value = (True, "ok")
@@ -136,12 +162,18 @@ class TestFeishuContent:
             # extra_elements（原生表格）在 kwargs 或第3位参数
             all_blobs = []
             import json
+
             for c in calls:
                 extra = c.kwargs.get("extra_elements")
                 if extra is None and len(c.args) >= 3:
                     extra = c.args[2]
-                all_blobs.append(json.dumps(
-                    {"body": c.args[1], "extra": extra}, ensure_ascii=False, default=str))
+                all_blobs.append(
+                    json.dumps(
+                        {"body": c.args[1], "extra": extra},
+                        ensure_ascii=False,
+                        default=str,
+                    )
+                )
             blob = "\n".join(all_blobs)
             assert any("价格" in t for t in titles)
             assert any("基本面" in t for t in titles)
@@ -171,16 +203,18 @@ class TestFeishuSections:
 
     def test_build_sections_empty_when_no_active_rows(self):
         old_date = pd.Timestamp.today().normalize() - pd.Timedelta(days=10)
-        sections = FeishuNotifier._build_report_sections(pd.DataFrame([
-            _stock_row("601728", "中国电信", date=old_date)
-        ]))
+        sections = FeishuNotifier._build_report_sections(
+            pd.DataFrame([_stock_row("601728", "中国电信", date=old_date)])
+        )
 
         assert len(sections) == 1
         assert sections[0][0] == "摘要"
         assert "本次没有可展示的活跃标的" in sections[0][1]
 
     def test_build_sections_without_tech_sends_two_cards(self):
-        sections = FeishuNotifier._build_report_sections(_make_daily_df(include_tech=False))
+        sections = FeishuNotifier._build_report_sections(
+            _make_daily_df(include_tech=False)
+        )
 
         # 3-tuple: (label, body, extra_elements)
         assert [s[0] for s in sections] == ["价格", "基本面"]
@@ -188,7 +222,10 @@ class TestFeishuSections:
 
     def test_build_sections_with_tech_sends_three_cards(self):
         import json
-        sections = FeishuNotifier._build_report_sections(_make_daily_df(include_tech=True))
+
+        sections = FeishuNotifier._build_report_sections(
+            _make_daily_df(include_tech=True)
+        )
 
         assert [s[0] for s in sections] == ["价格", "基本面", "技术"]
         # 技术段的原生表格含 MACD 列
@@ -198,6 +235,7 @@ class TestFeishuSections:
 
     def test_build_sections_alert_mode_filters_entries(self):
         import json
+
         sections = FeishuNotifier._build_report_sections(
             _make_two_stock_daily_df(),
             alerts=[{"stock_code": "00883"}],
@@ -205,8 +243,9 @@ class TestFeishuSections:
         )
 
         # 表格数据在 extra_elements（第3元素）
-        blob = json.dumps([(s[1], s[2]) for s in sections],
-                          ensure_ascii=False, default=str)
+        blob = json.dumps(
+            [(s[1], s[2]) for s in sections], ensure_ascii=False, default=str
+        )
         assert "00883" in blob
         assert "中国海洋石油" in blob
         assert "601728" not in blob
@@ -218,10 +257,13 @@ class TestFeishuEntries:
 
     def test_collect_entries_filters_by_date(self):
         old_date = pd.Timestamp.today().normalize() - pd.Timedelta(days=5)
-        df = pd.concat([
-            _make_daily_df(),
-            pd.DataFrame([_stock_row("000001", "平安银行", date=old_date)]),
-        ], ignore_index=True)
+        df = pd.concat(
+            [
+                _make_daily_df(),
+                pd.DataFrame([_stock_row("000001", "平安银行", date=old_date)]),
+            ],
+            ignore_index=True,
+        )
 
         entries = _collect_report_entries(df, pd.Timestamp.today())
 
@@ -230,10 +272,12 @@ class TestFeishuEntries:
         assert "000001" not in codes
 
     def test_collect_entries_skips_missing_date(self):
-        df = pd.DataFrame([
-            _stock_row("000001", "平安银行", date=None),
-            _stock_row("601728", "中国电信"),
-        ])
+        df = pd.DataFrame(
+            [
+                _stock_row("000001", "平安银行", date=None),
+                _stock_row("601728", "中国电信"),
+            ]
+        )
 
         entries = _collect_report_entries(df, pd.Timestamp.today())
 
@@ -254,17 +298,21 @@ class TestFeishuEntries:
         assert entry["macd_h"] == "0.045"
 
     def test_collect_entries_missing_values_to_dash(self):
-        df = pd.DataFrame([{
-            "stock_code": "510300",
-            "stock_name": "沪深300ETF",
-            "date": pd.Timestamp.today().normalize(),
-            "close": None,
-            "ma60": None,
-            "dividend_yield": None,
-            "pe_ratio": None,
-            "pb_ratio": None,
-            "roe": None,
-        }])
+        df = pd.DataFrame(
+            [
+                {
+                    "stock_code": "510300",
+                    "stock_name": "沪深300ETF",
+                    "date": pd.Timestamp.today().normalize(),
+                    "close": None,
+                    "ma60": None,
+                    "dividend_yield": None,
+                    "pe_ratio": None,
+                    "pb_ratio": None,
+                    "roe": None,
+                }
+            ]
+        )
 
         entry = _collect_report_entries(df, pd.Timestamp.today())[0]
 
@@ -360,7 +408,9 @@ class TestFeishuFormattingHelpers:
         assert _display_width("A股") == 3
 
     def test_calc_column_widths_min_and_max_clamp(self):
-        widths = _calc_column_widths(["代码", "很长很长很长很长的列名"], [["1", "中国海洋石油有限公司"]])
+        widths = _calc_column_widths(
+            ["代码", "很长很长很长很长的列名"], [["1", "中国海洋石油有限公司"]]
+        )
 
         assert widths[0] == 4
         assert widths[1] == 14
@@ -371,14 +421,22 @@ class TestFeishuFormattingHelpers:
 
 def _make_brief_df():
     import pandas as pd
-    return pd.DataFrame([
-        {
-            "stock_code": "601728", "stock_name": "中国电信",
-            "date": pd.Timestamp.today().normalize(),
-            "open": 5.70, "close": 5.76,
-            "ma60": 5.91, "wma20": 5.78, "wma30": 5.65, "wma50": 5.50,
-        }
-    ])
+
+    return pd.DataFrame(
+        [
+            {
+                "stock_code": "601728",
+                "stock_name": "中国电信",
+                "date": pd.Timestamp.today().normalize(),
+                "open": 5.70,
+                "close": 5.76,
+                "ma60": 5.91,
+                "wma20": 5.78,
+                "wma30": 5.65,
+                "wma50": 5.50,
+            }
+        ]
+    )
 
 
 def _make_daily_df(include_tech=True):
@@ -390,10 +448,12 @@ def _make_daily_df(include_tech=True):
 
 
 def _make_two_stock_daily_df():
-    return pd.DataFrame([
-        _stock_row("00883", "中国海洋石油", close=8.76, ma60=9.20),
-        _stock_row("601728", "中国电信"),
-    ])
+    return pd.DataFrame(
+        [
+            _stock_row("00883", "中国海洋石油", close=8.76, ma60=9.20),
+            _stock_row("601728", "中国电信"),
+        ]
+    )
 
 
 def _stock_row(code, name, date="today", close=5.76, ma60=5.91):
