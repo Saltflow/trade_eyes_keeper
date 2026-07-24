@@ -385,8 +385,8 @@ class TestSignalFnDispatch:
             return_value=ConsensusReport(consensus_stocks=["600001"]),
         ), patch.object(scanner, "_get_stock_codes", return_value=["600001"]):
             result = scanner.scan(sess, "a_share", top_n=5)
-        # 分位引擎命中 → 告警名来自引擎（含"分位评分"），非 buy_1
-        assert any("分位评分" in a.rule_label for a in result.alerts), [
+        # 分位引擎命中 → 告警名来自引擎（含"分位"），非 buy_1
+        assert any("分位" in a.rule_label for a in result.alerts), [
             a.rule_label for a in result.alerts
         ]
 

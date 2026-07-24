@@ -92,3 +92,62 @@ class PercentileSearchStrategy(SearchStrategy):
         sell_th = _decode_tau(vals.get("sell_score_thresh", 5))
         lines.append(f"  买入阈值 τ_buy={buy_th:.2f}  卖出阈值 τ_sell={sell_th:.2f}")
         return "\n".join(lines)
+
+    # ── 兼容旧 PercentileSignalFn API ──
+
+    def score_timeseries(self, params, hist_df):
+        """整段历史的每日净买卖评分 (T,)，供日报组合回测用。"""
+        import pandas as _pd
+        vals = params.values if hasattr(params, 'values') else params
+        T = len(hist_df)
+        buy = np.zeros(T, dtype=np.float32)
+        sell = np.zeros(T, dtype=np.float32)
+        total_w = 0.0
+        for lbl in PERCENTILE_LABELS:
+            tau = _decode_tau(vals.get(f"{lbl}_tau", 5))
+            w = _decode_w(vals.get(f"{lbl}_w", 2))
+            if w <= 0:
+                continue
+            src_col = {"adx_pct": "adx", "rsi_pct": "rsi",
+                       "deviation_pct": "deviation", "vol_ratio_pct": "vol_ratio",
+                       "ma200_dev_pct": "ma200_dev"}.get(lbl, lbl)
+            if src_col not in hist_df.columns:
+                continue
+            s = hist_df[src_col].values.astype(float)
+            pct = np.full(T, np.nan, dtype=np.float32)
+            for t in range(T):
+                lo = max(0, t - PCT_WINDOW + 1)
+                win = s[lo:t+1]
+                win = win[~np.isnan(win)]
+                if len(win) < 20:
+                    continue
+                pct[t] = (win <= s[t]).sum() / max(len(win), 1)
+            buy += w * (pct > tau).astype(np.float32)
+            sell += w * (pct < tau).astype(np.float32)
+            total_w += w
+        if total_w > 0:
+            buy /= total_w
+            sell /= total_w
+        return buy, sell
+
+    def scan_signals(self, params, today: dict, history=None) -> list[dict]:
+        """用分位评分逻辑判断今日买卖信号（兼容旧 PercentileSignalFn API）。"""
+        from .scanner import scan_percentile_today
+        vals = params.values if hasattr(params, 'values') else params
+        return scan_percentile_today(Params(values=dict(vals)), today, history)
+
+    _POS_FRACS = [0.05, 0.15, 0.25, 0.35, 0.45]
+
+    def _decode_pos_frac(self, level):
+        return self._POS_FRACS[min(int(level), len(self._POS_FRACS) - 1)]
+
+    def execution_params(self, params) -> dict:
+        vals = params.values if hasattr(params, 'values') else params
+        return {
+            "buy_threshold": _decode_tau(vals.get("buy_score_thresh", 5)),
+            "sell_threshold": _decode_tau(vals.get("sell_score_thresh", 5)),
+            "position_frac": self._decode_pos_frac(vals.get("position_frac", 2)),
+        }
+
+    # Expose PERCENTILE_HUMAN for external callers
+    PERCENTILE_HUMAN = PERCENTILE_HUMAN

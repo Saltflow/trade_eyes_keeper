@@ -253,8 +253,8 @@ class TestSignalFnEvaluation:
     """PortfolioEvaluator 引擎感知路径：__signal_fn__ 规则走评分流水线。"""
 
     def _pct_setup(self, drift=0.6, n=400):
-        from src.analysis.percentile_engine import PercentileSignalFn
-        from src.analysis.signal_functions import Params
+        from src.analysis.strategies.percentile.engine import PercentileSearchStrategy as PercentileSignalFn
+        from src.analysis.search_interface import Params
         from src.analysis.rule_engine import Rule
 
         rng = np.random.RandomState(11)
@@ -365,8 +365,8 @@ class TestPortfolioOptimizerSignalFnWiring:
     """PortfolioOptimizer 传递 signal_fn/engine_params 到 evaluator。"""
 
     def test_optimizer_accepts_signal_fn(self):
-        from src.analysis.percentile_engine import PercentileSignalFn
-        from src.analysis.signal_functions import Params
+        from src.analysis.strategies.percentile.engine import PercentileSearchStrategy as PercentileSignalFn
+        from src.analysis.search_interface import Params
 
         cfg = {"stocks": [], "portfolio_strategy": {}}
         p = Params(values={"adx_pct_w": 2}, _engine="percentile")

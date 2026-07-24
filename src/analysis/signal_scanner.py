@@ -34,7 +34,7 @@ def _make_signal_fn(engine_name: str):
         return None
     if engine_name in ("percentile", "pct", "new"):
         try:
-            from .percentile_engine import PercentileSignalFn
+            from .strategies.percentile.engine import PercentileSearchStrategy as PercentileSignalFn
 
             return PercentileSignalFn()
         except Exception as e:
@@ -48,7 +48,7 @@ def _params_from_yaml(params: dict):
 
     优化器可能把级别值序列化为字符串（'4'），这里统一转 int。
     """
-    from .signal_functions import Params
+    from .search_interface import Params
 
     vals = {}
     for k, v in params.items():

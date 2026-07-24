@@ -201,14 +201,14 @@ def handle_skip(kind: str, codes: list[str], remove: bool = False) -> str:
 
 def _engine_brief(engine_key: str) -> str:
     """获取引擎买卖标准简介（criterion 3）。"""
-    try:
-        if engine_key in ("percentile", "pct", "new"):
-            from ...analysis.percentile_engine import PercentileSignalFn
-
-            return PercentileSignalFn().engine_brief()
-        return ""
-    except Exception:
-        return ""
+    if engine_key in ("percentile", "pct", "new"):
+        return (
+            "分位评分引擎 (percentile)\n"
+            "  原理: 每只标的对自身 252 日历史算各指标分位排名, 加权求和打分\n"
+            "  买入: 加权分位分 > τ_buy (看涨指标处于历史高位)\n"
+            "  卖出: 加权分位分 > τ_sell (看跌指标处于历史高位)"
+        )
+    return ""
 
 
 def handle_switch_optimizer(kind: str | None = None) -> str:

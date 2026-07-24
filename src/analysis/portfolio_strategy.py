@@ -550,7 +550,8 @@ class PortfolioEvaluator:
         → simulate_portfolio（与搜参一致的决策仿真）。
         """
         import numpy as np
-        from .signal_functions import simulate_portfolio, compute_metrics
+        from .backtester import simulate_portfolio
+        from .search_interface import PortfolioTrace
 
         params = self._params_from_rules()
         if params is None:
@@ -671,7 +672,7 @@ class PortfolioEvaluator:
         )
 
         # 基准：本组价格基准（risk_free 兜底）用于超额收益
-        compute_metrics(trace, benchmark_series=None)
+        trace
 
         return PortfolioResult(
             name="",

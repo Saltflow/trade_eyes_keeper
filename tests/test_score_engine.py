@@ -20,7 +20,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 os.environ.setdefault("LOG_LEVEL", "ERROR")
 
-from analysis.signal_functions import simulate_portfolio  # noqa: E402
+from analysis.backtester import simulate_portfolio  # noqa: E402
 
 INF = float("inf")
 

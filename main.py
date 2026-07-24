@@ -322,9 +322,9 @@ def run_daily_task(force: bool = False):
 
                 # 分位/评分引擎：用 SignalFn 评分流水线回测（rules 保持 __signal_fn__）
                 if engine_name in ("percentile", "pct", "new"):
-                    from src.analysis.percentile_engine import PercentileSignalFn
+                    from src.analysis.strategies.percentile.engine import PercentileSearchStrategy
                     from src.analysis.signal_scanner import _params_from_yaml
-                    sig_fn = PercentileSignalFn()
+                    sig_fn = PercentileSearchStrategy()
                     eng_params = _params_from_yaml(params)
                     rules = [Rule.from_dict(r) for r in rules_raw] if rules_raw else None
                     return data, rules, sig_fn, eng_params
@@ -810,22 +810,8 @@ def _run_optimize_v2_impl(config):
 
     logger.info(f"A股: {len(a_codes)} 只 | 港股: {len(hk_codes)} 只 | 美股: {len(us_codes)} 只")
 
-    # 策略引擎选择（config.yaml optimizer.engine → 默认 global）
-    engine_type = (config.get("optimizer", {}) or {}).get("engine", "global")
-    engine = None
-    signal_fn = None
-    if engine_type in ("percentile", "pct", "new"):
-        from src.analysis.percentile_engine import PercentileSignalFn
-        from src.analysis.signal_fn_engine import SignalFnSearchEngine
-        signal_fn = PercentileSignalFn()
-        engine = SignalFnSearchEngine(signal_fn)
-        logger.info("使用分位评分引擎 (PercentileSignalFn)")
-    else:
-        from src.analysis.percentile_engine import PercentileSignalFn
-        from src.analysis.signal_fn_engine import SignalFnSearchEngine
-        signal_fn = PercentileSignalFn()
-        engine = SignalFnSearchEngine(signal_fn)
-        logger.info("使用分位评分引擎 (PercentileSignalFn, 默认)")
+    # 策略引擎：默认分位评分（已内置于 run_optimizer）
+    logger.info("引擎: PercentileSearchStrategy (内置)")
 
     # 数据源
     logger.info("data_source init...")

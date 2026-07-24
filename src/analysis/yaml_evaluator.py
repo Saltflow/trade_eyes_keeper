@@ -79,15 +79,20 @@ def evaluate_yaml_strategy(
 ) -> StrategyEvalReport | None:
     """对 YAML 策略做固定窗口回测。"""
     import pandas as pd
-    from src.analysis.percentile_engine import (
-        PercentileSignalFn,
+    from src.analysis.strategies.percentile.engine import (
+        PercentileSearchStrategy as PercentileSignalFn,
         _decode_tau,
         _decode_w,
-        _decode_pos_frac,
     )
     from src.analysis.signal_scanner import _params_from_yaml
-    from src.analysis.signal_functions import simulate_portfolio, Params as _Params
+    from src.analysis.backtester import simulate_portfolio
+    from src.analysis.search_interface import Params as _Params
     from src.analysis.config import get_execution_config
+
+    _POS_FRACS = [0.05, 0.15, 0.25, 0.35, 0.45]
+
+    def _decode_pos_frac(level):
+        return _POS_FRACS[min(int(level), len(_POS_FRACS) - 1)]
     from src.data.data_source import DataSource
     from src.analysis.portfolio_strategy import _detect_fine_group
 
