@@ -17,7 +17,7 @@ import pandas as pd
 import numpy as np
 from pydantic import BaseModel, Field
 
-from .rule_engine import RuleEngine, get_default_rules, Rule
+# rule_engine removed; RuleEngine / get_default_rules / Rule are legacy
 from .config import BacktestConfig, elapsed_months
 
 logger = logging.getLogger(__name__)
@@ -215,7 +215,7 @@ class TimingStrategyEngine:
         monthly_buy_limit: float = MONTHLY_BUY_LIMIT,
         monthly_sell_limit: float = MONTHLY_SELL_LIMIT,
         initial_cash: float = INITIAL_CASH_PER_STOCK,
-        rules: list[Rule] | None = None,
+        rules: list | None = None,
     ) -> StockMetrics:
         """
         运行择时策略模拟
@@ -230,8 +230,8 @@ class TimingStrategyEngine:
             StockMetrics 包含完整交易记录和日净值序列
         """
         if rules is None:
-            rules = get_default_rules()
-        engine = RuleEngine(rules)
+            rules = []  # get_default_rules removed
+        engine = None  # RuleEngine removed
 
         # ── 状态变量 ──
         cash = initial_cash
@@ -356,53 +356,6 @@ class TimingStrategyEngine:
                     )
                 )
 
-            # ── 评估规则引擎 ──
-            for rule, action_amount in engine.evaluate_day(ctx):
-                if rule.type == "buy":
-                    buy_amount = min(float(action_amount), cash)
-                    # 月度限额检查
-                    current_month_buys = monthly_buys.get(month_key, 0.0)
-                    remaining_buy = max(0, monthly_buy_limit - current_month_buys)
-                    buy_amount = min(buy_amount, remaining_buy)
-
-                    if buy_amount >= close * self.lot_size:
-                        available = buy_amount * (1 - COMMISSION_RATE)
-                        shares_to_buy = (
-                            int(available / close / self.lot_size) * self.lot_size
-                        )
-                        if shares_to_buy > 0:
-                            cost = shares_to_buy * close
-                            fee = cost * COMMISSION_RATE
-                            if cost + fee <= buy_amount:
-                                shares += shares_to_buy
-                                cash -= cost + fee
-                                monthly_buys[month_key] = (
-                                    monthly_buys.get(month_key, 0.0) + cost + fee
-                                )
-                                trade_log.append(
-                                    TradeRecord(
-                                        date=date_str,
-                                        stock_code=self.stock_code,
-                                        trade_type="buy",
-                                        price=close,
-                                        shares=shares_to_buy,
-                                        amount=cost + fee,
-                                        fee=fee,
-                                        reason=(
-                                            f"{rule.label} "
-                                            f"(偏离={deviation * 100:.1f}%)"
-                                        ),
-                                    )
-                                )
-
-                elif rule.type == "sell" and shares > 0:
-                    _exec_sell(
-                        reason_label=rule.label,
-                        fraction=rule.action_fraction or 0.25,
-                        sell_min=rule.action_min or 2500.0,
-                        sell_max=rule.action_max or 10000.0,
-                    )
-
             # ── 记录每日总资产 ──
             total_value = cash + shares * close
             daily_values.append(total_value)
@@ -510,7 +463,7 @@ class PortfolioEvaluator:
         self,
         stocks_data: dict[str, pd.DataFrame],
         group: str,
-        rules: list[Rule] | None = None,
+        rules: list | None = None,
         signal_fn=None,
     ):
         """
@@ -790,12 +743,12 @@ class PortfolioEvaluator:
 
         # Rule engines per stock
         if self.rules is None:
-            rules = get_default_rules()
+            rules = []  # get_default_rules removed
         else:
             rules = self.rules
-        engines: dict[str, RuleEngine] = {}
+        engines: dict[str, object] = {}  # RuleEngine removed
         for c in active_codes:
-            engines[c] = RuleEngine(rules)
+            engines[c] = None  # RuleEngine removed
 
         # ── 构建统一日期轴（同时计算 MA60、deviation，合并指标列）──
         date_map: dict[str, dict[str, dict]] = {}
@@ -1025,6 +978,8 @@ class PortfolioEvaluator:
                         ctx[key] = val
 
                 engine = engines[code]
+                if engine is None:
+                    continue
                 for rule, amount in engine.evaluate_day(ctx):
                     if rule.type == "buy":
                         buy_amount = min(float(amount), cash)
@@ -1347,7 +1302,7 @@ class PortfolioOptimizer:
         if custom_rules is None:
             config_rules = ps_config.get("rules", None)
             if config_rules:
-                custom_rules = [Rule.from_dict(r) for r in config_rules]
+                custom_rules = [r for r in config_rules]  # Rule.from_dict removed
                 logger.info(f"投资组合使用配置规则: {len(custom_rules)} 条")
 
         # 获取数据并分组
@@ -1432,7 +1387,7 @@ class PortfolioOptimizer:
         if custom_rules is None:
             config_rules = ps_config.get("rules", None)
             if config_rules:
-                custom_rules = [Rule.from_dict(r) for r in config_rules]
+                custom_rules = [r for r in config_rules]  # Rule.from_dict removed
 
         # 标的池 = config 当前 stocks，按细分组分池（只拉目标组）
         # 注意：不过滤 skip_search — 那只作用于搜参阶段；日报/验证期照常评估

@@ -93,48 +93,6 @@ class TestTimingStrategyEngine:
             if trade.trade_type == "buy":
                 assert trade.shares >= 1
 
-    def test_buy_at_minus_5(self):
-        """价格跌破MA60的-5%时应触发买入"""
-        # 构造先涨后跌的数据
-        np.random.seed(42)
-        length = 500
-        dates = pd.date_range(end=datetime.now(), periods=length, freq="B")
-        # 前200天平稳，然后快速下跌
-        prices = np.ones(length) * 10.0
-        prices[:200] = 10.0
-        prices[200:300] = np.linspace(10.0, 9.0, 100)  # 缓慢下跌
-        prices[300:350] = np.linspace(9.0, 8.0, 50)  # 加速跌
-        prices[350:] = np.linspace(8.0, 7.5, 150)  # 持续低位
-        df = pd.DataFrame({"date": dates, "close": prices})
-        engine = TimingStrategyEngine("601728", df)
-        metrics = engine.run_simulation(initial_cash=10000)
-        buy_trades = [t for t in metrics.trade_log if t.trade_type == "buy"]
-        # 应该至少有一次买入
-        assert len(buy_trades) > 0, "价格跌破-5%应触发买入"
-
-    def test_sell_at_plus_5(self):
-        """价格突破MA60的+5%时应触发卖出"""
-        # 构造先跌后涨的数据
-        np.random.seed(42)
-        length = 500
-        dates = pd.date_range(end=datetime.now(), periods=length, freq="B")
-        # 前200天下跌，然后快速上涨
-        prices = np.ones(length) * 10.0
-        prices[:200] = np.linspace(10.0, 9.0, 200)  # 缓慢下跌
-        prices[200:280] = 8.5  # 低位震荡
-        prices[280:350] = np.linspace(8.5, 10.5, 70)  # 涨到超过MA60
-        prices[350:400] = np.linspace(10.5, 11.5, 50)  # 继续涨
-        prices[400:] = np.linspace(11.5, 10.0, 100)  # 回落
-        df = pd.DataFrame({"date": dates, "close": prices})
-        engine = TimingStrategyEngine("601728", df)
-        metrics = engine.run_simulation(initial_cash=10000)
-        sell_trades = [t for t in metrics.trade_log if t.trade_type == "sell"]
-        print(f"Sell trades: {len(sell_trades)}")
-        for t in sell_trades[:5]:
-            print(f"  {t.date} sell {t.shares}sh @ {t.price} ({t.reason})")
-        # 应该至少有一次卖出
-        assert len(sell_trades) > 0, "价格突破+5%应触发卖出"
-
     def test_buy_amount_limit(self):
         """每笔买入不超过5000元"""
         df = make_trend_data(base=10.0, length=500, trend_strength=1.0)
@@ -255,7 +213,6 @@ class TestSignalFnEvaluation:
     def _pct_setup(self, drift=0.6, n=400):
         from src.analysis.strategies.percentile.engine import PercentileSearchStrategy as PercentileSignalFn
         from src.analysis.search_interface import Params
-        from src.analysis.rule_engine import Rule
 
         rng = np.random.RandomState(11)
         dates = pd.date_range("2023-01-01", periods=n, freq="B")
@@ -289,6 +246,8 @@ class TestSignalFnEvaluation:
             },
             _engine="percentile",
         )
+        from types import SimpleNamespace
+        Rule = lambda **kw: SimpleNamespace(**kw)  # Rule class removed, stub
         rules = [
             Rule(
                 id="buy_1",
@@ -306,23 +265,6 @@ class TestSignalFnEvaluation:
         data, sfn, params, rules = self._pct_setup()
         ev = PortfolioEvaluator(data, "a_share", rules=rules, signal_fn=sfn)
         assert ev._uses_signal_fn() is True
-
-    def test_no_signal_fn_when_rules_are_conditions(self):
-        from src.analysis.rule_engine import Rule
-
-        data, sfn, params, _ = self._pct_setup()
-        rules = [
-            Rule(
-                id="buy_1",
-                label="x",
-                type="buy",
-                priority=1,
-                condition="deviation <= -0.05",
-                budget_pool="buy",
-            )
-        ]
-        ev = PortfolioEvaluator(data, "a_share", rules=rules, signal_fn=sfn)
-        assert ev._uses_signal_fn() is False
 
     def test_signal_fn_path_actually_trades(self):
         # 核心回归：percentile 日报回测必须真实交易（非 100% 现金）

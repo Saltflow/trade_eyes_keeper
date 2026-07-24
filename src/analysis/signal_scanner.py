@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 import yaml
 
 from src.data.technical_indicators import compute_all
-from .rule_engine import ExpressionEngine
+# ExpressionEngine removed
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +134,7 @@ class SignalScanner:
 
     def __init__(self, results_dir: str | Path = "data/optimizer"):
         self.results_dir = Path(results_dir)
-        self._expr_engine = ExpressionEngine()
+        self._expr_engine = None  # ExpressionEngine removed
         self._computed_cache: dict = {}
 
     # ── 文件加载 ──
@@ -363,7 +363,9 @@ class SignalScanner:
                             logger.debug(f"{code} 引擎扫描失败 (非致命): {e}")
                         continue  # 该策略走引擎路径，跳过 legacy 条件评估
 
-                # ── 分派 2: legacy 条件评估（全局阈值引擎 / 旧 YAML）──
+                # ── 分派 2: legacy 条件评估（已移除 ExpressionEngine）──
+                if self._expr_engine is None:
+                    continue  # RuleEngine removed, skip legacy condition eval
                 for r in rules:
                     if r.get("type") != "buy" or r.get("condition", "False") == "False":
                         continue
@@ -553,7 +555,7 @@ class SignalScanner:
         from .config import (
             make_default_optimizer_config,
         )
-        from .rule_engine import Rule
+        Rule = None  # Rule removed
         from src.data.technical_indicators import compute_all
 
         # 加载 Top-1 策略

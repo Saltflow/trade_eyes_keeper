@@ -25,7 +25,7 @@ import pandas as pd
 import yaml
 from pydantic import BaseModel, Field
 
-from .rule_engine import Rule
+# Rule removed
 from .config import (
     BacktestConfig,
     make_training_config,
@@ -33,7 +33,7 @@ from .config import (
 )
 from .portfolio_strategy import PortfolioEvaluator
 from src.data.technical_indicators import compute_all
-from .rule_engine import ExpressionEngine
+# ExpressionEngine removed
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +208,7 @@ class StrategyTrial(BaseModel):
     """单次策略试验记录"""
 
     params: dict[str, str | float]  # 参数摘要（构建器名、阈值等）
-    rules: list[Rule]  # 生成的规则列表
+    rules: list  # 生成的规则列表
     train_return: float  # 训练期（0-12月）总收益率(%)
     train_drawdown: float  # 训练期最大回撤(%)
     test_return: float  # 测试期（12-24月）总收益率(%, vs primary benchmark)
@@ -294,7 +294,7 @@ class StrategyOptimizer:
         """设置基准 ETF 数据（510300 沪深300 / 510880 红利）"""
         self.benchmark_data = data
 
-    def _make_benchmark_rules(self) -> list[Rule]:
+    def _make_benchmark_rules(self) -> list:
         """买就满仓、永不卖出"""
         return [
             Rule(
@@ -373,7 +373,7 @@ class StrategyOptimizer:
         if not active_codes or not self.indicators:
             return list(BUY_BUILDERS), list(SELL_BUILDERS)
 
-        expr_engine = ExpressionEngine()
+        expr_engine = None  # ExpressionEngine removed
 
         # 对每个构建器计数
         def _count_signals(builder_name: str, direction: str) -> int:
@@ -427,7 +427,7 @@ class StrategyOptimizer:
                         "ma60": float(row.get("ma60", 0) or 0),
                     }
                     try:
-                        if expr_engine.evaluate(cond_str, ctx):
+                        if expr_engine is not None and expr_engine.evaluate(cond_str, ctx):
                             total += 1
                     except Exception as e:
                         logger.debug(f"条件求值异常 (非致命): {cond_str[:50]} | {e}")
@@ -540,7 +540,7 @@ class StrategyOptimizer:
         self,
         param_vec: list[float],
         stock_codes: list[str] | None = None,
-    ) -> tuple[list[Rule], list[str]]:
+    ) -> tuple[list, list[str]]:
         """将参数向量转换为 Rule 列表 + 纳入的股票代码
 
         Returns:
@@ -571,6 +571,8 @@ class StrategyOptimizer:
 
             condition, reset_when = build_condition(builder_name, t_norm, direction)
 
+            from types import SimpleNamespace
+            Rule = lambda **kw: SimpleNamespace(**kw)
             rule = Rule(
                 id=spec["id"],
                 label=spec["label"],

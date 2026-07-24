@@ -29,7 +29,6 @@ def test_all_key_modules():
         "src.analysis.strategy_optimizer",
         "src.analysis.signal_scanner",
         "src.analysis.portfolio_strategy",
-        "src.analysis.rule_engine",
         # health_server
         "src.health_server.core.global_instances",
         "src.health_server.core.health_server",

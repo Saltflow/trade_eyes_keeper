@@ -295,7 +295,6 @@ def run_daily_task(force: bool = False):
         # 5. 投资组合策略分析（标的池=config，策略规则=YAML，不选股不搜参）
         try:
             from src.analysis.portfolio_strategy import PortfolioOptimizer
-            from src.analysis.rule_engine import Rule
 
             logger.info("开始投资组合策略分析（config标的 + YAML规则）")
 
@@ -326,7 +325,7 @@ def run_daily_task(force: bool = False):
                     from src.analysis.signal_scanner import _params_from_yaml
                     sig_fn = PercentileSearchStrategy()
                     eng_params = _params_from_yaml(params)
-                    rules = [Rule.from_dict(r) for r in rules_raw] if rules_raw else None
+                    rules = rules_raw  # Rule.from_dict removed
                     return data, rules, sig_fn, eng_params
 
                 # position_target → cash*frac 转换（RuleEngine 无法求值 position_target）
@@ -340,7 +339,7 @@ def run_daily_task(force: bool = False):
                             r["action_fraction"] = params.get(f"sell_{idx}_frac", 0.25)
                             r["action_min"] = 2500.0
                             r["action_max"] = 10000.0
-                rules = [Rule.from_dict(r) for r in rules_raw] if rules_raw else None
+                rules = rules_raw  # Rule.from_dict removed
                 return data, rules, None, None
 
             a_data, a_rules, a_sfn, a_ep = _load_opt_yaml("a_share")
