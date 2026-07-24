@@ -11,12 +11,13 @@ import numpy as np
 from typing import TYPE_CHECKING
 
 from .signal_functions import SignalFn, ParamDim, ParamSpace, Params
-from .fast_evaluator import (
+from .backtester import (
     IDX_ADX_PCT,
     IDX_RSI_PCT,
     IDX_DEVIATION_PCT,
     IDX_VOL_RATIO_PCT,
     IDX_MA200_DEV_PCT,
+    compute_percentile_scores,
 )
 
 if TYPE_CHECKING:

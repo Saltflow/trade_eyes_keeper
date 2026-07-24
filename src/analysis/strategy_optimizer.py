@@ -26,13 +26,13 @@ import yaml
 from pydantic import BaseModel, Field
 
 from .rule_engine import Rule
-from .backtest_config import (
+from .config import (
     BacktestConfig,
     make_training_config,
     make_default_optimizer_config,
 )
 from .portfolio_strategy import PortfolioEvaluator
-from .indicator_library import compute_all
+from src.data.technical_indicators import compute_all
 from .rule_engine import ExpressionEngine
 
 logger = logging.getLogger(__name__)

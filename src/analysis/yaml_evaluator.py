@@ -87,7 +87,7 @@ def evaluate_yaml_strategy(
     )
     from src.analysis.signal_scanner import _params_from_yaml
     from src.analysis.signal_functions import simulate_portfolio, Params as _Params
-    from src.analysis.execution_config import get_execution_config
+    from src.analysis.config import get_execution_config
     from src.data.data_source import DataSource
     from src.analysis.portfolio_strategy import _detect_fine_group
 
@@ -142,7 +142,7 @@ def evaluate_yaml_strategy(
 
     sfn = PercentileSignalFn()
     ep = _params_from_yaml(params_dict)
-    from src.analysis.indicator_library import compute_all
+    from src.data.technical_indicators import compute_all
 
     computed = compute_all(stocks_data)
 

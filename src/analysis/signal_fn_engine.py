@@ -9,17 +9,65 @@
 from __future__ import annotations
 
 import logging
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .strategy_interface import StrategyEngine
+if TYPE_CHECKING:
+    from .optimizer import StrategyEncoding
+    from .backtester import FastEvaluator
+    from .config import StrategyConstraints, DiscreteSearchConfig
+
 from .signal_functions import (
     SignalFn,
     Params,
 )
-from .optimizer_constraints import WindowStats
+from .config import WindowStats
 
 logger = logging.getLogger(__name__)
+
+
+class StrategyEngine(ABC):
+    """策略评估的纯函数接口。
+    每个引擎实例管理一种参数空间 + 参数→评估的翻译逻辑。
+    """
+
+    @abstractmethod
+    def param_count(self) -> int:
+        ...
+
+    @abstractmethod
+    def random_encoding(self, ds_cfg) -> "StrategyEncoding":
+        ...
+
+    @abstractmethod
+    def evaluate_encoding(
+        self,
+        encoding: "StrategyEncoding",
+        windows,
+        ds_cfg: "DiscreteSearchConfig",
+        constraints: "StrategyConstraints",
+        evaluator: "FastEvaluator",
+        wf_manager,
+    ) -> tuple[list["WindowStats"], float] | None:
+        ...
+
+    @abstractmethod
+    def crossover_encoding(
+        self, p1: "StrategyEncoding", p2: "StrategyEncoding",
+    ) -> "StrategyEncoding":
+        ...
+
+    @abstractmethod
+    def mutate_encoding(
+        self, encoding: "StrategyEncoding", ds_cfg,
+    ) -> "StrategyEncoding":
+        ...
+
+    @abstractmethod
+    def to_human_readable(self, encoding: "StrategyEncoding", ds_cfg) -> str:
+        ...
 
 
 class SignalFnSearchEngine(StrategyEngine):
@@ -36,7 +84,7 @@ class SignalFnSearchEngine(StrategyEngine):
         monthly_limit: float | None = None,
         commission_rate: float | None = None,
     ):
-        from .execution_config import get_execution_config
+        from .config import get_execution_config
 
         cfg = get_execution_config()
         self.signal_fn = signal_fn

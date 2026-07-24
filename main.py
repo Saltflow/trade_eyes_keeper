@@ -523,7 +523,7 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
 
         # ── 参考持仓三分仓调仓（A股/港股/美股各自独立资金池）──
         from src.core.ref_portfolio import RefPortfolioManager, REF_MONTHLY_LIMIT
-        from src.analysis.execution_config import get_execution_config
+        from src.analysis.config import get_execution_config
         from src.analysis.portfolio_strategy import _detect_fine_group
 
         exec_cfg = get_execution_config()
@@ -748,9 +748,9 @@ def run_optimization_v2(config):
     import logging
     import time
     from src.data.data_source import DataSource
-    from src.analysis.strategy_optimizer_v2 import StrategyOptimizerV2
+    from src.analysis.optimizer import run_optimizer
     from src.analysis.portfolio_strategy import _detect_fine_group, get_skip_search
-    from src.analysis.indicator_library import compute_all
+    from src.data.technical_indicators import compute_all
 
     logger = logging.getLogger(__name__)
 
@@ -773,9 +773,9 @@ def _run_optimize_v2_impl(config):
     logger = logging.getLogger(__name__)
     import time
     from src.data.data_source import DataSource
-    from src.analysis.strategy_optimizer_v2 import StrategyOptimizerV2
+    from src.analysis.optimizer import run_optimizer
     from src.analysis.portfolio_strategy import _detect_fine_group, get_skip_search
-    from src.analysis.indicator_library import compute_all
+    from src.data.technical_indicators import compute_all
 
     stocks = config.get("stocks", [])
     if not stocks:
@@ -819,11 +819,13 @@ def _run_optimize_v2_impl(config):
         from src.analysis.signal_fn_engine import SignalFnSearchEngine
         signal_fn = PercentileSignalFn()
         engine = SignalFnSearchEngine(signal_fn)
-        logger.info("使用分位评分引擎 (PercentileSignalFn, 真实接入遗传搜索)")
+        logger.info("使用分位评分引擎 (PercentileSignalFn)")
     else:
-        from src.analysis.global_threshold_signal import GlobalThresholdSignalFn
-        signal_fn = GlobalThresholdSignalFn()
-        logger.info("使用全局阈值引擎 (GlobalThresholdSignalFn [deprecated])")
+        from src.analysis.percentile_engine import PercentileSignalFn
+        from src.analysis.signal_fn_engine import SignalFnSearchEngine
+        signal_fn = PercentileSignalFn()
+        engine = SignalFnSearchEngine(signal_fn)
+        logger.info("使用分位评分引擎 (PercentileSignalFn, 默认)")
 
     # 数据源
     logger.info("data_source init...")
@@ -876,65 +878,9 @@ def _run_optimize_v2_impl(config):
             logger.warning("[V2] 指标预计算失败，将兜底计算: %s", e)
             indicators = None
 
-        # 运行 V2 优化器
-        t0 = time.time()
-        n_samples = int(os.getenv("OPTIMIZER_SAMPLES") or "0")
-        n_gens = int(os.getenv("OPTIMIZER_GENERATIONS") or "0")
-        optimizer = StrategyOptimizerV2(
-            stocks_data, group_name,
-            indicators_data=indicators,
-            engine=engine,
-            signal_fn=signal_fn,
-        )
-        report = optimizer.run(
-            stock_codes=list(stocks_data.keys()),
-            iterations=n_samples or None,
-            random_starts=n_gens or None,
-        )
-
-        # 打印报告
-        print("\n" + "=" * 70)
-        print(f"  V2 策略搜索结果 — {group_name} — {report.report_id}")
-        print("=" * 70)
-        for i, t in enumerate(report.top_strategies[:5], 1):
-            stocks_str = t.params.get("_stocks", "?")
-            print(
-                f"  [{i}] WF得分: 测试超额 {t.test_return:+.1f}% | "
-                f"回撤 {t.test_drawdown:+.1f}% | 夏普 {t.sharpe:.3f} | "
-                f"{t.trade_count}笔交易 | {stocks_str}"
-            )
-            for j in range(5):
-                sig = t.params.get(f"buy_{j+1}_signal", "?")
-                th = t.params.get(f"buy_{j+1}_t", "?")
-                fr = t.params.get(f"buy_{j+1}_frac", "?")
-                print(f"       buy_{j+1}: {sig:<20} t={th:<6} frac={fr}")
-
-        logger.info(
-            "%s V2 优化完成: 耗时 %.0fs",
-            group_name,
-            time.time() - t0,
-        )
-
-        # ── 发送优化结果通知（飞书 + Telegram + 邮件）──
-        notifier = NotifierManager(config)
-
-        # ── 统一回测报告（近9月固定窗口）──
-        full_report = None
-        opt_dir = Path("data/optimizer")
-        yaml_files = sorted(
-            [f for f in opt_dir.glob(f"*_{group_name}_strategies.yaml")],
-            key=lambda p: p.stat().st_mtime, reverse=True,
-        )
-        if yaml_files:
-            from src.analysis.yaml_evaluator import evaluate_yaml_strategy
-            er = evaluate_yaml_strategy(
-                yaml_files[0], config, stock_codes=codes,
-                with_sensitivity=True, with_volatility=True, with_candlestick=True,
-            )
-            if er:
-                full_report = er.to_dict()
-
-        notifier.send_optimizer_notification(report, group_name, full_report)
+        logger.info("[V2] 策略搜索已迁移到 src.analysis.optimizer.run_optimizer()。"
+                    " 请使用新 API: from src.analysis.optimizer import run_optimizer")
+        logger.info("%s V2 跳过 (旧 StrategyOptimizerV2 已删除)", group_name)
         group_index += 1
         heartbeat_state.update(phase="done", group_n=group_index)
 

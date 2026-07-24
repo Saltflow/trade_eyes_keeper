@@ -22,8 +22,10 @@ def test_all_key_modules():
     """关键模块批量导入"""
     modules = [
         # analysis
-        "src.analysis.backtest_config",
-        "src.analysis.indicator_library",
+        "src.analysis.config",
+        "src.analysis.search_interface",
+        "src.analysis.backtester",
+        "src.analysis.optimizer",
         "src.analysis.strategy_optimizer",
         "src.analysis.signal_scanner",
         "src.analysis.portfolio_strategy",

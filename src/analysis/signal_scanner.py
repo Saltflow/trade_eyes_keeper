@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 import yaml
 
-from .indicator_library import compute_all
+from src.data.technical_indicators import compute_all
 from .rule_engine import ExpressionEngine
 
 logger = logging.getLogger(__name__)
@@ -550,11 +550,11 @@ class SignalScanner:
             如果没有任何优化结果或数据，返回 None。
         """
         from .portfolio_strategy import PortfolioEvaluator
-        from .backtest_config import (
+        from .config import (
             make_default_optimizer_config,
         )
         from .rule_engine import Rule
-        from .indicator_library import compute_all
+        from src.data.technical_indicators import compute_all
 
         # 加载 Top-1 策略
         strategies = self._load_strategies(group, top_n=1)
@@ -662,7 +662,7 @@ class SignalScanner:
         if not bench_data:
             return results
 
-        from .backtest_config import BacktestConfig
+        from .config import BacktestConfig
 
         bcfg = config if isinstance(config, BacktestConfig) else BacktestConfig()
         rf_rate = bcfg.rf_rate

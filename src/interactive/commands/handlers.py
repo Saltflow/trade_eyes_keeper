@@ -206,9 +206,7 @@ def _engine_brief(engine_key: str) -> str:
             from ...analysis.percentile_engine import PercentileSignalFn
 
             return PercentileSignalFn().engine_brief()
-        from ...analysis.global_threshold_signal import GlobalThresholdSignalFn
-
-        return GlobalThresholdSignalFn().engine_brief()
+        return ""
     except Exception:
         return ""
 
@@ -772,7 +770,7 @@ def handle_config(action: str, key: str, value: str) -> str:
         _save_opt_config(cfg)
         # 刷新执行配置缓存（search/daily 两路径生效）
         try:
-            from ...analysis.execution_config import reload_execution_config
+            from ...analysis.config import reload_execution_config
 
             reload_execution_config()
         except Exception:

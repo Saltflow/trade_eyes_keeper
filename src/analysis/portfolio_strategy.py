@@ -18,7 +18,7 @@ import numpy as np
 from pydantic import BaseModel, Field
 
 from .rule_engine import RuleEngine, get_default_rules, Rule
-from .backtest_config import BacktestConfig, elapsed_months
+from .config import BacktestConfig, elapsed_months
 
 logger = logging.getLogger(__name__)
 
@@ -572,7 +572,7 @@ class PortfolioEvaluator:
 
         # 补齐分位源指标 (rsi/adx/vol_ratio)，deviation/ma200_dev 由引擎兜底
         try:
-            from .indicator_library import compute_all
+            from src.data.technical_indicators import compute_all
 
             computed = compute_all({c: self.stocks_data[c] for c in active_codes})
         except Exception as e:
@@ -635,7 +635,7 @@ class PortfolioEvaluator:
 
         exec_p = self.signal_fn.execution_params(params)
         # 读取统一执行配置
-        from .execution_config import get_execution_config
+        from .config import get_execution_config
 
         exec_cfg = get_execution_config()
         monthly = exec_cfg.monthly_buy_limit

@@ -308,7 +308,7 @@ class StockDataFetcher:
 
                     # 计算动量/波动率/成交量指标 (RSI/MACD/ADX/布林/量比)
                     try:
-                        from ..analysis.indicator_library import (
+                        from ...data.technical_indicators import (
                             add_rsi,
                             add_macd,
                             add_adx,
