@@ -31,14 +31,12 @@ def check(desc: str, fn):
 def test_imports():
     modules = [
         "src.core.ref_portfolio",
-        "src.analysis.yaml_evaluator",
-        "src.analysis.percentile_engine",
-        "src.analysis.signal_functions",
-        "src.analysis.signal_fn_engine",
+        "src.analysis.config",
+        "src.analysis.search_interface",
+        "src.analysis.backtester",
+        "src.analysis.optimizer",
         "src.analysis.portfolio_strategy",
-        "src.analysis.strategy_optimizer_v2",
-        "src.analysis.execution_config",
-        "src.analysis.signal_scanner",
+        "src.analysis.strategy_optimizer",
         "src.notification.email_notifier",
         "src.notification.feishu_notifier",
         "src.notification.telegram_notifier",
@@ -76,32 +74,9 @@ def test_ref_portfolio():
         pass
 
 
-# ── 3. yaml_evaluator 可实例化 ──
-def test_yaml_evaluator():
-    from src.analysis.yaml_evaluator import StrategyEvalReport
-
-    r = StrategyEvalReport(group="a_share", label="A股")
-    d = r.to_dict()
-    check(
-        "StrategyEvalReport.to_dict keys",
-        lambda: (
-            "total_return" in d and "excess_return" in d and "benchmark_returns" in d
-        ),
-    )
-
-
-# ── 4. 关键函数签名检查 ──
+# ── 3. 关键函数签名检查 ──
 def test_function_signatures():
     import inspect
-
-    # evaluate_yaml_strategy should exist and accept key params
-    from src.analysis.yaml_evaluator import evaluate_yaml_strategy
-
-    sig = inspect.signature(evaluate_yaml_strategy)
-    check(
-        "evaluate_yaml_strategy has 'with_sensitivity'",
-        lambda: "with_sensitivity" in sig.parameters,
-    )
 
     # rebalance should accept fx_rate, force
     from src.core.ref_portfolio import RefPortfolioManager
@@ -163,7 +138,6 @@ if __name__ == "__main__":
 
     test_imports()
     test_ref_portfolio()
-    test_yaml_evaluator()
     test_function_signatures()
     test_commands()
     test_main_symbols()

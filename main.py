@@ -178,73 +178,27 @@ def run_daily_task(force: bool = False):
         checker.check_from_session(session, session_manager)
         logger.info(f"条件检查完成: {len(session.alerts)}个警报")
 
-        # 3b. 策略信号扫描（基于最新优化结果）
+        # 3b. 策略信号扫描（基于最新优化结果，直接调 PercentileSearchStrategy）
         try:
-            from src.analysis.signal_scanner import SignalScanner
-
-            def _merge_consensus(a, b):
-                """合并两个 ConsensusReport，求并集"""
-                from src.analysis.signal_scanner import ConsensusReport
-                return ConsensusReport(
-                    buy_signal_counts={**a.buy_signal_counts, **b.buy_signal_counts},
-                    sell_signal_counts={**a.sell_signal_counts, **b.sell_signal_counts},
-                    stock_inclusion_counts={**a.stock_inclusion_counts, **b.stock_inclusion_counts},
-                    consensus_buy_signals=list(set(a.consensus_buy_signals + b.consensus_buy_signals)),
-                    consensus_stocks=list(set(a.consensus_stocks + b.consensus_stocks)),
-                    consensus_indicators=list(set(a.consensus_indicators + b.consensus_indicators)),
-                )
-
             logger.info("开始策略信号扫描")
-            scanner = SignalScanner()
-            scan_result = scanner.scan(session, "a_share", top_n=5)
-            # 合并策略告警到 session.alerts
-            for sa in scan_result.alerts:
-                session.alerts.append({
-                    "type": "strategy",
-                    "stock_code": sa.stock_code,
-                    "rule_id": sa.rule_id,
-                    "rule_label": sa.rule_label,
-                    "condition": sa.condition_str,
-                    "current_value": sa.current_value,
-                    "strategy_rank": sa.strategy_rank,
-                })
+            a_alerts = _scan_group(session, "a_share")
+            hk_alerts = _scan_group(session, "hk")
+            us_alerts = _scan_group(session, "us")
 
-            # 港股 + 美股各自扫描（独立 YAML 策略）
-            logger.info("开始港股/美股策略信号扫描")
-            hk_result = scanner.scan(session, "hk", top_n=5)
-            us_result = scanner.scan(session, "us", top_n=5)
-            nona_alerts = list(hk_result.alerts) + list(us_result.alerts)
-            for sa in nona_alerts:
-                session.alerts.append({
-                    "type": "strategy",
-                    "stock_code": sa.stock_code,
-                    "rule_id": sa.rule_id,
-                    "rule_label": sa.rule_label,
-                    "condition": sa.condition_str,
-                    "current_value": sa.current_value,
-                    "strategy_rank": sa.strategy_rank,
-                })
-            # 合并 indicator_snapshot: A 股 + 港股 + 美股
-            merged_snapshot = dict(scan_result.indicator_snapshot or {})
-            merged_snapshot.update(hk_result.indicator_snapshot or {})
-            merged_snapshot.update(us_result.indicator_snapshot or {})
-            scan_result.indicator_snapshot = merged_snapshot
-            # 合并共识报告
-            merged_consensus = _merge_consensus(
-                _merge_consensus(scan_result.consensus, hk_result.consensus),
-                us_result.consensus,
-            )
-            scan_result.consensus = merged_consensus
-            # 合并告警：A股 + 港股 + 美股（否则邮件今日信号只显示A股）
-            n_a_alerts = len(scan_result.alerts)
-            n_nona_alerts = len(nona_alerts)
-            scan_result.alerts = list(scan_result.alerts) + nona_alerts
+            for sa in a_alerts + hk_alerts + us_alerts:
+                session.alerts.append(sa)
 
-            # 存入共识数据供邮件使用
-            session.signal_scan = scan_result
+            # 存入信号扫描结果供邮件使用
+            session.signal_scan = type("ScanResult", (), {
+                "alerts": a_alerts + hk_alerts + us_alerts,
+                "consensus": None,
+                "indicator_snapshot": {},
+                "divergence_warnings": [],
+            })()
+
             logger.info(
-                f"策略信号扫描完成: A股={n_a_alerts} + "
-                f"境外={n_nona_alerts} 个策略告警"
+                f"策略信号扫描完成: A股={len(a_alerts)} + "
+                f"境外={len(hk_alerts) + len(us_alerts)} 个策略告警"
             )
         except Exception as e:
             logger.warning(f"策略信号扫描失败 (非致命): {e}")
@@ -322,7 +276,6 @@ def run_daily_task(force: bool = False):
                 # 分位/评分引擎：用 SignalFn 评分流水线回测（rules 保持 __signal_fn__）
                 if engine_name in ("percentile", "pct", "new"):
                     from src.analysis.strategies.percentile.engine import PercentileSearchStrategy
-                    from src.analysis.signal_scanner import _params_from_yaml
                     sig_fn = PercentileSearchStrategy()
                     eng_params = _params_from_yaml(params)
                     rules = rules_raw  # Rule.from_dict removed
@@ -421,7 +374,6 @@ def run_daily_task(force: bool = False):
         object.__setattr__(session, "ref_portfolio_status", all_statuses)
 
         # ── 统一回测报告缓存（固定9月窗口，供日报策略摘要使用）──
-        from src.analysis.yaml_evaluator import evaluate_yaml_strategy
         yaml_eval_cache: dict[str, dict] = {}
         for gk in ("a_share", "hk", "us"):
             yf = sorted(
@@ -430,9 +382,8 @@ def run_daily_task(force: bool = False):
             )
             if not yf:
                 continue
-            er = evaluate_yaml_strategy(
+            er = eval_yaml_strategy(
                 yf[0], config, stock_codes=None,
-                with_sensitivity=False, with_volatility=False,
             )
             if er:
                 yaml_eval_cache[gk] = er.to_dict()
@@ -499,24 +450,19 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
 
         logger.info(f"简报：获取到 {len(session.stocks_data)} 只股票数据")
 
-        # 策略信号扫描（和日报同一套 SignalScanner，三组分别扫描）
+        # 策略信号扫描（直接调 PercentileSearchStrategy）
         try:
-            from src.analysis.signal_scanner import SignalScanner
-            scanner = SignalScanner()
-            scan_result = scanner.scan(session, "a_share", top_n=5)
-            hk_result = scanner.scan(session, "hk", top_n=5)
-            us_result = scanner.scan(session, "us", top_n=5)
-            merged_snapshot = dict(scan_result.indicator_snapshot or {})
-            merged_snapshot.update(hk_result.indicator_snapshot or {})
-            merged_snapshot.update(us_result.indicator_snapshot or {})
-            scan_result.indicator_snapshot = merged_snapshot
-            scan_result.alerts = (
-                list(scan_result.alerts)
-                + list(hk_result.alerts)
-                + list(us_result.alerts)
-            )
-            session.signal_scan = scan_result
-            logger.info(f"简报策略信号扫描完成: {len(scan_result.alerts)} 个策略告警")
+            a_alerts = _scan_group(session, "a_share")
+            hk_alerts = _scan_group(session, "hk")
+            us_alerts = _scan_group(session, "us")
+
+            session.signal_scan = type("ScanResult", (), {
+                "alerts": a_alerts + hk_alerts + us_alerts,
+                "consensus": None,
+                "indicator_snapshot": {},
+                "divergence_warnings": [],
+            })()
+            logger.info(f"简报策略信号扫描完成: {len(session.signal_scan.alerts)} 个策略告警")
         except Exception as e:
             logger.warning(f"简报策略信号扫描失败 (非致命): {e}")
 
@@ -933,6 +879,213 @@ def _send_optimizer_report_telegram(config, report):
             _logger.warning("Telegram 报告发送失败: HTTP %d", resp.status_code)
     except Exception as e:
         _logger.warning("Telegram 报告发送异常: %s", e)
+
+
+# ═══════════════════════════════════════════════════════════
+# 微型策略扫描（替代 signal_scanner.py + yaml_evaluator.py）
+# ═══════════════════════════════════════════════════════════
+
+def _params_from_yaml(params: dict) -> dict:
+    """YAML params → 过滤非整数级别键（剔除 _mode/_engine/_stocks）。"""
+    vals = {}
+    for k, v in params.items():
+        if k.startswith("_"):
+            continue
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, (int, float)):
+            vals[k] = int(v)
+        elif isinstance(v, str):
+            try:
+                vals[k] = int(float(v))
+            except (ValueError, TypeError):
+                pass
+    return vals
+
+
+def _scan_group(session, group: str, top_n: int = 5):
+    """读最新搜参 YAML，调 PercentileSearchStrategy.scan_signals()，返回告警列表。"""
+    from pathlib import Path
+    from src.analysis.strategies.percentile.engine import (
+        PercentileSearchStrategy as PS,
+    )
+    from src.analysis.search_interface import Params
+    from src.analysis.portfolio_strategy import (
+        _detect_stock_group, _detect_fine_group, get_skip_signals,
+    )
+    from src.data.technical_indicators import compute_all
+
+    opt_dir = Path("data/optimizer")
+    pattern = f"*_{group}_strategies.yaml"
+    files = sorted(
+        [f for f in opt_dir.glob(pattern) if (group == "non_a_share") == ("non_a_share" in f.name)],
+        key=lambda p: p.stat().st_mtime, reverse=True,
+    )
+    if not files:
+        return []
+
+    with open(files[0], encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    strategies = (data.get("strategies") or [])[:top_n]
+
+    stocks_data = getattr(session, "stocks_data", []) or []
+    all_codes = [s.stock_code if hasattr(s, "stock_code") else str(s)
+                 for s in stocks_data]
+    skip_sig = get_skip_signals(getattr(session, "config", {}) or {})
+    if group in ("hk", "us"):
+        stock_codes = [c for c in all_codes
+                       if _detect_fine_group(c) == group and c not in skip_sig]
+    else:
+        stock_codes = [c for c in all_codes
+                       if _detect_stock_group(c) == group and c not in skip_sig]
+
+    historical = getattr(session, "_historical", {}) or {}
+    strategy = PS()
+    all_alerts = []
+
+    for s_idx, strat in enumerate(strategies):
+        params = strat.get("params", {}) or {}
+        rules = strat.get("rules", [])
+        engine_name = params.get("_engine", "")
+        if engine_name not in ("percentile", "pct", "new"):
+            continue
+        uses_sf = any(r.get("condition") == "__signal_fn__" for r in rules)
+        if not uses_sf:
+            continue
+
+        sig_params = Params(
+            values=_params_from_yaml(params),
+            _engine=engine_name,
+        )
+
+        for code in stock_codes:
+            df = historical.get(code)
+            if df is None or df.empty:
+                continue
+            # Build today dict from last row
+            today = {}
+            for col in df.columns:
+                v = df[col].iloc[-1]
+                if not (isinstance(v, float) and np.isnan(v)):
+                    today[col] = v
+
+            try:
+                hist = compute_all({code: df}).get(code, df)
+                hits = strategy.scan_signals(sig_params, today, hist)
+                for h in hits:
+                    all_alerts.append({
+                        "stock_code": code,
+                        "rule_id": h.get("side", "buy"),
+                        "rule_label": h.get("label", ""),
+                        "condition_str": h.get("detail", ""),
+                        "current_value": h.get("detail", "--"),
+                        "strategy_rank": s_idx + 1,
+                        "type": f"strategy_{h.get('side', 'buy')}",
+                    })
+            except Exception:
+                pass
+
+    return all_alerts
+
+
+def eval_yaml_strategy(yaml_path, config, stock_codes=None):
+    """读搜参 YAML → 取 top1 策略 → simulate_portfolio → 返回 dict。"""
+    from pathlib import Path
+    from src.analysis.strategies.percentile.engine import (
+        PercentileSearchStrategy as PS, _decode_tau, _decode_w,
+    )
+    from src.analysis.backtester import simulate_portfolio
+    from src.analysis.search_interface import Params
+    from src.analysis.config import get_execution_config
+    from src.data.data_source import DataSource
+    from src.analysis.portfolio_strategy import _detect_fine_group
+    from src.data.technical_indicators import compute_all
+
+    yaml_path = Path(yaml_path)
+    if not yaml_path.exists():
+        return None
+    with open(yaml_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    top = (data.get("strategies") or [{}])[0]
+    params_dict = top.get("params", {})
+    engine_name = params_dict.get("_engine", "")
+    if engine_name not in ("percentile", "pct", "new"):
+        return None
+
+    if stock_codes is None:
+        sc_str = params_dict.get("_stocks", "")
+        stock_codes = [s.strip() for s in sc_str.split(",") if s.strip()]
+    if not stock_codes:
+        return None
+
+    exec_cfg = get_execution_config()
+    group = data.get("group", "")
+    ds = DataSource(config)
+    stocks_data = {}
+    lookback = config.get("portfolio_strategy", {}).get("lookback_days", 274)
+    for code in stock_codes:
+        df = ds.fetch_stock_data(str(code), days=lookback)
+        if df is not None and not df.empty:
+            stocks_data[str(code)] = df
+    if not stocks_data:
+        return None
+
+    sfn = PS()
+    ep = Params(values=_params_from_yaml(params_dict), _engine=engine_name)
+    computed = compute_all(stocks_data)
+
+    per_code_bs, per_code_ss = {}, {}
+    dates = None
+    for code, df in computed.items():
+        if df is None or df.empty:
+            continue
+        bs, ss = sfn.score_timeseries(ep, df)
+        per_code_bs[code] = bs
+        per_code_ss[code] = ss
+        if dates is None:
+            dates = [str(d.date()) for d in df.index]
+
+    if dates is None or not per_code_bs:
+        return None
+
+    T = len(dates)
+    N = len(stock_codes)
+    buy_scores = np.zeros((T, N), dtype=np.float32)
+    sell_scores = np.zeros((T, N), dtype=np.float32)
+    price_matrix = np.zeros((T, N), dtype=np.float32)
+    for i, code in enumerate(stock_codes):
+        df = stocks_data.get(code)
+        if code in per_code_bs:
+            L = min(T, len(per_code_bs[code]))
+            buy_scores[:L, i] = per_code_bs[code][:L]
+            sell_scores[:L, i] = per_code_ss[code][:L]
+        if df is not None and "close" in df.columns:
+            aligned = df["close"].values[:T]
+            price_matrix[:len(aligned), i] = aligned
+
+    buy_th = _decode_tau(params_dict.get("buy_score_thresh", 5))
+    sell_th = _decode_tau(params_dict.get("sell_score_thresh", 5))
+    pos_frac = [0.05, 0.15, 0.25, 0.35, 0.45][min(
+        int(params_dict.get("position_frac", 2)), 4
+    )]
+
+    lot_size = exec_cfg.lot_sizes.get(group, 100)
+    trace = simulate_portfolio(
+        buy_scores, sell_scores, price_matrix,
+        float(exec_cfg.initial_capital),
+        buy_th, sell_th, pos_frac,
+        lot_size, float(exec_cfg.monthly_buy_limit),
+        float(exec_cfg.commission_rate),
+        dates, stock_codes,
+    )
+    return {
+        "total_return": trace.total_return_pct,
+        "max_drawdown": trace.max_drawdown_pct,
+        "sharpe": trace.sharpe_ratio,
+        "trades": trace.total_trades,
+        "quarterly": trace.quarterly_holdings,
+    }
 
 
 def _eval_opt_lookback() -> int:

@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import pandas as pd
 
-    from ..analysis.signal_scanner import ScanResult
 from datetime import datetime, date
 from typing import Optional, Dict, Any
 from enum import Enum
@@ -327,7 +326,7 @@ class SessionContext(BaseModel):
     # 扩展字段
     announcements: dict[str, list] = Field(default_factory=dict)
     portfolio_results: Optional[dict] = None
-    signal_scan: Optional["ScanResult"] = None  # 信号扫描结果 (Pydantic)
+    signal_scan: Optional["object"] = None  # 信号扫描结果
     backtest: Optional[dict] = None  # backtest results {group: dict}
     opt_data_a: Optional[dict] = None  # A股最新优化器 YAML (供邮件展示预估收益)
     opt_data_non_a: Optional[dict] = None  # 非A股最新优化器 YAML (向后兼容)
