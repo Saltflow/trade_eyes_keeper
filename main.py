@@ -275,8 +275,8 @@ def run_daily_task(force: bool = False):
 
                 # 分位/评分引擎：用 SignalFn 评分流水线回测（rules 保持 __signal_fn__）
                 if engine_name in ("percentile", "pct", "new"):
-                    from src.analysis.strategies.percentile.engine import PercentileSearchStrategy
-                    sig_fn = PercentileSearchStrategy()
+                    from src.analysis.strategies import get_strategy
+                    sig_fn = get_strategy(engine_name) or get_strategy("percentile")
                     eng_params = _params_from_yaml(params)
                     rules = rules_raw  # Rule.from_dict removed
                     return data, rules, sig_fn, eng_params
@@ -755,8 +755,9 @@ def _run_optimize_v2_impl(config):
 
     logger.info(f"A股: {len(a_codes)} 只 | 港股: {len(hk_codes)} 只 | 美股: {len(us_codes)} 只")
 
-    # 策略引擎：默认分位评分（已内置于 run_optimizer）
-    logger.info("引擎: PercentileSearchStrategy (内置)")
+    # 策略引擎：默认走注册表 get_strategy("percentile")
+    from src.analysis.strategies import get_strategy
+    logger.info("引擎: %s", get_strategy("percentile").label)
 
     # 数据源
     logger.info("data_source init...")
@@ -906,186 +907,8 @@ def _params_from_yaml(params: dict) -> dict:
 def _scan_group(session, group: str, top_n: int = 5):
     """读最新搜参 YAML，调 PercentileSearchStrategy.scan_signals()，返回告警列表。"""
     from pathlib import Path
-    from src.analysis.strategies.percentile.engine import (
-        PercentileSearchStrategy as PS,
-    )
-    from src.analysis.search_interface import Params
-    from src.analysis.portfolio_strategy import (
-        _detect_stock_group, _detect_fine_group, get_skip_signals,
-    )
-    from src.data.technical_indicators import compute_all
-
-    opt_dir = Path("data/optimizer")
-    pattern = f"*_{group}_strategies.yaml"
-    files = sorted(
-        [f for f in opt_dir.glob(pattern) if (group == "non_a_share") == ("non_a_share" in f.name)],
-        key=lambda p: p.stat().st_mtime, reverse=True,
-    )
-    if not files:
-        return []
-
-    with open(files[0], encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    strategies = (data.get("strategies") or [])[:top_n]
-
-    stocks_data = getattr(session, "stocks_data", []) or []
-    all_codes = [s.stock_code if hasattr(s, "stock_code") else str(s)
-                 for s in stocks_data]
-    skip_sig = get_skip_signals(getattr(session, "config", {}) or {})
-    if group in ("hk", "us"):
-        stock_codes = [c for c in all_codes
-                       if _detect_fine_group(c) == group and c not in skip_sig]
-    else:
-        stock_codes = [c for c in all_codes
-                       if _detect_stock_group(c) == group and c not in skip_sig]
-
-    historical = getattr(session, "_historical", {}) or {}
-    strategy = PS()
-    all_alerts = []
-
-    for s_idx, strat in enumerate(strategies):
-        params = strat.get("params", {}) or {}
-        rules = strat.get("rules", [])
-        engine_name = params.get("_engine", "")
-        if engine_name not in ("percentile", "pct", "new"):
-            continue
-        uses_sf = any(r.get("condition") == "__signal_fn__" for r in rules)
-        if not uses_sf:
-            continue
-
-        sig_params = Params(
-            values=_params_from_yaml(params),
-            _engine=engine_name,
-        )
-
-        for code in stock_codes:
-            df = historical.get(code)
-            if df is None or df.empty:
-                continue
-            # Build today dict from last row
-            today = {}
-            for col in df.columns:
-                v = df[col].iloc[-1]
-                if not (isinstance(v, float) and np.isnan(v)):
-                    today[col] = v
-
-            try:
-                hist = compute_all({code: df}).get(code, df)
-                hits = strategy.scan_signals(sig_params, today, hist)
-                for h in hits:
-                    all_alerts.append({
-                        "stock_code": code,
-                        "rule_id": h.get("side", "buy"),
-                        "rule_label": h.get("label", ""),
-                        "condition_str": h.get("detail", ""),
-                        "current_value": h.get("detail", "--"),
-                        "strategy_rank": s_idx + 1,
-                        "type": f"strategy_{h.get('side', 'buy')}",
-                    })
-            except Exception:
-                pass
-
-    return all_alerts
-
-
-def eval_yaml_strategy(yaml_path, config, stock_codes=None):
-    """读搜参 YAML → 取 top1 策略 → simulate_portfolio → 返回 dict。"""
-    from pathlib import Path
-    from src.analysis.strategies.percentile.engine import (
-        PercentileSearchStrategy as PS, _decode_tau, _decode_w,
-    )
-    from src.analysis.backtester import simulate_portfolio
-    from src.analysis.search_interface import Params
-    from src.analysis.config import get_execution_config
-    from src.data.data_source import DataSource
-    from src.analysis.portfolio_strategy import _detect_fine_group
-    from src.data.technical_indicators import compute_all
-
-    yaml_path = Path(yaml_path)
-    if not yaml_path.exists():
-        return None
-    with open(yaml_path, encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-
-    top = (data.get("strategies") or [{}])[0]
-    params_dict = top.get("params", {})
-    engine_name = params_dict.get("_engine", "")
-    if engine_name not in ("percentile", "pct", "new"):
-        return None
-
-    if stock_codes is None:
-        sc_str = params_dict.get("_stocks", "")
-        stock_codes = [s.strip() for s in sc_str.split(",") if s.strip()]
-    if not stock_codes:
-        return None
-
-    exec_cfg = get_execution_config()
-    group = data.get("group", "")
-    ds = DataSource(config)
-    stocks_data = {}
-    lookback = config.get("portfolio_strategy", {}).get("lookback_days", 274)
-    for code in stock_codes:
-        df = ds.fetch_stock_data(str(code), days=lookback)
-        if df is not None and not df.empty:
-            stocks_data[str(code)] = df
-    if not stocks_data:
-        return None
-
-    sfn = PS()
-    ep = Params(values=_params_from_yaml(params_dict), _engine=engine_name)
-    computed = compute_all(stocks_data)
-
-    per_code_bs, per_code_ss = {}, {}
-    dates = None
-    for code, df in computed.items():
-        if df is None or df.empty:
-            continue
-        bs, ss = sfn.score_timeseries(ep, df)
-        per_code_bs[code] = bs
-        per_code_ss[code] = ss
-        if dates is None:
-            dates = [str(d.date()) for d in df.index]
-
-    if dates is None or not per_code_bs:
-        return None
-
-    T = len(dates)
-    N = len(stock_codes)
-    buy_scores = np.zeros((T, N), dtype=np.float32)
-    sell_scores = np.zeros((T, N), dtype=np.float32)
-    price_matrix = np.zeros((T, N), dtype=np.float32)
-    for i, code in enumerate(stock_codes):
-        df = stocks_data.get(code)
-        if code in per_code_bs:
-            L = min(T, len(per_code_bs[code]))
-            buy_scores[:L, i] = per_code_bs[code][:L]
-            sell_scores[:L, i] = per_code_ss[code][:L]
-        if df is not None and "close" in df.columns:
-            aligned = df["close"].values[:T]
-            price_matrix[:len(aligned), i] = aligned
-
-    buy_th = _decode_tau(params_dict.get("buy_score_thresh", 5))
-    sell_th = _decode_tau(params_dict.get("sell_score_thresh", 5))
-    pos_frac = [0.05, 0.15, 0.25, 0.35, 0.45][min(
-        int(params_dict.get("position_frac", 2)), 4
-    )]
-
-    lot_size = exec_cfg.lot_sizes.get(group, 100)
-    trace = simulate_portfolio(
-        buy_scores, sell_scores, price_matrix,
-        float(exec_cfg.initial_capital),
-        buy_th, sell_th, pos_frac,
-        lot_size, float(exec_cfg.monthly_buy_limit),
-        float(exec_cfg.commission_rate),
-        dates, stock_codes,
-    )
-    return {
-        "total_return": trace.total_return_pct,
-        "max_drawdown": trace.max_drawdown_pct,
-        "sharpe": trace.sharpe_ratio,
-        "trades": trace.total_trades,
-        "quarterly": trace.quarterly_holdings,
-    }
+    from src.analysis.strategies import get_strategy
+    strategy = get_strategy("percentile")
 
 
 def _eval_opt_lookback() -> int:

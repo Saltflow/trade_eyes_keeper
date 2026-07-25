@@ -79,7 +79,7 @@ def _evaluate_encoding_wf(
     evaluator,
     wf_manager,
 ):
-    """在多个 WF 窗口上评估一组参数。"""
+    """在多个 WF 窗口上评估一组参数（统一路径，零策略分支）。"""
     all_stats = []
     params = encoding.to_params(strategy)
 
@@ -87,133 +87,9 @@ def _evaluate_encoding_wf(
         test_ind = wf_manager.indicator_matrix[w.test_start:w.test_end]
         test_price = wf_manager.price_matrix[w.test_start:w.test_end]
 
-        buy_score_signals = None
-        sell_score_signals = None
+        # 每个策略自己生成信号（optimizer 不关心策略内部逻辑）
+        buy_signals, sell_signals = strategy.make_signals(params, test_ind)
 
-        # 生成信号
-        if strategy.name in ("percentile",):
-            scores = strategy.evaluate(params, test_ind)
-            buy_th = params.values.get("buy_score_thresh", 5)
-            sell_th = params.values.get("sell_score_thresh", 5)
-            buy_score_signals = scores[:, :, 0] > (buy_th / 10.0 + 0.1)
-            sell_score_signals = scores[:, :, 1] > (sell_th / 10.0 + 0.1)
-        elif strategy.name == "builder":
-            from .strategies.builder.engine import (
-                CONDITION_BUILDERS_FAST, BUILDER_COUNT, FRAC_LEVELS_BUILDER,
-                THRESHOLD_LEVELS_BUILDER,
-            )
-            buy_names = list(CONDITION_BUILDERS_FAST.keys())[:BUILDER_COUNT]
-            sell_names = list(CONDITION_BUILDERS_FAST.keys())[
-                BUILDER_COUNT:BUILDER_COUNT + 6
-            ]
-            buy_builders = []
-            buy_thresholds = []
-            buy_fracs = []
-            for i in range(5):
-                n = params.values.get(f"buy_{i+1}_name", 0) % len(buy_names)
-                buy_builders.append(buy_names[n])
-                buy_thresholds.append(
-                    params.values.get(f"buy_{i+1}_threshold", 5)
-                    / (THRESHOLD_LEVELS_BUILDER - 1)
-                )
-                buy_fracs.append(
-                    FRAC_LEVELS_BUILDER[
-                        params.values.get(f"buy_{i+1}_frac", 0)
-                        % len(FRAC_LEVELS_BUILDER)
-                    ]
-                )
-            sell_builders = []
-            sell_thresholds = []
-            sell_fracs = []
-            for i in range(3):
-                n = params.values.get(f"sell_{i+1}_name", 0) % len(sell_names)
-                sell_builders.append(sell_names[n])
-                sell_thresholds.append(
-                    params.values.get(f"sell_{i+1}_threshold", 5)
-                    / (THRESHOLD_LEVELS_BUILDER - 1)
-                )
-                sell_fracs.append(
-                    FRAC_LEVELS_BUILDER[
-                        params.values.get(f"sell_{i+1}_frac", 0)
-                        % len(FRAC_LEVELS_BUILDER)
-                    ]
-                )
-
-            cash_bs = np.ones(test_ind.shape[0], dtype=np.float64) * (
-                evaluator.initial_cash * (1 + constraints.risk_free_rate / 252)
-            ).cumprod()
-
-            stats = evaluator.evaluate(
-                indicator_matrix=test_ind,
-                price_matrix=test_price,
-                cash_baseline=cash_bs,
-                buy_builders=buy_builders,
-                buy_thresholds=buy_thresholds,
-                buy_fracs=buy_fracs,
-                sell_builders=sell_builders,
-                sell_thresholds=sell_thresholds,
-                sell_fracs=sell_fracs,
-            )
-            all_stats.append(stats)
-            continue
-
-        elif strategy.name == "simplified":
-            from .strategies.simplified.engine import (
-                BUY_BUILDERS_SIMP, SELL_BUILDERS_SIMP,
-                BUY_LIMIT_LEVELS, SELL_LIMIT_LEVELS, THRESHOLD_LEVELS_SIMP,
-            )
-            buy_builders = []
-            buy_thresholds = []
-            buy_limits = []
-            for i in range(5):
-                n = params.values.get(f"buy_{i+1}_name", 0) % len(BUY_BUILDERS_SIMP)
-                buy_builders.append(BUY_BUILDERS_SIMP[n])
-                buy_thresholds.append(
-                    params.values.get(f"buy_{i+1}_threshold", 5)
-                    / (THRESHOLD_LEVELS_SIMP - 1)
-                )
-                buy_limits.append(
-                    BUY_LIMIT_LEVELS[
-                        params.values.get(f"buy_{i+1}_limit", 1)
-                        % len(BUY_LIMIT_LEVELS)
-                    ]
-                )
-            sell_builders = []
-            sell_thresholds = []
-            sell_limits = []
-            for i in range(3):
-                n = params.values.get(f"sell_{i+1}_name", 0) % len(SELL_BUILDERS_SIMP)
-                sell_builders.append(SELL_BUILDERS_SIMP[n])
-                sell_thresholds.append(
-                    params.values.get(f"sell_{i+1}_threshold", 5)
-                    / (THRESHOLD_LEVELS_SIMP - 1)
-                )
-                sell_limits.append(
-                    SELL_LIMIT_LEVELS[
-                        params.values.get(f"sell_{i+1}_limit", 1)
-                        % len(SELL_LIMIT_LEVELS)
-                    ]
-                )
-
-            cash_bs = np.ones(test_ind.shape[0], dtype=np.float64) * (
-                evaluator.initial_cash * (1 + constraints.risk_free_rate / 252)
-            ).cumprod()
-
-            stats = evaluator.evaluate(
-                indicator_matrix=test_ind,
-                price_matrix=test_price,
-                cash_baseline=cash_bs,
-                buy_builders=buy_builders,
-                buy_thresholds=buy_thresholds,
-                buy_limits=buy_limits,
-                sell_builders=sell_builders,
-                sell_thresholds=sell_thresholds,
-                sell_limits=sell_limits,
-            )
-            all_stats.append(stats)
-            continue
-
-        # percentile / score-signal 路径
         cash_bs = np.ones(test_ind.shape[0], dtype=np.float64) * (
             evaluator.initial_cash * (1 + constraints.risk_free_rate / 252)
         ).cumprod()
@@ -221,8 +97,8 @@ def _evaluate_encoding_wf(
             indicator_matrix=test_ind,
             price_matrix=test_price,
             cash_baseline=cash_bs,
-            buy_score_signals=buy_score_signals,
-            sell_score_signals=sell_score_signals,
+            buy_score_signals=buy_signals,
+            sell_score_signals=sell_signals,
         )
         all_stats.append(stats)
 

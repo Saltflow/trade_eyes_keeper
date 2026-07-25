@@ -200,60 +200,42 @@ def handle_skip(kind: str, codes: list[str], remove: bool = False) -> str:
 
 
 def _engine_brief(engine_key: str) -> str:
-    """获取引擎买卖标准简介（criterion 3）。"""
-    if engine_key in ("percentile", "pct", "new"):
-        return (
-            "分位评分引擎 (percentile)\n"
-            "  原理: 每只标的对自身 252 日历史算各指标分位排名, 加权求和打分\n"
-            "  买入: 加权分位分 > τ_buy (看涨指标处于历史高位)\n"
-            "  卖出: 加权分位分 > τ_sell (看跌指标处于历史高位)"
-        )
+    """获取引擎买卖标准简介。"""
+    from ...analysis.strategies import get_strategy
+    s = get_strategy(engine_key)
+    if s:
+        return f"{s.label}\n  原理: {s.description}"
     return ""
 
 
 def handle_switch_optimizer(kind: str | None = None) -> str:
-    """切换搜参引擎。
-
-    kind=None → 列出可用引擎 + 买卖标准简介。
-    kind="global"|"percentile" → 写 config.yaml optimizer.engine。
-    """
-    engines = {
-        "global": "全局阈值引擎 (固定绝对阈值, 默认)",
-        "percentile": "分位评分引擎 (标的自比较分位+权重, 推荐)",
-    }
+    """切换搜参引擎。kind=None → 列出可用引擎。"""
+    from ...analysis.strategies import list_strategies, get_strategy
+    strategies = list_strategies()
 
     if kind is None:
-        # 列出可用引擎 + 简介
         config = _load_config()
-        cur = (config.get("optimizer", {}) or {}).get("engine", "global")
+        cur = (config.get("optimizer", {}) or {}).get("engine", "percentile")
         lines = ["<b>可用搜参引擎</b>\n"]
-        for eng, desc in engines.items():
-            marker = "  ← 当前" if eng == cur else ""
-            lines.append(f"<b>{eng}</b> — {desc}{marker}")
-            brief = _engine_brief(eng)
-            if brief:
-                # 缩进简介每行
-                for bl in brief.split("\n"):
-                    lines.append(f"  {bl}")
-            if eng != cur:
-                lines.append(f"  切换: <code>/switch_optimizer {eng}</code>")
+        for s in strategies:
+            marker = "  ← 当前" if s["key"] == cur else ""
+            lines.append(f"<b>{s['key']}</b> — {s['label']}{marker}")
+            lines.append(f"  {s['description']}")
+            if s["key"] != cur:
+                lines.append(f"  切换: <code>/switch_optimizer {s['key']}</code>")
             lines.append("")
         return "\n".join(lines).rstrip()
 
-    if kind not in engines:
-        return f"❌ 未知引擎: {kind}。可用: {', '.join(engines.keys())}"
+    s = get_strategy(kind)
+    if s is None:
+        valid = [x["key"] for x in strategies]
+        return f"❌ 未知引擎: {kind}。可用: {', '.join(valid)}"
 
     config = _load_config()
-    old = (config.get("optimizer", {}) or {}).get("engine", "global")
+    old = (config.get("optimizer", {}) or {}).get("engine", "percentile")
     config.setdefault("optimizer", {})["engine"] = kind
     _save_config(config)
-
-    brief = _engine_brief(kind)
-    return (
-        f"✅ 搜参引擎已切换: <b>{old} → {kind}</b>\n\n"
-        f"{brief}\n\n"
-        f"下次 02:00 cron 自动生效。手动搜参: <code>/optimize</code>"
-    )
+    return f"✅ 搜参引擎已切换: <b>{old} → {kind}</b>\n\n{s.label}: {s.description}"
 
 
 def handle_add(codes: list[str]) -> str:

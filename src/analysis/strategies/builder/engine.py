@@ -170,6 +170,10 @@ FRAC_LEVELS_BUILDER = [0.10, 0.15, 0.20, 0.25, 0.30, 0.40]
 class BuilderSearchStrategy(SearchStrategy):
     """条件构建器搜参策略。"""
 
+    name = "builder"
+    label = "条件构建器引擎 (MA穿越/RSI/布林/放量等)"
+    description = "15个信号构建函数, ~100维参数, 支持lock/reset/confirmation"
+
     def __init__(self):
         dims = []
         buy_names = list(CONDITION_BUILDERS_FAST.keys())[:BUILDER_COUNT]
@@ -185,10 +189,6 @@ class BuilderSearchStrategy(SearchStrategy):
         self._space = ParamSpace(dims)
 
     @property
-    def name(self) -> str:
-        return "builder"
-
-    @property
     def param_space(self) -> ParamSpace:
         return self._space
 
@@ -198,6 +198,80 @@ class BuilderSearchStrategy(SearchStrategy):
         """Builder 策略不产生连续评分——先返回占位，实际由 FastEvaluator.evaluate() 直接调用 builder。"""
         T, N = indicator_matrix.shape[:2]
         return np.zeros((T, N, 2), dtype=np.float32)
+
+    def make_signals(self, params: Params, indicator_matrix: np.ndarray):
+        """Params → builder名/阈值/比例列表 → CONDITION_BUILDERS_FAST → lock/reset/confirm → bool信号。"""
+        import numpy as np
+        from ...backtester import _apply_lock_reset_numba, _apply_lock_reset, _apply_confirmation
+
+        try:
+            from numba import jit as _  # noqa
+            HAS_NUMBA = True
+        except ImportError:
+            HAS_NUMBA = False
+
+        T, N = indicator_matrix.shape[:2]
+        buy_names = list(CONDITION_BUILDERS_FAST.keys())[:BUILDER_COUNT]
+        sell_names = list(CONDITION_BUILDERS_FAST.keys())[BUILDER_COUNT:BUILDER_COUNT + 6]
+
+        # Decode buy params
+        buy_builders, buy_thresholds = [], []
+        for i in range(5):
+            n = params.values.get(f"buy_{i+1}_name", 0) % len(buy_names)
+            buy_builders.append(buy_names[n])
+            buy_thresholds.append(
+                params.values.get(f"buy_{i+1}_threshold", 5)
+                / (THRESHOLD_LEVELS_BUILDER - 1)
+            )
+        # Decode sell params
+        sell_builders, sell_thresholds = [], []
+        for i in range(3):
+            n = params.values.get(f"sell_{i+1}_name", 0) % len(sell_names)
+            sell_builders.append(sell_names[n])
+            sell_thresholds.append(
+                params.values.get(f"sell_{i+1}_threshold", 5)
+                / (THRESHOLD_LEVELS_BUILDER - 1)
+            )
+
+        # Buy: builder → condition/reset → lock/reset → confirmation
+        R = len(buy_builders)
+        buy_conds = np.zeros((R, T, N), dtype=bool)
+        buy_resets = np.zeros((R, T, N), dtype=float)
+        for r in range(R):
+            fn = CONDITION_BUILDERS_FAST.get(buy_builders[r])
+            if fn is None:
+                continue
+            th = buy_thresholds[r] if r < len(buy_thresholds) else 0.5
+            c, rs = fn(indicator_matrix, th)
+            buy_conds[r] = c
+            buy_resets[r] = rs
+
+        if HAS_NUMBA:
+            buy_signals, _ = _apply_lock_reset_numba(buy_conds, buy_resets)
+        else:
+            buy_signals, _ = _apply_lock_reset(buy_conds, buy_resets)
+        buy_signals = _apply_confirmation(buy_conds.any(axis=0), 3)
+
+        # Sell: same pipeline
+        S = len(sell_builders)
+        sell_conds = np.zeros((S, T, N), dtype=bool)
+        sell_resets_arr = np.zeros((S, T, N), dtype=float)
+        for r in range(S):
+            fn = CONDITION_BUILDERS_FAST.get(sell_builders[r])
+            if fn is None:
+                continue
+            th = sell_thresholds[r] if r < len(sell_thresholds) else 0.5
+            c, rs = fn(indicator_matrix, th)
+            sell_conds[r] = c
+            sell_resets_arr[r] = rs
+
+        if HAS_NUMBA:
+            sell_signals, _ = _apply_lock_reset_numba(sell_conds, sell_resets_arr)
+        else:
+            sell_signals, _ = _apply_lock_reset(sell_conds, sell_resets_arr)
+        sell_signals = _apply_confirmation(sell_conds.any(axis=0), 1)
+
+        return buy_signals, sell_signals
 
     def scan_today(self, params, today: dict, history=None) -> list[dict]:
         from .scanner import scan_builder_today

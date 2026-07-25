@@ -112,20 +112,17 @@ class PortfolioTrace:
 class SearchStrategy(ABC):
     """搜参策略 —— 系统唯一可替换的接口。
 
-    每个策略只需实现 4 个核心方法：
-      name, param_space, evaluate, scan_today, to_human_readable。
-
-    遗传搜索操作（random_params / crossover / mutate）由基类提供默认实现，
-    基于 param_space 自动完成编解码。
+    每个策略实现 8 个方法，系统不关心任何内部细节。
+    加新策略 = 新建文件夹 + strategies/__init__.py 注册 1 行，其余零改动。
     """
 
-    # ── 核心接口（子类必须实现）──
+    # ══════════ 元信息（每个策略类自己声明） ══════════
 
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """策略标识 (percentile / builder / simplified)。"""
-        ...
+    name: str = ""
+    label: str = ""
+    description: str = ""
+
+    # ══════════ 搜索空间 ══════════
 
     @property
     @abstractmethod
@@ -133,33 +130,33 @@ class SearchStrategy(ABC):
         """参数搜索空间。"""
         ...
 
+    # ══════════ 核心：连续评分 ══════════
+
     @abstractmethod
     def evaluate(
-        self,
-        params: Params,
-        indicator_matrix: np.ndarray,  # (T, N, K)
+        self, params: Params, indicator_matrix: np.ndarray,
     ) -> np.ndarray:
-        """Params × 天级指标矩阵 → 评分矩阵。
+        """Params × 指标 → (T, N, 2) float32 连续评分矩阵。"""
+        ...
 
-        Returns:
-            (T, N, 2) float32 — [:, :, 0] = buy 评分, [:, :, 1] = sell 评分。
-            评分值域 [0, 1]，越高表示信号越强。
+    # ══════════ 核心：评分→Bool信号（optimizer 的唯一调用） ══════════
+
+    @abstractmethod
+    def make_signals(
+        self, params: Params, indicator_matrix: np.ndarray,
+    ) -> tuple:
+        """Params × 指标 → (buy_signals, sell_signals) 各 (T,N) bool。
+        这是 optimizer 和 backtester 的入口。每个策略自己管理编解码逻辑。
         """
         ...
 
+    # ══════════ 展示 ══════════
+
     @abstractmethod
     def scan_today(
-        self,
-        params: Params,
-        today: dict[str, float],
-        history=None,
+        self, params: Params, today: dict, history=None,
     ) -> list[dict]:
-        """今日单票告警扫描。
-
-        Returns:
-            [{"side": "buy"|"sell", "label": ..., "detail": ...}, ...]
-            空列表 = 今日无信号。
-        """
+        """单票今日告警。返回 [{"side","label","detail"},...]。"""
         ...
 
     @abstractmethod
@@ -167,7 +164,7 @@ class SearchStrategy(ABC):
         """参数 → 人类可读描述。"""
         ...
 
-    # ── 遗传操作用默认实现（基于 param_space）──
+    # ══════════ 默认实现（通用GA操作） ══════════
 
     def random_params(self, rng=None) -> Params:
         p = self.param_space.random(rng)
@@ -175,7 +172,6 @@ class SearchStrategy(ABC):
         return p
 
     def crossover(self, p1: Params, p2: Params, rng=None) -> Params:
-        """均匀交叉两组参数。"""
         r = rng or __import__("random")
         child = {}
         for d in self.param_space.dims:
@@ -186,10 +182,7 @@ class SearchStrategy(ABC):
             )
         return Params(values=child, _engine=self.name)
 
-    def mutate(
-        self, params: Params, rate: float = 0.15, rng=None
-    ) -> Params:
-        """按位随机重采样变异。"""
+    def mutate(self, params: Params, rate: float = 0.15, rng=None) -> Params:
         r = rng or __import__("random")
         new_vals = dict(params.values)
         for d in self.param_space.dims:

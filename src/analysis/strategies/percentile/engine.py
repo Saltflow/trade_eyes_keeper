@@ -43,6 +43,10 @@ def _decode_w(level: int) -> float:
 class PercentileSearchStrategy(SearchStrategy):
     """分位评分搜参策略。"""
 
+    name = "percentile"
+    label = "分位评分引擎 (标的自比较分位, 推荐)"
+    description = "每只标的对自身252日历史算各指标分位排名, 加权求和打分, 13维参数"
+
     def __init__(self):
         dims = []
         for lbl in PERCENTILE_LABELS:
@@ -52,10 +56,6 @@ class PercentileSearchStrategy(SearchStrategy):
         dims.append(ParamDim("sell_score_thresh", TAU_LEVELS, 0.1, 0.9))
         dims.append(ParamDim("position_frac", 5, 0.05, 0.45))
         self._space = ParamSpace(dims)
-
-    @property
-    def name(self) -> str:
-        return "percentile"
 
     @property
     def param_space(self) -> ParamSpace:
@@ -76,6 +76,17 @@ class PercentileSearchStrategy(SearchStrategy):
             indicator_matrix, PERCENTILE_COLUMNS, pct_thresholds, weights,
         )
         return np.stack([buy_scores, sell_scores], axis=-1).astype(np.float32)
+
+    def make_signals(self, params: Params, indicator_matrix: np.ndarray):
+        """分数 → 二值信号：与旧 optimizer 公式一致。"""
+        scores = self.evaluate(params, indicator_matrix)
+        buy_th = params.values.get("buy_score_thresh", 5)
+        sell_th = params.values.get("sell_score_thresh", 5)
+        # 精确匹配旧 optimizer.py 的阈值公式: level/10 + 0.1
+        return (
+            scores[:, :, 0] > (buy_th / 10.0 + 0.1),
+            scores[:, :, 1] > (sell_th / 10.0 + 0.1),
+        )
 
     def scan_today(self, params, today: dict, history=None) -> list[dict]:
         from .scanner import scan_percentile_today
