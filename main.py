@@ -35,6 +35,7 @@ from src.analysis.strategies import get_strategy
 from src.analysis.backtester import evaluate_all_groups
 from src.analysis.config import get_execution_config
 from src.analysis.helpers import _detect_fine_group
+from src.analysis.search_interface import Params
 from src.core.ref_portfolio import RefPortfolioManager, REF_MONTHLY_LIMIT
 
 
