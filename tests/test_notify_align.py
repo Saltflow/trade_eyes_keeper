@@ -18,7 +18,7 @@ def _make_report(group="a_share", total_return=10.0, excess_return=8.0,
                  quarterly_holdings=None, benchmark_returns=None,
                  nav_series=None, nav_dates=None, engine_name="percentile",
                  strategy_label="分位评分"):
-    from analysis.portfolio_evaluator import EvaluationReport
+    from analysis.search_interface import EvaluationReport
 
     return EvaluationReport(
         group=group,

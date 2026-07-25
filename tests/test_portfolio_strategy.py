@@ -7,14 +7,14 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
-from src.analysis.portfolio_evaluator import (
+from src.analysis.helpers import (
     _detect_stock_group,
     _detect_fine_group,
     _get_lot_size,
     get_skip_search,
     get_skip_signals,
-    EvaluationReport,
 )
+from src.analysis.search_interface import EvaluationReport
 
 
 class TestStockGroupDetection:

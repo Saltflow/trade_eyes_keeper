@@ -27,7 +27,7 @@ def test_all_key_modules():
         "src.analysis.backtester",
         "src.analysis.optimizer",
         "src.analysis.strategies",
-        "src.analysis.portfolio_evaluator",
+        "src.analysis.helpers",
         # health_server
         "src.health_server.core.global_instances",
         "src.health_server.core.health_server",

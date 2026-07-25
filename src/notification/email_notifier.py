@@ -420,9 +420,9 @@ def _readable_signal(
     map_us 缺省时港美股共用 map_hk（向后兼容非A单组）。
     """
     try:
-        from ..analysis.portfolio_evaluator import _detect_fine_group
+        from ..analysis.helpers import _detect_fine_group
     except (ImportError, ValueError):
-        from analysis.portfolio_evaluator import _detect_fine_group
+        from analysis.helpers import _detect_fine_group
     g = _detect_fine_group(str(code))
     if g == "a_share":
         m = map_a

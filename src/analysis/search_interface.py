@@ -105,6 +105,47 @@ class PortfolioTrace:
     final_cash: float = 0.0
 
 
+@dataclass
+class EvaluationReport:
+    """单组策略评估完整报告 — 邮件/IM 渲染段的唯一数据源"""
+
+    group: str  # "a_share" / "hk" / "us"
+    engine_name: str  # "percentile" / "builder" / "simplified"
+    strategy_label: str  # "分位评分"
+    timestamp: str  # "2026-07-25T19:00:00"
+
+    # 策略表现
+    total_return: float
+    excess_return: float
+    max_drawdown: float
+    sharpe_ratio: float
+    trade_count: int
+    avg_cash_pct: float
+
+    # 基准比较
+    benchmark_returns: dict[str, float] = field(default_factory=dict)
+
+    # 组合构成
+    composition: list[str] = field(default_factory=list)
+
+    # 可视化
+    nav_series: list[float] = field(default_factory=list)
+    nav_dates: list[str] = field(default_factory=list)
+    quarterly_holdings: list[dict] = field(default_factory=list)
+
+    def to_cache_dict(self) -> dict:
+        """序列化为 session._yaml_eval_cache 兼容格式"""
+        return {
+            "total_return": self.total_return,
+            "excess_return": self.excess_return,
+            "dd": self.max_drawdown,
+            "sharpe": self.sharpe_ratio,
+            "benchmark_returns": dict(self.benchmark_returns),
+            "trades": self.trade_count,
+            "composition": list(self.composition),
+        }
+
+
 # ═══════════════════════════════════════════════════════
 # 搜参策略抽象基类
 # ═══════════════════════════════════════════════════════

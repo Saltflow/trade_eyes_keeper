@@ -13,7 +13,8 @@ import numpy as np
 import pandas as pd
 
 from .config import WindowStats, ExecutionConfig
-from .search_interface import PortfolioTrace, Params
+from .search_interface import PortfolioTrace, Params, EvaluationReport
+from .helpers import _detect_fine_group, RISK_FREE_A, RISK_FREE_NON_A, MIN_EVAL_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -857,3 +858,256 @@ class WalkForwardManager:
                 window_index=wi,
             ))
         return windows
+
+
+# ═══════════════════════════════════════════════════════════════
+# 日报评估引擎：make_signals → simulate_portfolio → EvaluationReport
+# ═══════════════════════════════════════════════════════════════
+
+def _build_indicator_matrix(
+    computed: dict[str, pd.DataFrame],
+    stock_codes: list[str],
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """从 compute_all() 结果构建 (T,N,K) 指标矩阵 + 价格矩阵 + 公共日期。
+
+    Returns:
+        (indicator_matrix, price_matrix, date_strings)
+    """
+    dates_sets = []
+    for code in stock_codes:
+        df = computed.get(code)
+        if df is not None and not df.empty:
+            dates_sets.append(set(df.index))
+    if not dates_sets:
+        return (
+            np.zeros((0, 0, len(INDICATOR_NAMES)), dtype=np.float32),
+            np.zeros((0, 0), dtype=np.float32),
+            [],
+        )
+    common = sorted(dates_sets[0].intersection(*dates_sets[1:]))
+    if not common:
+        return (
+            np.zeros((0, 0, len(INDICATOR_NAMES)), dtype=np.float32),
+            np.zeros((0, 0), dtype=np.float32),
+            [],
+        )
+
+    T = len(common)
+    N = len(stock_codes)
+    dates = pd.DatetimeIndex(common)
+    date_strs = [d.strftime("%Y-%m-%d") for d in dates]
+
+    ind_mat = np.full((T, N, len(INDICATOR_NAMES)), np.nan, dtype=np.float32)
+    price_mat = np.full((T, N), np.nan, dtype=np.float32)
+
+    for i, code in enumerate(stock_codes):
+        df = computed.get(code)
+        if df is None or df.empty:
+            continue
+        aligned = df.reindex(dates)
+        for k, name in enumerate(INDICATOR_NAMES):
+            if name in aligned.columns:
+                ind_mat[:, i, k] = aligned[name].values.astype(np.float32)
+        if "close" in aligned.columns:
+            price_mat[:, i] = aligned["close"].values.astype(np.float32)
+
+    return ind_mat, price_mat, date_strs
+
+
+def _evaluate_signal_fn(
+    stocks_data: dict[str, pd.DataFrame],
+    active_codes: list[str],
+    strategy,  # SearchStrategy
+    params: Params,
+    initial_capital: float,
+    monthly_limit: float,
+    commission_rate: float,
+    lot_size: int,
+    fx_rate: float = 1.0,
+) -> tuple:
+    """用 ABC 的 make_signals 评估一组标的（不调任何私有方法）。
+
+    Returns:
+        (trace: PortfolioTrace, dates: list[str], codes: list[str])
+    """
+    from src.data.technical_indicators import compute_all
+
+    # 1. 补齐技术指标
+    try:
+        computed = compute_all({c: stocks_data[c] for c in active_codes})
+    except Exception as e:
+        logger.warning(f"指标计算失败，仅用兜底列: {e}")
+        computed = {}
+
+    # 2. 构建统一指标矩阵
+    ind_mat, price, dates = _build_indicator_matrix(computed, active_codes)
+    T, N = ind_mat.shape[:2]
+    if T == 0 or N == 0:
+        return (
+            PortfolioTrace(
+                daily_values=np.zeros(1),
+                daily_dates=dates,
+                total_trades=0,
+                avg_position_pct=0.0,
+                max_drawdown_pct=0.0,
+                sharpe_ratio=0.0,
+                total_return_pct=0.0,
+                final_position_pct=0.0,
+                quarterly_holdings=[],
+                composition=list(active_codes),
+            ),
+            dates,
+            list(active_codes),
+        )
+
+    # 3. ABC 抽象方法 make_signals — 任意策略通用
+    buy_bool, sell_bool = strategy.make_signals(params, ind_mat)
+    buy_scores = buy_bool.astype(np.float64)
+    sell_scores = sell_bool.astype(np.float64)
+
+    # 4. 前向填充价格
+    for j in range(N):
+        last = np.nan
+        for ti in range(T):
+            if np.isnan(price[ti, j]):
+                price[ti, j] = last
+            else:
+                last = price[ti, j]
+    price = np.nan_to_num(price, nan=0.0) * fx_rate
+
+    # 5. 仿真 (threshold=0.5 对 bool→float 天然等价)
+    trace = simulate_portfolio(
+        buy_scores,
+        sell_scores,
+        price,
+        float(initial_capital),
+        buy_threshold=0.5,
+        sell_threshold=0.5,
+        position_frac=0.15,
+        lot_size=lot_size,
+        monthly_limit=float(monthly_limit),
+        commission_rate=float(commission_rate),
+        dates=dates,
+        stock_codes=list(active_codes),
+    )
+    return trace, dates, list(active_codes)
+
+
+def evaluate_all_groups(
+    stocks_data: dict[str, pd.DataFrame],
+    stock_codes: list[str],
+    strategy,  # SearchStrategy
+    params: Params,
+    exec_cfg,
+    benchmark_data: dict[str, pd.DataFrame] | None = None,
+    target_groups: list[str] | None = None,
+) -> dict[str, EvaluationReport]:
+    """日报/IM 的唯一评估入口。
+
+    读 stock_codes → 按 fine_group 分组 → make_signals → simulate_portfolio
+    → EvaluationReport。只调 ABC 方法，零策略硬编码。
+
+    Args:
+        stocks_data: {code: DataFrame} 已拉取的历史数据
+        stock_codes: 全量标的代码列表
+        strategy: SearchStrategy 实例（percentile/builder/simplified）
+        params: 策略参数
+        exec_cfg: get_execution_config() 返回值
+        benchmark_data: 基准价格数据
+        target_groups: 分组子集，None=全部
+
+    Returns:
+        {group_key: EvaluationReport}
+    """
+    from datetime import datetime
+
+    target_groups = target_groups or ["a_share", "hk", "us"]
+    fx_map = exec_cfg.fx_rates
+    lot_map = exec_cfg.lot_sizes
+
+    # 按 fine_group 分组
+    group_data_map: dict[str, dict[str, pd.DataFrame]] = {g: {} for g in target_groups}
+    for code in stock_codes:
+        code_str = str(code)
+        if code_str not in stocks_data:
+            continue
+        df = stocks_data[code_str]
+        if df is None or df.empty or "close" not in df.columns:
+            continue
+        if len(df) < MIN_EVAL_DAYS:
+            continue
+        group = _detect_fine_group(code_str)
+        if group not in target_groups:
+            continue
+        group_data_map[group][code_str] = df
+
+    engine_name = getattr(params, "_engine", "") or getattr(strategy, "name", "percentile")
+    engine_names = {
+        "percentile": "分位评分",
+        "builder": "条件构建",
+        "simplified": "固定限额",
+    }
+    timestamp = datetime.now().isoformat()
+
+    results: dict[str, EvaluationReport] = {}
+    for group_name in target_groups:
+        group_data = group_data_map.get(group_name, {})
+        active_codes = list(group_data.keys())
+        if not active_codes:
+            continue
+
+        fx = fx_map.get(group_name, 1.0)
+        lot = lot_map.get(group_name, 100)
+        initial_capital = float(exec_cfg.initial_capital)
+        monthly_limit = float(exec_cfg.monthly_buy_limit)
+
+        # 回测
+        trace, dates, codes = _evaluate_signal_fn(
+            group_data, active_codes, strategy, params,
+            initial_capital, monthly_limit,
+            float(exec_cfg.commission_rate), lot, fx,
+        )
+
+        # 超额收益 = 策略收益 - 现金基准收益
+        risk_free = RISK_FREE_A if group_name == "a_share" else RISK_FREE_NON_A
+        n_days = max(len(dates), 1)
+        rfr_daily = (1 + risk_free) ** (1 / 252) - 1
+        cash_final = initial_capital * (1 + rfr_daily) ** n_days
+        cash_ret = (cash_final / initial_capital - 1) * 100
+        excess = trace.total_return_pct - cash_ret
+
+        # 基准收益率
+        benchmark_returns: dict[str, float] = {
+            "risk_free": round(cash_ret, 2),
+        }
+
+        # 平均现金仓位
+        qh = trace.quarterly_holdings or []
+        cash_pcts = [(100 - q.get("pos_pct", 0)) for q in qh if q.get("nav", 0) > 0]
+        avg_cash = sum(cash_pcts) / len(cash_pcts) if cash_pcts else 0.0
+
+        report = EvaluationReport(
+            group=group_name,
+            engine_name=engine_name,
+            strategy_label=engine_names.get(engine_name, engine_name),
+            timestamp=timestamp,
+            total_return=round(trace.total_return_pct, 2),
+            excess_return=round(excess, 2),
+            max_drawdown=round(trace.max_drawdown_pct, 2),
+            sharpe_ratio=round(trace.sharpe_ratio, 4),
+            trade_count=trace.total_trades,
+            avg_cash_pct=round(avg_cash, 0),
+            benchmark_returns=benchmark_returns,
+            composition=list(codes),
+            nav_series=list(trace.nav_series),
+            nav_dates=list(trace.nav_dates),
+            quarterly_holdings=list(qh),
+        )
+        results[group_name] = report
+        logger.info(
+            f"{group_name} 评估完成: 收益{trace.total_return_pct:.1f}% "
+            f"超额{excess:.1f}% 回撤{trace.max_drawdown_pct:.1f}% "
+            f"夏普{trace.sharpe_ratio:.2f} {trace.total_trades}笔"
+        )
+
+    return results

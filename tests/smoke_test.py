@@ -35,7 +35,7 @@ def test_imports():
         "src.analysis.search_interface",
         "src.analysis.backtester",
         "src.analysis.optimizer",
-        "src.analysis.portfolio_evaluator",
+        "src.analysis.helpers",
         "src.notification.email_notifier",
         "src.notification.feishu_notifier",
         "src.notification.telegram_notifier",

@@ -31,6 +31,11 @@ from src.notification.manager import NotifierManager
 from src.core.scheduler_manager import SchedulerManager
 from src.data.announcement_fetcher import AnnouncementFetcher
 from src.session.session_manager import SessionManager
+from src.analysis.strategies import get_strategy
+from src.analysis.backtester import evaluate_all_groups
+from src.analysis.config import get_execution_config
+from src.analysis.helpers import _detect_fine_group
+from src.core.ref_portfolio import RefPortfolioManager, REF_MONTHLY_LIMIT
 
 
 # 设置日志
@@ -207,48 +212,51 @@ def run_daily_task(force: bool = False):
         # 4. 创建通知管理器（统一入口）
         notifier = NotifierManager(config)
 
-        # 5. 投资组合策略分析（标的池=config，统一评估，唯一收口）
+        # 5. 投资组合策略分析（config.dashboard.strategy → evaluate_all_groups）
         try:
-            from src.analysis.portfolio_evaluator import evaluate_all_groups, _detect_fine_group
-            import logging as _log5
-            _log = _log5.getLogger(__name__)
+            logger.info("开始投资组合策略分析")
 
-            _log.info("开始投资组合策略分析")
+            strategy_name = config.get("dashboard", {}).get("strategy", "percentile")
+            strategy = get_strategy(strategy_name)
+            if strategy is None:
+                strategy = get_strategy("percentile")
+            params = strategy.random_params()
+            exec_cfg = get_execution_config()
 
-            # 加载最新搜参 YAML → 策略 + 参数
-            signal_fn, params, yaml_data = _load_strategy()
+            # 全量历史数据（session._historical 已缓存数据拉取结果）
+            stocks_data = {}
+            for code in config["stocks"]:
+                code_str = str(code)
+                df = getattr(session, "_historical", {}).get(code_str)
+                if df is not None and len(df) >= 60:
+                    stocks_data[code_str] = df
 
-            # 基准 ETF 数据
             benchmark_data = _fetch_benchmarks(config, session)
 
-            # 统一评估（一次回测，一组报告，三组并进）
             reports = evaluate_all_groups(
-                config,
-                signal_fn,
-                params,
+                stocks_data,
+                [str(c) for c in config["stocks"]],
+                strategy, params, exec_cfg,
                 benchmark_data=benchmark_data,
             )
 
             if reports:
-                # 唯一数据源：EvaluationReport → 邮件/IM 渲染段直接消费
-                session.evaluation_reports = reports
-                # 兼容旧渲染段的 _yaml_eval_cache（渲染段更新后移除）
-                session._yaml_eval_cache = {
+                object.__setattr__(session, "evaluation_reports", reports)
+                object.__setattr__(session, "_yaml_eval_cache", {
                     gk: r.to_cache_dict() for gk, r in reports.items()
-                }
-                _log.info(
+                })
+                logger.info(
                     f"投资组合策略分析完成 ({len(reports)}组: "
-                    + ", ".join(f"{rk}:{rv.total_return:+.1f}%"
-                                for rk, rv in reports.items())
+                    + ", ".join(f"{k}:{v.total_return:+.1f}%"
+                                for k, v in reports.items())
                     + ")"
                 )
             else:
-                _log.warning("无可用标的，跳过投资组合分析")
+                logger.warning("无可用标的，跳过投资组合分析")
         except Exception as e:
             logger.error(f"投资组合策略分析失败: {e}", exc_info=True)
 
         # ── 参考持仓状态（只读，日报不做调仓，三分仓）──
-        from src.core.ref_portfolio import RefPortfolioManager
 
         stock_data_df = session.get_all_dataframe()
         all_statuses = {}
@@ -358,9 +366,6 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
             logger.warning(f"简报策略信号扫描失败 (非致命): {e}")
 
         # ── 参考持仓三分仓调仓（A股/港股/美股各自独立资金池）──
-        from src.core.ref_portfolio import RefPortfolioManager, REF_MONTHLY_LIMIT
-        from src.analysis.config import get_execution_config
-        from src.analysis.portfolio_evaluator import _detect_fine_group
 
         exec_cfg = get_execution_config()
         alerts_all = session.signal_scan.alerts if session.signal_scan else []
@@ -528,44 +533,6 @@ def _send_optimizer_report_telegram(config, report):
         _logger.warning("Telegram 报告发送异常: %s", e)
 
 
-# ═══════════════════════════════════════════════════════════
-# 策略加载 + 辅助函数
-# ═══════════════════════════════════════════════════════════
-
-def _load_strategy():
-    """从最新搜参 YAML 加载策略 + 参数。
-
-    Returns:
-        (signal_fn, params, yaml_data) 或 (None, None, None)
-    """
-    from src.analysis.strategies import get_strategy
-    from src.analysis.search_interface import Params
-
-    opt_dir = Path("data/optimizer")
-    if not opt_dir.exists():
-        return None, None, None
-
-    # 优先 a_share YAML（三组共用同一种策略）
-    for group in ("a_share", "non_a_share"):
-        files = sorted(
-            opt_dir.glob(f"*_{group}_strategies.yaml"),
-            key=lambda p: p.stat().st_mtime, reverse=True,
-        )
-        if not files:
-            continue
-        with open(files[0], "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-        top = (data.get("strategies") or [{}])[0]
-        params_raw = top.get("params", {})
-        engine_name = params_raw.get("_engine", "percentile")
-
-        sig_fn = get_strategy(engine_name) or get_strategy("percentile")
-        params_vals = _params_from_yaml(params_raw)
-        params = Params(values=params_vals, _engine=engine_name)
-        return sig_fn, params, data
-
-    return None, None, None
-
 
 def _fetch_benchmarks(config, session) -> dict:
     """拉取基准 ETF 数据（510300/510880/VOO/BRK.B）。
@@ -580,7 +547,6 @@ def _fetch_benchmarks(config, session) -> dict:
         "BRK.B": 730,    # 伯克希尔
     }
     bench_data = {}
-    from src.core.data_fetcher import StockDataFetcher
 
     for bc, days in bench_codes_map.items():
         if bc in historical:
@@ -596,28 +562,6 @@ def _fetch_benchmarks(config, session) -> dict:
         except Exception:
             pass
     return bench_data
-
-
-# ═══════════════════════════════════════════════════════════
-# 微型策略扫描（替代 signal_scanner.py + yaml_evaluator.py）
-# ═══════════════════════════════════════════════════════════
-
-def _params_from_yaml(params: dict) -> dict:
-    """YAML params → 过滤非整数级别键（剔除 _mode/_engine/_stocks）。"""
-    vals = {}
-    for k, v in params.items():
-        if k.startswith("_"):
-            continue
-        if isinstance(v, bool):
-            continue
-        if isinstance(v, (int, float)):
-            vals[k] = int(v)
-        elif isinstance(v, str):
-            try:
-                vals[k] = int(float(v))
-            except (ValueError, TypeError):
-                pass
-    return vals
 
 
 def _scan_group(session, group: str, top_n: int = 5):

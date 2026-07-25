@@ -27,7 +27,7 @@ def _make_notifier():
 def _make_report(group="a_share", total_return=15.0, excess_return=10.0,
                  max_drawdown=-5.0, sharpe_ratio=1.2, composition=None,
                  quarterly_holdings=None, benchmark_returns=None):
-    from src.analysis.portfolio_evaluator import EvaluationReport
+    from src.analysis.search_interface import EvaluationReport
     return EvaluationReport(
         group=group, engine_name="percentile", strategy_label="分位评分",
         timestamp="2026-01-01T00:00:00",

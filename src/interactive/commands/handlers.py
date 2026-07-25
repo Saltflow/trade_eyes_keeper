@@ -313,7 +313,7 @@ def handle_backtest(code: str, start: str, end: str) -> str:
     """单票回测（使用统一评估引擎 evaluate_all_groups）。"""
     try:
         from ...data.data_source import DataSource
-        from ...analysis.portfolio_evaluator import evaluate_all_groups
+        from ...analysis.backtester import evaluate_all_groups
         from ...analysis.strategies import get_strategy
         from ...analysis.search_interface import Params
 
