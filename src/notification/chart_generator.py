@@ -367,3 +367,133 @@ def generate_candlestick_chart(weekly_ohlc: dict) -> tuple[str, bytes] | None:
     buf.seek(0)
     b64 = base64.b64encode(buf.read()).decode("utf-8")
     return (f"data:image/png;base64,{b64}", buf.getvalue())
+
+
+def generate_portfolio_chart(
+    evaluation_reports: dict,
+    benchmark_data: dict | None = None,
+) -> dict[str, bytes] | None:
+    """生成投资组合 NAV 走势图（每组一张独立 PNG）。
+
+    Args:
+        evaluation_reports: {group: EvaluationReport} — evaluate_all_groups 产出
+        benchmark_data: {stock_code: DataFrame} 基准价格数据
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
+
+    from io import BytesIO
+    from src.utils.font_setup import setup_cjk_font
+
+    setup_cjk_font()
+
+    group_labels = {
+        "a_share": "A股投资组合",
+        "hk": "港股投资组合",
+        "us": "美股投资组合",
+        "non_a_share": "非A股投资组合",
+    }
+    output: dict[str, bytes] = {}
+
+    for group_key in ("a_share", "hk", "us"):
+        report = evaluation_reports.get(group_key)
+        if report is None:
+            continue
+        navs = getattr(report, "nav_series", None) or []
+        dates = getattr(report, "nav_dates", None) or []
+        if len(navs) < 20:
+            continue
+
+        fig, ax = plt.subplots(figsize=(14, 5))
+        months_approx = max(1, round(len(navs) / 21))
+        title = (
+            f"{group_labels.get(group_key, group_key)} — "
+            f"{getattr(report, 'strategy_label', '策略')}净值走势"
+            f"（近{months_approx}个月）"
+        )
+        ax.set_title(title, fontsize=14, fontweight="bold")
+        ax.set_ylabel("组合净值 (基准100)", fontsize=11)
+        ax.grid(True, alpha=0.25, linestyle="--")
+
+        nav_arr = np.array(navs)
+        base = nav_arr[0] if nav_arr[0] > 0 else 1.0
+        nav_arr = nav_arr / base * 100
+
+        try:
+            dt_arr = pd.to_datetime(dates)
+        except Exception:
+            dt_arr = pd.date_range(
+                end=pd.Timestamp.now(), periods=len(navs), freq="B"
+            )
+
+        ax.plot(
+            dt_arr, nav_arr, color="#2e7d32", linewidth=2.5,
+            alpha=0.9, label="策略", zorder=5,
+        )
+
+        # 布林带
+        if len(nav_arr) >= 30:
+            sma = pd.Series(nav_arr).rolling(30, min_periods=1).mean()
+            std = pd.Series(nav_arr).rolling(30, min_periods=1).std()
+            upper = (sma + 2 * std).bfill().values
+            lower = (sma - 2 * std).bfill().values
+            ax.fill_between(
+                dt_arr, lower, upper, alpha=0.15, color="#2e7d32",
+                linewidth=0, zorder=1,
+            )
+            for arr, ls in [(upper, "--"), (lower, "--")]:
+                ax.plot(dt_arr, arr, color="#2e7d32", linewidth=1.0,
+                        alpha=0.4, linestyle=ls, zorder=2)
+
+        # 基准 ETF
+        benchmark_map = {
+            "a_share": ["510300", "510880"],
+            "hk": ["VOO", "BRK.B"],
+            "us": ["VOO", "BRK.B"],
+        }
+        bench_colors = ["#e74c3c", "#c0392b"]
+        bench_styles = ["--", "-."]
+        for bi, bcode in enumerate(benchmark_map.get(group_key, [])):
+            if not benchmark_data or bcode not in benchmark_data:
+                continue
+            bdf = benchmark_data[bcode]
+            if bdf is None or len(bdf) < 20:
+                continue
+            bdf = bdf.copy()
+            bdf["date"] = pd.to_datetime(bdf["date"])
+            bdf = bdf.sort_values("date").reset_index(drop=True)
+            mask = (bdf["date"] >= dt_arr[0]) & (bdf["date"] <= dt_arr[-1])
+            bdf = bdf[mask]
+            if len(bdf) < 2:
+                continue
+            b_close = bdf["close"].to_numpy()
+            b_base = b_close[0] if b_close[0] > 0 else 1.0
+            b_norm = b_close / b_base * 100
+            ax.plot(
+                bdf["date"].to_numpy(), b_norm,
+                color=bench_colors[bi], linewidth=1.5, alpha=0.7,
+                linestyle=bench_styles[bi], label=bcode, zorder=3,
+            )
+
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+        ax.xaxis.set_major_locator(mdates.YearLocator())
+        ax.tick_params(axis="x", labelsize=9, rotation=30)
+        ax.tick_params(axis="y", labelsize=9)
+        ax.legend(loc="upper left", fontsize=10, framealpha=0.85, edgecolor="#ccc")
+        fig.tight_layout(rect=[0, 0, 1, 0.93])
+
+        try:
+            buf = BytesIO()
+            fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+            buf.seek(0)
+            output[group_key] = buf.read()
+            plt.close(fig)
+            logger.info(f"投资组合图表 {group_key} 生成成功")
+        except Exception as e:
+            logger.error(f"投资组合图表 {group_key} 生成失败: {e}")
+            plt.close(fig)
+
+    return output if output else None

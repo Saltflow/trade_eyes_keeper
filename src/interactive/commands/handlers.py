@@ -310,9 +310,12 @@ def handle_remove(codes: list[str]) -> str:
 
 
 def handle_backtest(code: str, start: str, end: str) -> str:
+    """单票回测（使用统一评估引擎 evaluate_all_groups）。"""
     try:
         from ...data.data_source import DataSource
-        from ...analysis.portfolio_strategy import TimingStrategyEngine
+        from ...analysis.portfolio_evaluator import evaluate_all_groups
+        from ...analysis.strategies import get_strategy
+        from ...analysis.search_interface import Params
 
         config = _load_config()
         ds = DataSource(config)
@@ -320,13 +323,12 @@ def handle_backtest(code: str, start: str, end: str) -> str:
         s = datetime.strptime(start, "%Y-%m-%d")
         e = datetime.strptime(end, "%Y-%m-%d")
         requested_days = (e - s).days
-        days = max(requested_days + 365, 1000)  # 至少请求约 2.7 年数据给 MA60
+        days = max(requested_days + 365, 1000)
 
         data = ds.fetch_stock_data(code, days=days)
         if data is None or data.empty:
             return f"❌ 未获取到 <code>{code}</code> 的行情数据"
 
-        # 检查实际可用数据范围
         actual_start = str(data["date"].min())[:10]
         actual_end = str(data["date"].max())[:10]
         data = data[(data["date"] >= start) & (data["date"] <= end)]
@@ -336,47 +338,38 @@ def handle_backtest(code: str, start: str, end: str) -> str:
                 f"缓存数据范围: {actual_start} ~ {actual_end}"
             )
 
-        # 数据完整性提示
-        data_note = ""
-        if actual_start > start:
-            data_note = (
-                f"⚠ 数据不完整：请求 {start}，最早可用 {actual_start}。"
-                f"请 <code>/add {code}</code> 后等待系统缓存更久。"
-            )
+        # 用默认 percentile 参数跑评估
+        strategy = get_strategy("percentile")
+        params = Params(values={
+            "adx_pct_tau": 5, "adx_pct_w": 3, "rsi_pct_tau": 5, "rsi_pct_w": 3,
+            "deviation_pct_tau": 6, "deviation_pct_w": 2, "vol_ratio_pct_tau": 5,
+            "vol_ratio_pct_w": 2, "ma200_dev_pct_tau": 3, "ma200_dev_pct_w": 1,
+            "buy_score_thresh": 5, "sell_score_thresh": 5, "position_frac": 2,
+        }, _engine="percentile")
 
-        engine = TimingStrategyEngine(code, data)
-        metrics = engine.run_simulation(initial_cash=100000)
+        # 临时 config 只含单只标的
+        tmp_config = {**config, "stocks": [code]}
+        reports = evaluate_all_groups(tmp_config, strategy, params)
+        report = reports.get("a_share") or reports.get("hk") or reports.get("us")
+        if report is None:
+            return f"❌ <code>{code}</code> 评估失败，无可交易数据"
 
         bh_start = float(data["close"].iloc[0])
         bh_end = float(data["close"].iloc[-1])
         bh_return = (bh_end - bh_start) / bh_start * 100
 
-        # 交易统计
-        buy_count = sum(1 for t in metrics.trade_log if t.trade_type == "buy")
-        sell_count = sum(1 for t in metrics.trade_log if t.trade_type == "sell")
-        total_fee = sum(t.fee for t in metrics.trade_log)
-
-        # 最近 3 笔
-        recent = ""
-        for t in metrics.trade_log[-3:]:
-            emoji = "🟢" if t.trade_type == "buy" else "🔴"
-            recent += f"{emoji} {t.date} {t.trade_type} {t.shares}股@{t.price:.2f} {t.reason}\n"
-
         return (
             f"<b>回测报告</b> — <code>{code}</code>\n"
             f"区间: {start} ~ {end}（{len(data)} 天）\n"
-            + (f"{data_note}\n" if data_note else "")
-            + f"策略: MA60 均值回归（买 ≤-5%/-10%，卖 ≥+5%/+10%/+15%）\n\n"
-            f"<b>策略收益</b>: {metrics.total_return:+.2f}%"
+            f"策略: {report.strategy_label} ({report.engine_name})\n\n"
+            f"<b>策略收益</b>: {report.total_return:+.2f}%"
             f"  |  <b>买入持有</b>: {bh_return:+.2f}%\n"
-            f"<b>年化收益</b>: {metrics.annual_return:+.2f}%"
-            f"  |  <b>最大回撤</b>: {metrics.max_drawdown:.2f}%\n"
-            f"<b>夏普比率</b>: {metrics.sharpe_ratio:.2f}"
-            f"  |  <b>交易</b>: {metrics.total_trades} 笔"
-            f"（买{buy_count}/卖{sell_count}）\n"
-            f"<b>期末持仓</b>: ¥{metrics.final_position_value:,.0f}"
-            f"  |  <b>手续费</b>: ¥{total_fee:,.2f}"
-            + (f"\n\n<b>最近交易:</b>\n{recent}" if recent else "")
+            f"<b>超额收益</b>: {report.excess_return:+.2f}%"
+            f"  |  <b>最大回撤</b>: {report.max_drawdown:.2f}%\n"
+            f"<b>夏普比率</b>: {report.sharpe_ratio:.2f}"
+            f"  |  <b>交易</b>: {report.trade_count} 笔\n"
+            f"<b>成分</b>: {', '.join(report.composition) if report.composition else '—'}"
+            f"  |  评估时间: {report.timestamp[:16].replace('T', ' ')}"
         )
     except Exception as exc:
         logger.exception(f"回测失败 {code} {start} {end}")

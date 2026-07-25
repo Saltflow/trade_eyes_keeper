@@ -142,6 +142,7 @@ class TestFeishuContent:
         session.signal_scan = None
         session.backtest = None
         session.portfolio_results = None
+        session.evaluation_reports = None
         notifier = FeishuNotifier(
             {
                 "notification": {

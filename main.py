@@ -204,144 +204,51 @@ def run_daily_task(force: bool = False):
             logger.warning(f"策略信号扫描失败 (非致命): {e}")
             session.signal_scan = None
 
-        # 3c. 回测分析（基于最新优化策略）
-        try:
-            logger.info("开始回测分析")
-            # 注入基准 ETF 数据（510300 沪深300, 510880 红利ETF）
-            historical = getattr(session, "_historical", {}) or {}
-            bench_codes = ["510300", "510880"]
-            bench_data = {}
-            for bc in bench_codes:
-                if bc in historical:
-                    bench_data[bc] = historical[bc]
-            # 如果 510300 不在股票列表, 单独抓取（730天以匹配净值图2年曲线）
-            for bc in bench_codes:
-                if bc not in bench_data:
-                    try:
-                        df = StockDataFetcher(config).data_source.fetch_stock_data(bc, days=730)
-                        if df is not None and not df.empty:
-                            bench_data[bc] = df
-                            historical[bc] = df
-                            logger.info(f"已单独获取基准 ETF {bc} 数据 ({len(df)} 行)")
-                    except Exception:
-                        logger.warning(f"无法获取基准 ETF {bc} 数据")
-            if bench_data:
-                scanner.benchmark_data = bench_data
-
-            bt_a = scanner.run_backtest(session, "a_share")
-            bt_nona = scanner.run_backtest(session, "non_a_share")
-            session.backtest = {}
-            if bt_a:
-                session.backtest["a_share"] = bt_a
-            if bt_nona:
-                session.backtest["non_a_share"] = bt_nona
-            logger.info(
-                f"回测分析完成: A股={'OK' if bt_a else 'N/A'}, "
-                f"非A={'OK' if bt_nona else 'N/A'}"
-            )
-        except Exception as e:
-            logger.warning(f"回测分析失败 (非致命): {e}")
-            session.backtest = None
-
         # 4. 创建通知管理器（统一入口）
         notifier = NotifierManager(config)
 
-        # 5. 投资组合策略分析（标的池=config，策略规则=YAML，不选股不搜参）
+        # 5. 投资组合策略分析（标的池=config，统一评估，唯一收口）
         try:
-            from src.analysis.portfolio_strategy import PortfolioOptimizer
+            from src.analysis.portfolio_evaluator import evaluate_all_groups, _detect_fine_group
+            import logging as _log5
+            _log = _log5.getLogger(__name__)
 
-            logger.info("开始投资组合策略分析（config标的 + YAML规则）")
+            _log.info("开始投资组合策略分析")
 
-            def _load_opt_yaml(group: str):
-                """读取指定分组最新 YAML，返回 (opt_data, custom_rules, signal_fn, engine_params)。
+            # 加载最新搜参 YAML → 策略 + 参数
+            signal_fn, params, yaml_data = _load_strategy()
 
-                只取策略规则，不再读 _stocks — 标的池由 config 决定。
-                """
-                opt_dir = Path("data/optimizer")
-                files = sorted(
-                    [f for f in opt_dir.glob(f"*_{group}_strategies.yaml")
-                     if (group == "non_a_share") == ("non_a_share" in f.name)],
-                    key=lambda p: p.stat().st_mtime, reverse=True,
+            # 基准 ETF 数据
+            benchmark_data = _fetch_benchmarks(config, session)
+
+            # 统一评估（一次回测，一组报告，三组并进）
+            reports = evaluate_all_groups(
+                config,
+                signal_fn,
+                params,
+                benchmark_data=benchmark_data,
+            )
+
+            if reports:
+                # 唯一数据源：EvaluationReport → 邮件/IM 渲染段直接消费
+                session.evaluation_reports = reports
+                # 兼容旧渲染段的 _yaml_eval_cache（渲染段更新后移除）
+                session._yaml_eval_cache = {
+                    gk: r.to_cache_dict() for gk, r in reports.items()
+                }
+                _log.info(
+                    f"投资组合策略分析完成 ({len(reports)}组: "
+                    + ", ".join(f"{rk}:{rv.total_return:+.1f}%"
+                                for rk, rv in reports.items())
+                    + ")"
                 )
-                if not files:
-                    return None, None, None, None
-                with open(files[0], "r", encoding="utf-8") as f:
-                    data = yaml.safe_load(f)
-                top = (data.get("strategies") or [{}])[0]
-                rules_raw = top.get("rules", [])
-                params = top.get("params", {})
-                mode = params.get("_mode", "?")
-                engine_name = params.get("_engine", "global")
-
-                # 分位/评分引擎：用 SignalFn 评分流水线回测（rules 保持 __signal_fn__）
-                if engine_name in ("percentile", "pct", "new"):
-                    from src.analysis.strategies import get_strategy
-                    sig_fn = get_strategy(engine_name) or get_strategy("percentile")
-                    eng_params = _params_from_yaml(params)
-                    rules = rules_raw  # Rule.from_dict removed
-                    return data, rules, sig_fn, eng_params
-
-                # position_target → cash*frac 转换（RuleEngine 无法求值 position_target）
-                if mode == "position_target":
-                    for r in rules_raw:
-                        rid = r.get("id", "")
-                        idx = rid.split("_")[-1] if "_" in rid else "1"
-                        if r.get("type") == "buy" and r.get("action_amount") == "position_target":
-                            r["action_amount"] = f"cash * {params.get(f'buy_{idx}_frac', 0.1)}"
-                        elif r.get("type") == "sell" and r.get("action_fraction", 0.25) == 0.0:
-                            r["action_fraction"] = params.get(f"sell_{idx}_frac", 0.25)
-                            r["action_min"] = 2500.0
-                            r["action_max"] = 10000.0
-                rules = rules_raw  # Rule.from_dict removed
-                return data, rules, None, None
-
-            a_data, a_rules, a_sfn, a_ep = _load_opt_yaml("a_share")
-            hk_data, hk_rules, hk_sfn, hk_ep = _load_opt_yaml("hk")
-            us_data, us_rules, us_sfn, us_ep = _load_opt_yaml("us")
-            # 回退：hk/us YAML 尚未生成时用 non_a_share（旧格式兼容）
-            if hk_rules is None or us_rules is None:
-                n_data, n_rules, n_sfn, n_ep = _load_opt_yaml("non_a_share")
-                if hk_rules is None:
-                    hk_data, hk_rules, hk_sfn, hk_ep = n_data, n_rules, n_sfn, n_ep
-                if us_rules is None:
-                    us_data, us_rules, us_sfn, us_ep = n_data, n_rules, n_sfn, n_ep
-
-            # 存 opt_data 供邮件展示 YAML 预估收益（Top1 test_return）
-            session.opt_data_a = a_data
-            session.opt_data_hk = hk_data
-            session.opt_data_us = us_data
-            # 向后兼容：opt_data_non_a 指向 us（邮件旧字段）
-            session.opt_data_non_a = us_data or hk_data
-
-            # 标的池全部来自 config：各组用各自 rules
-            portfolio_results = {}
-            opt_a = PortfolioOptimizer(config, custom_rules=a_rules,
-                                       signal_fn=a_sfn, engine_params=a_ep)
-            res_a = opt_a.run_fixed(groups=["a_share"])
-            if res_a.get("a_share"):
-                portfolio_results["a_share"] = res_a["a_share"]
-            opt_hk = PortfolioOptimizer(config, custom_rules=hk_rules,
-                                        signal_fn=hk_sfn, engine_params=hk_ep)
-            res_hk = opt_hk.run_fixed(groups=["hk"])
-            if res_hk.get("hk"):
-                portfolio_results["hk"] = res_hk["hk"]
-            opt_us = PortfolioOptimizer(config, custom_rules=us_rules,
-                                        signal_fn=us_sfn, engine_params=us_ep)
-            res_us = opt_us.run_fixed(groups=["us"])
-            if res_us.get("us"):
-                portfolio_results["us"] = res_us["us"]
-
-            if portfolio_results:
-                session.portfolio_results = portfolio_results
-                logger.info("投资组合策略分析完成（config标的 / A股/港股/美股独立资金池）")
             else:
-                logger.warning("无可用标的，跳过投资组合分析")
+                _log.warning("无可用标的，跳过投资组合分析")
         except Exception as e:
             logger.error(f"投资组合策略分析失败: {e}", exc_info=True)
 
         # ── 参考持仓状态（只读，日报不做调仓，三分仓）──
         from src.core.ref_portfolio import RefPortfolioManager
-        from src.analysis.portfolio_strategy import _detect_fine_group
 
         stock_data_df = session.get_all_dataframe()
         all_statuses = {}
@@ -372,22 +279,6 @@ def run_daily_task(force: bool = False):
                 f"回报 {status['nav_return_pct']:+.2f}%"
             )
         object.__setattr__(session, "ref_portfolio_status", all_statuses)
-
-        # ── 统一回测报告缓存（固定9月窗口，供日报策略摘要使用）──
-        yaml_eval_cache: dict[str, dict] = {}
-        for gk in ("a_share", "hk", "us"):
-            yf = sorted(
-                Path("data/optimizer").glob(f"*_{gk}_strategies.yaml"),
-                key=lambda p: p.stat().st_mtime, reverse=True,
-            )
-            if not yf:
-                continue
-            er = eval_yaml_strategy(
-                yf[0], config, stock_codes=None,
-            )
-            if er:
-                yaml_eval_cache[gk] = er.to_dict()
-        object.__setattr__(session, "_yaml_eval_cache", yaml_eval_cache)
 
         # 8. 发送邮件（无论是否有满足条件的股票都发送日报）
         if session.alerts:
@@ -469,7 +360,7 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
         # ── 参考持仓三分仓调仓（A股/港股/美股各自独立资金池）──
         from src.core.ref_portfolio import RefPortfolioManager, REF_MONTHLY_LIMIT
         from src.analysis.config import get_execution_config
-        from src.analysis.portfolio_strategy import _detect_fine_group
+        from src.analysis.portfolio_evaluator import _detect_fine_group
 
         exec_cfg = get_execution_config()
         alerts_all = session.signal_scan.alerts if session.signal_scan else []
@@ -635,6 +526,76 @@ def _send_optimizer_report_telegram(config, report):
             _logger.warning("Telegram 报告发送失败: HTTP %d", resp.status_code)
     except Exception as e:
         _logger.warning("Telegram 报告发送异常: %s", e)
+
+
+# ═══════════════════════════════════════════════════════════
+# 策略加载 + 辅助函数
+# ═══════════════════════════════════════════════════════════
+
+def _load_strategy():
+    """从最新搜参 YAML 加载策略 + 参数。
+
+    Returns:
+        (signal_fn, params, yaml_data) 或 (None, None, None)
+    """
+    from src.analysis.strategies import get_strategy
+    from src.analysis.search_interface import Params
+
+    opt_dir = Path("data/optimizer")
+    if not opt_dir.exists():
+        return None, None, None
+
+    # 优先 a_share YAML（三组共用同一种策略）
+    for group in ("a_share", "non_a_share"):
+        files = sorted(
+            opt_dir.glob(f"*_{group}_strategies.yaml"),
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
+        if not files:
+            continue
+        with open(files[0], "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        top = (data.get("strategies") or [{}])[0]
+        params_raw = top.get("params", {})
+        engine_name = params_raw.get("_engine", "percentile")
+
+        sig_fn = get_strategy(engine_name) or get_strategy("percentile")
+        params_vals = _params_from_yaml(params_raw)
+        params = Params(values=params_vals, _engine=engine_name)
+        return sig_fn, params, data
+
+    return None, None, None
+
+
+def _fetch_benchmarks(config, session) -> dict:
+    """拉取基准 ETF 数据（510300/510880/VOO/BRK.B）。
+
+    优先从 session._historical 读（已拉取过的历史数据）。
+    """
+    historical = getattr(session, "_historical", {}) or {}
+    bench_codes_map = {
+        "510300": 730,   # 沪深300
+        "510880": 730,   # 红利ETF
+        "VOO": 730,      # 标普500
+        "BRK.B": 730,    # 伯克希尔
+    }
+    bench_data = {}
+    from src.core.data_fetcher import StockDataFetcher
+
+    for bc, days in bench_codes_map.items():
+        if bc in historical:
+            bench_data[bc] = historical[bc]
+            continue
+        try:
+            df = StockDataFetcher(config).data_source.fetch_stock_data(
+                bc, days=days
+            )
+            if df is not None and not df.empty:
+                bench_data[bc] = df
+                historical[bc] = df
+        except Exception:
+            pass
+    return bench_data
 
 
 # ═══════════════════════════════════════════════════════════

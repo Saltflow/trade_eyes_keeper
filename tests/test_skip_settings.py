@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 class TestSkipHelpers:
     def test_get_skip_search(self):
-        from analysis.portfolio_strategy import get_skip_search
+        from analysis.portfolio_evaluator import get_skip_search
 
         assert get_skip_search({"skip_search": ["601985", "000958"]}) == {
             "601985",
@@ -19,7 +19,7 @@ class TestSkipHelpers:
         assert get_skip_search({"skip_search": None}) == set()
 
     def test_get_skip_signals(self):
-        from analysis.portfolio_strategy import get_skip_signals
+        from analysis.portfolio_evaluator import get_skip_signals
 
         assert get_skip_signals({"skip_signals": ["508091"]}) == {"508091"}
         assert get_skip_signals({}) == set()

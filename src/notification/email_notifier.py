@@ -420,9 +420,9 @@ def _readable_signal(
     map_us 缺省时港美股共用 map_hk（向后兼容非A单组）。
     """
     try:
-        from ..analysis.portfolio_strategy import _detect_fine_group
+        from ..analysis.portfolio_evaluator import _detect_fine_group
     except (ImportError, ValueError):
-        from analysis.portfolio_strategy import _detect_fine_group
+        from analysis.portfolio_evaluator import _detect_fine_group
     g = _detect_fine_group(str(code))
     if g == "a_share":
         m = map_a
@@ -436,231 +436,86 @@ def _readable_signal(
 def build_strategy_text_summary(session, markdown: bool = False) -> str:
     """构建搜参策略 + 今日信号 + 定增的纯文本摘要（Telegram/飞书共享）。
 
-    与邮件日报信息量对齐：搜参3组(A股/港股/美股) + 验证期胜率 + 平均现金仓位
-    + 今日信号(可读名) + 未解禁定增。
+    数据源统一为 session.evaluation_reports（EvaluationReport dict）。
 
     Args:
-        session: SessionContext（读 portfolio_results/signal_scan/placements/
-                 opt_data_a/opt_data_non_a）
+        session: SessionContext（读 evaluation_reports/signal_scan/placements）
         markdown: True=飞书(**粗体**), False=Telegram(纯文本)
     """
-    b = "**" if markdown else ""  # 粗体标记
-    portfolio_results = getattr(session, "portfolio_results", None)
+    b = "**" if markdown else ""
+    reports = getattr(session, "evaluation_reports", {}) or {}
     signal_scan = getattr(session, "signal_scan", None)
     placements = getattr(session, "placements", None)
-    opt_n = getattr(session, "opt_data_non_a", None)
-    yaml_by_group = {
-        "a_share": getattr(session, "opt_data_a", None),
-        "hk": getattr(session, "opt_data_hk", None) or opt_n,
-        "us": getattr(session, "opt_data_us", None) or opt_n,
-    }
     lines: list[str] = []
 
-    # 策略引擎名（新/旧引擎一目了然）
-    first_yaml = (
-        yaml_by_group.get("a_share")
-        or yaml_by_group.get("hk")
-        or yaml_by_group.get("us")
-    )
-    if first_yaml:
-        engine_id = (
-            (first_yaml.get("strategies") or [{}])[0]
-            .get("params", {})
-            .get("_engine", "global")
+    # 策略引擎名
+    first_r = next(iter(reports.values()), None)
+    if first_r:
+        lines.append(
+            f"{b}搜参引擎{b}: {first_r.strategy_label} "
+            f"({first_r.engine_name})  {first_r.timestamp[:16].replace('T', ' ')}"
         )
-        engine_names = {"percentile": "分位评分", "global": "全局阈值"}
-        engine_label = engine_names.get(engine_id, engine_id)
-        ts_raw = first_yaml.get("timestamp", "")[:16].replace("T", " ")
-        lines.append(f"{b}搜参引擎{b}: {engine_label} ({engine_id})  {ts_raw}")
         lines.append("")
 
-    # ── 搜参策略结果（三组）──
-    if portfolio_results:
-        group_labels = {"a_share": "A股组合", "hk": "港股组合", "us": "美股组合"}
-        eval_cache = getattr(session, "_yaml_eval_cache", {}) or {}
-        for gk, gl in group_labels.items():
-            gd = portfolio_results.get(gk)
-            if not gd:
-                continue
-            r = gd.get("top1") or gd.get("max_return")
-            if not r:
-                continue
-            # 统一回测报告优先，回退到 YAML test_return（兼容旧 YAML）
-            eval_cache = getattr(session, "_yaml_eval_cache", {}) or {}
-            er = eval_cache.get(gk, {}) or {}
-            yaml_data = yaml_by_group.get(gk) or {}
-            g_top = (yaml_data.get("strategies") or [{}])[0]
+    # 搜参策略结果
+    group_labels = {"a_share": "A股组合", "hk": "港股组合", "us": "美股组合"}
+    for gk, gl in group_labels.items():
+        r = reports.get(gk)
+        if r is None:
+            continue
 
-            total_ret = er.get("total_return")
-            test_ret = er.get("excess_return")
-            if test_ret is None:
-                test_ret = g_top.get("test_return")
-            test_dd = er.get("dd") or g_top.get("test_drawdown")
-            g_sharpe = er.get("sharpe") or g_top.get("sharpe")
-            ts = yaml_data.get("timestamp", "")[:16].replace("T", " ")
+        qh = r.quarterly_holdings or []
+        cash_pcts = [(100 - q.get("pos_pct", 0)) for q in qh if q.get("nav", 0) > 0]
+        avg_cash = sum(cash_pcts) / len(cash_pcts) if cash_pcts else None
 
-            qh = getattr(r, "quarterly_holdings", None) or []
-            cash_pcts = [(100 - q["pos_pct"]) for q in qh if q.get("nav", 0) > 0]
-            avg_cash = sum(cash_pcts) / len(cash_pcts) if cash_pcts else None
-            near_empty = avg_cash is not None and avg_cash >= 90
-            comp = getattr(r, "composition", [])
+        wr_parts = []
+        for bcode, bret in r.benchmark_returns.items():
+            lbl = "无风险" if bcode == "risk_free" else bcode
+            wr_parts.append(f"{lbl} {bret:+.2f}%")
 
-            # 基准收益（来自统一回测报告）
-            wr_parts = []
-            bench_returns = er.get("benchmark_returns", {}) or {}
-            for bcode, bret in bench_returns.items():
-                lbl = "无风险" if bcode == "risk_free" else bcode
-                wr_parts.append(f"{lbl} {bret:+.2f}%")
+        head = (
+            f"{b}{gl}{b} 验证期涨幅 {r.total_return:+.1f}% "
+            f"(超额{r.excess_return:+.1f}%)"
+            f"  最大回撤 {r.max_drawdown:.1f}%  夏普 {r.sharpe_ratio:.2f}"
+        )
+        if avg_cash is not None:
+            head += f"  平均现金仓位 {avg_cash:.0f}%"
+        lines.append(head)
+        if wr_parts:
+            lines.append(
+                "  验证期胜率(任意日买入持有到期跑赢): " + " | ".join(wr_parts)
+            )
+        if r.composition:
+            lines.append(f"  成分: {', '.join(r.composition)}")
+        ts = r.timestamp[:16].replace("T", " ")
+        lines.append(f"  评估时间 {ts}")
+        lines.append("")
 
-            if total_ret is None:
-                total_ret = g_top.get("total_return")
-            if test_ret is not None:
-                if total_ret is not None:
-                    head = (
-                        f"{b}{gl}{b} 验证期涨幅 {total_ret:+.1f}% "
-                        f"(超额{test_ret:+.1f}%)"
-                        f"  最大回撤 {test_dd:.1f}%  夏普 {g_sharpe:.2f}"
-                    )
-                else:
-                    head = (
-                        f"{b}{gl}{b} 预估收益(测试期超额,近9月) {test_ret:+.1f}%"
-                        f"  回撤 {test_dd:.1f}%  夏普 {g_sharpe:.2f}"
-                    )
-            else:
-                tr = getattr(r, "total_return", 0)
-                head = f"{b}{gl}{b} 收益 {tr:+.1f}%"
-            if avg_cash is not None:
-                head += f"  平均现金仓位 {avg_cash:.0f}%"
-            lines.append(head)
-            if wr_parts:
-                lines.append(
-                    "  验证期胜率(任意日买入持有到期跑赢): " + " | ".join(wr_parts)
-                )
-            elif near_empty:
-                lines.append("  验证期胜率: —（近乎空仓，无有效交易，胜率不适用）")
-            if comp:
-                lines.append(f"  成分: {', '.join(comp)}")
-            if ts:
-                lines.append(f"  搜参时间 {ts}")
-
-            # 买卖规则明细（从 YAML params 翻译；分位引擎无 _signal 则读 rules）
-            params = g_top.get("params", {})
-            buy_rules, sell_rules = [], []
-            has_signal_params = any(k.endswith("_signal") for k in params)
-            if has_signal_params:
-                for k, v in sorted(params.items()):
-                    if not k.endswith("_signal"):
-                        continue
-                    idx = k.split("_")[1]
-                    name = SIGNAL_NAMES.get(str(v), str(v))
-                    if str(v) == "none":
-                        continue
-                    t = params.get(k.replace("_signal", "_t"))
-                    frac = params.get(k.replace("_signal", "_frac"))
-                    extra = ""
-                    if t is not None:
-                        extra += f" 阈值{float(t):.2f}"
-                    if frac is not None:
-                        extra += f" 仓位{float(frac) * 100:.0f}%"
-                    if k.startswith("buy"):
-                        buy_rules.append(f"买{idx}:{name}{extra}")
-                    else:
-                        sell_rules.append(f"卖{idx}:{name}{extra}")
-            else:
-                # 分位/自定义引擎：读 YAML rules 列表（已含引擎自定义名和 type）
-                for r in g_top.get("rules") or []:
-                    label = r.get("label", r.get("id", ""))
-                    if r.get("type") == "buy":
-                        buy_rules.append(label)
-                    elif r.get("type") == "sell":
-                        sell_rules.append(label)
-            if buy_rules:
-                lines.append("  买入: " + " | ".join(buy_rules))
-            if sell_rules:
-                lines.append("  卖出: " + " | ".join(sell_rules))
-
-            # 季末持仓（最后一个季度快照）
-            if qh:
-                last_q = qh[-1]
-                qpos = last_q.get("positions", [])
-                if qpos:
-                    pos_str = ", ".join(
-                        f"{p['code']} {p['shares']:.0f}股@{p['price']:.2f}"
-                        f"({p.get('pnl_pct', 0):+.0f}%)"
-                        for p in qpos[:8]
-                    )
-                    lines.append(
-                        f"  期末持仓(Q{last_q.get('quarter', '?')}): {pos_str}"
-                    )
-            lines.append("")
-
-    # ── 今日信号 ──
-    alerts = getattr(signal_scan, "alerts", None) or [] if signal_scan else []
-    if alerts:
-        map_a = _build_signal_label_map("a_share")
-        map_hk = _build_signal_label_map("hk") or _build_signal_label_map("non_a_share")
-        map_us = _build_signal_label_map("us") or _build_signal_label_map("non_a_share")
-        codes = set()
-        for a in alerts:
-            codes.add(getattr(a, "stock_code", "?"))
-        lines.append(f"{b}今日信号{b} ({len(alerts)}条 / {len(codes)}只)")
-        for a in alerts[:30]:
+    # 今日信号
+    if signal_scan and signal_scan.alerts:
+        lines.append(f"{b}今日策略信号{b}:")
+        for a in signal_scan.alerts[:10]:
             code = getattr(a, "stock_code", "?")
             raw = getattr(a, "rule_label", "?")
-            readable = _readable_signal(code, raw, map_a, map_hk, map_us)
-            cv = getattr(a, "current_value", "-")
-            lines.append(f"  {code} {readable}  {cv}")
-        lines.append("")
+            cv = getattr(a, "current_value", "")
+            lines.append(f"  {code} {raw} {cv}")
     elif signal_scan is not None:
         lines.append(f"{b}今日信号{b}: 无触发")
-        lines.append("")
+    lines.append("")
 
-    # ── 未解禁定增 ──
+    # 定增
     if placements:
-        name_map = {}
-        try:
-            df = session.get_all_dataframe()
-            for _, row in df.iterrows():
-                name_map[str(row.get("stock_code", ""))] = row.get("stock_name", "")
-        except Exception:
-            pass
-        lines.append(f"{b}未解禁定增{b}")
-        for code, p in sorted(placements.items()):
-            name = name_map.get(code, "")
+        lines.append(f"{b}未解禁定增{b}:")
+        for code, p in placements.items():
             num = p.get("issue_num")
             num_str = f"{num / 1e8:.2f}亿股" if num else "—"
-            price = p.get("issue_price")
-            price_str = f"{price:.2f}元" if price else "—"
-            pct = p.get("pct_of_total")
-            pct_str = f"{pct:.2f}%" if pct is not None else "—"
-            unlock = p.get("unlock_date") or "—"
+            price_str = f"{p.get('issue_price', '-')}元"
             lines.append(
-                f"  {code} {name}  {num_str}  占{pct_str}  {price_str}  解禁{unlock}"
+                f"  {code} {num_str} 发行价{price_str} "
+                f"解禁{p.get('unlock_date','-')}"
             )
-        lines.append("")
 
-    # ── 公告 / 股息 ──
-    announcements = getattr(session, "announcements", None) or {}
-    ann_lines = []
-    for code, items in announcements.items():
-        if not items:
-            continue
-        for a in items[:2]:  # 每只最多2条
-            title = a.get("title", "")
-            date = str(a.get("date", ""))[:10]
-            # 优先展示 LLM 提取的分红
-            div = a.get("llm_extracted_dividend") or {}
-            cash = div.get("cash_dividend_per_share") or div.get("dividend_per_share")
-            if cash:
-                ann_lines.append(f"  {code} {date} 分红{cash:.3f}元/股")
-            elif title:
-                ann_lines.append(f"  {code} {date} {title[:24]}")
-    if ann_lines:
-        lines.append(f"{b}公告/股息{b}")
-        lines.extend(ann_lines[:15])
-        lines.append("")
-
-    return "\n".join(lines).rstrip()
+    return "\n".join(lines).strip()
 
 
 def build_optimizer_summary(
@@ -873,26 +728,17 @@ class EmailNotifier(BaseNotifier):
             # 构建邮件主题
             subject = f"股票提醒 - {datetime.now().strftime('%Y-%m-%d')}"
 
-            # 获取投资组合策略结果
-            portfolio_results = getattr(session, "portfolio_results", None)
+            # 获取投资组合策略结果（唯一收口）
+            evaluation_reports = getattr(session, "evaluation_reports", None)
 
-            # 优化器 YAML（main.py 已存入 session，A/非A 各一份）
-            opt_data = getattr(session, "opt_data_a", None)
-            opt_data_map = {
-                "a_share": getattr(session, "opt_data_a", None),
-                "hk": getattr(session, "opt_data_hk", None),
-                "us": getattr(session, "opt_data_us", None),
-                "non_a_share": getattr(session, "opt_data_non_a", None),
-            }
-
-            # 生成投资组合走势图（两张: A股 / 非A股）
+            # 生成投资组合走势图
             portfolio_chart_dict = None
-            if portfolio_results:
+            if evaluation_reports:
                 try:
-                    from ..analysis.portfolio_strategy import generate_portfolio_chart
+                    from .chart_generator import generate_portfolio_chart
 
                     portfolio_chart_dict = generate_portfolio_chart(
-                        portfolio_results,
+                        evaluation_reports,
                         benchmark_data=historical_data,
                     )
                     n_charts = len(portfolio_chart_dict) if portfolio_chart_dict else 0
@@ -930,15 +776,12 @@ class EmailNotifier(BaseNotifier):
                 announcements,
                 historical_data=historical_data,
                 chart_png_bytes=chart_png_bytes,
-                portfolio_results=portfolio_results,
                 portfolio_chart_dict=portfolio_chart_dict,
                 signal_scan=signal_scan,
                 backtest=backtest,
-                opt_data=opt_data,
+                evaluation_reports=evaluation_reports,
                 daily_mode=True,
-                opt_data_map=opt_data_map,
                 placements=getattr(session, "placements", None),
-                eval_cache=getattr(session, "_yaml_eval_cache", None),
             )
 
             # ── 参考持仓 ──
@@ -982,26 +825,17 @@ class EmailNotifier(BaseNotifier):
             # 构建邮件主题
             subject = f"股票日报 - {datetime.now().strftime('%Y-%m-%d')}"
 
-            # 获取投资组合策略结果
-            portfolio_results = getattr(session, "portfolio_results", None)
+            # 获取投资组合策略结果（唯一收口）
+            evaluation_reports = getattr(session, "evaluation_reports", None)
 
-            # 优化器 YAML（main.py 已存入 session，A/非A 各一份）
-            opt_data = getattr(session, "opt_data_a", None)
-            opt_data_map = {
-                "a_share": getattr(session, "opt_data_a", None),
-                "hk": getattr(session, "opt_data_hk", None),
-                "us": getattr(session, "opt_data_us", None),
-                "non_a_share": getattr(session, "opt_data_non_a", None),
-            }
-
-            # 生成投资组合走势图（两张）
+            # 生成投资组合走势图
             portfolio_chart_dict = None
-            if portfolio_results:
+            if evaluation_reports:
                 try:
-                    from ..analysis.portfolio_strategy import generate_portfolio_chart
+                    from .chart_generator import generate_portfolio_chart
 
                     portfolio_chart_dict = generate_portfolio_chart(
-                        portfolio_results,
+                        evaluation_reports,
                         benchmark_data=historical_data,
                     )
                 except Exception as e:
@@ -1030,13 +864,11 @@ class EmailNotifier(BaseNotifier):
                 stock_data,
                 announcements,
                 historical_data=historical_data,
-                portfolio_results=portfolio_results,
                 portfolio_chart_dict=portfolio_chart_dict,
                 signal_scan=signal_scan,
                 backtest=backtest,
-                opt_data=opt_data,
+                evaluation_reports=evaluation_reports,
                 daily_mode=True,
-                opt_data_map=opt_data_map,
                 placements=getattr(session, "placements", None),
                 eval_cache=getattr(session, "_yaml_eval_cache", None),
             )
@@ -1429,134 +1261,41 @@ class EmailNotifier(BaseNotifier):
 
     def _build_strategy_results_section(
         self,
-        portfolio_results,
-        opt_data=None,
+        evaluation_reports,
         signal_scan=None,
-        opt_data_map=None,
-        benchmark_data=None,
-        eval_cache=None,
     ) -> str:
-        """构建搜参策略结果段（策略规则 + 今日信号 + 回测指标 + 季末持仓）。
+        """构建搜参策略结果段（策略指标 + 今日信号 + 季末持仓）。
+
+        唯一数据源：session.evaluation_reports（EvaluationReport dict）。
 
         Args:
-            portfolio_results: PortfolioOptimizer.run_fixed() 返回值
-            opt_data: A股优化器 YAML (含 params/rules)，向后兼容
+            evaluation_reports: {group: EvaluationReport}
             signal_scan: SignalScanner.scan() 结果 (今日触发的策略信号)
-            opt_data_map: {"a_share": yaml, "non_a_share": yaml} 各组 YAML
-                          用于展示 YAML 权威预估收益 (test_return)
-            benchmark_data: {code: DataFrame} 基准价格 (算验证期胜率)
         """
-        if not portfolio_results:
+        reports = evaluation_reports or {}
+        if not reports:
             return ""
-        if opt_data_map is None:
-            opt_data_map = {"a_share": opt_data, "non_a_share": None}
-        benchmark_data = benchmark_data or {}
-
-        SIGNAL_NAMES = {
-            "deviation_cross": "偏离穿越",
-            "deviation_absolute": "偏离达标",
-            "rsi_signal": "RSI超卖",
-            "bollinger_signal": "布林低位",
-            "volume_spike": "放量异动",
-            "trend_follow": "趋势跟踪",
-            "deep_value": "深度价值",
-            "absolute_discount": "绝对折价",
-            "sell_deviation_cross": "偏离穿越(卖)",
-            "sell_deviation_absolute": "偏离达标(卖)",
-            "sell_rsi_signal": "RSI超买",
-            "sell_bollinger_signal": "布林高位",
-            "sell_trend_follow": "趋势反转",
-            "none": "无",
-        }
 
         lines: list[str] = []
         lines.append(
             '<div style="margin-top:30px;border-top:2px solid #2c3e50;padding-top:16px">'
         )
 
-        # 策略引擎名 + 搜参日期（新/旧引擎一目了然）
-        engine_label = ""
-        ts_display = ""
-        if opt_data:
-            top_engine = (opt_data.get("strategies") or [{}])[0]
-            engine_id = (top_engine.get("params") or {}).get("_engine", "global")
-            engine_names = {"percentile": "分位评分", "global": "全局阈值"}
-            engine_label = engine_names.get(engine_id, engine_id)
-            raw_ts = opt_data.get("timestamp", "")
-            if raw_ts:
-                ts_display = raw_ts[:16].replace("T", " ")
+        # 策略引擎名 + 评估日期
+        first_r = next(iter(reports.values()), None)
+        engine_name = getattr(first_r, "engine_name", "?") if first_r else "?"
+        engine_label = getattr(first_r, "strategy_label", "?") if first_r else "?"
+        ts = (
+            (getattr(first_r, "timestamp", "") or "")[:16].replace("T", " ")
+            if first_r else ""
+        )
 
-        header = "搜参策略结果"
-        if engine_label:
-            header += f" — {engine_label} ({engine_id})"
-        if ts_display:
-            header += f"  {ts_display}"
+        header = f"搜参策略结果 — {engine_label} ({engine_name})"
+        if ts:
+            header += f"  {ts}"
         lines.append(f'<h3 style="color:#2c3e50">{header}</h3>')
 
-        # 策略参数摘要 (从 optimizer YAML)
-        top_strategy = None
-        if opt_data:
-            top_strategy = (opt_data.get("strategies") or [None])[0]
-        if top_strategy:
-            params = top_strategy.get("params", {})
-            buy_rules: list[str] = []
-            sell_rules: list[str] = []
-            has_signal_params = any(k.endswith("_signal") for k in params)
-            if has_signal_params:
-                for k, v in sorted(params.items()):
-                    if not k.endswith("_signal"):
-                        continue
-                    if str(v) == "none":
-                        continue
-                    idx = k.split("_")[1]
-                    name = SIGNAL_NAMES.get(str(v), str(v))
-                    t = params.get(k.replace("_signal", "_t"))
-                    frac = params.get(k.replace("_signal", "_frac"))
-                    extra = ""
-                    if t is not None:
-                        extra += f" 阈值{float(t):.2f}"
-                    if frac is not None:
-                        extra += f" 仓位{float(frac) * 100:.0f}%"
-                    if k.startswith("buy"):
-                        buy_rules.append(f"买{idx}:{name}{extra}")
-                    else:
-                        sell_rules.append(f"卖{idx}:{name}{extra}")
-            else:
-                # 分位/自定义引擎：读 YAML rules 列表
-                for r in top_strategy.get("rules") or []:
-                    label = r.get("label", r.get("id", ""))
-                    if r.get("type") == "buy":
-                        buy_rules.append(label)
-                    elif r.get("type") == "sell":
-                        sell_rules.append(label)
-
-            mode = params.get("_mode", "?")
-            lines.append(
-                '<div style="background:#f0f4ff;border:1px solid #c8d6ff;'
-                'border-radius:6px;padding:12px;margin:10px 0">'
-            )
-            lines.append(
-                '<p style="margin:0;font-weight:600;color:#1565c0">'
-                f"Top1 策略 ({mode} 模式)</p>"
-            )
-            if buy_rules:
-                lines.append(
-                    '<p style="margin:6px 0 2px"><b>买入:</b> '
-                    f"{' | '.join(buy_rules)}</p>"
-                )
-            if sell_rules:
-                lines.append(
-                    '<p style="margin:2px 0 0"><b>卖出:</b> '
-                    f"{' | '.join(sell_rules)}</p>"
-                )
-            lines.append("</div>")
-        else:
-            lines.append(
-                '<p style="color:#888;margin:10px 0">'
-                "（未找到优化器策略，使用 confg 默认均线规则）</p>"
-            )
-
-        # 今日信号（从 SignalScanner 结果取，和日报/简报同一套数据）
+        # 今日信号
         alerts = getattr(signal_scan, "alerts", None) or [] if signal_scan else []
         if alerts:
             lines.append(
@@ -1574,7 +1313,8 @@ class EmailNotifier(BaseNotifier):
                 f"今日信号 ({len(alerts)} 条 / {len(signal_codes)} 只标的)</p>"
             )
             lines.append(
-                '<table style="font-size:12px;border-collapse:collapse;width:100%;table-layout:fixed;word-break:break-all">'
+                '<table style="font-size:12px;border-collapse:collapse;'
+                'width:100%;table-layout:fixed;word-break:break-all">'
                 '<tr style="background:#2c3e50;color:#fff">'
                 '<th style="width:22%">标的</th><th style="width:33%">规则</th>'
                 '<th style="width:45%">当前值</th></tr>'
@@ -1604,101 +1344,58 @@ class EmailNotifier(BaseNotifier):
         else:
             lines.append('<p style="color:#888;margin:8px 0">今日信号: 无触发</p>')
 
-        # 组合结果 (PortfolioEvaluator 实盘评估) — 只展示 Top1 (max_return)
+        # 各组结果
         group_labels = {
             "a_share": "A股组合",
             "hk": "港股组合",
             "us": "美股组合",
-            "non_a_share": "非A股组合",
         }
         for group_key, group_label in group_labels.items():
-            group_data = portfolio_results.get(group_key)
-            if not group_data:
-                continue
-            # run_fixed 返回 "top1"，向后兼容旧 "max_return"
-            r = group_data.get("top1") or group_data.get("max_return")
-            if not r:
+            r = reports.get(group_key)
+            if r is None:
                 continue
             lines.append(
                 f'<h4 style="color:#333;border-left:4px solid #2196f3;'
                 f'padding-left:10px;margin:16px 0 8px">{group_label}</h4>'
             )
 
-            # ── 统一回测报告优先，回退 YAML test_return（兼容旧 YAML）──
-            er = (eval_cache or {}).get(group_key, {}) or {}
-            g_yaml = (
-                opt_data_map.get(group_key) or opt_data_map.get("non_a_share") or {}
-            )
-            g_top = (g_yaml.get("strategies") or [{}])[0]
-            total_ret = er.get("total_return")
-            test_ret = er.get("excess_return")
-            if test_ret is None:
-                test_ret = g_top.get("test_return")
-            test_dd = er.get("dd") or g_top.get("test_drawdown")
-            g_sharpe = er.get("sharpe") or g_top.get("sharpe")
-            ts = g_yaml.get("timestamp", "")[:16].replace("T", " ")
-            comp = getattr(r, "composition", [])
-            qh = getattr(r, "quarterly_holdings", None) or []
-            # 平均现金仓位（从季末持仓算 avg(cash/nav)）
-            cash_pcts = [(100 - q["pos_pct"]) for q in qh if q.get("nav", 0) > 0]
+            qh = r.quarterly_holdings or []
+            cash_pcts = [(100 - q.get("pos_pct", 0)) for q in qh if q.get("nav", 0) > 0]
             avg_cash = sum(cash_pcts) / len(cash_pcts) if cash_pcts else None
 
-            # ── 基准收益（来自统一回测报告）──
-            bench_returns = er.get("benchmark_returns", {}) or {}
+            bench_returns = r.benchmark_returns or {}
             wr_parts = []
             for bcode, bret in bench_returns.items():
                 lbl = "无风险" if bcode == "risk_free" else bcode
                 wr_parts.append(f"{lbl} {bret:+.2f}%")
 
-            total_ret = er.get("total_return")
-            if total_ret is None:
-                total_ret = g_top.get("total_return")
-            if test_ret is not None:
-                rc = "#27ae60" if test_ret >= 0 else "#c0392b"
-                if total_ret is not None:
-                    trc = "#27ae60" if total_ret >= 0 else "#c0392b"
-                    summary = (
-                        '<div style="border:1px solid #ddd;padding:10px;'
-                        'margin:6px 0;border-radius:5px;background:#f0f7ff">'
-                        f"<b>验证期涨幅 "
-                        f'<span style="color:{trc}">{total_ret:+.1f}%</span>'
-                        f' (超额<span style="color:{rc}">{test_ret:+.1f}%</span>)</b> &nbsp; '
-                        f"最大回撤 {test_dd:.1f}% &nbsp; "
-                        f"夏普 {g_sharpe:.2f} &nbsp; "
-                    )
-                else:
-                    summary = (
-                        '<div style="border:1px solid #ddd;padding:10px;'
-                        'margin:6px 0;border-radius:5px;background:#f0f7ff">'
-                        f"<b>预估收益(测试期超额, 近9月, 不参与排序)</b> "
-                        f'<span style="color:{rc}">{test_ret:+.1f}%</span> &nbsp; '
-                        f"回撤 {test_dd:.1f}% &nbsp; "
-                        f"夏普 {g_sharpe:.2f} &nbsp; "
-                    )
-                if avg_cash is not None:
-                    summary += f"平均现金仓位 {avg_cash:.0f}% &nbsp; "
-                # 验证期胜率（三基线）
-                if wr_parts:
-                    summary += (
-                        "<br><b>验证期胜率</b>(任意一天买入持有到期跑赢): "
-                        + " | ".join(wr_parts)
-                    )
-                summary += '<br><span style="color:#888;font-size:11px">'
-                summary += f"搜参时间 {ts} · 成分: "
-                summary += f"{', '.join(comp) if comp else '—'}</span>"
-                lines.append(summary)
-            else:
-                # YAML 无测试收益时回退展示评估值
-                tr = getattr(r, "total_return", 0)
-                dd = getattr(r, "max_drawdown", 0)
-                rc = "#27ae60" if tr >= 0 else "#c0392b"
-                lines.append(
-                    '<div style="border:1px solid #ddd;padding:10px;'
-                    'margin:6px 0;border-radius:5px;background:#fafafa">'
-                    f'收益 <span style="color:{rc}">{tr:+.1f}%</span> &nbsp; '
-                    f"回撤 {dd:.1f}% &nbsp; 成分: "
-                    f"{', '.join(comp) if comp else '—'}"
+            trc = "#27ae60" if r.total_return >= 0 else "#c0392b"
+            rc = "#27ae60" if r.excess_return >= 0 else "#c0392b"
+            ts = (r.timestamp or "")[:16].replace("T", " ")
+            comp = r.composition or []
+
+            summary = (
+                '<div style="border:1px solid #ddd;padding:10px;'
+                'margin:6px 0;border-radius:5px;background:#f0f7ff">'
+                f"<b>验证期涨幅 "
+                f'<span style="color:{trc}">{r.total_return:+.1f}%</span>'
+                f' (超额<span style="color:{rc}">{r.excess_return:+.1f}%</span>)</b> &nbsp; '
+                f"最大回撤 {r.max_drawdown:.1f}% &nbsp; "
+                f"夏普 {r.sharpe_ratio:.2f} &nbsp; "
+            )
+            if avg_cash is not None:
+                summary += f"平均现金仓位 {avg_cash:.0f}% &nbsp; "
+            if wr_parts:
+                summary += (
+                    "<br><b>验证期胜率</b>(任意一天买入持有到期跑赢): "
+                    + " | ".join(wr_parts)
                 )
+            summary += (
+                '<br><span style="color:#888;font-size:11px">'
+                f"评估时间 {ts} · 成分: "
+                f"{', '.join(comp) if comp else '—'}</span></div>"
+            )
+            lines.append(summary)
 
             # 季末持仓明细
             if qh:
@@ -1745,9 +1442,8 @@ class EmailNotifier(BaseNotifier):
                             f"<td colspan=3>仓位: {qp:.0f}%</td></tr>"
                         )
                 lines.append("</table>")
-            lines.append("</div>")  # close card
 
-        lines.append("</div>")  # close section
+        lines.append("</div>")
         return "<br>".join(lines)
 
     def _build_portfolio_section(self, portfolio_results, portfolio_chart_dict=None):
@@ -1921,15 +1617,12 @@ class EmailNotifier(BaseNotifier):
         announcements=None,
         historical_data=None,
         chart_png_bytes=None,
-        portfolio_results=None,
         portfolio_chart_dict=None,
         signal_scan=None,
         backtest=None,
-        opt_data=None,
+        evaluation_reports=None,
         daily_mode=False,
-        opt_data_map=None,
         placements=None,
-        eval_cache=None,
     ):
         """
         构建邮件正文（完整版：表格 + 公告 + 图表）
@@ -2389,24 +2082,16 @@ class EmailNotifier(BaseNotifier):
              <p><em>注：公告信息仅供参考，请以交易所官方公告为准。</em></p>
             """
 
-        # 6b. 构建搜参策略结果段（含今日信号）
+        # 6b. 构建搜参策略结果段
         strategy_results_section = ""
-        if portfolio_results:
+        if evaluation_reports:
             strategy_results_section = self._build_strategy_results_section(
-                portfolio_results,
-                opt_data,
+                evaluation_reports,
                 signal_scan=signal_scan,
-                opt_data_map=opt_data_map,
-                benchmark_data=historical_data,
-                eval_cache=eval_cache,
             )
 
-        # 6c. 构建投资组合策略分析部分（旧版，日报模式跳过避免与搜参段重复）
+        # 6c. 投资组合策略分析（旧版，日报模式跳过）
         portfolio_section = ""
-        if portfolio_results and not daily_mode:
-            portfolio_section = self._build_portfolio_section(
-                portfolio_results, portfolio_chart_dict
-            )
 
         # 7. 走势图表（由调用方生成，通过 chart_png_bytes 传入，使用 CID 内嵌）
         chart_section = ""

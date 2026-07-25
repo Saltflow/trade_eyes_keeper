@@ -1,0 +1,9 @@
+ref_portfolio:
+  inception_date: '2026-07-14'
+  cash: 100000.0
+  initial_capital: 100000.0
+  trading_days: 0
+  last_rebalance_date: ''
+  last_reset_date: '2026-07-15'
+  holdings: {}
+  trade_log: []

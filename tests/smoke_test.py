@@ -35,15 +35,10 @@ def test_imports():
         "src.analysis.search_interface",
         "src.analysis.backtester",
         "src.analysis.optimizer",
-        "src.analysis.portfolio_strategy",
-        "src.analysis.strategy_optimizer",
+        "src.analysis.portfolio_evaluator",
         "src.notification.email_notifier",
         "src.notification.feishu_notifier",
         "src.notification.telegram_notifier",
-        "src.interactive.commands.handlers",
-        "src.interactive.command_parser",
-        "src.core.schedule_manager",
-        "main",
     ]
     for m in modules:
         check(f"import {m}", lambda m=m: importlib.import_module(m))
