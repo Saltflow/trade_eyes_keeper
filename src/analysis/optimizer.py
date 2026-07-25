@@ -90,9 +90,9 @@ def _evaluate_encoding_wf(
         # 每个策略自己生成信号（optimizer 不关心策略内部逻辑）
         buy_signals, sell_signals = strategy.make_signals(params, test_ind)
 
-        cash_bs = np.ones(test_ind.shape[0], dtype=np.float64) * (
-            evaluator.initial_cash * (1 + constraints.risk_free_rate / 252)
-        ).cumprod()
+        cash_bs = evaluator.initial_cash * (
+            1 + constraints.risk_free_rate / 252
+        ) ** np.arange(test_ind.shape[0], dtype=np.float64)
         stats = evaluator.evaluate(
             indicator_matrix=test_ind,
             price_matrix=test_price,
@@ -228,13 +228,17 @@ def run_optimizer(
     stocks_data: dict,
     stock_codes: list[str],
     group: str = "a_share",
+    _constraints=None,
 ) -> tuple[list[ScoredEncoding], StrategyConstraints]:
     """运行完整搜参流程：数据 → 窗口 → GA → 排序结果。"""
     from .backtester import WalkForwardManager, FastEvaluator
     from .config import get_constraints
 
-    constraints = get_constraints()
-    constraints.set_group(group)
+    if _constraints is not None:
+        constraints = _constraints
+    else:
+        constraints = get_constraints()
+        constraints.set_group(group)
     exec_cfg = constraints.execution
 
     wf_manager = WalkForwardManager(stocks_data, constraints, stock_codes)
