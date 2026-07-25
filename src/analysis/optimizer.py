@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import yaml
+from datetime import datetime
 
 from .config import (
     StrategyConstraints, DiscreteSearchConfig, WindowStats, get_constraints,
@@ -242,14 +243,34 @@ def run_optimizer(
     exec_cfg = constraints.execution
 
     wf_manager = WalkForwardManager(stocks_data, constraints, stock_codes)
-    evaluator = FastEvaluator(
-        initial_cash=exec_cfg.initial_capital,
-        monthly_buy_limit=exec_cfg.monthly_buy_limit,
-        lot_size=exec_cfg.lot_sizes.get(group, 100),
-        commission_rate=exec_cfg.commission_rate,
-        min_holding_days=exec_cfg.min_holding_days,
-    )
+    evaluator = FastEvaluator(exec_cfg, group)
 
     opt = GeneticOptimizer(strategy, constraints, wf_manager, evaluator)
     results = opt.run()
+    if results:
+        _save_optimizer_result(results, strategy, group)
     return results, constraints
+
+
+def _save_optimizer_result(
+    results,
+    strategy,
+    group: str,
+) -> None:
+    """保存最优参数到 data/optimizer/{group}_best_params.yaml"""
+    top = results[0]
+    params = top.encoding.to_params(strategy)
+    data = {
+        "timestamp": datetime.now().isoformat(),
+        "group": group,
+        "engine": strategy.name,
+        "params": {**params.values, "_engine": strategy.name},
+        "wf_score": top.wf_score,
+    }
+    from pathlib import Path
+
+    out_dir = Path("data/optimizer")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{group}_best_params.yaml"
+    path.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    logger.info(f"最优参数已保存: {path}")

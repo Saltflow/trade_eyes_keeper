@@ -1368,8 +1368,11 @@ class StockWebCrawler:
                         if len(items) > 46:
                             pe = _safe_float(items[39])
                             pb = _safe_float(items[46])
-                            pe = pe if pe and 0 < abs(pe) <= 1000 else None
-                            pb = pb if pb and 0 < abs(pb) <= 50 else None
+                            if pe is not None and (pe <= 0 or pe > 1000):
+                                raise ValueError(f"{stock_code} PE={pe} 超出合理范围")
+                            if pb is not None and (pb <= 0 or pb > 50):
+                                raise ValueError(f"{stock_code} PB={pb} 超出合理范围")
+                            return {"pe_ratio": pe, "pb_ratio": pb}
                             if pe or pb:
                                 return {"pe_ratio": pe, "pb_ratio": pb}
                 except Exception as e:
@@ -1406,10 +1409,11 @@ class StockWebCrawler:
                 )
                 pe = price.get("trailingPE")
                 pb = price.get("priceToBook")
-                return {
-                    "pe_ratio": pe if pe and 0 < abs(pe) <= 1000 else None,
-                    "pb_ratio": pb if pb and 0 < abs(pb) <= 50 else None,
-                }
+                if pe is not None and (pe <= 0 or pe > 1000):
+                    raise ValueError(f"{code} PE={pe} 超出合理范围")
+                if pb is not None and (pb <= 0 or pb > 50):
+                    raise ValueError(f"{code} PB={pb} 超出合理范围")
+                return {"pe_ratio": pe, "pb_ratio": pb}
             except Exception as e:
                 logger.info(f"Yahoo 估值 {code} 失败: {e}")
             return None

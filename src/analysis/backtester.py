@@ -424,21 +424,16 @@ class FastEvaluator:
 
     def __init__(
         self,
-        initial_cash: float = 100000.0,
-        monthly_buy_limit: float = 15000.0,
-        lot_size: int = 100,
-        commission_rate: float = 0.005,
-        buy_confirmation_days: int = 3,
-        sell_confirmation_days: int = 1,
-        min_holding_days: int = 30,
+        exec_cfg,
+        group: str = "a_share",
     ):
-        self.initial_cash = initial_cash
-        self.monthly_buy_limit = monthly_buy_limit
-        self.lot_size = lot_size
-        self.commission_rate = commission_rate
-        self.buy_confirmation_days = buy_confirmation_days
-        self.sell_confirmation_days = sell_confirmation_days
-        self.min_holding_days = min_holding_days
+        self.initial_cash = exec_cfg.initial_capital
+        self.monthly_buy_limit = exec_cfg.monthly_buy_limit
+        self.lot_size = exec_cfg.lot_sizes.get(group, 100)
+        self.commission_rate = exec_cfg.commission_rate
+        self.min_holding_days = exec_cfg.min_holding_days
+        self.buy_confirmation_days = 3
+        self.sell_confirmation_days = 1
 
     def evaluate(
         self,

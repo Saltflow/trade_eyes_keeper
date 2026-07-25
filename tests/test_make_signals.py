@@ -96,7 +96,9 @@ def test_builder_signals():
         sell_thresholds.append(params.values.get(f"sell_{i+1}_threshold", 5) / (THRESHOLD_LEVELS_BUILDER - 1))
         sell_fracs.append(FRAC_LEVELS_BUILDER[params.values.get(f"sell_{i+1}_frac", 0) % len(FRAC_LEVELS_BUILDER)])
 
-    ev = FastEvaluator()
+    from src.analysis.config import ExecutionConfig
+    mock_cfg = ExecutionConfig()
+    ev = FastEvaluator(mock_cfg)
     old_stats = ev.evaluate(
         indicator_matrix=ind, price_matrix=price, cash_baseline=cash_bs,
         buy_builders=buy_builders, buy_thresholds=buy_thresholds, buy_fracs=buy_fracs,
@@ -155,7 +157,9 @@ def test_simplified_signals():
         sell_limits.append(SELL_LIMIT_LEVELS[params.values.get(f"sell_{i+1}_limit", 1) % len(SELL_LIMIT_LEVELS)])
 
     # 旧路径：Run FastEvaluator.evaluate() with buy_limits, get trade count
-    ev = FastEvaluator()
+    from src.analysis.config import ExecutionConfig
+    mock_cfg = ExecutionConfig()
+    ev = FastEvaluator(mock_cfg)
     old_stats = ev.evaluate(
         indicator_matrix=ind, price_matrix=price, cash_baseline=cash_bs,
         buy_builders=buy_builders, buy_thresholds=buy_thresholds, buy_limits=buy_limits,

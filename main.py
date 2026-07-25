@@ -183,12 +183,14 @@ def run_daily_task(force: bool = False):
         checker.check_from_session(session, session_manager)
         logger.info(f"条件检查完成: {len(session.alerts)}个警报")
 
-        # 3b. 策略信号扫描（基于最新优化结果，直接调 PercentileSearchStrategy）
+        # 3b. 策略信号扫描
         try:
             logger.info("开始策略信号扫描")
-            a_alerts = _scan_group(session, "a_share")
-            hk_alerts = _scan_group(session, "hk")
-            us_alerts = _scan_group(session, "us")
+            strategy_name = config.get("dashboard", {}).get("strategy")
+            scan_strategy = get_strategy(strategy_name) if strategy_name else None
+            a_alerts = _scan_group(session, scan_strategy, "a_share")
+            hk_alerts = _scan_group(session, scan_strategy, "hk")
+            us_alerts = _scan_group(session, scan_strategy, "us")
 
             for sa in a_alerts + hk_alerts + us_alerts:
                 session.alerts.append(sa)
@@ -212,47 +214,58 @@ def run_daily_task(force: bool = False):
         # 4. 创建通知管理器（统一入口）
         notifier = NotifierManager(config)
 
-        # 5. 投资组合策略分析（config.dashboard.strategy → evaluate_all_groups）
+        # 5. 投资组合策略分析（参数唯一来源: data/optimizer/{group}_best_params.yaml）
         try:
             logger.info("开始投资组合策略分析")
 
-            strategy_name = config.get("dashboard", {}).get("strategy", "percentile")
-            strategy = get_strategy(strategy_name)
-            if strategy is None:
-                strategy = get_strategy("percentile")
-            params = strategy.random_params()
-            exec_cfg = get_execution_config()
-
-            # 全量历史数据（session._historical 已缓存数据拉取结果）
-            stocks_data = {}
-            for code in config["stocks"]:
-                code_str = str(code)
-                df = getattr(session, "_historical", {}).get(code_str)
-                if df is not None and len(df) >= 60:
-                    stocks_data[code_str] = df
-
-            benchmark_data = _fetch_benchmarks(config, session)
-
-            reports = evaluate_all_groups(
-                stocks_data,
-                [str(c) for c in config["stocks"]],
-                strategy, params, exec_cfg,
-                benchmark_data=benchmark_data,
-            )
-
-            if reports:
-                object.__setattr__(session, "evaluation_reports", reports)
-                object.__setattr__(session, "_yaml_eval_cache", {
-                    gk: r.to_cache_dict() for gk, r in reports.items()
-                })
-                logger.info(
-                    f"投资组合策略分析完成 ({len(reports)}组: "
-                    + ", ".join(f"{k}:{v.total_return:+.1f}%"
-                                for k, v in reports.items())
-                    + ")"
-                )
+            strategy_name = config.get("dashboard", {}).get("strategy")
+            if not strategy_name:
+                logger.warning("config 未配置 dashboard.strategy，跳过")
+                strategy = None
             else:
-                logger.warning("无可用标的，跳过投资组合分析")
+                strategy = get_strategy(strategy_name)
+
+            if strategy is None:
+                logger.warning("未找到有效策略，跳过策略评估")
+            else:
+                params = _load_optimized_params("a_share", strategy.name)
+                if params is None:
+                    logger.warning(
+                        f"未找到 {strategy.name} 优化参数文件 "
+                        f"data/optimizer/a_share_best_params.yaml，"
+                        "跳过策略评估。请运行 python main.py --optimize"
+                    )
+                else:
+                    exec_cfg = get_execution_config()
+                    stocks_data = {}
+                    for code in config["stocks"]:
+                        code_str = str(code)
+                        df = getattr(session, "_historical", {}).get(code_str)
+                        if df is not None and len(df) >= 60:
+                            stocks_data[code_str] = df
+
+                    benchmark_data = _fetch_benchmarks(config, session)
+
+                    reports = evaluate_all_groups(
+                        stocks_data,
+                        [str(c) for c in config["stocks"]],
+                        strategy, params, exec_cfg,
+                        benchmark_data=benchmark_data,
+                    )
+
+                    if reports:
+                        object.__setattr__(session, "evaluation_reports", reports)
+                        object.__setattr__(session, "_yaml_eval_cache", {
+                            gk: r.to_cache_dict() for gk, r in reports.items()
+                        })
+                        logger.info(
+                            f"投资组合策略分析完成 ({len(reports)}组: "
+                            + ", ".join(f"{k}:{v.total_return:+.1f}%"
+                                        for k, v in reports.items())
+                            + ")"
+                        )
+                    else:
+                        logger.warning("无可用标的，跳过投资组合分析")
         except Exception as e:
             logger.error(f"投资组合策略分析失败: {e}", exc_info=True)
 
@@ -349,11 +362,13 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
 
         logger.info(f"简报：获取到 {len(session.stocks_data)} 只股票数据")
 
-        # 策略信号扫描（直接调 PercentileSearchStrategy）
+        # 策略信号扫描
         try:
-            a_alerts = _scan_group(session, "a_share")
-            hk_alerts = _scan_group(session, "hk")
-            us_alerts = _scan_group(session, "us")
+            brief_strategy_name = config.get("dashboard", {}).get("strategy")
+            brief_strategy = get_strategy(brief_strategy_name) if brief_strategy_name else None
+            a_alerts = _scan_group(session, brief_strategy, "a_share")
+            hk_alerts = _scan_group(session, brief_strategy, "hk")
+            us_alerts = _scan_group(session, brief_strategy, "us")
 
             session.signal_scan = type("ScanResult", (), {
                 "alerts": a_alerts + hk_alerts + us_alerts,
@@ -564,11 +579,46 @@ def _fetch_benchmarks(config, session) -> dict:
     return bench_data
 
 
-def _scan_group(session, group: str, top_n: int = 5):
-    """读最新搜参 YAML，调 PercentileSearchStrategy.scan_signals()，返回告警列表。"""
-    from pathlib import Path
-    from src.analysis.strategies import get_strategy
-    strategy = get_strategy("percentile")
+def _load_optimized_params(group: str, engine: str) -> "Params | None":
+    """读取 optimizer 保存的最优参数。
+
+    引擎必须匹配，防止 builder 参数被 percentile 误读。
+    """
+    path = Path("data/optimizer") / f"{group}_best_params.yaml"
+    if not path.exists():
+        return None
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if data.get("engine") != engine:
+        logger.warning(f"参数文件 {path} 引擎={data.get('engine')} 与 {engine} 不匹配")
+        return None
+    vals = {k: int(v) for k, v in data["params"].items() if not k.startswith("_")}
+    return Params(values=vals, _engine=engine)
+
+
+def _scan_group(session, strategy, group: str, top_n: int = 5):
+    """调用策略 scan_today 返回信号告警列表。"""
+    if strategy is None:
+        return []
+    df = session.get_all_dataframe()
+    alerts = []
+    for _, row in df.iterrows():
+        code = str(row.get("stock_code", ""))
+        if _detect_fine_group(code) != group:
+            continue
+        today = {
+            col: row.get(col)
+            for col in row.index
+            if row.get(col) is not None and not pd.isna(row.get(col))
+        }
+        try:
+            results = strategy.scan_today(None, today)
+            if results:
+                for r in results:
+                    r["stock_code"] = code
+                alerts.extend(results)
+        except Exception:
+            pass
+    return alerts[:top_n]
 
 
 def _eval_opt_lookback() -> int:

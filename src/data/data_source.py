@@ -29,11 +29,10 @@ class DataSource:
 
     # 主源 → 备用复权源的映射
     ALT_SOURCE_MAP = {
-        "_fetch_from_qq": "_fetch_from_eastmoney",
-        "_fetch_from_eastmoney": "_fetch_from_qq",
-        "_fetch_from_sina_us": "_fetch_from_eastmoney",
-        "_fetch_from_yahoo": "_fetch_from_eastmoney",
         "_fetch_from_sina": "_fetch_from_qq",
+        "_fetch_from_qq": "_fetch_from_sina",
+        "_fetch_from_sina_us": "_fetch_from_sina",
+        "_fetch_from_yahoo": "_fetch_from_qq",
     }
 
     def __init__(self, config: dict):
