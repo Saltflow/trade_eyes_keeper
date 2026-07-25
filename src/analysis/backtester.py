@@ -870,14 +870,25 @@ def _build_indicator_matrix(
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """从 compute_all() 结果构建 (T,N,K) 指标矩阵 + 价格矩阵 + 公共日期。
 
+    兼容 date 作为列名或 index 两种格式。
+
     Returns:
         (indicator_matrix, price_matrix, date_strings)
     """
     dates_sets = []
+    per_code_dates: dict[str, list] = {}
     for code in stock_codes:
         df = computed.get(code)
-        if df is not None and not df.empty:
-            dates_sets.append(set(df.index))
+        if df is None or df.empty:
+            continue
+        # 优先用 date 列，回退到 index
+        if "date" in df.columns:
+            date_vals = pd.to_datetime(df["date"]).tolist()
+        else:
+            date_vals = df.index.tolist()
+        dates_sets.append(set(date_vals))
+        per_code_dates[code] = date_vals
+
     if not dates_sets:
         return (
             np.zeros((0, 0, len(INDICATOR_NAMES)), dtype=np.float32),
@@ -904,6 +915,11 @@ def _build_indicator_matrix(
         df = computed.get(code)
         if df is None or df.empty:
             continue
+        # 统一用 date 列做 index 再 reindex 到公共日期
+        if "date" in df.columns:
+            df = df.copy()
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.set_index("date")
         aligned = df.reindex(dates)
         for k, name in enumerate(INDICATOR_NAMES):
             if name in aligned.columns:

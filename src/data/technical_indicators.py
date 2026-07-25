@@ -448,6 +448,37 @@ def add_volume_ratio(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
     return df
 
 
+def _add_ma60_and_deviation(df: pd.DataFrame) -> None:
+    """补 MA60 / 偏离 / MA200_偏离 — INDICATOR_NAMES 要求列"""
+    ma60 = df["close"].rolling(60, min_periods=1).mean()
+    df["ma60"] = ma60
+    df["deviation"] = (df["close"] - ma60) / ma60.replace(0, float("nan"))
+    ma200 = df["close"].rolling(200, min_periods=1).mean()
+    df["ma200_dev"] = (df["close"] - ma200) / ma200.replace(0, float("nan"))
+
+
+def _add_rolling_percentile_ranks(df: pd.DataFrame, window: int = 252) -> None:
+    """计算滚动分位值 (0.0~1.0, 含多少天 ≤ 今日值)。
+    与 percentile/engine.py score_timeseries 同定义。
+    """
+    for src_col, out_col in [
+        ("adx", "adx_pct"), ("rsi", "rsi_pct"),
+        ("deviation", "deviation_pct"), ("vol_ratio", "vol_ratio_pct"),
+        ("ma200_dev", "ma200_dev_pct"),
+    ]:
+        if src_col not in df.columns:
+            continue
+        arr = df[src_col].values.astype(float)
+        result = np.full(len(arr), np.nan)
+        for t in range(window - 1, len(arr)):
+            lo = t - window + 1
+            win = arr[lo:t + 1]
+            win = win[~np.isnan(win)]
+            if len(win) >= 20:
+                result[t] = (win <= arr[t]).sum() / len(win)
+        df[out_col] = result
+
+
 def compute_all(
     stocks_data: dict[str, pd.DataFrame],
     rsi_period: int = 14,
@@ -480,6 +511,9 @@ def compute_all(
             add_bollinger(df, window=boll_window, num_std=boll_std)
             add_adx(df, period=adx_period)
             add_volume_ratio(df, window=vol_window)
+            # ── INDICATOR_NAMES 补齐列（百分位策略依赖）──
+            _add_ma60_and_deviation(df)
+            _add_rolling_percentile_ranks(df, window=252)
         except Exception as e:
             logger.warning("股票 %s 指标计算失败: %s", code, e)
         result[code] = df

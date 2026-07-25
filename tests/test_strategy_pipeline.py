@@ -71,4 +71,10 @@ class TestAllStrategiesPlugIntoPipeline:
             assert isinstance(r, EvaluationReport)
             assert r.max_drawdown <= 0, f"{strategy_name}/{gk} 回撤应≤0，实际 {r.max_drawdown}"
             assert len(r.nav_series) >= 20, f"{strategy_name}/{gk} 净值序列应≥20点"
-            assert r.trade_count >= 0, f"{strategy_name}/{gk} 交易笔数应≥0"
+            if strategy_name == "percentile":
+                assert r.trade_count > 0, (
+                    f"percentile 在 {len(real_stocks_data)} 只标的 × "
+                    f"{len(r.nav_series)} 天上 0 笔交易 — 指标矩阵缺列或分值全 NaN"
+                )
+            else:
+                assert r.trade_count >= 0, f"{strategy_name}/{gk} 交易笔数应≥0"

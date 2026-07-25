@@ -1,9 +1,10 @@
 """日报完整链路端到端测试。
 
-验证 run_daily_task 跑通后邮件 HTML 的策略结果段非空、含真数据。
+验证 run_daily_task 跑通后邮件 HTML 的策略结果段非空、含真数据、收益非零。
 """
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -44,7 +45,7 @@ def test_daily_report_strategy_section_not_empty():
         next_section = html.find("<!-- Monitoring -->", start)
     section = html[start:next_section] if next_section > start else html[start:]
 
-    # 策略段必须包含至少一个数据关键词
+    # 数据关键词存在
     found = any(
         kw in section
         for kw in ["验证期涨幅", "最大回撤", "超额", "夏普", "平均现金仓位", "基准"]
@@ -54,3 +55,14 @@ def test_daily_report_strategy_section_not_empty():
         f"邮件: {latest.name}\n"
         f"段内容: {section[:300]}"
     )
+
+    # 验证期涨幅 ≠ 0.0%（零交易的特征）
+    m = re.search(
+        r"验证期涨幅[^<]*<span[^>]*>([+-][\d.]+)%</span>", section
+    )
+    if m:
+        ret_val = float(m.group(1))
+        assert ret_val != 0.0, (
+            f"策略收益为 0.0%（疑似全现金零交易）。"
+            f"邮件: {latest.name}"
+        )
