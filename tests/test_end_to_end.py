@@ -35,10 +35,7 @@ def test_optimizer_produces_valid_results():
     """GA 搜索产出 ≥1 个通过约束的策略，且指标在合理范围内。"""
     from src.analysis.strategies import get_strategy
     from src.analysis.optimizer import run_optimizer
-    from src.analysis.config import (
-        StrategyConstraints, WalkForwardConfig, GeneticSearchConfig,
-        DiscreteSearchConfig, get_constraints,
-    )
+    from src.analysis.config import StrategyConstraints
 
     stocks_data = _load_stocks()
     strategy = get_strategy("percentile")
@@ -47,7 +44,18 @@ def test_optimizer_produces_valid_results():
     # 构造最小配置（train=3月, test=3月, Phase1=50抽样, 0代GA）
     constraints = StrategyConstraints({
         "walk_forward": {"train_months": 3, "test_months": 3, "step_months": 1, "num_windows": 1, "validation_windows": 0},
-        "genetic_search": {"phase1_random_samples": 50, "phase1_top_keep": 10, "num_generations": 0, "population_size": 10, "offspring_size": 0, "crossover_rate": 0.7, "mutation_rate": 0.3},
+        "genetic_search": {
+            "phase1_random_samples": 50,
+            "phase1_top_keep": 10,
+            "num_generations": 0,
+            "population_size": 10,
+            "offspring_size": 0,
+            "crossover_rate": 0.7,
+            "mutation_rate": 0.3,
+            # This one-window smoke test is not an absolute-return gate test.
+            "min_weighted_strategy_return": -999.0,
+            "min_positive_return_windows": 0,
+        },
         "discrete_search": {"mode": "frac", "buy_builders": ["deviation_cross", "rsi_signal"], "sell_builders": ["sell_deviation_cross", "sell_rsi_signal"], "num_buy_rules": 3, "num_sell_rules": 2},
         "hard_constraints": {"min_avg_position_pct": 0.0, "max_drawdown_pct": -50.0, "max_return_std_pct": 100.0, "min_trades_per_month": 0, "max_trades_per_month": 50},
         "benchmarks": {"a_share": [], "risk_free_rates": {"a_share": 0.02}},

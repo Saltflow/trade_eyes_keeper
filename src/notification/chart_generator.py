@@ -11,6 +11,7 @@ from typing import Optional, Dict, List
 from io import BytesIO
 import base64
 
+import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)

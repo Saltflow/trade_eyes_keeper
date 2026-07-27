@@ -24,8 +24,6 @@ hard_constraints:
   min_avg_position_pct: 5
   max_drawdown_pct: -40
   max_return_std_pct: 15.0
-  min_trades_per_month: 1
-  max_trades_per_month: 100
 soft_constraints:
   min_sharpe: 0.5
   sharpe_penalty_weight: 0.3
@@ -33,7 +31,8 @@ walk_forward:
   train_months: 12
   test_months: 9
   step_months: 3
-  num_windows: 14
+  # 13 ranking windows + 2 embargoed overlaps + 1 untouched daily validation.
+  num_windows: 16
   window_weights:
   - 1.0
   - 1.0
@@ -42,8 +41,16 @@ walk_forward:
   - 1.0
   - 1.0
   stability_penalty: 0.5
-  data_years: 5
+  data_years: 6
+  # ``num_windows`` is the total number of windows.  The newest
+  # ``validation_windows`` are held out for the daily-report validation.
+  # With a 9-month test horizon and a 3-month step, the two windows before
+  # the hold-out overlap it.  ``purge_overlapping_windows`` excludes those
+  # dates from ranking, constraints, GA evolution and sensitivity as well.
+  # This configuration yields exactly 13 ranking windows, 2 embargoed
+  # overlapping windows and 1 untouched hold-out validation window.
   validation_windows: 1
+  purge_overlapping_windows: true
 genetic_search:
   phase1_random_samples: 30000
   phase1_top_keep: 10000
@@ -54,7 +61,16 @@ genetic_search:
   mutation_rate: 0.3
   mutation_builder_rate: 0.2
   mutation_threshold_step: 2
-  mutation_frac_step: 1
+  random_seed: 20260726
+  # Candidates are ranked by WF excess first, then all of this pool receives
+  # the full ranking-window sensitivity calculation before final selection.
+  sensitivity_top_candidates: 500
+  sensitivity_samples: 10
+  sensitivity_penalty_weight: 1.0
+  # Ranking-window-only absolute-return gate.  The two purged windows and
+  # newest validation window never participate in these checks.
+  min_weighted_strategy_return: 0.0
+  min_positive_return_windows: 8
 discrete_search:
   buy_builders:
   - deviation_cross
@@ -67,13 +83,6 @@ discrete_search:
   - deep_value
   - none
   threshold_levels: 10
-  frac_levels:
-  - 0.3
-  - 0.45
-  - 0.6
-  - 0.75
-  - 0.9
-  - 1.0
   num_buy_rules: 5
   sell_builders:
   - deviation_cross
@@ -83,28 +92,9 @@ discrete_search:
   - trend_follow
   - sell_overextended
   - none
-  sell_frac_levels:
-  - 0.1
-  - 0.2
-  - 0.3
-  - 0.4
-  - 0.5
   num_sell_rules: 3
-  mode: simplified
-  position_model:
-    slope_range:
-    - 0.5
-    - 10.0
-    slope_step: 0.5
-    slope_levels: 20
-    bias_range:
-    - -3.0
-    - 3.0
-    bias_step: 0.3
-    bias_levels: 20
-    max_daily_adjust: 0.4
-# ── 简化搜参（mode=simplified）──
-# buy_limits/sell_limits 替代 fracs，每条规则独立限额
+# ── 统一现金档位（所有注册策略共用）──
+# 每次买卖各自从下列档位中搜参；不是月度额度，也不是仓位比例。
 simplified_search:
   buy_limit_levels:
   - 10000
@@ -120,7 +110,6 @@ simplified_search:
   - 50000
 # ── 执行参数（搜参/日回报测统一从此读取，禁止代码写死）──
 execution_params:
-  monthly_buy_limit: 15000
   initial_capital: 100000
   commission_rate: 0.005
   min_holding_days: 30

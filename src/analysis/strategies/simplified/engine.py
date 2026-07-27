@@ -1,4 +1,4 @@
-"""简化限额搜参策略 — 固定总资金 100k + 最低持仓 30 天，每条规则独立限额。"""
+"""简化条件策略 — 共用每笔买卖现金档位。"""
 
 from __future__ import annotations
 
@@ -6,8 +6,6 @@ import numpy as np
 
 from ...search_interface import SearchStrategy, ParamDim, ParamSpace, Params
 
-BUY_LIMIT_LEVELS = [5000.0, 10000.0, 20000.0, 30000.0, 50000.0]
-SELL_LIMIT_LEVELS = [5000.0, 10000.0, 20000.0, 30000.0, 50000.0]
 THRESHOLD_LEVELS_SIMP = 10
 NUM_BUY_RULES = 5
 NUM_SELL_RULES = 3
@@ -21,11 +19,12 @@ SELL_BUILDERS_SIMP = [
 
 
 class SimplifiedSearchStrategy(SearchStrategy):
-    """简化限额搜参策略 — 2 个固定参数 + 每条规则独立买卖限额。"""
+    """简化条件搜参策略；执行金额由基类的现金档位统一管理。"""
 
     name = "simplified"
-    label = "简化限额引擎 (固定100k+30天+独立限额)"
-    description = "固定总资金100k, 最低持仓30天, 每条规则独立买卖限额"
+    label = "简化现金档位引擎"
+    description = "固定条件信号 + 统一单笔买卖现金档位"
+    warmup_rows = 200
 
     def __init__(self):
         dims = []
@@ -36,9 +35,6 @@ class SimplifiedSearchStrategy(SearchStrategy):
             dims.append(ParamDim(
                 f"buy_{i+1}_threshold", THRESHOLD_LEVELS_SIMP, 0, 1
             ))
-            dims.append(ParamDim(
-                f"buy_{i+1}_limit", len(BUY_LIMIT_LEVELS), 0, 1
-            ))
         for i in range(NUM_SELL_RULES):
             dims.append(ParamDim(
                 f"sell_{i+1}_name", len(SELL_BUILDERS_SIMP), 0, 1
@@ -46,10 +42,7 @@ class SimplifiedSearchStrategy(SearchStrategy):
             dims.append(ParamDim(
                 f"sell_{i+1}_threshold", THRESHOLD_LEVELS_SIMP, 0, 1
             ))
-            dims.append(ParamDim(
-                f"sell_{i+1}_limit", len(SELL_LIMIT_LEVELS), 0, 1
-            ))
-        self._space = ParamSpace(dims)
+        self._space = self.with_execution_dims(dims)
 
     @property
     def param_space(self) -> ParamSpace:
@@ -134,31 +127,30 @@ class SimplifiedSearchStrategy(SearchStrategy):
         return buy_signals, sell_signals
 
     def scan_today(self, params, today: dict, history=None) -> list[dict]:
-        from .scanner import scan_simplified_today
-        return scan_simplified_today(params, today, history)
+        return super().scan_today(params, today, history)
 
     def to_human_readable(self, params: Params) -> str:
         vals = params.values
         lines = ["简化限额策略 (simplified)"]
-        lines.append("  total_capital=100000, min_holding_days=30")
+        lines.append("  使用统一单笔现金上限")
         for i in range(NUM_BUY_RULES):
             n_idx = vals.get(f"buy_{i+1}_name", 0) % len(BUY_BUILDERS_SIMP)
-            limit = BUY_LIMIT_LEVELS[
-                vals.get(f"buy_{i+1}_limit", 1) % len(BUY_LIMIT_LEVELS)
-            ]
             th = vals.get(f"buy_{i+1}_threshold", 5)
             lines.append(
                 f"  买入#{i+1}: {BUY_BUILDERS_SIMP[n_idx]} "
-                f"th_lv={th} limit={limit:.0f}元"
+                f"th_lv={th}"
             )
         for i in range(NUM_SELL_RULES):
             n_idx = vals.get(f"sell_{i+1}_name", 0) % len(SELL_BUILDERS_SIMP)
-            limit = SELL_LIMIT_LEVELS[
-                vals.get(f"sell_{i+1}_limit", 1) % len(SELL_LIMIT_LEVELS)
-            ]
             th = vals.get(f"sell_{i+1}_threshold", 5)
             lines.append(
                 f"  卖出#{i+1}: {SELL_BUILDERS_SIMP[n_idx]} "
-                f"th_lv={th} limit={limit:.0f}元"
+                f"th_lv={th}"
             )
+        execution = self.execution_params(params)
+        lines.append(
+            "  单笔现金上限: "
+            f"买入 {execution['buy_cash_limit']:.0f} / "
+            f"卖出 {execution['sell_cash_limit']:.0f} 元"
+        )
         return "\n".join(lines)

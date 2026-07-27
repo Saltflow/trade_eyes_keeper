@@ -92,15 +92,16 @@ class TestSellExecutionPriceSingleDay:
     """需求2：卖出执行价 = 单日收盘价（触发日），不平滑。"""
 
     def test_sell_uses_trigger_day_close(self):
-        # t=0 买入(价10), t=4 卖出(价50). 卖出按当日50, 不是3日均价
+        # t=0 买入(价10), t=4 卖出(价50). 卖出按当日50, 不是3日均价。
+        # 现金档位限制单笔卖出金额，故为部分卖出。
         buy = [1, 0, 0, 0, 0]
         sell = [0, 0, 0, 0, 1]
         price = [10.0, 20.0, 30.0, 40.0, 50.0]
         tr = _sim(buy, sell, price, frac=1.0, lot=1)
-        # 买入 10000 股 @10; t=4 卖出 frac=1.0 → 全卖 @50 → cash≈500000
+        # 买入 10000 股 @10; t=4 按 100000 元单笔上限卖出 @50。
         assert tr.total_trades == 2
-        assert tr.final_shares[0] == 0
-        assert tr.final_cash > 490000  # 卖在50而非3日均价40
+        assert tr.final_shares[0] == 8000
+        assert tr.final_cash > 99000  # 卖在50而非3日均价40
 
 
 class TestSameDayMutualExclusion:
@@ -134,11 +135,11 @@ class TestMonthlyLimitUnlimited:
         assert tr.total_trades == 1
         assert tr.final_shares[0] == 10000  # 全仓
 
-    def test_finite_monthly_limit_caps_buy(self):
-        # 显式有限额度 15000 → 单笔买入截断到 15000 → 1500 股
+    def test_finite_monthly_limit_is_ignored_by_cash_tier_execution(self):
+        # 月度额度已废除；实际金额只能由单笔现金档位决定。
         tr = _sim([1, 0], [0, 0], [10.0, 10.0], frac=1.0, monthly=15000.0)
         assert tr.total_trades == 1
-        assert tr.final_shares[0] == 1500  # 15000/10
+        assert tr.final_shares[0] == 10000
 
 
 class TestReentryAllowed:

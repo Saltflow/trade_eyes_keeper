@@ -1773,8 +1773,13 @@ class StockWebCrawler:
                     )
                     unlock_date = unlock.strftime("%Y-%m-%d")
                     is_locked = _dt.now() < unlock
-                except Exception:
-                    pass
+                except (OverflowError, TypeError, ValueError) as exc:
+                    logger.debug(
+                        "Unable to derive placement unlock date from %s / %s: %s",
+                        listing_date,
+                        lockin,
+                        exc,
+                    )
 
         return {
             "issue_num": issue_num,

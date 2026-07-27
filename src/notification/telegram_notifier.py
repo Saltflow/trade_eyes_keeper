@@ -6,6 +6,7 @@ Telegram 通知器 — Bot API 消息推送（HTML 格式）
 
 import logging
 import os
+import re
 import requests
 import pandas as pd
 from datetime import datetime
@@ -145,7 +146,15 @@ class TelegramNotifier(BaseNotifier):
         body = build_optimizer_summary(
             report, group_name, full_report, include_charts=False
         )
-        self._send(title, body)
+        # Optimizer summaries are shared with email/Feishu and use ``<br>``
+        # for visual line breaks. Telegram's HTML subset rejects that tag,
+        # while accepting the remaining ``<b>`` and ``<code>`` markup.
+        body = re.sub(r"<br\s*/?>", "\n", body, flags=re.IGNORECASE)
+        ok, detail = self._send(title, body)
+        if ok:
+            logger.info("Telegram optimizer notification delivered")
+        else:
+            logger.error("Telegram optimizer notification failed: %s", detail)
 
     # ── 构建方法 ─────────────────────────────
 

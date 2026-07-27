@@ -222,7 +222,11 @@ class FeishuNotifier(BaseNotifier):
         body = build_optimizer_summary(
             report, group_name, full_report, include_charts=False
         )
-        self._send(title, body)
+        ok, detail = self._send(title, body)
+        if ok:
+            logger.info("Feishu optimizer notification delivered")
+        else:
+            logger.error("Feishu optimizer notification failed: %s", detail)
 
     # ── 辅助 ──────────────────────────────────
 

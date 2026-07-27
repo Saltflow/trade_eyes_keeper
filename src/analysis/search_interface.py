@@ -65,6 +65,11 @@ class Params:
     """一组具体的参数值。纯数据，可序列化到 YAML。"""
     values: dict[str, int]
     _engine: str = ""
+    # Execution is persisted alongside an optimizer artifact rather than
+    # encoded as a mutable config-level index.  Keeping the resolved amount on
+    # the in-memory params means a later edit to the tier list cannot silently
+    # alter an already activated strategy.
+    execution_snapshot: dict[str, float | int | str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {"_engine": self._engine, **self.values}
@@ -78,7 +83,29 @@ class Params:
         return dim.decode(self.values.get(dim.name, 0))
 
     def clone(self) -> Params:
-        return Params(values=dict(self.values), _engine=self._engine)
+        return Params(
+            values=dict(self.values),
+            _engine=self._engine,
+            execution_snapshot=dict(self.execution_snapshot),
+        )
+
+
+@dataclass
+class TradePlan:
+    """The single strategy-to-execution contract.
+
+    Signals, strengths and cash limits travel together.  This prevents the
+    optimizer, daily report and live scanner from independently decoding the
+    same parameter set (the source of the previous percentile mismatch).
+    """
+
+    buy_signals: np.ndarray
+    sell_signals: np.ndarray
+    buy_priority: np.ndarray
+    sell_priority: np.ndarray
+    buy_cash_limit: float
+    sell_cash_limit: float
+    warmup_rows: int
 
 
 # ═══════════════════════════════════════════════════════
@@ -124,9 +151,18 @@ class EvaluationReport:
 
     # 基准比较
     benchmark_returns: dict[str, float] = field(default_factory=dict)
+    benchmark_win_rates: dict[str, float] = field(default_factory=dict)
 
     # 组合构成
     composition: list[str] = field(default_factory=list)
+    eligible_codes: list[str] = field(default_factory=list)
+    warming_codes: list[str] = field(default_factory=list)
+    eligible_from: dict[str, str] = field(default_factory=dict)
+
+    # Immutable optimizer-selection metadata copied from the active artifact.
+    # It documents why these parameters were selected, while the performance
+    # fields above remain the strictly held-out daily validation result.
+    selection_diagnostics: dict[str, object] = field(default_factory=dict)
 
     # 可视化
     nav_series: list[float] = field(default_factory=list)
@@ -141,8 +177,12 @@ class EvaluationReport:
             "dd": self.max_drawdown,
             "sharpe": self.sharpe_ratio,
             "benchmark_returns": dict(self.benchmark_returns),
+            "benchmark_win_rates": dict(self.benchmark_win_rates),
             "trades": self.trade_count,
             "composition": list(self.composition),
+            "eligible_codes": list(self.eligible_codes),
+            "warming_codes": list(self.warming_codes),
+            "selection_diagnostics": dict(self.selection_diagnostics),
         }
 
 
@@ -162,6 +202,95 @@ class SearchStrategy(ABC):
     name: str = ""
     label: str = ""
     description: str = ""
+    warmup_rows: int = 60
+
+    def with_execution_dims(self, dims: list[ParamDim]) -> ParamSpace:
+        """Attach the shared cash-tier dimensions to a strategy's signal space.
+
+        A strategy owns only its signal/ranking parameters.  The execution
+        model is deliberately supplied by the base class so adding a strategy
+        never requires a branch in the optimizer, CLI or notification paths.
+        """
+        from .config import get_constraints
+
+        tiers = get_constraints().discrete_search
+        return ParamSpace(
+            [
+                *dims,
+                ParamDim("buy_cash_tier", len(tiers.buy_limit_levels)),
+                ParamDim("sell_cash_tier", len(tiers.sell_limit_levels)),
+            ]
+        )
+
+    def execution_params(self, params: Params) -> dict[str, float | int | str]:
+        """Resolve immutable per-trade cash caps for ``params``.
+
+        Native artifacts carry a numeric snapshot.  Unsnapshotted params are
+        only encountered while optimizing or in interactive previews and are
+        decoded from the current tier configuration.
+        """
+        snapshot = dict(getattr(params, "execution_snapshot", {}) or {})
+        if (
+            snapshot.get("model") == "cash_cap_v2"
+            and "buy_cash_limit" in snapshot
+            and "sell_cash_limit" in snapshot
+        ):
+            return snapshot
+
+        from .config import get_constraints
+
+        tiers = get_constraints().discrete_search
+        buy_levels = tiers.buy_limit_levels or [10000.0]
+        sell_levels = tiers.sell_limit_levels or [10000.0]
+        buy_level = int(params.values.get("buy_cash_tier", 0))
+        sell_level = int(params.values.get("sell_cash_tier", 0))
+        return {
+            "model": "cash_cap_v2",
+            "buy_cash_limit": float(buy_levels[buy_level % len(buy_levels)]),
+            "sell_cash_limit": float(sell_levels[sell_level % len(sell_levels)]),
+            "buy_cash_tier": buy_level,
+            "sell_cash_tier": sell_level,
+        }
+
+    def make_trade_plan(
+        self, params: Params, indicator_matrix: np.ndarray
+    ) -> TradePlan:
+        """Build a canonical plan used by optimization, reports and alerts."""
+        buy_signals, sell_signals = self.make_signals(params, indicator_matrix)
+        buy_signals = np.asarray(buy_signals, dtype=bool).copy()
+        sell_signals = np.asarray(sell_signals, dtype=bool).copy()
+        scores = np.asarray(self.evaluate(params, indicator_matrix), dtype=float)
+        if scores.shape[:2] != buy_signals.shape or scores.shape[-1] < 2:
+            scores = np.zeros((*buy_signals.shape, 2), dtype=float)
+
+        # A simultaneous signal is an exit decision, never a sell-then-buy
+        # churn transaction.  Invalid/pre-warmup rows cannot generate orders.
+        buy_signals[sell_signals] = False
+        valid = np.isfinite(indicator_matrix[:, :, 0])
+        observed = np.cumsum(valid, axis=0)
+        eligible = observed >= max(1, int(self.warmup_rows))
+        buy_signals &= eligible
+        sell_signals &= eligible
+
+        buy_priority = np.where(buy_signals, scores[:, :, 0], -np.inf)
+        sell_priority = np.where(sell_signals, scores[:, :, 1], -np.inf)
+        # Rule-based strategies may deliberately return zero score.  Their
+        # active signals still receive a deterministic neutral priority.
+        buy_priority[buy_signals & ~np.isfinite(buy_priority)] = 1.0
+        sell_priority[sell_signals & ~np.isfinite(sell_priority)] = 1.0
+        buy_priority[buy_signals & (buy_priority == 0)] = 1.0
+        sell_priority[sell_signals & (sell_priority == 0)] = 1.0
+
+        execution = self.execution_params(params)
+        return TradePlan(
+            buy_signals=buy_signals,
+            sell_signals=sell_signals,
+            buy_priority=buy_priority.astype(np.float32),
+            sell_priority=sell_priority.astype(np.float32),
+            buy_cash_limit=float(execution["buy_cash_limit"]),
+            sell_cash_limit=float(execution["sell_cash_limit"]),
+            warmup_rows=int(self.warmup_rows),
+        )
 
     # ══════════ 搜索空间 ══════════
 
@@ -193,12 +322,53 @@ class SearchStrategy(ABC):
 
     # ══════════ 展示 ══════════
 
-    @abstractmethod
     def scan_today(
         self, params: Params, today: dict, history=None,
     ) -> list[dict]:
-        """单票今日告警。返回 [{"side","label","detail"},...]。"""
-        ...
+        """Emit the final row of the exact same plan used for backtests."""
+        if history is None or len(history) < self.warmup_rows:
+            return []
+        try:
+            from src.data.technical_indicators import compute_all
+            from .backtester import _build_indicator_matrix
+
+            computed = compute_all({"scan": history})
+            indicator, _prices, _dates, _tradable = _build_indicator_matrix(
+                computed, ["scan"]
+            )
+            if len(indicator) == 0:
+                return []
+            plan = self.make_trade_plan(params, indicator)
+        except (KeyError, TypeError, ValueError):
+            return []
+
+        row = len(plan.buy_signals) - 1
+        results = []
+        if plan.buy_signals[row, 0]:
+            results.append(
+                {
+                    "side": "buy",
+                    "label": self.name,
+                    "priority": float(plan.buy_priority[row, 0]),
+                    "detail": (
+                        f"buy score {plan.buy_priority[row, 0]:.2f}; "
+                        f"max cash {plan.buy_cash_limit:.0f}"
+                    ),
+                }
+            )
+        if plan.sell_signals[row, 0]:
+            results.append(
+                {
+                    "side": "sell",
+                    "label": self.name,
+                    "priority": float(plan.sell_priority[row, 0]),
+                    "detail": (
+                        f"sell score {plan.sell_priority[row, 0]:.2f}; "
+                        f"max cash {plan.sell_cash_limit:.0f}"
+                    ),
+                }
+            )
+        return results
 
     @abstractmethod
     def to_human_readable(self, params: Params) -> str:
@@ -230,3 +400,29 @@ class SearchStrategy(ABC):
             if r.random() < rate:
                 new_vals[d.name] = r.randint(0, max(d.levels - 1, 0))
         return Params(values=new_vals, _engine=self.name)
+
+    def random_perturbations(
+        self, params: Params, n: int = 10, rng=None
+    ) -> list[Params]:
+        """Create report-only sensitivity variants around ``params``.
+
+        The historic percentile optimizer used ten full-parameter random
+        perturbations, moving each discrete parameter by ±1..3 levels.  The
+        default lives on the strategy interface so every newly registered
+        strategy automatically receives the same diagnostic without an
+        optimizer-side strategy branch.  Strategies may override it when a
+        dimension has coupled or invalid values.
+        """
+        r = rng or __import__("random")
+        variants: list[Params] = []
+        for _ in range(n):
+            values = dict(params.values)
+            for dim in self.param_space.dims:
+                delta = r.randint(-3, 3)
+                if delta == 0:
+                    continue
+                current = int(values.get(dim.name, 0))
+                max_level = max(dim.levels - 1, 0)
+                values[dim.name] = max(0, min(current + delta, max_level))
+            variants.append(Params(values=values, _engine=self.name))
+        return variants

@@ -38,6 +38,8 @@ DEFAULT_PATH = (
 @dataclass
 class ExecutionConfig:
     """搜参/日回报测通用执行参数。"""
+    # Compatibility field for old callers.  The unified cash-cap simulator
+    # deliberately ignores it; per-trade tiers are now the only amount cap.
     monthly_buy_limit: float = 15000.0
     initial_capital: float = 100000.0
     commission_rate: float = 0.005
@@ -64,7 +66,47 @@ class WalkForwardConfig:
             "window_weights", [1.0] * self.num_windows
         )
         self.stability_penalty: float = data.get("stability_penalty", 0.5)
-        self.validation_windows: int = data.get("validation_windows", 0)
+        self.data_years: float = max(
+            1.0,
+            float(data.get("data_years", self.total_months_needed / 12)),
+        )
+        # The newest N windows are held out.  They are for the daily report
+        # validation only and must never be used to rank, filter, mutate, or
+        # otherwise select a search candidate.
+        self.validation_windows: int = max(0, int(data.get("validation_windows", 0)))
+        # A 9-month test window advanced every 3 months overlaps the next two
+        # windows.  When enabled, those overlapping historical windows are
+        # purged before ranking so a daily-report hold-out is truly unseen.
+        self.purge_overlapping_windows: bool = bool(
+            data.get("purge_overlapping_windows", True)
+        )
+
+    @property
+    def ranking_window_count(self) -> int:
+        """Number of historical windows that may participate in selection."""
+        return max(0, self.num_windows - min(self.validation_windows, self.num_windows))
+
+    @property
+    def held_out_window_count(self) -> int:
+        """Number of configured validation windows actually available."""
+        return min(self.validation_windows, self.num_windows)
+
+    def ranking_weights(self, count: int) -> list[float]:
+        """Return one non-negative scoring weight for every ranking window.
+
+        Historic configuration files sometimes contain fewer weights than
+        windows.  Truncating with ``zip`` silently dropped newer ranking
+        windows, so retain the original weighted-mean formula while extending
+        the final configured weight to every remaining ranking window.
+        """
+        if count <= 0:
+            return []
+        weights = [max(0.0, float(weight)) for weight in self.window_weights]
+        if not weights:
+            return [1.0] * count
+        if len(weights) < count:
+            weights.extend([weights[-1]] * (count - len(weights)))
+        return weights[:count]
 
     @property
     def total_months_needed(self) -> int:
@@ -92,7 +134,26 @@ class GeneticSearchConfig:
         self.mutation_rate: float = data.get("mutation_rate", 0.30)
         self.mutation_builder_rate: float = data.get("mutation_builder_rate", 0.20)
         self.mutation_threshold_step: int = data.get("mutation_threshold_step", 2)
-        self.mutation_frac_step: int = data.get("mutation_frac_step", 1)
+        self.random_seed: int | None = (
+            int(data["random_seed"])
+            if data.get("random_seed") is not None
+            else None
+        )
+        self.sensitivity_top_candidates: int = max(
+            1, int(data.get("sensitivity_top_candidates", 500))
+        )
+        self.sensitivity_samples: int = max(
+            1, int(data.get("sensitivity_samples", 10))
+        )
+        self.sensitivity_penalty_weight: float = max(
+            0.0, float(data.get("sensitivity_penalty_weight", 1.0))
+        )
+        self.min_weighted_strategy_return: float = float(
+            data.get("min_weighted_strategy_return", 0.0)
+        )
+        self.min_positive_return_windows: int = max(
+            0, int(data.get("min_positive_return_windows", 8))
+        )
 
 # ═══════════════════════════════════════════════════════════════
 # 离散搜索空间配置
@@ -106,24 +167,13 @@ class DiscreteSearchConfig:
              "volume_spike", "deviation_absolute", "trend_follow", "none"],
         )
         self.threshold_levels: int = data.get("threshold_levels", 10)
-        self.frac_levels: list[float] = data.get(
-            "frac_levels", [0.10, 0.15, 0.20, 0.25, 0.30, 0.40]
-        )
         self.num_buy_rules: int = data.get("num_buy_rules", 5)
         self.sell_builders: list[str] = data.get(
             "sell_builders",
             ["deviation_cross", "rsi_signal", "bollinger_signal",
              "deviation_absolute", "trend_follow", "none"],
         )
-        self.sell_frac_levels: list[float] = data.get(
-            "sell_frac_levels", [0.10, 0.20, 0.30, 0.40, 0.50]
-        )
         self.num_sell_rules: int = data.get("num_sell_rules", 3)
-        pm = data.get("position_model", {})
-        self.mode: str = data.get("mode", "frac")
-        self.position_slope_levels: int = pm.get("slope_levels", 20)
-        self.position_bias_levels: int = pm.get("bias_levels", 20)
-        self.max_daily_adjust: float = pm.get("max_daily_adjust", 0.10)
         ss = data.get("simplified_search", {})
         self.buy_limit_levels: list[float] = ss.get(
             "buy_limit_levels", [5000.0, 10000.0, 20000.0, 30000.0, 50000.0]
@@ -133,32 +183,15 @@ class DiscreteSearchConfig:
         )
 
     @property
-    def use_position_target(self) -> bool:
-        return self.mode == "position_target"
-
-    @property
-    def use_simplified(self) -> bool:
-        return self.mode == "simplified"
-
-    @property
     def search_space_size(self) -> int:
-        if self.use_simplified:
-            buy_singles = (
-                len(self.buy_builders) * self.threshold_levels
-                * len(self.buy_limit_levels)
-            )
-            sell_singles = (
-                len(self.sell_builders) * self.threshold_levels
-                * len(self.sell_limit_levels)
-            )
-        else:
-            buy_singles = (
-                len(self.buy_builders) * self.threshold_levels * len(self.frac_levels)
-            )
-            sell_singles = (
-                len(self.sell_builders) * self.threshold_levels
-                * len(self.sell_frac_levels)
-            )
+        buy_singles = (
+            len(self.buy_builders) * self.threshold_levels
+            * len(self.buy_limit_levels)
+        )
+        sell_singles = (
+            len(self.sell_builders) * self.threshold_levels
+            * len(self.sell_limit_levels)
+        )
         return (buy_singles ** self.num_buy_rules) * (
             sell_singles ** self.num_sell_rules
         )
@@ -176,8 +209,6 @@ class StrategyConstraints:
         self.min_avg_position_pct: float = hc.get("min_avg_position_pct", 20.0)
         self.max_drawdown_pct: float = hc.get("max_drawdown_pct", -25.0)
         self.max_return_std_pct: float = hc.get("max_return_std_pct", 15.0)
-        self.min_trades_per_month: int = hc.get("min_trades_per_month", 1)
-        self.max_trades_per_month: int = hc.get("max_trades_per_month", 6)
         sc = raw_config.get("soft_constraints", {})
         self.min_sharpe: float = sc.get("min_sharpe", 0.5)
         self.sharpe_penalty_weight: float = sc.get("sharpe_penalty_weight", 0.3)
@@ -231,15 +262,6 @@ class StrategyConstraints:
             if ret_std > self.max_return_std_pct:
                 violations.append(
                     f"test return std {ret_std:.1f}% > {self.max_return_std_pct:.1f}%"
-                )
-        for i, ws in enumerate(window_stats):
-            if ws.trades_per_month < self.min_trades_per_month:
-                violations.append(
-                    f"W{i+1} trades/month {ws.trades_per_month:.1f} < {self.min_trades_per_month}"
-                )
-            if ws.trades_per_month > self.max_trades_per_month:
-                violations.append(
-                    f"W{i+1} trades/month {ws.trades_per_month:.1f} > {self.max_trades_per_month}"
                 )
         return len(violations) == 0, violations
 

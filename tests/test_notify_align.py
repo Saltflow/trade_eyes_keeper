@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 def _make_report(group="a_share", total_return=10.0, excess_return=8.0,
                  max_drawdown=-5.0, sharpe_ratio=1.0, composition=None,
                  quarterly_holdings=None, benchmark_returns=None,
+                 benchmark_win_rates=None,
                  nav_series=None, nav_dates=None, engine_name="percentile",
                  strategy_label="分位评分"):
     from analysis.search_interface import EvaluationReport
@@ -35,6 +36,11 @@ def _make_report(group="a_share", total_return=10.0, excess_return=8.0,
             "risk_free": 1.0,
             "510300": 5.0,
             "510880": 3.0,
+        },
+        benchmark_win_rates=benchmark_win_rates or {
+            "risk_free": 70.0,
+            "510300": 55.0,
+            "510880": 60.0,
         },
         composition=composition or ["601088"],
         nav_series=nav_series or [],
@@ -94,6 +100,7 @@ class TestStrategyTextSummary:
         r = _make_report(
             group="a_share",
             benchmark_returns={"risk_free": 1.0, "510300": 5.0, "510880": 3.0},
+            benchmark_win_rates={"risk_free": 70.0, "510300": 55.0, "510880": 60.0},
         )
         s = _make_session(evaluation_reports={"a_share": r})
         out = build_strategy_text_summary(s)
@@ -101,6 +108,7 @@ class TestStrategyTextSummary:
         assert "510300" in out
         assert "510880" in out
         assert "无风险" in out
+        assert "三基线收益 / 策略超额" in out
 
     def test_signals_readable_names(self):
         from notification.email_notifier import build_strategy_text_summary
@@ -193,4 +201,3 @@ class TestReadableSignalByGroup:
     def test_unknown_falls_back_to_raw(self):
         from notification.email_notifier import _readable_signal
         assert _readable_signal("601728", "buy_9", {}, {}, {}) == "buy_9"
-

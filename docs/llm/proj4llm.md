@@ -5,6 +5,72 @@
 
 ---
 
+## 2026-07-26: A-share optimizer integrity repair
+
+- The 9-month test / 3-month step overlaps the newest 9-month hold-out.  The
+  new `purge_overlapping_windows` switch excludes overlapping windows from
+  ranking, constraints, GA selection and sensitivity.
+- The current A-share horizon uses 13 strict ranking windows, 2 purged windows
+  and 1 daily-report validation window; artifacts record those counts.
+- Fast optimizer scoring now uses the configured primary benchmark and the
+  same position fraction, fill model, lot handling and fees as daily reports.
+- Sharpe shortfall and deterministic sensitivity checks re-rank the top
+  finalists by a robust selection score.
+- `python main.py --optimize` now runs A shares only; `--all-markets` retains
+  the three-market entry point and an A-only publish retains compatible HK/US
+  artifacts from the active manifest.
+- Percentile alerts receive historical data and apply the optimizer's weighted
+  aggregate signal; raw snapshot values are no longer treated as percentiles.
+
+## 2026-07-27: A-share absolute-return robust selection
+
+- Candidate gates use only the 13 ranking windows: weighted strategy return
+  must be positive and at least 8/13 windows must be positive.  Purged and
+  held-out validation windows remain excluded from every selection decision.
+- The final robust score is `wf_score - 1.0 * sensitivity_drop`; sensitivity
+  is evaluated for the top 500 ranking-qualified candidates.  All three
+  values are configurable under `genetic_search`.
+- Versioned artifacts, optimizer reports and the daily held-out backtest
+  section record ranking-window absolute return, positive-window count,
+  sensitivity diagnostics and selection score.  These are selection-only
+  diagnostics, separately labelled from the validation-period result.
+
+## 2026-07-26: Three-market backtest recovery
+
+- Restored `main.py --optimize` and its `--optimize-v2` compatibility alias.
+  The retained optimizer now runs and persists independent A-share, HK, and US
+  percentile parameters instead of applying A-share parameters to every market.
+- Prevented short-history instruments from collapsing a market's common
+  walk-forward timeline. They remain in daily and brief price scans, while
+  optimizer input requires one complete train/test window.
+- Repaired interactive date-range backtests to preserve indicator warmup while
+  reporting only the requested period.
+- Restored the reference-portfolio `commission_rate` argument used by both
+  brief reports. Early and afternoon briefs can rebalance and render again.
+- Local full run used the configured universe and produced current optimizer
+  parameter files for all three markets. Local daily and both brief report
+  emails were rendered to `data/email_archive` with external delivery disabled.
+
+## 2026-07-26: Registered optimizer runs and active strategy selection
+
+- `main.py` now uses `argparse`: `--optimize --strategy <registered-name>`
+  selects any entry from `src/analysis/strategies/STRATEGIES`; `--optimize-v2`
+  remains a compatibility alias.
+- Feishu and Telegram parse the same `/optimize <strategy> [fast|deep]` syntax.
+  `/switch_optimizer` also discovers entries from the registry rather than a
+  hard-coded strategy list.
+- Each optimizer trigger writes versioned per-market artifacts under
+  `data/optimizer/runs/<timestamp>_<strategy>/`.  Only a run with successful
+  A-share, HK and US artifacts atomically updates `latest_strategy.yaml`.
+  Daily reports, brief reports and interactive backtests resolve that newest
+  complete timestamped run before falling back to legacy settings.
+- Optimizer completion sends one three-market summary through the same
+  `NotifierManager` fan-out used by daily and brief reports (email, Feishu and
+  Telegram), including incomplete-run status without changing the active
+  strategy.
+
+---
+
 ## 2026-07-15 修复 (v1.22)
 
 ### 1. 图表 + 季度统一 9 个月窗口
@@ -823,3 +889,37 @@ pytest tests/test_import_smoke.py         # 导入完整性
 | 飞书真实数据链路测试 | ✅ 已实现 | `tests/integration/test_feishu_real_data.py` 用最小 config 只放 `601728`，通过 `StockDataFetcher` 真实取数写入 Session，只启 Feishu；默认 patch `_send` 只验证一张价格卡片，设置 `FEISHU_E2E_SEND=1` 时才真实发送 |
 | Telegram 交互 Bot | ✅ 已实现 | `main.py --interactive` 启动 Telegram 轮询 Bot，支持 `/help` `/list` `/add` `/remove` `/backtest`；白名单 + 限流安全层；纯 requests 轮询，不添加第三方依赖 |
 | **参考持仓跟踪** | ✅ 已实现 | 持久化参考持仓（RefPortfolio），简报/日报展示系统持续运行的仓位状态（标的/持仓/现价/现金/参考 Nav/期初日期/交易天数）。只在简报时间（09:50/14:30）按量化信号调仓，禁止盘后交易，周末休市不交易。手动 `/ref_date` 重置时清空仓位并恢复初始现金，有防呆确认。详细设计见下方。 |
+
+### 日报完整性与三基线回归修复（2026-07-26）
+
+- 日报不再因 `daily_mode` 删除锚点、锚值、偏离和技术指标；邮件正文固定展示价格/锚点、基本面、技术面三张表。
+- 统一回测入口重新消费 `benchmark_data`：A 股比较 `510880 / 510300 / 无风险`，港股和美股比较 `VOO / BRK.B / 无风险`。
+- 基准累计收益、策略相对每个基准的超额收益、以及最近九个月“任意日买入持有到期跑赢”的胜率分别计算、分别渲染，禁止再将基准收益错误标为胜率。
+
+### 优化简报完整性修复（2026-07-26）
+
+- 三市场优化简报保留每个市场的验证期收益、三基线/胜率、验证期末持仓和最近八周 NAV 变化；不再在统一摘要路径中丢弃旧版回测信息。
+- 搜参简报区分“按配置实际评估次数”和“遗传算法最终入围数”：默认配置为每市场 `30,000 + 5 × 25,000 = 155,000` 次评估，`5,000` 仅为最终保留池上限。
+- 搜参元数据与验证期快照写入版本化参数产物；补发通知不需要猜测历史搜索规模。
+- Telegram 在发送共享 HTML 摘要前将 `<br>` 规范化为换行，避免 Bot API 拒绝不支持的标签。
+
+### Walk-Forward 验证集隔离（2026-07-26）
+
+- `walk_forward.num_windows` 表示总窗口数，`validation_windows` 表示末尾严格留出的日报验证窗口；两者均在 `config/optimizer_constraints.yaml` 配置。当前为 14 总窗口 = 13 个历史排序窗口 + 1 个 9 个月验证窗口。
+- 只有历史排序窗口可以参与：WF 加权得分、稳定性惩罚、硬约束筛选、GA 父代/子代保留和参数敏感性。验证窗口只生成日报/简报的样本外回测，不得用于候选排序或从备选策略中挑选“表现更好”的版本。
+- WF 评分恢复为原始公式：`weighted_excess_return - stability_penalty * std(window_returns)`。遗留配置的权重少于排序窗口时，系统延用最后一个权重，确保不会因 `zip` 截断而丢掉任何历史窗口。
+- 参数敏感性恢复为策略接口的通用能力：对全部离散参数生成 10 版、每维最多 ±3 档的扰动；仅在历史排序窗口上计算，作为报告诊断，不改变候选排名。新增策略无需改优化器即可继承该行为，也可按自身参数耦合规则覆写。
+- 版本化产物和三渠道优化简报记录排序/验证窗口数量与敏感性摘要，明确标注验证集未参与排序。
+- 搜参数据预检现在要求每个入选标的覆盖完整配置的 Walk-Forward 时间轴（训练期 + 最末窗口完整测试期）；历史不足的标的继续参与日报/简报，但不再截断市场公共时间轴、把 13 个排序窗口悄然降为 12 个。
+- Walk-Forward 窗口从最新可用交易日向前排布：最末隔离窗口的结束日与日报九个月验证期的最新数据日对齐。指标计算所需的额外历史缓冲不会再把隔离窗口留在旧区间。
+- 优化器日志输出完整窗口数量及首尾测试区间索引；若数据不足以构成完整配置窗口，会明确记录行数与配置需求，避免无候选结果难以审计。
+- 优化数据回看期在配置窗口总长度之外保留 180 个日历日（而非 90 日），覆盖交易所节假日与多标的日期交集损耗；避免 A 股实际共同交易日比完整末窗只少数日而无候选。
+
+### 统一现金档位执行与动态自选（2026-07-27）
+
+- 所有注册策略的参数空间由 `SearchStrategy` 自动追加 `buy_cash_tier` 与 `sell_cash_tier`；`position_frac`、每规则比例和月度买入金额闸门不再参与当前策略执行。
+- 策略输出统一为 `TradePlan`（买卖信号、强度、单笔买卖现金上限和预热期）。优化器、日报回测、简报及实时告警均消费同一份计划，避免扫描器另行解码阈值。
+- 同日候选按策略强度成交，代码仅作稳定平手裁决；先卖后买，严格遵守现金上限、手续费、交易单位与最短持有期。
+- 日报矩阵使用自选标的的日期并集与逐标的可交易掩码。新加入标的不会缩短既有标的历史，满足策略预热后自动加入；未满足者在报告中标为“预热中”。
+- 版本化产物保存实际现金金额快照和严格 WF 验证起止日期。旧比例产物在读取时一次性映射到最近现金档位并标记迁移，下一次搜参写入原生 v2 产物。
+- 每月最小/最大成交次数硬约束及交互配置入口已移除；成交笔数保留为优化简报与日报诊断指标。

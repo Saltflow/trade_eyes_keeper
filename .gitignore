@@ -95,6 +95,9 @@ cache/
 # Optimizer output
 data/optimizer/
 
+# Runtime reference portfolios: server state, never deployment payload.
+data/ref_portfolio*.yaml
+
 # Config - sensitive (passwords, API keys, email config)
 config/config.yaml
 config/.env

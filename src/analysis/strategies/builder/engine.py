@@ -6,7 +6,7 @@ import numpy as np
 
 from ...search_interface import SearchStrategy, ParamDim, ParamSpace, Params
 from ...backtester import (
-    IDX_CLOSE, IDX_MA60, IDX_DEVIATION, IDX_RSI, IDX_MACD,
+    IDX_CLOSE, IDX_MA60, IDX_DEVIATION, IDX_RSI,
     IDX_MACD_HIST, IDX_VOL_RATIO, IDX_BOLL_PCT_B, IDX_ADX,
 )
 
@@ -160,7 +160,6 @@ CONDITION_BUILDERS_FAST: dict[str, callable] = {
 BUILDER_COUNT = 8  # 买入 builder 数量（前8个）
 SELL_BUILDER_COUNT = 6  # 卖出 builder 数量
 THRESHOLD_LEVELS_BUILDER = 10
-FRAC_LEVELS_BUILDER = [0.10, 0.15, 0.20, 0.25, 0.30, 0.40]
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -173,20 +172,17 @@ class BuilderSearchStrategy(SearchStrategy):
     name = "builder"
     label = "条件构建器引擎 (MA穿越/RSI/布林/放量等)"
     description = "15个信号构建函数, ~100维参数, 支持lock/reset/confirmation"
+    warmup_rows = 200
 
     def __init__(self):
         dims = []
-        buy_names = list(CONDITION_BUILDERS_FAST.keys())[:BUILDER_COUNT]
         for i in range(5):
             dims.append(ParamDim(f"buy_{i+1}_name", BUILDER_COUNT, 0, 1))
             dims.append(ParamDim(f"buy_{i+1}_threshold", THRESHOLD_LEVELS_BUILDER, 0, 1))
-            dims.append(ParamDim(f"buy_{i+1}_frac", len(FRAC_LEVELS_BUILDER), 0, 1))
-        sell_names = list(CONDITION_BUILDERS_FAST.keys())[BUILDER_COUNT:BUILDER_COUNT + SELL_BUILDER_COUNT]
         for i in range(3):
             dims.append(ParamDim(f"sell_{i+1}_name", SELL_BUILDER_COUNT, 0, 1))
             dims.append(ParamDim(f"sell_{i+1}_threshold", THRESHOLD_LEVELS_BUILDER, 0, 1))
-            dims.append(ParamDim(f"sell_{i+1}_frac", len(FRAC_LEVELS_BUILDER), 0, 1))
-        self._space = ParamSpace(dims)
+        self._space = self.with_execution_dims(dims)
 
     @property
     def param_space(self) -> ParamSpace:
@@ -274,8 +270,7 @@ class BuilderSearchStrategy(SearchStrategy):
         return buy_signals, sell_signals
 
     def scan_today(self, params, today: dict, history=None) -> list[dict]:
-        from .scanner import scan_builder_today
-        return scan_builder_today(params, today, history)
+        return super().scan_today(params, today, history)
 
     def to_human_readable(self, params: Params) -> str:
         buy_names = list(CONDITION_BUILDERS_FAST.keys())[:BUILDER_COUNT]
@@ -285,13 +280,17 @@ class BuilderSearchStrategy(SearchStrategy):
         for i in range(5):
             n_idx = vals.get(f"buy_{i+1}_name", 0) % len(buy_names)
             th = vals.get(f"buy_{i+1}_threshold", 5)
-            fr = FRAC_LEVELS_BUILDER[vals.get(f"buy_{i+1}_frac", 0) % len(FRAC_LEVELS_BUILDER)]
             if buy_names[n_idx] != "none":
-                lines.append(f"  买入#{i+1}: {buy_names[n_idx]} th_lv={th} frac={fr:.0%}")
+                lines.append(f"  买入#{i+1}: {buy_names[n_idx]} th_lv={th}")
         for i in range(3):
             n_idx = vals.get(f"sell_{i+1}_name", 0) % len(sell_names)
             th = vals.get(f"sell_{i+1}_threshold", 5)
-            fr = FRAC_LEVELS_BUILDER[vals.get(f"sell_{i+1}_frac", 0) % len(FRAC_LEVELS_BUILDER)]
             if sell_names[n_idx] != "none":
-                lines.append(f"  卖出#{i+1}: {sell_names[n_idx]} th_lv={th} frac={fr:.0%}")
+                lines.append(f"  卖出#{i+1}: {sell_names[n_idx]} th_lv={th}")
+        execution = self.execution_params(params)
+        lines.append(
+            "  单笔现金上限: "
+            f"买入 {execution['buy_cash_limit']:.0f} / "
+            f"卖出 {execution['sell_cash_limit']:.0f} 元"
+        )
         return "\n".join(lines)

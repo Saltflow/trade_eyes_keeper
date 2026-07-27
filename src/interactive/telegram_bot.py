@@ -13,8 +13,10 @@ from .command_parser import (
     ErrorCommand,
     HelpCommand,
     ListCommand,
+    OptimizeCommand,
     RefDateCommand,
     RemoveCommand,
+    SwitchOptimizerCommand,
     parse_command,
 )
 from .commands.handlers import (
@@ -22,8 +24,10 @@ from .commands.handlers import (
     handle_backtest,
     handle_help,
     handle_list,
+    handle_optimize,
     handle_ref_date,
     handle_remove,
+    handle_switch_optimizer,
 )
 from .security import RateLimiter, SecurityGate
 
@@ -134,6 +138,10 @@ class TelegramBot:
                 f"⏳ 正在回测 <code>{cmd.stock_code}</code>…",
             )
             response = handle_backtest(cmd.stock_code, cmd.start_date, cmd.end_date)
+        elif isinstance(cmd, OptimizeCommand):
+            response = handle_optimize(cmd.preset, strategy_name=cmd.strategy_name)
+        elif isinstance(cmd, SwitchOptimizerCommand):
+            response = handle_switch_optimizer(cmd.kind)
         elif isinstance(cmd, ErrorCommand):
             response = f"❌ {cmd.message}"
         elif isinstance(cmd, RefDateCommand):

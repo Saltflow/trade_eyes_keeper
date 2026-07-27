@@ -48,6 +48,7 @@
   <div style="font-size:15px;font-weight:600;color:#2c3e50">监控标的</div>
 </td></tr>
 <tr><td style="padding:8px 24px 16px">
+  <div style="font-size:13px;font-weight:600;color:#34495e;margin:0 0 6px">价格 / 锚点</div>
   <table role="presentation" style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed;word-break:break-all" cellpadding="6" cellspacing="0" border="0">
     <thead>
       <tr style="background:#34495e;color:#fff">
@@ -60,13 +61,13 @@
   </table>
 </td></tr>
 <tr><td style="padding:8px 24px 16px">
+  <div style="font-size:13px;font-weight:600;color:#34495e;margin:0 0 6px">基本面</div>
   <table role="presentation" style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed;word-break:break-all" cellpadding="6" cellspacing="0" border="0">
     <thead>
       <tr style="background:#34495e;color:#fff">
         <th style="text-align:left;padding:8px">代码</th>
         <th style="text-align:right;padding:8px">分红</th>
         <th style="text-align:right;padding:8px">股息率</th>
-        <th style="text-align:right;padding:8px">增长</th>
         <th style="text-align:right;padding:8px">PE</th>
         <th style="text-align:right;padding:8px">PB</th>
         <th style="text-align:right;padding:8px">ROE</th>
@@ -74,6 +75,24 @@
     </thead>
     <tbody>
 {all_rows_fundamental}
+    </tbody>
+  </table>
+</td></tr>
+<tr><td style="padding:8px 24px 16px">
+  <div style="font-size:13px;font-weight:600;color:#34495e;margin:0 0 6px">技术面</div>
+  <table role="presentation" style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed;word-break:break-all" cellpadding="6" cellspacing="0" border="0">
+    <thead>
+      <tr style="background:#34495e;color:#fff">
+        <th style="text-align:left;padding:8px">代码</th>
+        <th style="text-align:right;padding:8px">RSI</th>
+        <th style="text-align:right;padding:8px">MACD柱</th>
+        <th style="text-align:right;padding:8px">量比</th>
+        <th style="text-align:right;padding:8px">ADX</th>
+        <th style="text-align:right;padding:8px">布林%B</th>
+      </tr>
+    </thead>
+    <tbody>
+{all_rows_technical}
     </tbody>
   </table>
 </td></tr>

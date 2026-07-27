@@ -433,6 +433,34 @@ def _readable_signal(
     return m.get(rule_label, rule_label)
 
 
+def _benchmark_label(code: str) -> str:
+    """Return the human label used consistently in every notification channel."""
+    return "无风险" if code == "risk_free" else code
+
+
+def _format_benchmark_comparison(report) -> tuple[list[str], list[str]]:
+    """Render cumulative benchmark returns and forward win rates separately."""
+    returns = getattr(report, "benchmark_returns", None) or {}
+    win_rates = getattr(report, "benchmark_win_rates", None) or {}
+    return_parts = []
+    win_parts = []
+    for code, benchmark_return in returns.items():
+        try:
+            excess = float(report.total_return) - float(benchmark_return)
+            return_parts.append(
+                f"{_benchmark_label(code)} {float(benchmark_return):+.1f}% / "
+                f"超额{excess:+.1f}%"
+            )
+        except (TypeError, ValueError):
+            continue
+    for code, win_rate in win_rates.items():
+        try:
+            win_parts.append(f"{_benchmark_label(code)} {float(win_rate):.0f}%")
+        except (TypeError, ValueError):
+            continue
+    return return_parts, win_parts
+
+
 def build_strategy_text_summary(session, markdown: bool = False) -> str:
     """构建搜参策略 + 今日信号 + 定增的纯文本摘要（Telegram/飞书共享）。
 
@@ -468,25 +496,51 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
         cash_pcts = [(100 - q.get("pos_pct", 0)) for q in qh if q.get("nav", 0) > 0]
         avg_cash = sum(cash_pcts) / len(cash_pcts) if cash_pcts else None
 
-        wr_parts = []
-        for bcode, bret in r.benchmark_returns.items():
-            lbl = "无风险" if bcode == "risk_free" else bcode
-            wr_parts.append(f"{lbl} {bret:+.2f}%")
+        benchmark_parts, win_rate_parts = _format_benchmark_comparison(r)
 
         head = (
-            f"{b}{gl}{b} 验证期涨幅 {r.total_return:+.1f}% "
+            f"{b}{gl}{b} 评估期收益 {r.total_return:+.1f}% "
             f"(超额{r.excess_return:+.1f}%)"
             f"  最大回撤 {r.max_drawdown:.1f}%  夏普 {r.sharpe_ratio:.2f}"
         )
         if avg_cash is not None:
             head += f"  平均现金仓位 {avg_cash:.0f}%"
         lines.append(head)
-        if wr_parts:
+        if benchmark_parts:
             lines.append(
-                "  验证期胜率(任意日买入持有到期跑赢): " + " | ".join(wr_parts)
+                "  三基线收益 / 策略超额: " + " | ".join(benchmark_parts)
+            )
+        if win_rate_parts:
+            lines.append(
+                "  验证期胜率(任意日买入持有到期跑赢): "
+                + " | ".join(win_rate_parts)
+            )
+        selection = getattr(r, "selection_diagnostics", None) or {}
+        ranking = selection.get("ranking_diagnostics", {})
+        sensitivity = selection.get("sensitivity", {})
+        if ranking:
+            lines.append(
+                "  排名筛选（仅 13 个历史窗口）: "
+                f"加权绝对收益 {float(ranking.get('weighted_strategy_return', 0.0)):+.2f}% | "
+                f"正收益窗口 {int(ranking.get('positive_return_windows', 0))}/"
+                f"{int(ranking.get('ranking_window_count', 0))} | "
+                f"基础 WF {float(selection.get('wf_score') or 0.0):+.3f}"
+            )
+        if sensitivity:
+            final_score = selection.get("selection_score")
+            if final_score is None:
+                final_score = sensitivity.get("selection_score")
+            lines.append(
+                "  稳健性: "
+                f"最差分 {float(sensitivity.get('worst_score', 0.0)):+.3f} | "
+                f"降幅 {float(sensitivity.get('drop', 0.0)):+.3f} | "
+                f"最终选择分 {float(final_score or 0.0):+.3f}"
             )
         if r.composition:
             lines.append(f"  成分: {', '.join(r.composition)}")
+        warming = getattr(r, "warming_codes", None) or []
+        if warming:
+            lines.append(f"  预热中（暂不交易）: {', '.join(warming)}")
         ts = r.timestamp[:16].replace("T", " ")
         lines.append(f"  评估时间 {ts}")
         lines.append("")
@@ -529,6 +583,11 @@ def build_optimizer_summary(
     full_report 非空时追加：日回报测指标 / 季末持仓 / 敏感性 / 波动率。
     include_charts=False 时跳过图片（飞书 markdown 不支持 <img>）。
     """
+    if hasattr(report, "strategy_name") and isinstance(
+        getattr(report, "groups", None), dict
+    ):
+        return _build_optimizer_run_summary(report)
+
     lines = ["<b>策略优化完成</b>"]
     if group_name:
         label = {
@@ -588,8 +647,14 @@ def build_optimizer_summary(
             lines.append(
                 f"  买阈 τ_buy={params.get('tau_buy', '?'):.2f}"
                 f"  卖阈 τ_sell={params.get('tau_sell', '?'):.2f}"
-                f"  仓位比 {params.get('pos_frac', '?'):.2f}"
             )
+            execution = full_report.get("execution", {}) or {}
+            if execution:
+                lines.append(
+                    "  单笔现金上限 "
+                    f"买入 {float(execution.get('buy_cash_limit', 0)):.0f} / "
+                    f"卖出 {float(execution.get('sell_cash_limit', 0)):.0f} 元"
+                )
 
         # 季末持仓
         qh = full_report.get("quarterly", [])
@@ -652,6 +717,146 @@ def build_optimizer_summary(
                     summary_parts.append(f"{labels[k]}: {closes[k]:.0f}")
                 lines.append("  " + " | ".join(summary_parts))
 
+    return "<br>".join(lines)
+
+
+def _build_optimizer_run_summary(report) -> str:
+    """Render a channel-neutral optimizer summary covering all three markets."""
+    labels = {"a_share": "A股", "hk": "港股", "us": "美股"}
+    status_labels = {
+        "completed": "完成",
+        "no_symbols": "无可搜参标的",
+        "no_data": "无可用数据",
+        "no_candidates": "未找到有效候选",
+        "failed": "执行失败",
+        "not_run": "未执行",
+    }
+    lines = ["<b>策略优化简报</b>"]
+    lines.append(f"策略: <b>{report.strategy_label}</b> ({report.strategy_name})")
+    if report.elapsed_seconds > 0:
+        lines.append(f"开始时间: {report.timestamp} | 耗时: {report.elapsed_seconds:.0f}s")
+    else:
+        lines.append(f"活动策略版本: {report.timestamp}（补发重建）")
+    if report.activated:
+        lines.append("<b>已发布:</b> 此运行已成为日报、简报和回测的当前告警策略。")
+    else:
+        lines.append("<b>未切换:</b> 三个市场未全部完成，系统继续使用上一次完整策略。")
+
+    for group in ("a_share", "hk", "us"):
+        item = report.groups.get(group)
+        if item is None:
+            lines.append(f"<br><b>{labels[group]}</b>: 未执行")
+            continue
+        status = status_labels.get(item.status, item.status)
+        lines.append(f"<br><b>{labels[group]}</b>: {status}")
+        if item.status != "completed":
+            continue
+        evaluated = getattr(item, "evaluated_count", 0)
+        survivors = getattr(item, "survivor_count", 0) or item.candidate_count
+        ranking_windows = getattr(item, "ranking_window_count", 0)
+        validation_windows = getattr(item, "validation_window_count", 0)
+        purged_windows = getattr(item, "purged_window_count", 0)
+        if evaluated:
+            lines.append(
+                f"配置搜索评估 {evaluated:,} 次 | 最终入围 {survivors:,} 个 | "
+                f"最优 WF 分数 {item.wf_score:+.3f}"
+            )
+        else:
+            lines.append(
+                f"最终入围 {survivors:,} 个 | 最优 WF 分数 {item.wf_score:+.3f}"
+            )
+        if ranking_windows:
+            lines.append(
+                f"WF 排名仅使用 {ranking_windows} 个历史窗口；"
+                f"{validation_windows} 个日报验证窗口未参与排序、约束或敏感性。"
+            )
+        if purged_windows:
+            lines.append(
+                f"严格验证隔离额外剔除了 {purged_windows} 个与验证期重叠的 WF 窗口。"
+            )
+        ranking_diagnostics = getattr(item, "ranking_diagnostics", None) or {}
+        if ranking_diagnostics:
+            lines.append(
+                "Ranking absolute return: "
+                f"weighted {float(ranking_diagnostics.get('weighted_strategy_return', 0.0)):+.2f}% | "
+                f"positive windows {int(ranking_diagnostics.get('positive_return_windows', 0))}/"
+                f"{int(ranking_diagnostics.get('ranking_window_count', 0))}"
+            )
+        sensitivity = getattr(item, "sensitivity", None) or {}
+        if sensitivity:
+            lines.append(
+                "历史窗口参数敏感性 "
+                f"({sensitivity.get('sample_count', 0)} 版扰动): "
+                f"基准 {sensitivity.get('base_score', 0.0):+.3f} | "
+                f"最差 {sensitivity.get('worst_score', 0.0):+.3f} | "
+                f"降幅 {sensitivity.get('drop', 0.0):+.3f}"
+            )
+        if sensitivity and "selection_score" in sensitivity:
+            lines.append(
+                "Robust selection score: "
+                f"{float(sensitivity['selection_score']):+.3f}"
+            )
+        if item.params:
+            params = ", ".join(f"{key}={value}" for key, value in item.params.items())
+            lines.append(f"<code>{params}</code>")
+        execution = getattr(item, "execution", None) or {}
+        if execution:
+            lines.append(
+                "单笔现金上限: "
+                f"买入 {float(execution.get('buy_cash_limit', 0)):.0f} / "
+                f"卖出 {float(execution.get('sell_cash_limit', 0)):.0f} 元"
+            )
+        validation = getattr(item, "validation", None) or {}
+        if validation:
+            lines.append("<b>验证期回测</b>")
+            lines.append(
+                f"收益 {validation.get('total_return', 0.0):+.1f}% | "
+                f"超额 {validation.get('excess_return', 0.0):+.1f}% | "
+                f"回撤 {validation.get('max_drawdown', 0.0):.1f}% | "
+                f"夏普 {validation.get('sharpe_ratio', 0.0):.2f} | "
+                f"交易 {validation.get('trade_count', 0)} 笔 | "
+                f"平均现金 {validation.get('avg_cash_pct', 0.0):.0f}%"
+            )
+            benchmark_returns = validation.get("benchmark_returns", {}) or {}
+            if benchmark_returns:
+                baselines = " | ".join(
+                    f"{_benchmark_label(code)} {value:+.1f}%"
+                    for code, value in benchmark_returns.items()
+                )
+                lines.append(f"三基线收益 / 策略超额: {baselines}")
+            win_rates = validation.get("benchmark_win_rates", {}) or {}
+            if win_rates:
+                wins = " | ".join(
+                    f"{_benchmark_label(code)} {value:.1f}%"
+                    for code, value in win_rates.items()
+                )
+                lines.append(f"验证期胜率: {wins}")
+            latest = validation.get("latest_holdings", {}) or {}
+            positions = latest.get("positions", []) or []
+            if positions:
+                holding_text = ", ".join(
+                    f"{pos.get('code', '?')} {pos.get('shares', 0):.0f}股"
+                    for pos in positions
+                )
+                lines.append(
+                    f"期末持仓 (Q{latest.get('quarter', '?')} / NAV "
+                    f"{latest.get('nav', 0):,.0f}): {holding_text}"
+                )
+            elif latest:
+                lines.append(
+                    f"期末持仓 (Q{latest.get('quarter', '?')} / NAV "
+                    f"{latest.get('nav', 0):,.0f}): 空仓"
+                )
+            weekly = validation.get("weekly_ohlc", {}) or {}
+            weekly_labels = weekly.get("labels", [])
+            closes = weekly.get("close", [])
+            if weekly_labels and closes:
+                start = max(0, len(weekly_labels) - 8)
+                changes = " | ".join(
+                    f"{weekly_labels[index]} {closes[index]:.0f}"
+                    for index in range(start, min(len(weekly_labels), len(closes)))
+                )
+                lines.append(f"验证期 NAV 周线: {changes}")
     return "<br>".join(lines)
 
 
@@ -1212,8 +1417,8 @@ class EmailNotifier(BaseNotifier):
             if stock_data is not None and hasattr(stock_data, "iterrows"):
                 for _, row in stock_data.iterrows():
                     name_map[str(row.get("stock_code", ""))] = row.get("stock_name", "")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Unable to build placement stock-name mapping: %s", exc)
 
         rows = ""
         for code, p in sorted(placements.items()):
@@ -1363,11 +1568,7 @@ class EmailNotifier(BaseNotifier):
             cash_pcts = [(100 - q.get("pos_pct", 0)) for q in qh if q.get("nav", 0) > 0]
             avg_cash = sum(cash_pcts) / len(cash_pcts) if cash_pcts else None
 
-            bench_returns = r.benchmark_returns or {}
-            wr_parts = []
-            for bcode, bret in bench_returns.items():
-                lbl = "无风险" if bcode == "risk_free" else bcode
-                wr_parts.append(f"{lbl} {bret:+.2f}%")
+            benchmark_parts, win_rate_parts = _format_benchmark_comparison(r)
 
             trc = "#27ae60" if r.total_return >= 0 else "#c0392b"
             rc = "#27ae60" if r.excess_return >= 0 else "#c0392b"
@@ -1377,7 +1578,7 @@ class EmailNotifier(BaseNotifier):
             summary = (
                 '<div style="border:1px solid #ddd;padding:10px;'
                 'margin:6px 0;border-radius:5px;background:#f0f7ff">'
-                f"<b>验证期涨幅 "
+                f"<b>评估期收益 "
                 f'<span style="color:{trc}">{r.total_return:+.1f}%</span>'
                 f' (超额<span style="color:{rc}">{r.excess_return:+.1f}%</span>)</b> &nbsp; '
                 f"最大回撤 {r.max_drawdown:.1f}% &nbsp; "
@@ -1385,16 +1586,48 @@ class EmailNotifier(BaseNotifier):
             )
             if avg_cash is not None:
                 summary += f"平均现金仓位 {avg_cash:.0f}% &nbsp; "
-            if wr_parts:
+            if benchmark_parts:
                 summary += (
-                    "<br><b>验证期胜率</b>(任意一天买入持有到期跑赢): "
-                    + " | ".join(wr_parts)
+                    "<br><b>三基线收益 / 策略超额</b>: "
+                    + " | ".join(benchmark_parts)
+                )
+            if win_rate_parts:
+                summary += (
+                    "<br><b>验证期胜率</b>(任意日买入持有到期跑赢): "
+                    + " | ".join(win_rate_parts)
+                )
+            selection = getattr(r, "selection_diagnostics", None) or {}
+            ranking = selection.get("ranking_diagnostics", {})
+            sensitivity = selection.get("sensitivity", {})
+            if ranking:
+                summary += (
+                    "<br><b>排名筛选（仅 13 个历史窗口）</b>: "
+                    f"加权绝对收益 {float(ranking.get('weighted_strategy_return', 0.0)):+.2f}% | "
+                    f"正收益窗口 {int(ranking.get('positive_return_windows', 0))}/"
+                    f"{int(ranking.get('ranking_window_count', 0))} | "
+                    f"基础 WF {float(selection.get('wf_score') or 0.0):+.3f}"
+                )
+            if sensitivity:
+                final_score = selection.get("selection_score")
+                if final_score is None:
+                    final_score = sensitivity.get("selection_score")
+                summary += (
+                    "<br><b>稳健性</b>: "
+                    f"最差分 {float(sensitivity.get('worst_score', 0.0)):+.3f} | "
+                    f"降幅 {float(sensitivity.get('drop', 0.0)):+.3f} | "
+                    f"最终选择分 {float(final_score or 0.0):+.3f}"
                 )
             summary += (
                 '<br><span style="color:#888;font-size:11px">'
                 f"评估时间 {ts} · 成分: "
                 f"{', '.join(comp) if comp else '—'}</span></div>"
             )
+            warming = getattr(r, "warming_codes", None) or []
+            if warming:
+                summary += (
+                    '<div style="font-size:11px;color:#888;margin:4px 0">'
+                    f"预热中（暂不交易）: {', '.join(warming)}</div>"
+                )
             lines.append(summary)
 
             # 季末持仓明细
@@ -1809,31 +2042,24 @@ class EmailNotifier(BaseNotifier):
                 """
                     seen_fundamental.add(stock_code)
 
-        # 3. 构建所有监控股票行（拆分为价格技术指标和基本面指标）
+        # 3. 构建所有监控股票行。日报与提醒共用完整字段，避免日报
+        #    "精简" 时把锚点和技术面这两类决策数据一起删掉。
         all_rows_price = ""
         all_rows_fundamental = ""
+        all_rows_technical = ""
 
-        # 价格表表头（日报模式精简：去掉 MA60/偏离/状态 列）
-        if daily_mode:
-            price_table_header = (
-                '<th style="text-align:left;padding:8px">代码</th>\n'
-                '        <th style="text-align:right;padding:8px">开盘</th>\n'
-                '        <th style="text-align:right;padding:8px">收盘</th>\n'
-                '        <th style="text-align:right;padding:8px">最高</th>\n'
-                '        <th style="text-align:right;padding:8px">最低</th>'
-            )
-        else:
-            price_table_header = (
-                '<th style="text-align:left;padding:8px">代码</th>\n'
-                '        <th style="text-align:right;padding:8px">开盘</th>\n'
-                '        <th style="text-align:right;padding:8px">收盘</th>\n'
-                '        <th style="text-align:right;padding:8px">最高</th>\n'
-                '        <th style="text-align:right;padding:8px">最低</th>\n'
-                '        <th style="text-align:right;padding:8px">MA60</th>\n'
-                '        <th style="text-align:right;padding:8px">偏离</th>\n'
-                '        <th style="text-align:right;padding:8px">偏离%</th>\n'
-                '        <th style="text-align:left;padding:8px">状态</th>'
-            )
+        price_table_header = (
+            '<th style="text-align:left;padding:8px">代码</th>\n'
+            '        <th style="text-align:left;padding:8px">名称</th>\n'
+            '        <th style="text-align:right;padding:8px">开盘</th>\n'
+            '        <th style="text-align:right;padding:8px">收盘</th>\n'
+            '        <th style="text-align:right;padding:8px">最高</th>\n'
+            '        <th style="text-align:right;padding:8px">最低</th>\n'
+            '        <th style="text-align:left;padding:8px">锚点</th>\n'
+            '        <th style="text-align:right;padding:8px">锚值</th>\n'
+            '        <th style="text-align:right;padding:8px">偏离%</th>\n'
+            '        <th style="text-align:left;padding:8px">状态</th>'
+        )
         for _, row in stock_data.iterrows():
             stock_code = row.get("stock_code", "")
             stock_name = row.get("stock_name", stock_code)
@@ -1842,6 +2068,23 @@ class EmailNotifier(BaseNotifier):
             high_price = row.get("high")
             low_price = row.get("low")
             ma60 = row.get("ma60")
+
+            anchors = {}
+            for anchor_key in ("ma60", "wma20", "wma30", "wma50"):
+                anchor_value = row.get(anchor_key)
+                if anchor_value is not None and not pd.isna(anchor_value):
+                    anchors[anchor_key] = float(anchor_value)
+            best_anchor = (
+                self._pick_best_anchor(float(close_price), anchors)
+                if close_price is not None
+                and not pd.isna(close_price)
+                and anchors
+                else None
+            )
+            if best_anchor:
+                anchor_name, anchor_value, anchor_deviation_pct = best_anchor
+            else:
+                anchor_name, anchor_value, anchor_deviation_pct = "—", None, None
 
             # 计算收盘价与MA60差值（仅在数据有效时计算）
             if (
@@ -1852,13 +2095,9 @@ class EmailNotifier(BaseNotifier):
             ):
                 close_ma60_diff = close_price - ma60
                 close_ma60_pct = (close_ma60_diff / ma60 * 100) if ma60 != 0 else 0
-                diff_style = ""
-                pct_style = ""
             else:
                 close_ma60_diff = None
                 close_ma60_pct = None
-                diff_style = ""
-                pct_style = ""
 
             # 获取基本面数据
             dividend_per_share = row.get("dividend_per_share")
@@ -1889,6 +2128,28 @@ class EmailNotifier(BaseNotifier):
                 else "—"
             )
             roe_str = f"{roe:.2f}%" if roe is not None and not pd.isna(roe) else "—"
+            rsi = row.get("rsi")
+            macd_hist = row.get("macd_hist")
+            vol_ratio = row.get("vol_ratio")
+            adx = row.get("adx")
+            boll_pct_b = row.get("boll_pct_b")
+            rsi_str = f"{rsi:.1f}" if rsi is not None and not pd.isna(rsi) else "—"
+            macd_hist_str = (
+                f"{macd_hist:.3f}"
+                if macd_hist is not None and not pd.isna(macd_hist)
+                else "—"
+            )
+            vol_ratio_str = (
+                f"{vol_ratio:.2f}"
+                if vol_ratio is not None and not pd.isna(vol_ratio)
+                else "—"
+            )
+            adx_str = f"{adx:.1f}" if adx is not None and not pd.isna(adx) else "—"
+            boll_pct_b_str = (
+                f"{boll_pct_b:.2f}"
+                if boll_pct_b is not None and not pd.isna(boll_pct_b)
+                else "—"
+            )
 
             # 检查是否满足条件（最低价 < MA60）- 安全处理None值
             status = "正常"
@@ -1929,50 +2190,40 @@ class EmailNotifier(BaseNotifier):
             close_ma60_pct_str = (
                 f"{close_ma60_pct:+.2f}%" if close_ma60_pct is not None else "—"
             )
+            anchor_value_str = (
+                f"{anchor_value:.2f}" if anchor_value is not None else "—"
+            )
+            anchor_deviation_pct_str = (
+                f"{anchor_deviation_pct:+.2f}%"
+                if anchor_deviation_pct is not None
+                else "—"
+            )
 
             # 价格技术指标行 (inline styles for email clients)
             pos = "color:#27ae60;text-align:right"
             neg = "color:#c0392b;text-align:right"
             neut = "text-align:right"
-            diff_style = (
+            anchor_style = (
                 pos
-                if close_ma60_diff is not None and close_ma60_diff >= 0
+                if anchor_deviation_pct is not None and anchor_deviation_pct >= 0
                 else neg
-                if close_ma60_diff is not None
+                if anchor_deviation_pct is not None
                 else neut
             )
-            pct_style = (
-                pos
-                if close_ma60_pct is not None and close_ma60_pct >= 0
-                else neg
-                if close_ma60_pct is not None
-                else neut
+            all_rows_price += (
+                f"<tr>"
+                f"<td>{stock_code}</td>"
+                f"<td>{stock_name}</td>"
+                f'<td style="{neut}">{open_price_str}</td>'
+                f'<td style="{neut}">{close_price_str}</td>'
+                f'<td style="{neut}">{high_price_str}</td>'
+                f'<td style="{neut}">{low_price_str}</td>'
+                f"<td>{anchor_name}</td>"
+                f'<td style="{neut}">{anchor_value_str}</td>'
+                f'<td style="{anchor_style}">{anchor_deviation_pct_str}</td>'
+                f"<td>{status}</td>"
+                f"</tr>"
             )
-            if daily_mode:
-                # 日报模式：精简价格行（去掉 MA60/偏离/状态）
-                all_rows_price += (
-                    f"<tr>"
-                    f"<td>{stock_code}</td>"
-                    f'<td style="{neut}">{open_price_str}</td>'
-                    f'<td style="{neut}">{close_price_str}</td>'
-                    f'<td style="{neut}">{high_price_str}</td>'
-                    f'<td style="{neut}">{low_price_str}</td>'
-                    f"</tr>"
-                )
-            else:
-                all_rows_price += (
-                    f"<tr>"
-                    f"<td>{stock_code}</td>"
-                    f'<td style="{neut}">{open_price_str}</td>'
-                    f'<td style="{neut}">{close_price_str}</td>'
-                    f'<td style="{neut}">{high_price_str}</td>'
-                    f'<td style="{neut}">{low_price_str}</td>'
-                    f'<td style="{neut}">{ma60_str}</td>'
-                    f'<td style="{diff_style}">{close_ma60_diff_str}</td>'
-                    f'<td style="{pct_style}">{close_ma60_pct_str}</td>'
-                    f"<td>{status}</td>"
-                    f"</tr>"
-                )
 
             # 基本面指标行
             all_rows_fundamental += (
@@ -1983,6 +2234,16 @@ class EmailNotifier(BaseNotifier):
                 f'<td style="{neut}">{pe_ratio_str}</td>'
                 f'<td style="{neut}">{pb_ratio_str}</td>'
                 f'<td style="{neut}">{roe_str}</td>'
+                f"</tr>"
+            )
+            all_rows_technical += (
+                f"<tr>"
+                f"<td>{stock_code}</td>"
+                f'<td style="{neut}">{rsi_str}</td>'
+                f'<td style="{neut}">{macd_hist_str}</td>'
+                f'<td style="{neut}">{vol_ratio_str}</td>'
+                f'<td style="{neut}">{adx_str}</td>'
+                f'<td style="{neut}">{boll_pct_b_str}</td>'
                 f"</tr>"
             )
 
@@ -2297,6 +2558,7 @@ class EmailNotifier(BaseNotifier):
             alert_section=alert_section,
             all_rows_price=all_rows_price,
             all_rows_fundamental=all_rows_fundamental,
+            all_rows_technical=all_rows_technical,
             price_table_header=price_table_header,
             announcements_section=announcements_section,
             placement_section=placement_section,
@@ -3224,23 +3486,38 @@ class EmailNotifier(BaseNotifier):
                 )
 
             buy_count = len(sa)
+            evaluation_reports = getattr(session, "evaluation_reports", {}) or {}
             bt_a = backtest.get("a_share", {}) if backtest else {}
             bt_n = backtest.get("non_a_share", {}) if backtest else {}
 
-            ta = bt_a.get("total_return")  # None = no backtest data
-            tn = bt_n.get("total_return")
-            has_backtest = ta is not None or tn is not None
+            def _report_return(group: str):
+                report = evaluation_reports.get(group)
+                if report is not None:
+                    return report.total_return
+                return None
+
+            ta = _report_return("a_share")
+            th = _report_return("hk")
+            tu = _report_return("us")
+            # 兼容尚未迁移的旧 session.backtest，但日报主链路只读
+            # EvaluationReport，因此 PDF 和邮件/IM 使用同一份三市场结果。
+            if not evaluation_reports:
+                ta = bt_a.get("total_return")
+                tu = bt_n.get("total_return")
+            has_backtest = any(value is not None for value in (ta, th, tu))
             kpi_buy = str(buy_count)
             kpi_a = f"{ta:+.1f}\\%" if ta is not None else "—"
-            kpi_n = f"{tn:+.1f}\\%" if tn is not None else "—"
+            kpi_h = f"{th:+.1f}\\%" if th is not None else "—"
+            kpi_u = f"{tu:+.1f}\\%" if tu is not None else "—"
             if not has_backtest:
                 kpi_s = "⚙ 优化未运行"
-            elif (ta if ta is not None else 0) > 0 or (tn if tn is not None else 0) > 0:
+            elif any(value > 0 for value in (ta, th, tu) if value is not None):
                 kpi_s = "✓ 策略有效"
             else:
                 kpi_s = "✗ 策略无效"
             kpi_color_a = "green" if ta is not None and ta > 0 else "red"
-            kpi_color_n = "green" if tn is not None and tn > 0 else "red"
+            kpi_color_h = "green" if th is not None and th > 0 else "red"
+            kpi_color_u = "green" if tu is not None and tu > 0 else "red"
             kpi_color_s = "green" if buy_count > 0 else "red"
 
             # 3. 触发信号
@@ -3276,7 +3553,31 @@ class EmailNotifier(BaseNotifier):
                     pe = row.get("pe_ratio")
                     pb = row.get("pb_ratio")
                     dy = row.get("dividend_yield")
+                    anchors = {}
+                    for anchor_key in ("ma60", "wma20", "wma30", "wma50"):
+                        anchor_value = row.get(anchor_key)
+                        if anchor_value is not None and not pd.isna(anchor_value):
+                            anchors[anchor_key] = float(anchor_value)
+                    close = row.get("close")
+                    best_anchor = (
+                        self._pick_best_anchor(float(close), anchors)
+                        if close is not None and not pd.isna(close) and anchors
+                        else None
+                    )
+                    anchor_name, anchor_value, anchor_deviation = (
+                        best_anchor if best_anchor else ("—", None, None)
+                    )
                     fundamentals[code] = {
+                        "close": f"{close:.2f}"
+                        if close is not None and not pd.isna(close)
+                        else "—",
+                        "anchor_name": _esc(anchor_name),
+                        "anchor_value": f"{anchor_value:.2f}"
+                        if anchor_value is not None
+                        else "—",
+                        "anchor_deviation": f"{anchor_deviation:+.1f}\\%"
+                        if anchor_deviation is not None
+                        else "—",
                         "pe": f"{pe:.1f}"
                         if pe is not None and not pd.isna(pe)
                         else "—",
@@ -3288,25 +3589,31 @@ class EmailNotifier(BaseNotifier):
                         else "—",
                     }
 
-            header_cols = ["标的"] + cons_inds + ["息\\%", "PE", "PB", "信号"]
+            header_cols = ["标的", "收盘", "锚点", "锚值", "偏离\\%"] + cons_inds + ["息\\%", "PE", "PB", "信号"]
             # 列格式: l for 标的, c for signal, r for numbers
-            col_fmt = "l" + "r" * len(cons_inds) + "r" * 3 + "c"
+            col_fmt = "l" + "r" * (len(cons_inds) + 7) + "c"
             table_rows = ""
             alert_codes = set(getattr(a, "stock_code", "") for a in sa)
 
+            from src.analysis.helpers import _detect_fine_group
+
+            report_codes = list(fundamentals)
             a_codes = sorted(
-                [
-                    c
-                    for c in snapshot
-                    if (c.isdigit() and len(c) == 6) or c.replace(".", "").isdigit()
-                ],
-                key=lambda c: abs(snapshot[c].get("deviation", 0) or 0),
+                [c for c in report_codes if _detect_fine_group(c) == "a_share"],
+                key=lambda c: abs(snapshot.get(c, {}).get("deviation", 0) or 0),
                 reverse=True,
             )
             for code in a_codes:
                 vals = snapshot.get(code, {})
                 sig = "●" if code in alert_codes else ""
-                cells = [_esc(code)]
+                fund = fundamentals.get(code, {})
+                cells = [
+                    _esc(code),
+                    fund.get("close", "—"),
+                    fund.get("anchor_name", "—"),
+                    fund.get("anchor_value", "—"),
+                    fund.get("anchor_deviation", "—"),
+                ]
                 for ind in cons_inds:
                     v = vals.get(ind)  # None = 缺失, 0 = 真实零
                     if v is None:
@@ -3315,7 +3622,6 @@ class EmailNotifier(BaseNotifier):
                         cells.append(f"{v * 100:+.1f}\\%")
                     else:
                         cells.append(f"{v:.2f}")
-                fund = fundamentals.get(code, {})
                 cells.append(fund.get("dy", "—"))
                 cells.append(fund.get("pe", "—"))
                 cells.append(fund.get("pb", "—"))
@@ -3324,8 +3630,8 @@ class EmailNotifier(BaseNotifier):
                 table_rows += f"{row_color}{' & '.join(cells)} \\\\\n"
 
             nona_codes = sorted(
-                [c for c in snapshot if c not in a_codes],
-                key=lambda c: abs(snapshot[c].get("deviation", 0) or 0),
+                [c for c in report_codes if c not in a_codes],
+                key=lambda c: abs(snapshot.get(c, {}).get("deviation", 0) or 0),
                 reverse=True,
             )
             if nona_codes:
@@ -3333,7 +3639,14 @@ class EmailNotifier(BaseNotifier):
             for code in nona_codes:
                 vals = snapshot.get(code, {})
                 sig = "●" if code in alert_codes else ""
-                cells = [_esc(code)]
+                fund = fundamentals.get(code, {})
+                cells = [
+                    _esc(code),
+                    fund.get("close", "—"),
+                    fund.get("anchor_name", "—"),
+                    fund.get("anchor_value", "—"),
+                    fund.get("anchor_deviation", "—"),
+                ]
                 for ind in cons_inds:
                     v = vals.get(ind)  # None = 缺失, 0 = 真实零
                     if v is None:
@@ -3342,7 +3655,6 @@ class EmailNotifier(BaseNotifier):
                         cells.append(f"{v * 100:+.1f}\\%")
                     else:
                         cells.append(f"{v:.2f}")
-                fund = fundamentals.get(code, {})
                 cells.append(fund.get("dy", "—"))
                 cells.append(fund.get("pe", "—"))
                 cells.append(fund.get("pb", "—"))
@@ -3351,22 +3663,41 @@ class EmailNotifier(BaseNotifier):
                 table_rows += f"{row_color}{' & '.join(cells)} \\\\\n"
 
             table_section = (
-                "\\small\n"
+                "\\scriptsize\n"
                 "\\rowcolors{2}{white}{stripe}\n"
+                "\\resizebox{\\textwidth}{!}{%\n"
                 f"\\begin{{tabular}}{{{col_fmt}}}\n"
                 "\\toprule\n" + " & ".join(header_cols) + " \\\\\n"
                 "\\midrule\n" + table_rows + "\\bottomrule\n"
-                "\\end{tabular}"
+                "\\end{tabular}}"
             )
 
             # 5. 脚注
             buy_sigs = consensus.buy_signal_counts if consensus else {}
             strat_note = " · ".join(list(buy_sigs.keys())[:4]) if buy_sigs else "—"
-            bt_text = f"A股策略超额 {ta:+.1f}\\%" if ta is not None else "A股策略未运行"
-            if bt_a.get("benchmarks"):
-                for bn, bv in bt_a["benchmarks"].items():
-                    beat = "✓" if (ta is not None and ta > bv) else "✗"
-                    bt_text += f"\\quad vs {bn} {bv:+.1f}\\% {beat}"
+            if evaluation_reports:
+                metric_parts = []
+                labels = {"a_share": "A股", "hk": "港股", "us": "美股"}
+                for group, label in labels.items():
+                    report = evaluation_reports.get(group)
+                    if report is None:
+                        continue
+                    base_parts = []
+                    for bn, bv in (report.benchmark_returns or {}).items():
+                        rate = (report.benchmark_win_rates or {}).get(bn)
+                        rate_text = f"，胜率 {rate:.0f}\\%" if rate is not None else ""
+                        base_parts.append(f"{_esc(_benchmark_label(bn))} {bv:+.1f}\\%{rate_text}")
+                    metric_parts.append(
+                        f"{label} 收益 {report.total_return:+.1f}\\%"
+                        + (f"（{'；'.join(base_parts)}）" if base_parts else "")
+                    )
+                bt_text = "\\quad ".join(metric_parts) or "策略未运行"
+            else:
+                bt_text = f"A股策略超额 {ta:+.1f}\\%" if ta is not None else "A股策略未运行"
+                if bt_a.get("benchmarks"):
+                    for bn, bv in bt_a["benchmarks"].items():
+                        beat = "✓" if (ta is not None and ta > bv) else "✗"
+                        bt_text += f"\\quad vs {bn} {bv:+.1f}\\% {beat}"
 
             # 6. 附录
             md_path = (
@@ -3440,10 +3771,12 @@ class EmailNotifier(BaseNotifier):
             html = html.replace("\\VAR{server_hostname}", info.get("hostname", ""))
             html = html.replace("\\VAR{kpi_buy}", kpi_buy)
             html = html.replace("\\VAR{kpi_a}", kpi_a)
-            html = html.replace("\\VAR{kpi_n}", kpi_n)
+            html = html.replace("\\VAR{kpi_h}", kpi_h)
+            html = html.replace("\\VAR{kpi_u}", kpi_u)
             html = html.replace("\\VAR{kpi_s}", kpi_s)
             html = html.replace("\\VAR{kpi_color_a}", kpi_color_a)
-            html = html.replace("\\VAR{kpi_color_n}", kpi_color_n)
+            html = html.replace("\\VAR{kpi_color_h}", kpi_color_h)
+            html = html.replace("\\VAR{kpi_color_u}", kpi_color_u)
             html = html.replace("\\VAR{kpi_color_s}", kpi_color_s)
             html = html.replace("\\VAR{chart_section}", chart_section)
             html = html.replace("\\VAR{trigger_section}", trigger_section)

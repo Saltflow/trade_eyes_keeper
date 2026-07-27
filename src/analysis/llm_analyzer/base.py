@@ -7,8 +7,6 @@ import logging
 import json
 import hashlib
 from datetime import datetime
-import sys
-import io
 import requests
 from ...data.cache_manager import CacheManager
 
@@ -34,10 +32,6 @@ def _patched_json_dump(obj, fp, *args, **kwargs):
 
 
 json.dump = _patched_json_dump
-
-# 设置UTF-8编码，避免中文字符编码问题
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
 logger = logging.getLogger(__name__)
 

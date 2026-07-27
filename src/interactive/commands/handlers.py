@@ -88,9 +88,9 @@ def handle_help() -> str:
         (
             "🔬 策略与搜参",
             [
-                ("/optimize [v1]", "触发策略优化（默认 V2）"),
+                ("/optimize [策略] [fast|deep]", "触发三市场策略优化并推送简报"),
                 ("/switch_optimizer [引擎]", "查看/切换搜参引擎"),
-                ("/mode [frac|position]", "查看/切换策略模式"),
+                ("/mode", "查看统一现金档位执行方式"),
                 ("/config [show|set K V|reset]", "查看/修改优化器配置"),
                 ("/ref_date [YYYY-MM-DD]", "设置参考持仓基期（默认今天）"),
             ],
@@ -309,13 +309,79 @@ def handle_remove(codes: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _get_backtest_strategy(config: dict):
+    """Resolve the newest complete strategy run before consulting defaults."""
+    from ...analysis.strategy_artifacts import load_latest_strategy_run
+    from ...analysis.strategies import get_strategy
+
+    active = load_latest_strategy_run()
+    if active and active.strategy is not None:
+        return active.strategy
+
+    names = [
+        (config.get("optimizer", {}) or {}).get("engine"),
+        (config.get("dashboard", {}) or {}).get("strategy"),
+        "percentile",
+    ]
+    for name in names:
+        if not name:
+            continue
+        strategy = get_strategy(str(name))
+        if strategy is not None:
+            return strategy
+    return None
+
+
+def _get_backtest_params(group: str, strategy):
+    """Load group-specific optimized parameters or use neutral valid values."""
+    from ...analysis.search_interface import Params
+    from ...analysis.strategy_artifacts import load_latest_strategy_run
+
+    active = load_latest_strategy_run()
+    if active and active.strategy_name == strategy.name:
+        params = active.params_by_group.get(group)
+        if params is not None:
+            return params, False
+
+    path = CONFIG_PATH.parent.parent / "data" / "optimizer" / f"{group}_best_params.yaml"
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, yaml.YAMLError) as exc:
+        logger.warning("Cannot load backtest parameters from %s: %s", path, exc)
+        data = {}
+
+    raw_params = data.get("params") if isinstance(data, dict) else None
+    if data.get("engine") == strategy.name and isinstance(raw_params, dict):
+        try:
+            return (
+                Params(
+                    values={
+                        key: int(value)
+                        for key, value in raw_params.items()
+                        if not key.startswith("_")
+                    },
+                    _engine=strategy.name,
+                ),
+                False,
+            )
+        except (TypeError, ValueError) as exc:
+            logger.warning("Invalid backtest parameters in %s: %s", path, exc)
+
+    neutral_values = {
+        dim.name: max((dim.levels - 1) // 2, 0)
+        for dim in strategy.param_space.dims
+    }
+    return Params(values=neutral_values, _engine=strategy.name), True
+
+
 def handle_backtest(code: str, start: str, end: str) -> str:
     """单票回测（使用统一评估引擎 evaluate_all_groups）。"""
     try:
         from ...data.data_source import DataSource
         from ...analysis.backtester import evaluate_all_groups
-        from ...analysis.strategies import get_strategy
-        from ...analysis.search_interface import Params
+        from ...analysis.config import get_execution_config
+        from ...analysis.helpers import _detect_fine_group
+        import pandas as pd
 
         config = _load_config()
         ds = DataSource(config)
@@ -325,32 +391,41 @@ def handle_backtest(code: str, start: str, end: str) -> str:
         requested_days = (e - s).days
         days = max(requested_days + 365, 1000)
 
-        data = ds.fetch_stock_data(code, days=days)
-        if data is None or data.empty:
+        history = ds.fetch_stock_data(code, days=days)
+        if history is None or history.empty or "date" not in history.columns:
             return f"❌ 未获取到 <code>{code}</code> 的行情数据"
 
-        actual_start = str(data["date"].min())[:10]
-        actual_end = str(data["date"].max())[:10]
-        data = data[(data["date"] >= start) & (data["date"] <= end)]
+        history = history.copy()
+        history["date"] = pd.to_datetime(history["date"])
+        history = history.sort_values("date").reset_index(drop=True)
+        actual_start = str(history["date"].min())[:10]
+        actual_end = str(history["date"].max())[:10]
+        data = history[
+            (history["date"] >= pd.Timestamp(start))
+            & (history["date"] <= pd.Timestamp(end))
+        ]
         if data.empty:
             return (
                 f"❌ <code>{code}</code> 在 {start} ~ {end} 无数据\n"
                 f"缓存数据范围: {actual_start} ~ {actual_end}"
             )
 
-        # 用默认 percentile 参数跑评估
-        strategy = get_strategy("percentile")
-        params = Params(values={
-            "adx_pct_tau": 5, "adx_pct_w": 3, "rsi_pct_tau": 5, "rsi_pct_w": 3,
-            "deviation_pct_tau": 6, "deviation_pct_w": 2, "vol_ratio_pct_tau": 5,
-            "vol_ratio_pct_w": 2, "ma200_dev_pct_tau": 3, "ma200_dev_pct_w": 1,
-            "buy_score_thresh": 5, "sell_score_thresh": 5, "position_frac": 2,
-        }, _engine="percentile")
-
-        # 临时 config 只含单只标的
-        tmp_config = {**config, "stocks": [code]}
-        reports = evaluate_all_groups(tmp_config, strategy, params)
-        report = reports.get("a_share") or reports.get("hk") or reports.get("us")
+        strategy = _get_backtest_strategy(config)
+        if strategy is None:
+            return "❌ 未配置有效的回测策略"
+        group = _detect_fine_group(code)
+        params, using_fallback_params = _get_backtest_params(group, strategy)
+        reports = evaluate_all_groups(
+            {code: history[history["date"] <= pd.Timestamp(end)]},
+            [code],
+            strategy,
+            params,
+            get_execution_config(),
+            target_groups=[group],
+            start_date=start,
+            end_date=end,
+        )
+        report = reports.get(group)
         if report is None:
             return f"❌ <code>{code}</code> 评估失败，无可交易数据"
 
@@ -362,7 +437,12 @@ def handle_backtest(code: str, start: str, end: str) -> str:
             f"<b>回测报告</b> — <code>{code}</code>\n"
             f"区间: {start} ~ {end}（{len(data)} 天）\n"
             f"策略: {report.strategy_label} ({report.engine_name})\n\n"
-            f"<b>策略收益</b>: {report.total_return:+.2f}%"
+            + (
+                "⚠ 未找到该市场的优化参数，已使用中性参数。\n"
+                if using_fallback_params
+                else ""
+            )
+            + f"<b>策略收益</b>: {report.total_return:+.2f}%"
             f"  |  <b>买入持有</b>: {bh_return:+.2f}%\n"
             f"<b>超额收益</b>: {report.excess_return:+.2f}%"
             f"  |  <b>最大回撤</b>: {report.max_drawdown:.2f}%\n"
@@ -446,26 +526,33 @@ def handle_brief(report_id: str = "morning_snapshot") -> str:
     return f"❌ {label}触发失败"
 
 
-def handle_optimize(preset: str = "v2") -> str:
+def handle_optimize(preset: str = "v2", strategy_name: str | None = None) -> str:
+    from ...analysis.strategies import get_strategy
+
+    strategy = get_strategy(strategy_name) if strategy_name else None
+    strategy_label = f" · {strategy.label}" if strategy else ""
     if preset == "v1":
-        label = "策略优化 V1（贝叶斯）"
+        label = f"策略优化{strategy_label}"
         args = ["--optimize"]
         env = {}
     elif preset == "fast":
-        label = "策略优化 V2 快速（~2 分钟）"
-        args = ["--optimize-v2"]
+        label = f"策略优化{strategy_label} 快速"
+        args = ["--optimize"]
         env = {"OPTIMIZER_SAMPLES": "2000", "OPTIMIZER_GENERATIONS": "1"}
     elif preset == "deep":
-        label = "策略优化 V2 深度（~30 分钟）"
-        args = ["--optimize-v2"]
+        label = f"策略优化{strategy_label} 深度"
+        args = ["--optimize"]
         env = {"OPTIMIZER_SAMPLES": "20000", "OPTIMIZER_GENERATIONS": "5"}
     else:
-        label = "策略优化 V2"
-        args = ["--optimize-v2"]
+        label = f"策略优化{strategy_label}"
+        args = ["--optimize"]
         env = {}
 
+    if strategy_name:
+        args.extend(["--strategy", strategy_name])
+
     if _run_main(args, env):
-        return f"⏳ {label}已在后台启动。跑完后自动推送到飞书/邮件。"
+        return f"⏳ {label}已在后台启动。完成后自动推送三市场简报。"
     return f"❌ {label}启动失败"
 
 
@@ -608,21 +695,12 @@ def _save_opt_config(config: dict) -> None:
 
 
 _MODE_LABELS = {
-    "frac": "Fixed-Frac (固定比例买入)",
-    "position_target": "Position-Target (仓位目标驱动)",
-    "simplified": "Simplified (简化搜参: 每次交易固定限额)",
+    "cash_tier": "Cash-Tier (统一单笔现金档位)",
 }
 
 _CONFIG_HELP = {
     "min_pos": ("min_avg_position_pct", "最低平均仓位%", "hard_constraints", 5, 50),
     "max_dd": ("max_drawdown_pct", "最大回撤% (负数)", "hard_constraints", -50, -5),
-    "max_trades": (
-        "max_trades_per_month",
-        "月最大交易次数",
-        "hard_constraints",
-        1,
-        200,
-    ),
     "daily_adjust": (
         "max_daily_adjust",
         "日调仓上限 (Position-Target)",
@@ -638,61 +716,49 @@ _CONFIG_HELP = {
         1,
         5,
     ),
-    "frac_levels": (
-        "frac_levels",
-        "买入比例档位 (Fixed-Frac)",
-        "discrete_search",
+    "buy_cash_levels": (
+        "buy_limit_levels",
+        "买入现金档位",
+        "simplified_search",
+        None,
+        None,
+    ),
+    "sell_cash_levels": (
+        "sell_limit_levels",
+        "卖出现金档位",
+        "simplified_search",
         None,
         None,
     ),
     "num_buy": ("num_buy_rules", "买入规则槽位数", "discrete_search", 1, 10),
     "num_sell": ("num_sell_rules", "卖出规则槽位数", "discrete_search", 1, 5),
-    # 执行参数（统一月额度/手续费/本金）
-    "monthly_limit": (
-        "monthly_buy_limit",
-        "月买入额度",
-        "execution_params",
-        1000,
-        200000,
-    ),
+    # 执行参数（手续费/本金；单笔金额由现金档位决定）
     "commission": ("commission_rate", "手续费率", "execution_params", 0.001, 0.02),
     "init_capital": ("initial_capital", "初始本金", "execution_params", 10000, 1000000),
 }
 
+# The old ratio/position-target controls are intentionally not exposed.  They
+# may remain in a historic YAML file, but no command can mutate or display
+# them after the universal cash-tier migration.
+_CONFIG_HELP.pop("daily_adjust", None)
+_CONFIG_HELP.pop("confirm_days", None)
+
 
 def handle_mode(mode: str) -> str:
-    """切换或查看策略模式。"""
+    """Show the single execution model kept after the cash-tier migration."""
     cfg = _load_opt_config()
     if not mode:
-        current = cfg.get("discrete_search", {}).get("mode", "frac")
-        label = _MODE_LABELS.get(current, current)
         lines = [
-            f"当前模式: <b>{label}</b>",
+            f"当前模式: <b>{_MODE_LABELS['cash_tier']}</b>",
             "",
-            "可用模式:",
-            "  <code>/mode frac</code> — Fixed-Frac (每信号固定比例买入)",
-            "  <code>/mode position</code> — Position-Target (仓位目标动态调整)",
-            "  <code>/mode simplified</code> — Simplified (每信号固定金额限额)",
+            "所有注册策略均使用独立的买入/卖出单笔现金档位。",
+            "使用 <code>/config set buy_cash_levels 10000,20000,...</code> 修改下次搜参空间。",
         ]
-        # Show current key params
-        ds = cfg.get("discrete_search", {})
-        pm = ds.get("position_model", {})
-        hc = cfg.get("hard_constraints", {})
-        wf = cfg.get("walk_forward", {})
-        if current == "position_target":
-            adj = pm.get("max_daily_adjust", 0.10)
-            lines.append(f"  日调仓上限: {adj:.0%}  数据年: {wf.get('data_years', 5)}")
-        else:
-            fl = ds.get("frac_levels", [])
-            lines.append(
-                f"  买入比例档位: {fl}  月交易上限: {hc.get('max_trades_per_month', 100)}"
-            )
+        fl = cfg.get("simplified_search", {}).get("buy_limit_levels", [])
+        lines.append(f"  买入现金档位: {fl}")
         return "\n".join(lines)
 
-    cfg.setdefault("discrete_search", {})["mode"] = mode
-    _save_opt_config(cfg)
-    label = _MODE_LABELS.get(mode, mode)
-    return f"✅ 已切换为 <b>{label}</b>\n下次 /optimize 将使用此模式"
+    return "⚠️ 固定比例/仓位目标模式已移除；所有策略统一使用现金档位执行。"
 
 
 def handle_config(action: str, key: str, value: str) -> str:
@@ -702,15 +768,11 @@ def handle_config(action: str, key: str, value: str) -> str:
     if action == "reset":
         # Restore defaults
         ds = cfg.setdefault("discrete_search", {})
-        ds["frac_levels"] = [0.30, 0.45, 0.60, 0.75, 0.90, 1.00]
         ds["num_buy_rules"] = 5
         ds["num_sell_rules"] = 3
         hc = cfg.setdefault("hard_constraints", {})
         hc["min_avg_position_pct"] = 5
         hc["max_drawdown_pct"] = -40
-        hc["max_trades_per_month"] = 100
-        pm = ds.setdefault("position_model", {})
-        pm["max_daily_adjust"] = 0.40
         wf = cfg.setdefault("walk_forward", {})
         wf["data_years"] = 5
         _save_opt_config(cfg)
@@ -721,9 +783,9 @@ def handle_config(action: str, key: str, value: str) -> str:
             return f"❌ 未知配置项: <code>{key}</code>\n可用: {', '.join(_CONFIG_HELP.keys())}"
         field, _, section, vmin, vmax = _CONFIG_HELP[key]
         try:
-            if key in ("frac_levels",):
+            if key in ("buy_cash_levels", "sell_cash_levels"):
                 val = [float(x.strip()) for x in value.split(",")]
-            elif key in ("num_buy", "num_sell", "confirm_days"):
+            elif key in ("num_buy", "num_sell"):
                 val = int(value)
             else:
                 val = float(value)
@@ -732,14 +794,12 @@ def handle_config(action: str, key: str, value: str) -> str:
 
         if section == "hard_constraints":
             cfg.setdefault("hard_constraints", {})[field] = val
-        elif section == "position_model":
-            cfg.setdefault("discrete_search", {}).setdefault("position_model", {})[
-                field
-            ] = val
         elif section == "walk_forward":
             cfg.setdefault("walk_forward", {})[field] = val
         elif section == "discrete_search":
             cfg.setdefault("discrete_search", {})[field] = val
+        elif section == "simplified_search":
+            cfg.setdefault("simplified_search", {})[field] = val
         elif section == "execution_params":
             cfg.setdefault("execution_params", {})[field] = val
         _save_opt_config(cfg)
@@ -748,17 +808,15 @@ def handle_config(action: str, key: str, value: str) -> str:
             from ...analysis.config import reload_execution_config
 
             reload_execution_config()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Execution config reload failed after update: %s", exc)
         return f"✅ {_CONFIG_HELP[key][1]}: {value}"
 
     # show
     ds = cfg.get("discrete_search", {})
-    pm = ds.get("position_model", {})
     hc = cfg.get("hard_constraints", {})
     wf = cfg.get("walk_forward", {})
-    mode = ds.get("mode", "position_target")
-    label = _MODE_LABELS.get(mode, mode)
+    label = _MODE_LABELS["cash_tier"]
 
     if key:
         # show specific
@@ -768,12 +826,12 @@ def handle_config(action: str, key: str, value: str) -> str:
         val = None
         if section == "hard_constraints":
             val = hc.get(field)
-        elif section == "position_model":
-            val = pm.get(field)
         elif section == "walk_forward":
             val = wf.get(field)
         elif section == "discrete_search":
             val = ds.get(field)
+        elif section == "simplified_search":
+            val = cfg.get("simplified_search", {}).get(field)
         elif section == "execution_params":
             val = cfg.get("execution_params", {}).get(field)
         return f"<b>{label_f}</b>: {val}"
@@ -783,13 +841,11 @@ def handle_config(action: str, key: str, value: str) -> str:
         f"<b>优化器配置</b> (模式: {label})",
         f"  数据年: {wf.get('data_years', 5)}",
         f"  最低仓位%: {hc.get('min_avg_position_pct', 5)}  最大回撤%: {hc.get('max_drawdown_pct', -40)}",
-        f"  月交易上限: {hc.get('max_trades_per_month', 100)}",
-        f"  月买入额度: {ep.get('monthly_buy_limit', 15000):.0f}  手续费: {ep.get('commission_rate', 0.005):.3f}",
+        f"  买入现金档位: {cfg.get('simplified_search', {}).get('buy_limit_levels', [])}",
+        f"  卖出现金档位: {cfg.get('simplified_search', {}).get('sell_limit_levels', [])}",
+        f"  手续费: {ep.get('commission_rate', 0.005):.3f}",
     ]
-    if mode == "position_target":
-        lines.append(f"  日调仓上限: {pm.get('max_daily_adjust', 0.10):.0%}")
-    else:
-        lines.append(f"  买入比例档位: {ds.get('frac_levels', [])}")
+    lines.append("  每笔买卖金额由策略的现金档位参数决定")
     lines.extend(
         [
             f"  买入槽位: {ds.get('num_buy_rules', 5)}  卖出槽位: {ds.get('num_sell_rules', 3)}",

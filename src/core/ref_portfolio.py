@@ -196,8 +196,12 @@ class RefPortfolioManager:
             if tmp.exists():
                 try:
                     tmp.unlink()
-                except Exception:
-                    pass
+                except OSError as cleanup_error:
+                    logger.warning(
+                        "Failed to remove temporary reference portfolio %s: %s",
+                        tmp,
+                        cleanup_error,
+                    )
 
     # ── 重置 ──
 
@@ -239,7 +243,8 @@ class RefPortfolioManager:
         alerts: list,
         prices: dict[str, float],
         trade_date: str,
-        monthly_buy_limit: float,
+        monthly_buy_limit: float = REF_MONTHLY_LIMIT,
+        commission_rate: float = DEFAULT_COMMISSION_RATE,
         lot_size: int = 100,
         fx_rate: float = 1.0,
         label: str = "",

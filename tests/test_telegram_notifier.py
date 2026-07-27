@@ -2,6 +2,8 @@
 
 from unittest.mock import Mock, patch
 
+from src.analysis.strategy_artifacts import OptimizerGroupSummary, OptimizerRunSummary
+from src.notification.email_notifier import build_optimizer_summary
 from src.notification.telegram_notifier import TelegramNotifier
 
 
@@ -117,6 +119,7 @@ class TestTelegramContent:
         """简报按偏离率排序并包含 HTML 格式"""
         session = Mock()
         session.get_all_dataframe.return_value = _make_brief_df()
+        session.ref_portfolio_status = None
         notifier = TelegramNotifier(
             {
                 "notification": {
@@ -156,6 +159,84 @@ class TestTelegramContent:
             )
             assert ok
             mock_send.assert_called_once()
+
+    def test_optimizer_summary_replaces_unsupported_br_tags(self):
+        """Optimizer summary keeps supported HTML but never sends <br> to Telegram."""
+        notifier = TelegramNotifier(
+            {"notification": {"telegram": {"bot_token": "xxx", "chat_id": "yyy"}}}
+        )
+        report = OptimizerRunSummary(
+            strategy_name="percentile",
+            strategy_label="Percentile",
+            timestamp="2026-07-26T10:12:40",
+            elapsed_seconds=12,
+            groups={
+                "a_share": OptimizerGroupSummary(
+                    group="a_share", candidate_count=10, wf_score=1.2, status="completed"
+                )
+            },
+            activated=True,
+        )
+        with patch.object(notifier, "_send", return_value=(True, "ok")) as mock_send:
+            notifier.send_optimizer_notification(report, "Percentile")
+            _, body = mock_send.call_args[0]
+            assert "<br" not in body.lower()
+            assert "\n" in body
+            assert "<b>" in body
+
+    def test_optimizer_summary_keeps_validation_and_search_budget(self):
+        """Unified three-market payload must not collapse to the survivor count."""
+        report = OptimizerRunSummary(
+            strategy_name="percentile",
+            strategy_label="Percentile",
+            timestamp="2026-07-26T10:12:40",
+            elapsed_seconds=12,
+            groups={
+                "a_share": OptimizerGroupSummary(
+                    group="a_share",
+                    candidate_count=5000,
+                    evaluated_count=155000,
+                    survivor_count=5000,
+                    wf_score=1.2,
+                    status="completed",
+                    ranking_diagnostics={
+                        "weighted_strategy_return": 3.5,
+                        "positive_return_windows": 9,
+                        "ranking_window_count": 13,
+                    },
+                    sensitivity={"selection_score": 0.8},
+                    validation={
+                        "total_return": 12.3,
+                        "excess_return": 7.8,
+                        "max_drawdown": -5.0,
+                        "sharpe_ratio": 1.1,
+                        "trade_count": 8,
+                        "avg_cash_pct": 30.0,
+                        "benchmark_returns": {"510300": 4.0, "risk_free": 1.0},
+                        "benchmark_win_rates": {"510300": 55.0, "risk_free": 70.0},
+                        "latest_holdings": {
+                            "quarter": 3,
+                            "nav": 112300.0,
+                            "positions": [{"code": "601728", "shares": 100.0}],
+                        },
+                        "weekly_ohlc": {
+                            "labels": ["2026-W25"], "close": [112300.0]
+                        },
+                    },
+                )
+            },
+            activated=True,
+        )
+
+        body = build_optimizer_summary(report)
+        assert "Ranking absolute return: weighted +3.50% | positive windows 9/13" in body
+        assert "Robust selection score: +0.800" in body
+
+        assert "配置搜索评估 155,000 次" in body
+        assert "最终入围 5,000 个" in body
+        assert "验证期回测" in body
+        assert "期末持仓" in body
+        assert "验证期 NAV 周线" in body
 
 
 def _make_brief_df():

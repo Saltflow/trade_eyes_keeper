@@ -1,6 +1,4 @@
-"""基线测试：锚定旧 optimizer.py _evaluate_encoding_wf 的信号生成行为。
-重构后 strategy.make_signals() 必须产生完全一致的布尔信号矩阵。
-"""
+"""Strategy signal contracts use one canonical decoder across all paths."""
 
 import numpy as np
 import sys
@@ -35,15 +33,17 @@ def test_percentile_signals():
         "adx_pct_tau": 5, "adx_pct_w": 3, "rsi_pct_tau": 4, "rsi_pct_w": 3,
         "deviation_pct_tau": 6, "deviation_pct_w": 2, "vol_ratio_pct_tau": 5,
         "vol_ratio_pct_w": 2, "ma200_dev_pct_tau": 3, "ma200_dev_pct_w": 1,
-        "buy_score_thresh": 5, "sell_score_thresh": 5, "position_frac": 2,
+        "buy_score_thresh": 5, "sell_score_thresh": 5,
+        "buy_cash_tier": 2, "sell_cash_tier": 2,
     }, _engine="percentile")
 
     # ── 旧路径 ──
     scores = strategy.evaluate(params, ind)
     buy_th = params.values.get("buy_score_thresh", 5)
     sell_th = params.values.get("sell_score_thresh", 5)
-    old_buy = scores[:, :, 0] > (buy_th / 10.0 + 0.1)
-    old_sell = scores[:, :, 1] > (sell_th / 10.0 + 0.1)
+    from src.analysis.strategies.percentile.engine import _decode_tau
+    old_buy = scores[:, :, 0] > _decode_tau(buy_th)
+    old_sell = scores[:, :, 1] > _decode_tau(sell_th)
 
     # ── 新路径 ──
     new_buy, new_sell = strategy.make_signals(params, ind)
@@ -58,7 +58,7 @@ def test_percentile_signals():
 
 def test_builder_signals():
     """builder 策略：旧 optimizer 编解码 → FastEvaluator 信号 vs 新 make_signals() 必须一致。"""
-    from src.analysis.strategies.builder.engine import BuilderSearchStrategy, CONDITION_BUILDERS_FAST, BUILDER_COUNT, FRAC_LEVELS_BUILDER, THRESHOLD_LEVELS_BUILDER
+    from src.analysis.strategies.builder.engine import BuilderSearchStrategy, CONDITION_BUILDERS_FAST, BUILDER_COUNT, THRESHOLD_LEVELS_BUILDER
     from src.analysis.backtester import FastEvaluator
     from src.analysis.search_interface import Params
 
@@ -72,37 +72,36 @@ def test_builder_signals():
     sell_names = list(CONDITION_BUILDERS_FAST.keys())[BUILDER_COUNT:BUILDER_COUNT + 6]
 
     params = Params(values={
-        "buy_1_name": 0, "buy_1_threshold": 5, "buy_1_frac": 2,
-        "buy_2_name": 1, "buy_2_threshold": 5, "buy_2_frac": 2,
-        "buy_3_name": 2, "buy_3_threshold": 5, "buy_3_frac": 0,
-        "buy_4_name": 3, "buy_4_threshold": 7, "buy_4_frac": 1,
-        "buy_5_name": 7, "buy_5_threshold": 0, "buy_5_frac": 0,  # none builder
-        "sell_1_name": 0, "sell_1_threshold": 5, "sell_1_frac": 2,
-        "sell_2_name": 1, "sell_2_threshold": 5, "sell_2_frac": 0,
-        "sell_3_name": 2, "sell_3_threshold": 5, "sell_3_frac": 1,
+        "buy_1_name": 0, "buy_1_threshold": 5,
+        "buy_2_name": 1, "buy_2_threshold": 5,
+        "buy_3_name": 2, "buy_3_threshold": 5,
+        "buy_4_name": 3, "buy_4_threshold": 7,
+        "buy_5_name": 7, "buy_5_threshold": 0,
+        "sell_1_name": 0, "sell_1_threshold": 5,
+        "sell_2_name": 1, "sell_2_threshold": 5,
+        "sell_3_name": 2, "sell_3_threshold": 5,
+        "buy_cash_tier": 1, "sell_cash_tier": 1,
     }, _engine="builder")
 
     # ── 旧路径 → 通过 FastEvaluator.evaluate() 获取信号 ──
-    buy_builders, buy_thresholds, buy_fracs = [], [], []
+    buy_builders, buy_thresholds = [], []
     for i in range(5):
         n = params.values.get(f"buy_{i+1}_name", 0) % len(buy_names)
         buy_builders.append(buy_names[n])
         buy_thresholds.append(params.values.get(f"buy_{i+1}_threshold", 5) / (THRESHOLD_LEVELS_BUILDER - 1))
-        buy_fracs.append(FRAC_LEVELS_BUILDER[params.values.get(f"buy_{i+1}_frac", 0) % len(FRAC_LEVELS_BUILDER)])
-    sell_builders, sell_thresholds, sell_fracs = [], [], []
+    sell_builders, sell_thresholds = [], []
     for i in range(3):
         n = params.values.get(f"sell_{i+1}_name", 0) % len(sell_names)
         sell_builders.append(sell_names[n])
         sell_thresholds.append(params.values.get(f"sell_{i+1}_threshold", 5) / (THRESHOLD_LEVELS_BUILDER - 1))
-        sell_fracs.append(FRAC_LEVELS_BUILDER[params.values.get(f"sell_{i+1}_frac", 0) % len(FRAC_LEVELS_BUILDER)])
 
     from src.analysis.config import ExecutionConfig
     mock_cfg = ExecutionConfig()
     ev = FastEvaluator(mock_cfg)
     old_stats = ev.evaluate(
         indicator_matrix=ind, price_matrix=price, cash_baseline=cash_bs,
-        buy_builders=buy_builders, buy_thresholds=buy_thresholds, buy_fracs=buy_fracs,
-        sell_builders=sell_builders, sell_thresholds=sell_thresholds, sell_fracs=sell_fracs,
+        buy_builders=buy_builders, buy_thresholds=buy_thresholds,
+        sell_builders=sell_builders, sell_thresholds=sell_thresholds,
     )
     # 旧路径返回 WindowStats，有 total_trades。新路径返回 bool 矩阵。
     # 验证：新 make_signals 产生的信号送入 evaluate → 相同 total_trades
@@ -122,7 +121,7 @@ def test_builder_signals():
 
 def test_simplified_signals():
     """simplified 策略：旧 optimizer 编解码 → FastEvaluator 信号 vs 新 make_signals() 必须一致。"""
-    from src.analysis.strategies.simplified.engine import SimplifiedSearchStrategy, BUY_BUILDERS_SIMP, SELL_BUILDERS_SIMP, BUY_LIMIT_LEVELS, SELL_LIMIT_LEVELS, THRESHOLD_LEVELS_SIMP
+    from src.analysis.strategies.simplified.engine import SimplifiedSearchStrategy, BUY_BUILDERS_SIMP, SELL_BUILDERS_SIMP, THRESHOLD_LEVELS_SIMP
     from src.analysis.backtester import FastEvaluator
     from src.analysis.search_interface import Params
 
@@ -132,38 +131,37 @@ def test_simplified_signals():
     cash_bs = np.ones(ind.shape[0]) * 100000
 
     params = Params(values={
-        "buy_1_name": 0, "buy_1_threshold": 5, "buy_1_limit": 2,
-        "buy_2_name": 1, "buy_2_threshold": 5, "buy_2_limit": 1,
-        "buy_3_name": 2, "buy_3_threshold": 5, "buy_3_limit": 0,
-        "buy_4_name": 3, "buy_4_threshold": 7, "buy_4_limit": 3,
-        "buy_5_name": 4, "buy_5_threshold": 0, "buy_5_limit": 0,
-        "sell_1_name": 0, "sell_1_threshold": 5, "sell_1_limit": 2,
-        "sell_2_name": 1, "sell_2_threshold": 5, "sell_2_limit": 0,
-        "sell_3_name": 2, "sell_3_threshold": 5, "sell_3_limit": 1,
+        "buy_1_name": 0, "buy_1_threshold": 5,
+        "buy_2_name": 1, "buy_2_threshold": 5,
+        "buy_3_name": 2, "buy_3_threshold": 5,
+        "buy_4_name": 3, "buy_4_threshold": 7,
+        "buy_5_name": 4, "buy_5_threshold": 0,
+        "sell_1_name": 0, "sell_1_threshold": 5,
+        "sell_2_name": 1, "sell_2_threshold": 5,
+        "sell_3_name": 2, "sell_3_threshold": 5,
+        "buy_cash_tier": 2, "sell_cash_tier": 2,
     }, _engine="simplified")
 
     # ── 旧路径 → 手动生成布尔信号 ──
-    buy_builders, buy_thresholds, buy_limits = [], [], []
+    buy_builders, buy_thresholds = [], []
     for i in range(5):
         n = params.values.get(f"buy_{i+1}_name", 0) % len(BUY_BUILDERS_SIMP)
         buy_builders.append(BUY_BUILDERS_SIMP[n])
         buy_thresholds.append(params.values.get(f"buy_{i+1}_threshold", 5) / (THRESHOLD_LEVELS_SIMP - 1))
-        buy_limits.append(BUY_LIMIT_LEVELS[params.values.get(f"buy_{i+1}_limit", 1) % len(BUY_LIMIT_LEVELS)])
-    sell_builders, sell_thresholds, sell_limits = [], [], []
+    sell_builders, sell_thresholds = [], []
     for i in range(3):
         n = params.values.get(f"sell_{i+1}_name", 0) % len(SELL_BUILDERS_SIMP)
         sell_builders.append(SELL_BUILDERS_SIMP[n])
         sell_thresholds.append(params.values.get(f"sell_{i+1}_threshold", 5) / (THRESHOLD_LEVELS_SIMP - 1))
-        sell_limits.append(SELL_LIMIT_LEVELS[params.values.get(f"sell_{i+1}_limit", 1) % len(SELL_LIMIT_LEVELS)])
 
     # 旧路径：Run FastEvaluator.evaluate() with buy_limits, get trade count
     from src.analysis.config import ExecutionConfig
     mock_cfg = ExecutionConfig()
     ev = FastEvaluator(mock_cfg)
-    old_stats = ev.evaluate(
+    ev.evaluate(
         indicator_matrix=ind, price_matrix=price, cash_baseline=cash_bs,
-        buy_builders=buy_builders, buy_thresholds=buy_thresholds, buy_limits=buy_limits,
-        sell_builders=sell_builders, sell_thresholds=sell_thresholds, sell_limits=sell_limits,
+        buy_builders=buy_builders, buy_thresholds=buy_thresholds,
+        sell_builders=sell_builders, sell_thresholds=sell_thresholds,
     )
     # 新路径：make_signals → 同样 builder 信号，但走 score_signals 路径（限制定价不同）
     # 验证信号形状一致即可（限制定价逻辑不同，trade_count 可能不同）
@@ -176,7 +174,9 @@ def test_simplified_signals():
     from src.analysis.backtester import _apply_lock_reset_numba, _apply_lock_reset, _apply_confirmation
     from src.analysis.strategies.builder.engine import CONDITION_BUILDERS_FAST as CBF
     try:
-        from numba import jit as _; HAS = True
+        from numba import jit as _
+
+        HAS = True
     except ImportError:
         HAS = False
     R = len(buy_builders)
@@ -186,7 +186,8 @@ def test_simplified_signals():
         fn = CBF.get(buy_builders[r])
         if fn:
             c, rs = fn(ind, buy_thresholds[r])
-            bc[r] = c; br[r] = rs
+            bc[r] = c
+            br[r] = rs
     if HAS:
         old_buy, _ = _apply_lock_reset_numba(bc, br)
     else:

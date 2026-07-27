@@ -67,7 +67,7 @@ class ScheduleManager:
             self._add_job(
                 "optimize",
                 opt_time,
-                ["--optimize-v2"],
+                ["--optimize"],
                 "策略优化",
             )
 

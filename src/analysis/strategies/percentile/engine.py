@@ -44,8 +44,9 @@ class PercentileSearchStrategy(SearchStrategy):
     """分位评分搜参策略。"""
 
     name = "percentile"
-    label = "分位评分引擎 (标的自比较分位, 推荐)"
-    description = "每只标的对自身252日历史算各指标分位排名, 加权求和打分, 13维参数"
+    label = "分位评分引擎 (标的自比较分位)"
+    description = "每只标的对自身252日历史算各指标分位排名, 加权求和打分"
+    warmup_rows = PCT_WINDOW
 
     def __init__(self):
         dims = []
@@ -54,8 +55,7 @@ class PercentileSearchStrategy(SearchStrategy):
             dims.append(ParamDim(f"{lbl}_w", 5, 0.0, 1.0))
         dims.append(ParamDim("buy_score_thresh", TAU_LEVELS, 0.1, 0.9))
         dims.append(ParamDim("sell_score_thresh", TAU_LEVELS, 0.1, 0.9))
-        dims.append(ParamDim("position_frac", 5, 0.05, 0.45))
-        self._space = ParamSpace(dims)
+        self._space = self.with_execution_dims(dims)
 
     @property
     def param_space(self) -> ParamSpace:
@@ -82,15 +82,14 @@ class PercentileSearchStrategy(SearchStrategy):
         scores = self.evaluate(params, indicator_matrix)
         buy_th = params.values.get("buy_score_thresh", 5)
         sell_th = params.values.get("sell_score_thresh", 5)
-        # 精确匹配旧 optimizer.py 的阈值公式: level/10 + 0.1
+        # Scanner, optimizer and daily reports share this exact decoder.
         return (
-            scores[:, :, 0] > (buy_th / 10.0 + 0.1),
-            scores[:, :, 1] > (sell_th / 10.0 + 0.1),
+            scores[:, :, 0] > _decode_tau(buy_th),
+            scores[:, :, 1] > _decode_tau(sell_th),
         )
 
     def scan_today(self, params, today: dict, history=None) -> list[dict]:
-        from .scanner import scan_percentile_today
-        return scan_percentile_today(params, today, history)
+        return super().scan_today(params, today, history)
 
     def to_human_readable(self, params: Params) -> str:
         lines = ["分位评分策略 (PercentileSignalFn)"]
@@ -102,13 +101,18 @@ class PercentileSearchStrategy(SearchStrategy):
         buy_th = _decode_tau(vals.get("buy_score_thresh", 5))
         sell_th = _decode_tau(vals.get("sell_score_thresh", 5))
         lines.append(f"  买入阈值 τ_buy={buy_th:.2f}  卖出阈值 τ_sell={sell_th:.2f}")
+        execution = self.execution_params(params)
+        lines.append(
+            "  单笔现金上限: "
+            f"买入 {execution['buy_cash_limit']:.0f} / "
+            f"卖出 {execution['sell_cash_limit']:.0f} 元"
+        )
         return "\n".join(lines)
 
     # ── 兼容旧 PercentileSignalFn API ──
 
     def score_timeseries(self, params, hist_df):
         """整段历史的每日净买卖评分 (T,)，供日报组合回测用。"""
-        import pandas as _pd
         vals = params.values if hasattr(params, 'values') else params
         T = len(hist_df)
         buy = np.zeros(T, dtype=np.float32)
@@ -143,22 +147,8 @@ class PercentileSearchStrategy(SearchStrategy):
 
     def scan_signals(self, params, today: dict, history=None) -> list[dict]:
         """用分位评分逻辑判断今日买卖信号（兼容旧 PercentileSignalFn API）。"""
-        from .scanner import scan_percentile_today
         vals = params.values if hasattr(params, 'values') else params
-        return scan_percentile_today(Params(values=dict(vals)), today, history)
-
-    _POS_FRACS = [0.05, 0.15, 0.25, 0.35, 0.45]
-
-    def _decode_pos_frac(self, level):
-        return self._POS_FRACS[min(int(level), len(self._POS_FRACS) - 1)]
-
-    def execution_params(self, params) -> dict:
-        vals = params.values if hasattr(params, 'values') else params
-        return {
-            "buy_threshold": _decode_tau(vals.get("buy_score_thresh", 5)),
-            "sell_threshold": _decode_tau(vals.get("sell_score_thresh", 5)),
-            "position_frac": self._decode_pos_frac(vals.get("position_frac", 2)),
-        }
+        return super().scan_today(Params(values=dict(vals)), today, history)
 
     # Expose PERCENTILE_HUMAN for external callers
     PERCENTILE_HUMAN = PERCENTILE_HUMAN

@@ -131,8 +131,8 @@ class HealthServer:
             if resp.status == 200:
                 self._watchdog_failures = 0
                 return
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Watchdog health request failed: %s", exc)
         self._watchdog_failures += 1
         logger.warning(
             f"Watchdog: /health 自检失败 ({self._watchdog_failures}/{max_failures})"
