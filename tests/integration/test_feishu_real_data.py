@@ -43,7 +43,7 @@ def test_feishu_real_data_one_card_pipeline():
 
     sections = manager.feishu._build_report_sections(stock_data)
     assert sections
-    label, body = sections[0]
+    label, body, native_elements = sections[0]
 
     assert label == "价格"
     assert "监控日报" in body
@@ -51,6 +51,7 @@ def test_feishu_real_data_one_card_pipeline():
     assert "<table" not in body
     assert "| --- |" not in body
     assert "```" not in body
+    assert native_elements
 
     title = f"飞书真实链路验证 · {label}"
     if os.getenv("FEISHU_E2E_SEND") == "1" and config["notification"]["feishu"].get(

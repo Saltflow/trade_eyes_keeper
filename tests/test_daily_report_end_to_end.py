@@ -17,10 +17,14 @@ os.environ.setdefault("LOG_LEVEL", "WARNING")
 @pytest.mark.skipif(
     os.getenv("CI") == "true", reason="CI 环境不跑完整日报数据拉取"
 )
-def test_daily_report_strategy_section_not_empty():
+def test_daily_report_strategy_section_not_empty(monkeypatch):
     """run_daily_task 完成后，最新邮件 HTML 的策略段不能是空占位。"""
-    os.environ["SKIP_EMAIL"] = "true"
-    os.environ["BOT_FORCE"] = "1"
+    # Avoid leaking transport/test flags into later notifier tests in the same
+    # pytest process. monkeypatch restores both variables after this test.
+    monkeypatch.setenv("SKIP_EMAIL", "true")
+    monkeypatch.setenv("SKIP_FEISHU", "true")
+    monkeypatch.setenv("SKIP_TELEGRAM", "true")
+    monkeypatch.setenv("BOT_FORCE", "1")
 
     from main import run_daily_task
 

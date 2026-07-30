@@ -132,7 +132,7 @@ def test_process_stock_dataframe(temp_cache_dir):
     # 验证日志输出（通过捕获日志）
     import logging
 
-    logger = logging.getLogger("src.alert_processor")
+    logger = logging.getLogger("src.alerting.alert_processor")
     with pytest.MonkeyPatch.context() as mp:
         log_messages = []
 

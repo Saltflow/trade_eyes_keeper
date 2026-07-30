@@ -18,7 +18,8 @@ def _make_report(group="a_share", total_return=10.0, excess_return=8.0,
                  quarterly_holdings=None, benchmark_returns=None,
                  benchmark_win_rates=None,
                  nav_series=None, nav_dates=None, engine_name="percentile",
-                 strategy_label="分位评分"):
+                 strategy_label="分位评分", weekly_nav_ohlc=None,
+                 final_holdings=None):
     from analysis.search_interface import EvaluationReport
 
     return EvaluationReport(
@@ -46,6 +47,12 @@ def _make_report(group="a_share", total_return=10.0, excess_return=8.0,
         nav_series=nav_series or [],
         nav_dates=nav_dates or [],
         quarterly_holdings=quarterly_holdings or [],
+        weekly_nav_ohlc=weekly_nav_ohlc or {},
+        final_asset=105000.0,
+        final_cash=65000.0,
+        final_holdings_value=40000.0,
+        final_position_pct=38.1,
+        final_holdings=final_holdings or [],
     )
 
 
@@ -109,6 +116,37 @@ class TestStrategyTextSummary:
         assert "510880" in out
         assert "无风险" in out
         assert "三基线收益 / 策略超额" in out
+
+    def test_shared_im_summary_uses_unified_report_snapshots(self):
+        from notification.email_notifier import build_strategy_text_summary
+
+        position = {
+            "code": "601088", "shares": 200, "cost": 30.0,
+            "price": 35.0, "value": 7000.0, "weight": 6.7,
+            "pnl": 1000.0, "pnl_pct": 16.7,
+        }
+        report = _make_report(
+            weekly_nav_ohlc={
+                "labels": ["2026-W27"], "open": [100000.0],
+                "high": [106000.0], "low": [99000.0], "close": [105000.0],
+            },
+            quarterly_holdings=[{
+                "quarter": "2026Q2", "date": "2026-06-30",
+                "cash": 98000.0, "pos_pct": 6.7, "nav": 105000.0,
+                "positions": [position],
+            }],
+            final_holdings=[position],
+        )
+        out = build_strategy_text_summary(
+            _make_session(evaluation_reports={"a_share": report})
+        )
+
+        assert "周 NAV K线" in out
+        assert "2026-W27 100000.00/106000.00/99000.00/105000.00" in out
+        assert "季末持仓" in out
+        assert "2026-06-30" in out
+        assert "期末持仓" in out
+        assert "成本 30.00 / 期末价 35.00" in out
 
     def test_signals_readable_names(self):
         from notification.email_notifier import build_strategy_text_summary

@@ -139,7 +139,7 @@ class TelegramBot:
             )
             response = handle_backtest(cmd.stock_code, cmd.start_date, cmd.end_date)
         elif isinstance(cmd, OptimizeCommand):
-            response = handle_optimize(cmd.preset, strategy_name=cmd.strategy_name)
+            response = handle_optimize()
         elif isinstance(cmd, SwitchOptimizerCommand):
             response = handle_switch_optimizer(cmd.kind)
         elif isinstance(cmd, ErrorCommand):

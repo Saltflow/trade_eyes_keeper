@@ -6,6 +6,7 @@ from src.interactive.command_parser import (
     BriefCommand,
     CommandType,
     DailyCommand,
+    ErrorCommand,
     HelpCommand,
     ListCommand,
     OptimizeCommand,
@@ -185,22 +186,19 @@ class TestCommandParser:
     def test_parse_optimize_default(self):
         cmd = parse_command("/optimize")
         assert isinstance(cmd, OptimizeCommand)
-        assert cmd.preset == "v2"
+        assert cmd.cmd_type == CommandType.OPTIMIZE
 
-    def test_parse_optimize_v1(self):
+    def test_parse_optimize_rejects_legacy_version_argument(self):
         cmd = parse_command("/optimize v1")
-        assert isinstance(cmd, OptimizeCommand)
-        assert cmd.preset == "v1"
+        assert isinstance(cmd, ErrorCommand)
 
     def test_parse_optimize_fast(self):
         cmd = parse_command("/optimize fast")
-        assert isinstance(cmd, OptimizeCommand)
-        assert cmd.preset == "fast"
+        assert isinstance(cmd, ErrorCommand)
 
     def test_parse_optimize_deep(self):
         cmd = parse_command("/optimize deep")
-        assert isinstance(cmd, OptimizeCommand)
-        assert cmd.preset == "deep"
+        assert isinstance(cmd, ErrorCommand)
 
     def test_parse_daily(self):
         cmd = parse_command("/daily")

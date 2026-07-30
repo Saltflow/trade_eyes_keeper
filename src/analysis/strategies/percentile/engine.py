@@ -77,7 +77,7 @@ class PercentileSearchStrategy(SearchStrategy):
         )
         return np.stack([buy_scores, sell_scores], axis=-1).astype(np.float32)
 
-    def make_signals(self, params: Params, indicator_matrix: np.ndarray):
+    def _make_signal_arrays(self, params: Params, indicator_matrix: np.ndarray):
         """分数 → 二值信号：与旧 optimizer 公式一致。"""
         scores = self.evaluate(params, indicator_matrix)
         buy_th = params.values.get("buy_score_thresh", 5)

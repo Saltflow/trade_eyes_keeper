@@ -191,11 +191,11 @@ class BuilderSearchStrategy(SearchStrategy):
     def evaluate(
         self, params: Params, indicator_matrix: np.ndarray,
     ) -> np.ndarray:
-        """Builder 策略不产生连续评分——先返回占位，实际由 FastEvaluator.evaluate() 直接调用 builder。"""
+        """Return neutral priorities; decisions come from ``_make_signal_arrays``."""
         T, N = indicator_matrix.shape[:2]
         return np.zeros((T, N, 2), dtype=np.float32)
 
-    def make_signals(self, params: Params, indicator_matrix: np.ndarray):
+    def _make_signal_arrays(self, params: Params, indicator_matrix: np.ndarray):
         """Params → builder名/阈值/比例列表 → CONDITION_BUILDERS_FAST → lock/reset/confirm → bool信号。"""
         import numpy as np
         from ...backtester import _apply_lock_reset_numba, _apply_lock_reset, _apply_confirmation

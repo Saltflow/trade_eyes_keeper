@@ -91,6 +91,17 @@ class Params:
 
 
 @dataclass
+class StrategyMarketData:
+    """Immutable strategy input shared by search, reports and live scanning."""
+
+    indicator_matrix: np.ndarray
+    dates: list[str] = field(default_factory=list)
+    symbols: list[str] = field(default_factory=list)
+    prices: np.ndarray | None = None
+    tradable: np.ndarray | None = None
+
+
+@dataclass
 class TradePlan:
     """The single strategy-to-execution contract.
 
@@ -106,6 +117,25 @@ class TradePlan:
     buy_cash_limit: float
     sell_cash_limit: float
     warmup_rows: int
+    dates: list[str] = field(default_factory=list)
+    symbols: list[str] = field(default_factory=list)
+    execution: dict[str, float | int | str] = field(default_factory=dict)
+    strategy_metadata: dict[str, object] = field(default_factory=dict)
+
+    def sliced(self, start: int, end: int) -> "TradePlan":
+        return TradePlan(
+            buy_signals=self.buy_signals[start:end],
+            sell_signals=self.sell_signals[start:end],
+            buy_priority=self.buy_priority[start:end],
+            sell_priority=self.sell_priority[start:end],
+            buy_cash_limit=self.buy_cash_limit,
+            sell_cash_limit=self.sell_cash_limit,
+            warmup_rows=self.warmup_rows,
+            dates=self.dates[start:end],
+            symbols=list(self.symbols),
+            execution=dict(self.execution),
+            strategy_metadata=dict(self.strategy_metadata),
+        )
 
 
 # ═══════════════════════════════════════════════════════
@@ -129,6 +159,7 @@ class PortfolioTrace:
     nav_dates: list[str] = field(default_factory=list)
     cost_basis: np.ndarray | None = None
     final_shares: np.ndarray | None = None
+    final_prices: np.ndarray | None = None
     final_cash: float = 0.0
 
 
@@ -149,9 +180,19 @@ class EvaluationReport:
     trade_count: int
     avg_cash_pct: float
 
+    initial_asset: float = 0.0
+    final_asset: float = 0.0
+    final_cash: float = 0.0
+    final_holdings_value: float = 0.0
+    final_position_pct: float = 0.0
+    final_holdings: list[dict] = field(default_factory=list)
+
     # 基准比较
     benchmark_returns: dict[str, float] = field(default_factory=dict)
     benchmark_win_rates: dict[str, float] = field(default_factory=dict)
+    benchmark_excess_returns: dict[str, float] = field(default_factory=dict)
+    benchmark_details: dict[str, dict[str, object]] = field(default_factory=dict)
+    primary_benchmark: str = ""
 
     # 组合构成
     composition: list[str] = field(default_factory=list)
@@ -167,6 +208,7 @@ class EvaluationReport:
     # 可视化
     nav_series: list[float] = field(default_factory=list)
     nav_dates: list[str] = field(default_factory=list)
+    weekly_nav_ohlc: dict[str, list] = field(default_factory=dict)
     quarterly_holdings: list[dict] = field(default_factory=list)
 
     def to_cache_dict(self) -> dict:
@@ -178,7 +220,17 @@ class EvaluationReport:
             "sharpe": self.sharpe_ratio,
             "benchmark_returns": dict(self.benchmark_returns),
             "benchmark_win_rates": dict(self.benchmark_win_rates),
+            "benchmark_excess_returns": dict(self.benchmark_excess_returns),
+            "benchmark_details": dict(self.benchmark_details),
+            "primary_benchmark": self.primary_benchmark,
             "trades": self.trade_count,
+            "initial_asset": self.initial_asset,
+            "final_asset": self.final_asset,
+            "final_cash": self.final_cash,
+            "final_holdings_value": self.final_holdings_value,
+            "final_position_pct": self.final_position_pct,
+            "final_holdings": list(self.final_holdings),
+            "weekly_nav_ohlc": dict(self.weekly_nav_ohlc),
             "composition": list(self.composition),
             "eligible_codes": list(self.eligible_codes),
             "warming_codes": list(self.warming_codes),
@@ -231,7 +283,7 @@ class SearchStrategy(ABC):
         """
         snapshot = dict(getattr(params, "execution_snapshot", {}) or {})
         if (
-            snapshot.get("model") == "cash_cap_v2"
+            snapshot.get("model") == "cash_cap"
             and "buy_cash_limit" in snapshot
             and "sell_cash_limit" in snapshot
         ):
@@ -245,18 +297,23 @@ class SearchStrategy(ABC):
         buy_level = int(params.values.get("buy_cash_tier", 0))
         sell_level = int(params.values.get("sell_cash_tier", 0))
         return {
-            "model": "cash_cap_v2",
+            "model": "cash_cap",
             "buy_cash_limit": float(buy_levels[buy_level % len(buy_levels)]),
             "sell_cash_limit": float(sell_levels[sell_level % len(sell_levels)]),
             "buy_cash_tier": buy_level,
             "sell_cash_tier": sell_level,
         }
 
-    def make_trade_plan(
-        self, params: Params, indicator_matrix: np.ndarray
+    def make_signals(
+        self, params: Params, market_data: StrategyMarketData
     ) -> TradePlan:
-        """Build a canonical plan used by optimization, reports and alerts."""
-        buy_signals, sell_signals = self.make_signals(params, indicator_matrix)
+        """Build the only strategy decision object used by every caller."""
+        if not isinstance(market_data, StrategyMarketData):
+            raise TypeError("make_signals requires StrategyMarketData")
+        indicator_matrix = market_data.indicator_matrix
+        buy_signals, sell_signals = self._make_signal_arrays(
+            params, indicator_matrix
+        )
         buy_signals = np.asarray(buy_signals, dtype=bool).copy()
         sell_signals = np.asarray(sell_signals, dtype=bool).copy()
         scores = np.asarray(self.evaluate(params, indicator_matrix), dtype=float)
@@ -290,6 +347,14 @@ class SearchStrategy(ABC):
             buy_cash_limit=float(execution["buy_cash_limit"]),
             sell_cash_limit=float(execution["sell_cash_limit"]),
             warmup_rows=int(self.warmup_rows),
+            dates=list(market_data.dates),
+            symbols=list(market_data.symbols),
+            execution=dict(execution),
+            strategy_metadata={
+                "strategy_id": self.name,
+                "strategy_label": self.label,
+                "parameters": dict(params.values),
+            },
         )
 
     # ══════════ 搜索空间 ══════════
@@ -312,7 +377,7 @@ class SearchStrategy(ABC):
     # ══════════ 核心：评分→Bool信号（optimizer 的唯一调用） ══════════
 
     @abstractmethod
-    def make_signals(
+    def _make_signal_arrays(
         self, params: Params, indicator_matrix: np.ndarray,
     ) -> tuple:
         """Params × 指标 → (buy_signals, sell_signals) 各 (T,N) bool。
@@ -338,7 +403,14 @@ class SearchStrategy(ABC):
             )
             if len(indicator) == 0:
                 return []
-            plan = self.make_trade_plan(params, indicator)
+            market_data = StrategyMarketData(
+                indicator_matrix=indicator,
+                dates=list(_dates),
+                symbols=["scan"],
+                prices=_prices,
+                tradable=_tradable,
+            )
+            plan = self.make_signals(params, market_data)
         except (KeyError, TypeError, ValueError):
             return []
 

@@ -523,7 +523,7 @@ def _escape_cell(text: str) -> str:
 def _build_ref_portfolio_markdown(session) -> str:
     """构建参考持仓 Markdown 片段（飞书卡片），三组各自一行。"""
     all_statuses = getattr(session, "ref_portfolio_status", None)
-    if not all_statuses:
+    if not isinstance(all_statuses, dict) or not all_statuses:
         return ""
 
     lines = ["**📊 参考持仓**"]

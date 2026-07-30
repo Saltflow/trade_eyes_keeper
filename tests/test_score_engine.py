@@ -16,11 +16,13 @@ import os
 import sys
 
 import numpy as np
+import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 os.environ.setdefault("LOG_LEVEL", "ERROR")
 
 from analysis.backtester import simulate_portfolio  # noqa: E402
+from analysis.search_interface import StrategyMarketData, TradePlan  # noqa: E402
 
 INF = float("inf")
 
@@ -47,21 +49,37 @@ def _sim(
         sell = sell.reshape(-1, 1)
         price = price.reshape(-1, 1)
     T, N = buy.shape
-    dates = [f"d{i}" for i in range(T)]
+    dates = pd.bdate_range("2025-01-02", periods=T).strftime(
+        "%Y-%m-%d"
+    ).tolist()
     codes = [f"S{i}" for i in range(N)]
+    buy_signals = buy > buy_th
+    sell_signals = sell > sell_th
+    buy_signals[sell_signals] = False
+    plan = TradePlan(
+        buy_signals=buy_signals,
+        sell_signals=sell_signals,
+        buy_priority=np.where(buy_signals, buy, -np.inf),
+        sell_priority=np.where(sell_signals, sell, -np.inf),
+        buy_cash_limit=float(cash) * float(frac),
+        sell_cash_limit=float(cash) * float(frac),
+        warmup_rows=0,
+        dates=dates,
+        symbols=codes,
+    )
+    market_data = StrategyMarketData(
+        indicator_matrix=np.empty((*price.shape, 0), dtype=np.float32),
+        dates=dates,
+        symbols=codes,
+        prices=price,
+        tradable=np.isfinite(price) & (price > 0),
+    )
     return simulate_portfolio(
-        buy,
-        sell,
-        price,
+        plan,
+        market_data,
         cash,
-        buy_th,
-        sell_th,
-        frac,
         lot,
-        monthly,
         comm,
-        dates,
-        codes,
     )
 
 

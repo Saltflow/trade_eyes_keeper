@@ -159,7 +159,7 @@ def _dispatch(cmd) -> str:
     if isinstance(cmd, BriefCommand):
         return handle_brief(cmd.report_id)
     if isinstance(cmd, OptimizeCommand):
-        return handle_optimize(cmd.preset, strategy_name=cmd.strategy_name)
+        return handle_optimize()
     if isinstance(cmd, DailyCommand):
         return handle_daily()
     if isinstance(cmd, ScheduleCommand):

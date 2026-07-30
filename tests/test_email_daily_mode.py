@@ -6,6 +6,8 @@ import sys
 import os
 import unittest.mock
 from datetime import datetime
+from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -27,7 +29,8 @@ def _make_notifier():
 def _make_report(group="a_share", total_return=15.0, excess_return=10.0,
                  max_drawdown=-5.0, sharpe_ratio=1.2, composition=None,
                  quarterly_holdings=None, benchmark_returns=None,
-                 benchmark_win_rates=None):
+                 benchmark_win_rates=None, weekly_nav_ohlc=None,
+                 final_holdings=None):
     from src.analysis.search_interface import EvaluationReport
     return EvaluationReport(
         group=group, engine_name="percentile", strategy_label="分位评分",
@@ -39,6 +42,12 @@ def _make_report(group="a_share", total_return=15.0, excess_return=10.0,
         benchmark_win_rates=benchmark_win_rates or {"risk_free": 70.0, "510300": 55.0},
         composition=composition or ["601088"],
         quarterly_holdings=quarterly_holdings or [],
+        weekly_nav_ohlc=weekly_nav_ohlc or {},
+        final_asset=108000.0,
+        final_cash=68000.0,
+        final_holdings_value=40000.0,
+        final_position_pct=37.04,
+        final_holdings=final_holdings or [],
     )
 
 
@@ -90,6 +99,17 @@ class TestDailyModeEmail:
         assert "搜参策略结果" in section
         assert "分位评分" in section
 
+    def test_monitoring_targets_precede_backtest_results(self):
+        notifier = _make_notifier()
+        html = notifier._build_email_body(
+            [],
+            pd.DataFrame(),
+            daily_mode=True,
+            evaluation_reports={"a_share": _make_report()},
+        )
+
+        assert html.index("监控标的") < html.index("搜参策略结果")
+
     def test_daily_strategy_section_keeps_ranking_selection_diagnostics(self):
         notifier = _make_notifier()
         report = _make_report()
@@ -130,6 +150,84 @@ class TestDailyModeEmail:
         section = notifier._build_strategy_results_section(reports)
         assert "601728" in section
         assert "1000股" in section
+
+    def test_unified_weekly_quarterly_and_final_report_rendered(self, monkeypatch):
+        notifier = _make_notifier()
+        monkeypatch.setattr(
+            "src.notification.chart_generator.generate_candlestick_chart",
+            lambda weekly: ("data:image/png;base64,AAAA", b"fake"),
+        )
+        position = {
+            "code": "601728", "shares": 1000, "cost": 10.0,
+            "price": 12.0, "value": 12000, "weight": 11.11,
+            "pnl": 2000, "pnl_pct": 20.0,
+        }
+        report = _make_report(
+            weekly_nav_ohlc={
+                "labels": ["2026-W01", "2026-W02", "2026-W03"],
+                "open": [100000.0, 100500.0, 101000.0],
+                "high": [101000.0, 101500.0, 102000.0],
+                "low": [99000.0, 100000.0, 100500.0],
+                "close": [100500.0, 101000.0, 101500.0],
+            },
+            quarterly_holdings=[{
+                "quarter": "2026Q1", "date": "2026-03-31",
+                "cash": 88000, "pos_pct": 12.0, "nav": 100000,
+                "positions": [position],
+            }],
+            final_holdings=[position],
+        )
+
+        section = notifier._build_strategy_results_section({"a_share": report})
+
+        assert "周 NAV K线" in section
+        assert 'src="data:image/png;base64,AAAA"' in section
+        assert "<th>自然周</th>" not in section
+        assert "季末持仓（自然季度最后有效交易日）" in section
+        assert "2026-03-31" in section
+        assert "期末持仓" in section
+        assert "期末资产" in section
+        assert "11.1%" in section
+
+    def test_pdf_template_receives_unified_evaluation_appendix(self, monkeypatch):
+        notifier = _make_notifier()
+        position = {
+            "code": "601728", "shares": 1000, "cost": 10.0,
+            "price": 12.0, "value": 12000, "weight": 11.11,
+            "pnl": 2000, "pnl_pct": 20.0,
+        }
+        report = _make_report(
+            weekly_nav_ohlc={
+                "labels": ["2026-W01"], "open": [100000.0],
+                "high": [101000.0], "low": [99000.0], "close": [100500.0],
+            },
+            quarterly_holdings=[{
+                "quarter": "2026Q1", "date": "2026-03-31",
+                "cash": 88000, "pos_pct": 12.0, "nav": 100000,
+                "positions": [position],
+            }],
+            final_holdings=[position],
+        )
+        session = SimpleNamespace(evaluation_reports={"a_share": report})
+        captured = {}
+
+        monkeypatch.setattr(notifier, "_chart_deviation_timeline", lambda *a, **k: None)
+
+        def fake_run(args, **kwargs):
+            tex_path = Path(args[-1])
+            captured["tex"] = tex_path.read_text(encoding="utf-8")
+            (tex_path.parent / "report.pdf").write_bytes(b"%PDF-FAKE")
+            return SimpleNamespace(returncode=0, stderr="")
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        pdf = notifier._generate_daily_pdf(session, [], None, {}, pd.DataFrame())
+
+        assert pdf == b"%PDF-FAKE"
+        assert "统一策略评估" in captured["tex"]
+        assert "周 NAV K线（自然周 OHLC）" in captured["tex"]
+        assert "季末持仓（自然季度最后有效交易日）" in captured["tex"]
+        assert "期末持仓" in captured["tex"]
+        assert "2026-W01" in captured["tex"]
 
     def test_empty_body_no_crash(self):
         notifier = _make_notifier()

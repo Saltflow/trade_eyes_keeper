@@ -26,18 +26,18 @@ RUNS_DIRNAME = "runs"
 LATEST_MANIFEST = "latest_strategy.yaml"
 
 
-def _as_yaml_primitives(value):
+def as_yaml_primitives(value):
     """Recursively convert NumPy/Pandas scalar values before YAML persistence."""
     if isinstance(value, dict):
-        return {str(key): _as_yaml_primitives(item) for key, item in value.items()}
+        return {str(key): as_yaml_primitives(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_as_yaml_primitives(item) for item in value]
+        return [as_yaml_primitives(item) for item in value]
     if type(value) in (str, int, float, bool) or value is None:
         return value
     item = getattr(value, "item", None)
     if callable(item):
         try:
-            return _as_yaml_primitives(item())
+            return as_yaml_primitives(item())
         except (TypeError, ValueError):
             pass
     return str(value)
@@ -101,7 +101,8 @@ def _root(root: Path | str | None = None) -> Path:
 
 def _parse_params(data: dict, strategy_name: str) -> Params | None:
     raw_params = data.get("params")
-    if data.get("engine") != strategy_name or not isinstance(raw_params, dict):
+    artifact_strategy = data.get("strategy_id") or data.get("engine")
+    if artifact_strategy != strategy_name or not isinstance(raw_params, dict):
         return None
     try:
         values = {
@@ -172,7 +173,7 @@ def _migrate_legacy_execution(values: dict[str, int], strategy_name: str) -> dic
             / max(len(sell_fracs), 1)
         )
     return {
-        "model": "cash_cap_v2",
+        "model": "cash_cap",
         "buy_cash_limit": nearest(buy_levels, buy_amount),
         "sell_cash_limit": nearest(sell_levels, sell_amount),
         "migration": "legacy_execution_mapped",
@@ -314,8 +315,9 @@ def load_latest_strategy_run(
     legacy: list[tuple[str, str, dict]] = []
     for group in groups:
         data = _load_yaml(base / f"{group}_best_params.yaml")
-        if data and data.get("timestamp") and data.get("engine"):
-            legacy.append((str(data["timestamp"]), str(data["engine"]), data))
+        strategy_id = (data or {}).get("strategy_id") or (data or {}).get("engine")
+        if data and data.get("timestamp") and strategy_id:
+            legacy.append((str(data["timestamp"]), str(strategy_id), data))
     if not legacy:
         return None
     _, strategy_name, _ = max(legacy, key=lambda item: item[0])
@@ -482,7 +484,7 @@ def persist_group_summary(
     if summary.validation:
         data["validation"] = summary.validation
     path.write_text(
-        yaml.safe_dump(_as_yaml_primitives(data), allow_unicode=True, sort_keys=False),
+        yaml.safe_dump(as_yaml_primitives(data), allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
 

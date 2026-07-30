@@ -77,7 +77,7 @@ class TestSessionDataSafety:
 
     def test_random_data_in_dataframe_throws_exception(self):
         """测试DataFrame中的随机数据会被检测到（直接调用检测函数）"""
-        from utils.session_safety_check import _check_dataframe_for_random
+        from src.utils.session_safety_check import _check_dataframe_for_random
 
         # 注意：不要先clear，先生成随机值
         # 生成包含随机数的DataFrame
@@ -100,7 +100,7 @@ class TestSessionDataSafety:
         # 临时patch掉测试文件检测
 
         with patch(
-            "utils.session_safety_check._is_caller_from_test", return_value=False
+            "src.utils.session_safety_check._is_caller_from_test", return_value=False
         ):
             # 应该抛出SessionDataSafetyError异常
             with pytest.raises(SessionDataSafetyError):
@@ -108,7 +108,7 @@ class TestSessionDataSafety:
 
     def test_random_data_in_stock_price_data_throws_exception(self, valid_price_data):
         """测试扁平StockPriceData中的随机数据会被检测到（直接调用检测函数）"""
-        from utils.session_safety_check import _check_stock_price_data_for_random
+        from src.utils.session_safety_check import _check_stock_price_data_for_random
 
         # 注意：不要先clear，先生成随机值
         # 生成随机的ma60值
@@ -127,7 +127,7 @@ class TestSessionDataSafety:
         # 临时patch掉测试文件检测
 
         with patch(
-            "utils.session_safety_check._is_caller_from_test", return_value=False
+            "src.utils.session_safety_check._is_caller_from_test", return_value=False
         ):
             # 应该抛出SessionDataSafetyError异常
             with pytest.raises(SessionDataSafetyError):

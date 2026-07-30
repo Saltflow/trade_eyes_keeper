@@ -78,7 +78,7 @@ class WalkForwardConfig:
         # windows.  When enabled, those overlapping historical windows are
         # purged before ranking so a daily-report hold-out is truly unseen.
         self.purge_overlapping_windows: bool = bool(
-            data.get("purge_overlapping_windows", True)
+            data.get("purge_overlapping_windows", False)
         )
 
     @property
@@ -117,7 +117,7 @@ class WalkForwardConfig:
 
     @property
     def test_months_calendar_days(self) -> int:
-        return max(self.test_months * 30, 274)
+        return 273 if self.test_months == 9 else max(self.test_months * 30, 1)
 
 # ═══════════════════════════════════════════════════════════════
 # 遗传搜索配置
@@ -160,7 +160,7 @@ class GeneticSearchConfig:
 # ═══════════════════════════════════════════════════════════════
 
 class DiscreteSearchConfig:
-    def __init__(self, data: dict):
+    def __init__(self, data: dict, cash_tiers: dict | None = None):
         self.buy_builders: list[str] = data.get(
             "buy_builders",
             ["deviation_cross", "rsi_signal", "bollinger_signal",
@@ -174,7 +174,7 @@ class DiscreteSearchConfig:
              "deviation_absolute", "trend_follow", "none"],
         )
         self.num_sell_rules: int = data.get("num_sell_rules", 3)
-        ss = data.get("simplified_search", {})
+        ss = cash_tiers or data.get("simplified_search", {})
         self.buy_limit_levels: list[float] = ss.get(
             "buy_limit_levels", [5000.0, 10000.0, 20000.0, 30000.0, 50000.0]
         )
@@ -215,7 +215,8 @@ class StrategyConstraints:
         self.walk_forward = WalkForwardConfig(raw_config.get("walk_forward", {}))
         self.genetic_search = GeneticSearchConfig(raw_config.get("genetic_search", {}))
         self.discrete_search = DiscreteSearchConfig(
-            raw_config.get("discrete_search", {})
+            raw_config.get("discrete_search", {}),
+            raw_config.get("simplified_search", {}),
         )
         bc = raw_config.get("benchmarks", {})
         self.benchmark_codes: list[str] = []
@@ -229,6 +230,16 @@ class StrategyConstraints:
 
     def benchmark_codes_for(self, group: str) -> list[str]:
         return list(self._raw_benchmarks.get(group, []))
+
+    def primary_benchmark_for(self, group: str) -> str:
+        primary = self._raw_benchmarks.get("primary", {}) or {}
+        configured = str(primary.get(group, "")).strip()
+        if configured:
+            return configured
+        return next(
+            (code for code in self.benchmark_codes_for(group) if code != "risk_free"),
+            "risk_free",
+        )
 
     @property
     def execution(self) -> ExecutionConfig:
@@ -285,14 +296,18 @@ class WindowStats:
         test_months: int = 9,
         benchmark_returns: dict[str, float] | None = None,
         strategy_return: float = 0.0,
+        initial_asset: float = 0.0,
+        final_asset: float = 0.0,
         final_position_pct: float = 0.0,
         final_shares: np.ndarray | None = None,
+        final_prices: np.ndarray | None = None,
         final_cash: float = 0.0,
         cost_basis: np.ndarray | None = None,
         quarter_shares: np.ndarray | None = None,
         quarter_cash: np.ndarray | None = None,
         quarter_nav: np.ndarray | None = None,
         quarter_prices: np.ndarray | None = None,
+        quarter_cost_basis: np.ndarray | None = None,
     ):
         self.test_excess_return = test_excess_return
         self.max_drawdown_pct = max_drawdown_pct
@@ -302,14 +317,18 @@ class WindowStats:
         self.test_months = test_months
         self.benchmark_returns: dict[str, float] = benchmark_returns or {}
         self.strategy_return = strategy_return
+        self.initial_asset = initial_asset
+        self.final_asset = final_asset
         self.final_position_pct = final_position_pct
         self.final_shares = final_shares
+        self.final_prices = final_prices
         self.final_cash = final_cash
         self.cost_basis = cost_basis
         self.quarter_shares = quarter_shares
         self.quarter_cash = quarter_cash
         self.quarter_nav = quarter_nav
         self.quarter_prices = quarter_prices
+        self.quarter_cost_basis = quarter_cost_basis
 
     @property
     def trades_per_month(self) -> float:

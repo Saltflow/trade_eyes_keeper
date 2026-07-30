@@ -41,6 +41,24 @@ class TestNotifierManagerCreation:
         manager = NotifierManager({})
         assert manager.email is None
 
+    def test_transport_skip_flags_keep_local_email_renderer(self, monkeypatch):
+        monkeypatch.setenv("SKIP_FEISHU", "true")
+        monkeypatch.setenv("SKIP_TELEGRAM", "true")
+        config = {
+            "notification": {
+                "email": {"enabled": True},
+                "feishu": {"enabled": True},
+                "telegram": {"enabled": True},
+            }
+        }
+
+        with patch("src.notification.email_notifier.EmailNotifier") as email:
+            manager = NotifierManager(config)
+
+        assert manager.email is email.return_value
+        assert manager.feishu is None
+        assert manager.telegram is None
+
 
 class TestNotifierManagerDispatch:
     """分发逻辑"""

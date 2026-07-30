@@ -442,20 +442,34 @@ def _format_benchmark_comparison(report) -> tuple[list[str], list[str]]:
     """Render cumulative benchmark returns and forward win rates separately."""
     returns = getattr(report, "benchmark_returns", None) or {}
     win_rates = getattr(report, "benchmark_win_rates", None) or {}
+    details = getattr(report, "benchmark_details", None) or {}
+    primary = getattr(report, "primary_benchmark", "") or ""
     return_parts = []
     win_parts = []
     for code, benchmark_return in returns.items():
         try:
             excess = float(report.total_return) - float(benchmark_return)
+            marker = "★" if code == primary else ""
             return_parts.append(
-                f"{_benchmark_label(code)} {float(benchmark_return):+.1f}% / "
+                f"{marker}{_benchmark_label(code)} {float(benchmark_return):+.1f}% / "
                 f"超额{excess:+.1f}%"
             )
         except (TypeError, ValueError):
             continue
     for code, win_rate in win_rates.items():
         try:
-            win_parts.append(f"{_benchmark_label(code)} {float(win_rate):.0f}%")
+            detail = details.get(code, {}) or {}
+            wins = detail.get("win_days")
+            effective = detail.get("comparison_days", detail.get("effective_days"))
+            count_text = (
+                f" ({int(wins)}/{int(effective)})"
+                if wins is not None and effective is not None
+                else ""
+            )
+            marker = "★" if code == primary else ""
+            win_parts.append(
+                f"{marker}{_benchmark_label(code)} {float(win_rate):.0f}%{count_text}"
+            )
         except (TypeError, ValueError):
             continue
     return return_parts, win_parts
@@ -502,6 +516,7 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
             f"{b}{gl}{b} 评估期收益 {r.total_return:+.1f}% "
             f"(超额{r.excess_return:+.1f}%)"
             f"  最大回撤 {r.max_drawdown:.1f}%  夏普 {r.sharpe_ratio:.2f}"
+            f"  交易 {int(r.trade_count)}笔"
         )
         if avg_cash is not None:
             head += f"  平均现金仓位 {avg_cash:.0f}%"
@@ -538,6 +553,71 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
             )
         if r.composition:
             lines.append(f"  成分: {', '.join(r.composition)}")
+        final_positions = getattr(r, "final_holdings", None) or []
+        if final_positions:
+            holding_text = ", ".join(
+                f"{position.get('code', '?')} "
+                f"{float(position.get('shares', 0)):.0f}股 "
+                f"({float(position.get('weight', 0)):.1f}%)"
+                for position in final_positions
+            )
+        else:
+            holding_text = "空仓"
+        lines.append(
+            f"  期末资产 {float(getattr(r, 'final_asset', 0)):,.2f} | "
+            f"现金 {float(getattr(r, 'final_cash', 0)):,.2f} | "
+            f"持仓市值 {float(getattr(r, 'final_holdings_value', 0)):,.2f} | "
+            f"仓位 {float(getattr(r, 'final_position_pct', 0)):.1f}%"
+        )
+        lines.append(f"  期末持仓: {holding_text}")
+        for position in final_positions:
+            lines.append(
+                "    "
+                f"{position.get('code', '?')} 成本 "
+                f"{float(position.get('cost', 0)):.2f} / 期末价 "
+                f"{float(position.get('price', 0)):.2f} / 市值 "
+                f"{float(position.get('value', 0)):,.2f} / 盈亏 "
+                f"{float(position.get('pnl', 0)):+,.2f} "
+                f"({float(position.get('pnl_pct', 0)):+.1f}%)"
+            )
+
+        weekly = getattr(r, "weekly_nav_ohlc", None) or {}
+        weekly_labels = weekly.get("labels", [])
+        weekly_open = weekly.get("open", [])
+        weekly_high = weekly.get("high", [])
+        weekly_low = weekly.get("low", [])
+        weekly_close = weekly.get("close", [])
+        weekly_count = min(
+            len(weekly_labels), len(weekly_open), len(weekly_high),
+            len(weekly_low), len(weekly_close),
+        )
+        if weekly_count:
+            lines.append("  周 NAV K线（最近8个自然周，O/H/L/C）:")
+            for index in range(max(0, weekly_count - 8), weekly_count):
+                lines.append(
+                    f"    {weekly_labels[index]} "
+                    f"{weekly_open[index]:.2f}/"
+                    f"{weekly_high[index]:.2f}/"
+                    f"{weekly_low[index]:.2f}/"
+                    f"{weekly_close[index]:.2f}"
+                )
+
+        if qh:
+            lines.append("  季末持仓:")
+            for snapshot in qh:
+                positions = snapshot.get("positions", []) or []
+                position_text = ", ".join(
+                    f"{position.get('code', '?')} "
+                    f"{float(position.get('shares', 0)):.0f}股"
+                    for position in positions
+                ) or "空仓"
+                lines.append(
+                    f"    {snapshot.get('quarter', '?')} "
+                    f"({snapshot.get('date', '-')}) NAV "
+                    f"{float(snapshot.get('nav', 0)):,.2f} / "
+                    f"现金 {float(snapshot.get('cash', 0)):,.2f} / "
+                    f"{position_text}"
+                )
         warming = getattr(r, "warming_codes", None) or []
         if warming:
             lines.append(f"  预热中（暂不交易）: {', '.join(warming)}")
@@ -831,22 +911,18 @@ def _build_optimizer_run_summary(report) -> str:
                     for code, value in win_rates.items()
                 )
                 lines.append(f"验证期胜率: {wins}")
-            latest = validation.get("latest_holdings", {}) or {}
-            positions = latest.get("positions", []) or []
+            positions = validation.get("final_holdings", []) or []
             if positions:
                 holding_text = ", ".join(
                     f"{pos.get('code', '?')} {pos.get('shares', 0):.0f}股"
                     for pos in positions
                 )
                 lines.append(
-                    f"期末持仓 (Q{latest.get('quarter', '?')} / NAV "
-                    f"{latest.get('nav', 0):,.0f}): {holding_text}"
+                    f"期末持仓 (资产 {validation.get('final_asset', 0):,.0f}): "
+                    f"{holding_text}"
                 )
-            elif latest:
-                lines.append(
-                    f"期末持仓 (Q{latest.get('quarter', '?')} / NAV "
-                    f"{latest.get('nav', 0):,.0f}): 空仓"
-                )
+            else:
+                lines.append("期末持仓: 空仓")
             weekly = validation.get("weekly_ohlc", {}) or {}
             weekly_labels = weekly.get("labels", [])
             closes = weekly.get("close", [])
@@ -1312,97 +1388,6 @@ class EmailNotifier(BaseNotifier):
         return html
 
     @staticmethod
-    def _calc_validation_winrate(result, bench_df, months=9):
-        """验证期胜率：最近 N 月内任意一天买入持有到期，跑赢主基准的概率。
-
-        现场用策略 nav_series vs 基准价格逐日算 forward return，不依赖 YAML。
-
-        Returns:
-            (win_rate%, win_days, total_days, v_excess%) 或全 None
-        """
-        nav = getattr(result, "nav_series", None) or []
-        dates = getattr(result, "nav_dates", None) or []
-        if len(nav) < 20 or bench_df is None or len(dates) != len(nav):
-            return None, None, None, None
-        try:
-            import pandas as pd
-
-            # 验证期 = 最近 months 月 ≈ months*21 交易日
-            v_len = min(len(nav), months * 21)
-            cut = len(nav) - v_len
-            v_nav = nav[cut:]
-            v_dates = dates[cut:]
-
-            # 基准对齐到验证期日期
-            bdf = bench_df.copy()
-            bdf["date"] = pd.to_datetime(bdf["date"]).dt.strftime("%Y-%m-%d")
-            bmap = dict(zip(bdf["date"], bdf["close"]))
-            v_bench = [bmap.get(d) for d in v_dates]
-
-            # 剔除基准缺失日，保持对齐
-            pairs = [(n, b) for n, b in zip(v_nav, v_bench) if b is not None and b > 0]
-            if len(pairs) < 5:
-                return None, None, None, None
-            s_nav = [p[0] for p in pairs]
-            b_nav = [p[1] for p in pairs]
-
-            s_final = s_nav[-1]
-            b_final = b_nav[-1]
-            wins = 0
-            total = 0
-            for i in range(len(s_nav) - 1):
-                if s_nav[i] <= 0 or b_nav[i] <= 0:
-                    continue
-                s_fwd = s_final / s_nav[i] - 1
-                b_fwd = b_final / b_nav[i] - 1
-                if s_fwd > b_fwd:
-                    wins += 1
-                total += 1
-            if total == 0:
-                return None, None, None, None
-            win_rate = wins / total * 100
-            # 验证期整体超额
-            s_ret = (s_nav[-1] / s_nav[0] - 1) * 100 if s_nav[0] > 0 else 0
-            b_ret = (b_nav[-1] / b_nav[0] - 1) * 100 if b_nav[0] > 0 else 0
-            v_excess = s_ret - b_ret
-            return win_rate, wins, total, v_excess
-        except Exception as e:
-            logger.debug(f"验证期胜率计算失败: {e}")
-            return None, None, None, None
-
-    @staticmethod
-    def _calc_winrate_vs_riskfree(result, annual_rate=0.02, months=9):
-        """验证期胜率 vs 无风险基准（固定年化，日复利）。
-
-        Returns: (win_rate%, win_days, total_days) 或全 None
-        """
-        nav = getattr(result, "nav_series", None) or []
-        if len(nav) < 20:
-            return None, None, None
-        try:
-            v_len = min(len(nav), months * 21)
-            v_nav = nav[len(nav) - v_len :]
-            daily_rf = (1 + annual_rate) ** (1 / 252) - 1
-            s_final = v_nav[-1]
-            wins = total = 0
-            n = len(v_nav)
-            for i in range(n - 1):
-                if v_nav[i] <= 0:
-                    continue
-                s_fwd = s_final / v_nav[i] - 1
-                # 无风险从 i 持有到期末的收益（(n-1-i) 个交易日）
-                rf_fwd = (1 + daily_rf) ** (n - 1 - i) - 1
-                if s_fwd > rf_fwd:
-                    wins += 1
-                total += 1
-            if total == 0:
-                return None, None, None
-            return wins / total * 100, wins, total
-        except Exception as e:
-            logger.debug(f"无风险胜率计算失败: {e}")
-            return None, None, None
-
-    @staticmethod
     def _build_placement_section(placements, stock_data):
         """构建未解禁定增表 HTML。
 
@@ -1583,6 +1568,7 @@ class EmailNotifier(BaseNotifier):
                 f' (超额<span style="color:{rc}">{r.excess_return:+.1f}%</span>)</b> &nbsp; '
                 f"最大回撤 {r.max_drawdown:.1f}% &nbsp; "
                 f"夏普 {r.sharpe_ratio:.2f} &nbsp; "
+                f"交易 {int(r.trade_count)}笔 &nbsp; "
             )
             if avg_cash is not None:
                 summary += f"平均现金仓位 {avg_cash:.0f}% &nbsp; "
@@ -1630,25 +1616,107 @@ class EmailNotifier(BaseNotifier):
                 )
             lines.append(summary)
 
+            final_holdings = getattr(r, "final_holdings", None) or []
+            lines.append(
+                '<p style="font-size:11px;margin:8px 0 4px">'
+                f"<b>期末资产</b> {float(getattr(r, 'final_asset', 0)):,.2f} &nbsp; "
+                f"<b>现金</b> {float(getattr(r, 'final_cash', 0)):,.2f} &nbsp; "
+                f"<b>持仓市值</b> {float(getattr(r, 'final_holdings_value', 0)):,.2f} &nbsp; "
+                f"<b>仓位</b> {float(getattr(r, 'final_position_pct', 0)):.1f}%</p>"
+            )
+            lines.append(
+                '<p style="font-size:11px;margin:8px 0 4px"><b>期末持仓</b></p>'
+            )
+            if final_holdings:
+                lines.append(
+                    '<table style="font-size:11px;border-collapse:collapse;'
+                    'width:100%;table-layout:fixed;word-break:break-all">'
+                    '<tr style="background:#2c3e50;color:#fff">'
+                    '<th>代码</th><th>股数</th><th>成本</th><th>期末价</th>'
+                    '<th>市值</th><th>权重</th><th>盈亏</th><th>盈亏%</th></tr>'
+                )
+                for position in final_holdings:
+                    pnl = float(position.get("pnl", 0))
+                    color = "#27ae60" if pnl >= 0 else "#c0392b"
+                    lines.append(
+                        f"<tr><td>{position.get('code', '?')}</td>"
+                        f"<td>{float(position.get('shares', 0)):.0f}</td>"
+                        f"<td>{float(position.get('cost', 0)):.2f}</td>"
+                        f"<td>{float(position.get('price', 0)):.2f}</td>"
+                        f"<td>{float(position.get('value', 0)):.2f}</td>"
+                        f"<td>{float(position.get('weight', 0)):.1f}%</td>"
+                        f'<td style="color:{color}">{pnl:+.2f}</td>'
+                        f'<td style="color:{color}">'
+                        f"{float(position.get('pnl_pct', 0)):+.1f}%</td></tr>"
+                    )
+                lines.append("</table>")
+            else:
+                lines.append('<p style="font-size:11px;color:#888">空仓</p>')
+
+            weekly = getattr(r, "weekly_nav_ohlc", None) or {}
+            weekly_labels = weekly.get("labels", [])
+            weekly_open = weekly.get("open", [])
+            weekly_high = weekly.get("high", [])
+            weekly_low = weekly.get("low", [])
+            weekly_close = weekly.get("close", [])
+            weekly_count = min(
+                len(weekly_labels), len(weekly_open), len(weekly_high),
+                len(weekly_low), len(weekly_close),
+            )
+            if weekly_count:
+                weekly_chart = None
+                try:
+                    from .chart_generator import generate_candlestick_chart
+
+                    weekly_chart = generate_candlestick_chart({
+                        "labels": weekly_labels[:weekly_count],
+                        "open": weekly_open[:weekly_count],
+                        "high": weekly_high[:weekly_count],
+                        "low": weekly_low[:weekly_count],
+                        "close": weekly_close[:weekly_count],
+                    })
+                except Exception as e:
+                    logger.warning("周 NAV K线图生成失败: %s", e)
+                if weekly_chart:
+                    data_uri, _ = weekly_chart
+                    lines.append(
+                        '<p style="font-size:11px;margin:10px 0 4px">'
+                        '<b>周 NAV K线</b></p>'
+                        '<div style="text-align:center;margin:6px 0 12px">'
+                        f'<img src="{data_uri}" alt="周 NAV K线" '
+                        'style="max-width:100%;height:auto;border:1px solid #ddd;'
+                        'border-radius:4px" /></div>'
+                    )
+                else:
+                    lines.append(
+                        '<p style="font-size:11px;color:#888">'
+                        '周 NAV K线：有效自然周不足，暂不绘图</p>'
+                    )
+
             # 季末持仓明细
             if qh:
+                lines.append(
+                    '<p style="font-size:11px;margin:10px 0 4px">'
+                    '<b>季末持仓（自然季度最后有效交易日）</b></p>'
+                )
                 lines.append(
                     '<table style="font-size:11px;border-collapse:collapse;'
                     'width:100%;margin-top:6px;table-layout:fixed;word-break:break-all">'
                     '<tr style="background:#34495e;color:#fff">'
-                    "<th>Q</th><th>代码</th><th>持股</th>"
+                    "<th>季度</th><th>日期</th><th>代码</th><th>持股</th>"
                     "<th>成本</th><th>现价</th><th>市值</th>"
                     "<th>盈亏</th><th>盈亏%</th></tr>"
                 )
                 for q in qh:
                     qn = q["quarter"]
+                    qdate = q.get("date", "-")
                     qcs = q["cash"]
                     qp = q["pos_pct"]
                     qnv = q["nav"]
                     qpos = q.get("positions", [])
                     if not qpos:
                         lines.append(
-                            f"<tr><td>Q{qn}</td>"
+                            f"<tr><td>{qn}</td><td>{qdate}</td>"
                             f"<td colspan=7>空仓 (nav={qnv:.0f})</td></tr>"
                         )
                     for pos in qpos:
@@ -1661,7 +1729,7 @@ class EmailNotifier(BaseNotifier):
                         pp = pos["pnl_pct"]
                         color = "#27ae60" if pn >= 0 else "#c0392b"
                         lines.append(
-                            f"<tr><td>Q{qn}</td><td>{code}</td>"
+                            f"<tr><td>{qn}</td><td>{qdate}</td><td>{code}</td>"
                             f"<td>{sh:.0f}股</td>"
                             f"<td>{cb:.2f}</td><td>{px:.2f}</td>"
                             f"<td>{vl:.0f}</td>"
@@ -1670,7 +1738,7 @@ class EmailNotifier(BaseNotifier):
                         )
                     if qpos:
                         lines.append(
-                            f"<tr><td>Q{qn}</td>"
+                            f"<tr><td>{qn}</td><td>{qdate}</td>"
                             f"<td colspan=4>现金: {qcs:.0f}</td>"
                             f"<td colspan=3>仓位: {qp:.0f}%</td></tr>"
                         )
@@ -2914,7 +2982,7 @@ class EmailNotifier(BaseNotifier):
     def _build_ref_portfolio_html(session, today_date) -> str:
         """构建参考持仓 HTML 片段。三组（A股/港股/美股）各自展示。"""
         all_statuses = getattr(session, "ref_portfolio_status", None)
-        if not all_statuses:
+        if not isinstance(all_statuses, dict) or not all_statuses:
             return ""
 
         lines = ["<h3>📊 参考持仓</h3>"]
@@ -3699,6 +3767,115 @@ class EmailNotifier(BaseNotifier):
                         beat = "✓" if (ta is not None and ta > bv) else "✗"
                         bt_text += f"\\quad vs {bn} {bv:+.1f}\\% {beat}"
 
+            # 统一 EvaluationReport 附录：PDF 不再二次计算周线或持仓。
+            evaluation_report_section = ""
+            if evaluation_reports:
+                report_lines = [
+                    "\\newpage",
+                    "\\section*{\\color{navy}统一策略评估}",
+                    "{\\footnotesize 本节直接渲染与 HTML、飞书和 Telegram "
+                    "相同的 EvaluationReport。}",
+                ]
+                group_labels = {"a_share": "A股", "hk": "港股", "us": "美股"}
+                for group, label in group_labels.items():
+                    report = evaluation_reports.get(group)
+                    if report is None:
+                        continue
+                    report_lines.extend([
+                        f"\\subsection*{{{label}}}",
+                        "\\begin{tabular}{lr@{\\quad}lr@{\\quad}lr}",
+                        "\\toprule",
+                        f"收益 & {report.total_return:+.1f}\\% & "
+                        f"最大回撤 & {report.max_drawdown:.1f}\\% & "
+                        f"夏普 & {report.sharpe_ratio:.2f} \\",
+                        f"交易数 & {int(report.trade_count)} & "
+                        f"期末资产 & {report.final_asset:,.2f} & "
+                        f"仓位 & {report.final_position_pct:.1f}\\% \\",
+                        "\\bottomrule",
+                        "\\end{tabular}",
+                    ])
+
+                    weekly = report.weekly_nav_ohlc or {}
+                    labels = weekly.get("labels", [])
+                    opens = weekly.get("open", [])
+                    highs = weekly.get("high", [])
+                    lows = weekly.get("low", [])
+                    closes = weekly.get("close", [])
+                    count = min(
+                        len(labels), len(opens), len(highs), len(lows), len(closes)
+                    )
+                    if count:
+                        report_lines.extend([
+                            "\\paragraph{周 NAV K线（自然周 OHLC）}",
+                            "\\begin{longtable}{lrrrr}",
+                            "\\toprule 自然周 & Open & High & Low & Close \\\\ \\midrule",
+                        ])
+                        for index in range(count):
+                            report_lines.append(
+                                f"{_esc(labels[index])} & {opens[index]:.2f} & "
+                                f"{highs[index]:.2f} & {lows[index]:.2f} & "
+                                f"{closes[index]:.2f} \\"
+                            )
+                        report_lines.extend(["\\bottomrule", "\\end{longtable}"])
+
+                    quarters = report.quarterly_holdings or []
+                    if quarters:
+                        report_lines.extend([
+                            "\\paragraph{季末持仓（自然季度最后有效交易日）}",
+                            "\\begin{longtable}{llllrrr}",
+                            "\\toprule 季度 & 日期 & 代码 & 股数 & 成本 & 价格 & 市值 "
+                            "\\\\ \\midrule",
+                        ])
+                        for snapshot in quarters:
+                            positions = snapshot.get("positions", []) or []
+                            if not positions:
+                                report_lines.append(
+                                    f"{_esc(snapshot.get('quarter', '?'))} & "
+                                    f"{_esc(snapshot.get('date', '-'))} & 空仓 & -- & -- & -- & "
+                                    f"{float(snapshot.get('nav', 0)):,.2f} \\"
+                                )
+                            for position in positions:
+                                report_lines.append(
+                                    f"{_esc(snapshot.get('quarter', '?'))} & "
+                                    f"{_esc(snapshot.get('date', '-'))} & "
+                                    f"{_esc(position.get('code', '?'))} & "
+                                    f"{float(position.get('shares', 0)):.0f} & "
+                                    f"{float(position.get('cost', 0)):.2f} & "
+                                    f"{float(position.get('price', 0)):.2f} & "
+                                    f"{float(position.get('value', 0)):,.2f} \\"
+                                )
+                        report_lines.extend(["\\bottomrule", "\\end{longtable}"])
+
+                    final_holdings = report.final_holdings or []
+                    report_lines.extend([
+                        "\\paragraph{期末持仓}",
+                        "\\begin{tabular}{lrrrrrr}",
+                        "\\toprule 代码 & 股数 & 成本 & 期末价 & 市值 & 权重 & 盈亏 \\\\ "
+                        "\\midrule",
+                    ])
+                    if final_holdings:
+                        for position in final_holdings:
+                            report_lines.append(
+                                f"{_esc(position.get('code', '?'))} & "
+                                f"{float(position.get('shares', 0)):.0f} & "
+                                f"{float(position.get('cost', 0)):.2f} & "
+                                f"{float(position.get('price', 0)):.2f} & "
+                                f"{float(position.get('value', 0)):,.2f} & "
+                                f"{float(position.get('weight', 0)):.1f}\\% & "
+                                f"{float(position.get('pnl', 0)):+,.2f} \\"
+                            )
+                    else:
+                        report_lines.append("空仓 & -- & -- & -- & -- & -- & -- \\")
+                    report_lines.extend(["\\bottomrule", "\\end{tabular}"])
+                # Python string literals above emit one trailing backslash; LaTeX
+                # table rows require two. Normalize only row-ending backslashes.
+                row_break = chr(92)
+                report_lines = [
+                    line + row_break if line.endswith(row_break) else line
+                    for line in report_lines
+                ]
+                evaluation_report_section = "\n".join(report_lines)
+
             # 6. 附录
             md_path = (
                 Path(__file__).parent.parent / "templates" / "appendix_methodology.md"
@@ -3783,6 +3960,9 @@ class EmailNotifier(BaseNotifier):
             html = html.replace("\\VAR{table_section}", table_section)
             html = html.replace("\\VAR{strategy_note}", strat_note)
             html = html.replace("\\VAR{backtest_note}", bt_text)
+            html = html.replace(
+                "\\VAR{evaluation_report_section}", evaluation_report_section
+            )
             html = html.replace("\\VAR{appendix_section}", appendix_section)
 
             # 8. xelatex 编译

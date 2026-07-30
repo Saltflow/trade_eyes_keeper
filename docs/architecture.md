@@ -30,12 +30,11 @@
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │  分析策略层 (src/analysis/)                                      │
-│  - strategy_optimizer_v2.py  Walk-Forward 14窗口 + 遗传搜索（02:00 cron）│
-│  - signal_scanner.py         每日共识信号扫描（读 YAML，不重搜参）      │
-│  - portfolio_strategy.py     共享资金池模拟 + PortfolioEvaluator        │
-│  - rule_engine.py             YAML 驱动规则引擎 + 表达式沙箱    │
-│  - indicator_library.py      RSI/MACD/ATR/布林/ADX/量比计算     │
-│  - backtest_config.py         回测时间线约束 (观察/部署/持仓)    │
+│  - strategies/              builder/percentile/simplified 插件策略 │
+│  - optimizer.py             14窗口统一遗传搜参与排名             │
+│  - backtester.py            TradePlan 仿真 + EvaluationReport    │
+│  - strategy_artifacts.py    参数产物原子发布与旧 YAML 单点迁移   │
+│  - search_interface.py      StrategyMarketData/TradePlan 契约     │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
@@ -100,8 +99,10 @@ main.py --once
 | `session_manager.py` | 维护 Session 生命周期、类型安全数据模型 | **不包含**业务规则 |
 | `condition_checker.py` | 基于 Session 数据判断警报条件 | **不修改** Session 中的原始数据 |
 | `email_notifier.py` | 构建并发送邮件、xelatex PDF 生成、图表生成 | **不抓取**外部数据 |
-| `signal_scanner.py` | 加载优化 YAML、用 rules 评估今日共识信号 | **不重新搜参**、**不修改**原始数据 |
-| `strategy_optimizer_v2.py` | Walk-Forward 14窗口搜参（02:00 cron）、写 YAML | **不直接**调用邮件、**日报不调用它** |
+| `strategies/` | 从市场数据生成统一 `TradePlan`，最后一日即今日信号 | **不计算**收益和持仓 |
+| `optimizer.py` | 12月训练/9月测试/3月步长的14窗口搜参 | **不实现**策略判断或通知算法 |
+| `backtester.py` | 统一资金仿真并生成 `EvaluationReport` | **不重新搜参**、**不按策略 ID 分支** |
+| `strategy_artifacts.py` | 原子发布新产物并兼容读取旧 YAML | **不执行**策略或回测 |
 | `cache_manager.py` | 读写本地缓存、过期清理、完整性校验 | **不发起**网络请求 |
 
 ---

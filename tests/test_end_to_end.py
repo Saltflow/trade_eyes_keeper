@@ -7,6 +7,7 @@ import sys
 import os
 import numpy as np
 import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ["LOG_LEVEL"] = "ERROR"
@@ -20,6 +21,8 @@ def _load_stocks():
     data = {}
     for code in TEST_CODES:
         path = os.path.join("data", f"{code}_history.csv")
+        if not os.path.exists(path):
+            pytest.skip(f"local real-data fixture is unavailable: {path}")
         df = pd.read_csv(path)
         df["date"] = pd.to_datetime(df["date"])
         df.set_index("date", inplace=True)
@@ -97,9 +100,19 @@ def test_optimizer_produces_valid_results():
     # 验收 9: make_signals 链路通
     params = top.encoding.to_params(strategy)
     ind = _build_indicator_matrix(stocks_data)
-    buy, sell = strategy.make_signals(params, ind)
-    assert buy.shape == sell.shape == (ind.shape[0], len(TEST_CODES))
-    assert buy.dtype == bool and sell.dtype == bool
+    from src.analysis.search_interface import StrategyMarketData
+
+    market_data = StrategyMarketData(
+        indicator_matrix=ind,
+        symbols=list(TEST_CODES),
+    )
+    plan = strategy.make_signals(params, market_data)
+    assert plan.buy_signals.shape == plan.sell_signals.shape == (
+        ind.shape[0],
+        len(TEST_CODES),
+    )
+    assert plan.buy_signals.dtype == bool
+    assert plan.sell_signals.dtype == bool
 
 
 def _build_indicator_matrix(stocks_data):
@@ -179,12 +192,34 @@ def test_daily_report_pipeline():
 
     dates = [d.strftime("%Y-%m-%d") for d in common]
 
+    from src.analysis.search_interface import StrategyMarketData, TradePlan
+
+    buy_signals = buy_scores > 0.5
+    sell_signals = sell_scores > 0.5
+    buy_signals[sell_signals] = False
+    trade_plan = TradePlan(
+        buy_signals=buy_signals,
+        sell_signals=sell_signals,
+        buy_priority=np.where(buy_signals, buy_scores, -np.inf),
+        sell_priority=np.where(sell_signals, sell_scores, -np.inf),
+        buy_cash_limit=25_000.0,
+        sell_cash_limit=25_000.0,
+        warmup_rows=0,
+        dates=dates,
+        symbols=list(TEST_CODES),
+    )
     trace = simulate_portfolio(
-        buy_scores, sell_scores, price,
-        float(exec_cfg.initial_capital), 0.5, 0.5, 0.25,
+        trade_plan,
+        StrategyMarketData(
+            indicator_matrix=np.empty((*price.shape, 0), dtype=np.float32),
+            dates=dates,
+            symbols=list(TEST_CODES),
+            prices=price,
+            tradable=np.isfinite(price) & (price > 0),
+        ),
+        float(exec_cfg.initial_capital),
         exec_cfg.lot_sizes.get("a_share", 100),
-        float(exec_cfg.monthly_buy_limit), float(exec_cfg.commission_rate),
-        dates, TEST_CODES,
+        float(exec_cfg.commission_rate),
     )
 
     # 报告应包含有效数据

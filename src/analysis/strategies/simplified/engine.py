@@ -51,11 +51,11 @@ class SimplifiedSearchStrategy(SearchStrategy):
     def evaluate(
         self, params: Params, indicator_matrix: np.ndarray,
     ) -> np.ndarray:
-        """简化策略返回空评分——实际由 FastEvaluator.evaluate() 直接使用 limits 参数。"""
+        """Return neutral priorities; decisions come from ``_make_signal_arrays``."""
         T, N = indicator_matrix.shape[:2]
         return np.zeros((T, N, 2), dtype=np.float32)
 
-    def make_signals(self, params: Params, indicator_matrix: np.ndarray):
+    def _make_signal_arrays(self, params: Params, indicator_matrix: np.ndarray):
         """Params → builder名/阈值 → CONDITION_BUILDERS_FAST → lock/reset/confirm → bool信号。
         与 builder 策略共用相同的信号生成管道，区别仅在于限额 vs 比例。
         """

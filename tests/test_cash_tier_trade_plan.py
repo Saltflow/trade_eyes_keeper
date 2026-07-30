@@ -7,6 +7,7 @@ import pandas as pd
 import yaml
 
 from src.analysis.backtester import _build_indicator_matrix, simulate_portfolio
+from src.analysis.search_interface import StrategyMarketData, TradePlan
 from src.analysis.strategies import get_strategy
 from src.analysis.strategy_artifacts import load_latest_strategy_run
 
@@ -22,22 +23,38 @@ def _trace(
     min_holding_days: int = 30,
     initial_cash: float = 100_000.0,
 ):
-    return simulate_portfolio(
-        buy.astype(float),
-        sell.astype(float),
-        price.astype(np.float32),
-        initial_cash=initial_cash,
-        buy_threshold=0.5,
-        sell_threshold=0.5,
-        position_frac=None,
-        lot_size=100,
-        monthly_limit=0.0,
-        commission_rate=0.0,
-        dates=[f"2026-01-{index + 1:02d}" for index in range(len(price))],
-        stock_codes=["ZZZ", "AAA"][: price.shape[1]],
+    dates = pd.bdate_range("2026-01-02", periods=len(price)).strftime(
+        "%Y-%m-%d"
+    ).tolist()
+    symbols = ["ZZZ", "AAA"][: price.shape[1]]
+    plan = TradePlan(
+        buy_signals=buy.astype(bool),
+        sell_signals=sell.astype(bool),
+        buy_priority=(
+            buy_priority
+            if buy_priority is not None
+            else np.where(buy, 1.0, -np.inf)
+        ),
+        sell_priority=np.where(sell, 1.0, -np.inf),
         buy_cash_limit=buy_limit,
         sell_cash_limit=sell_limit,
-        buy_priority=buy_priority,
+        warmup_rows=0,
+        dates=dates,
+        symbols=symbols,
+    )
+    market_data = StrategyMarketData(
+        indicator_matrix=np.empty((*price.shape, 0), dtype=np.float32),
+        dates=dates,
+        symbols=symbols,
+        prices=price.astype(np.float32),
+        tradable=np.isfinite(price) & (price > 0),
+    )
+    return simulate_portfolio(
+        plan,
+        market_data,
+        initial_cash=initial_cash,
+        lot_size=100,
+        commission_rate=0.0,
         min_holding_days=min_holding_days,
     )
 
@@ -127,6 +144,6 @@ def test_legacy_artifact_maps_percentage_to_immutable_cash_snapshot(tmp_path):
 
     assert active is not None
     snapshot = active.params_by_group["a_share"].execution_snapshot
-    assert snapshot["model"] == "cash_cap_v2"
+    assert snapshot["model"] == "cash_cap"
     assert snapshot["migration"] == "legacy_execution_mapped"
     assert snapshot["buy_cash_limit"] == snapshot["sell_cash_limit"]

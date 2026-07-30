@@ -3,15 +3,25 @@
 """
 
 import logging
+import os
 
 
 logger = logging.getLogger(__name__)
+
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").lower() in {"1", "true", "yes"}
 
 
 class NotifierManager:
     """统一通知管理器：按 config 创建 enabled channel 的 notifier，并行分发"""
 
     def __init__(self, config: dict):
+        if _env_flag("SKIP_NOTIFICATIONS"):
+            self.email = None
+            self.feishu = None
+            self.telegram = None
+            return
         nc = config.get("notification", {})
 
         # Email（默认启用，但如果完全没有 email 配置则跳过）
@@ -26,7 +36,7 @@ class NotifierManager:
 
         # Feishu
         fc = nc.get("feishu", {})
-        if fc.get("enabled", False):
+        if fc.get("enabled", False) and not _env_flag("SKIP_FEISHU"):
             from .feishu_notifier import FeishuNotifier
 
             self.feishu = FeishuNotifier(config)
@@ -35,7 +45,7 @@ class NotifierManager:
 
         # Telegram
         tc = nc.get("telegram", {})
-        if tc.get("enabled", False):
+        if tc.get("enabled", False) and not _env_flag("SKIP_TELEGRAM"):
             from .telegram_notifier import TelegramNotifier
 
             self.telegram = TelegramNotifier(config)

@@ -71,8 +71,7 @@ src/
 | `python main.py` | 启动定时调度器 (cron) |
 | `python main.py --once` | 单次收盘日报 |
 | `python main.py --brief [id]` | 早盘/收盘简报 (`morning_snapshot` / `afternoon_snapshot`) |
-| `python main.py --optimize` | 策略搜索优化 V1 (贝叶斯，稳定) |
-| `python main.py --optimize-v2` | 策略搜索优化 V2 (遗传搜索+Walk-Forward，实验性) |
+| `python main.py --optimize` | 对配置活动策略执行三市场统一 Walk-Forward 搜参 |
 | `python main.py --health-server` | 仅启动健康服务器 |
 
 ## 配置
@@ -108,7 +107,7 @@ pytest tests/test_security.py           # 安全测试
 |------|------|------|
 | **v1.17.1** | ✅ 当前 master | 数据源清理（Eastmoney 删除）+ QQ 实时行情 + 优化器 P0 修复 + 布林带列名统一 |
 | **v1.18-beta** | 🔄 开发中 | 多渠道通知统一配置（Telegram + 飞书群机器人 Webhook + 邮件，YAML 驱动） |
-| **v1.18-beta** | 🔄 开发中 | 策略优化器 V2（Walk-Forward 6窗口 + 遗传搜索 + numba 向量化，实验性） |
+| **统一策略评估** | ✅ 当前实现 | 单一 `--optimize` 入口；14 个 12/9/3 自然月窗口；统一 TradePlan、Backtester 与 EvaluationReport |
 | **v1.18-beta** | 📋 TODO | 给定时间段回测工具：支持自定义起止日期 + 基准对比 + 训练/测试分离 |
 
 > Beta 分支功能稳定后将合并入 master 发布。

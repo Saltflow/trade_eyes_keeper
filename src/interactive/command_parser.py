@@ -84,8 +84,6 @@ class RefDateCommand:
 
 @dataclass
 class OptimizeCommand:
-    preset: str = "v2"
-    strategy_name: str | None = None
     cmd_type: CommandType = CommandType.OPTIMIZE
 
 
@@ -251,25 +249,9 @@ def parse_command(text: str):
         return BriefCommand(report_id="morning_snapshot")
 
     if cmd_name == "optimize":
-        from src.analysis.strategies import list_strategies
-
-        strategy_keys = {item["key"] for item in list_strategies()}
-        presets = {"v1", "fast", "deep"}
-        strategy_name = None
-        preset = "v2"
-        for token in args.strip().lower().split():
-            if token in presets:
-                preset = token
-            elif token in strategy_keys:
-                if strategy_name is not None:
-                    return ErrorCommand(message="一次只能指定一个搜参策略")
-                strategy_name = token
-            else:
-                valid = ", ".join(sorted(strategy_keys))
-                return ErrorCommand(
-                    message=f"未知搜参策略或预设: {token}。策略: {valid}；预设: fast, deep"
-                )
-        return OptimizeCommand(preset=preset, strategy_name=strategy_name)
+        if args.strip():
+            return ErrorCommand(message="/optimize 不接受参数；活动策略由配置决定")
+        return OptimizeCommand()
 
     if cmd_name == "daily":
         return DailyCommand()

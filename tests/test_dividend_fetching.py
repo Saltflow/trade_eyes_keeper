@@ -39,13 +39,9 @@ class TestDividendFetching:
             fetcher.cache_manager, "get_latest_llm_extraction_for_stock"
         ) as mock_cache:
             mock_cache.return_value = {
-                "stock_code": stock_code,
-                "date": "2026-03-21",
-                "extracted_data": {
-                    "cash_dividend_per_share": 0.5,
-                    "bonus_share_ratio": None,
-                    "conversion_ratio": None,
-                },
+                "cash_dividend_per_share": 0.5,
+                "bonus_share_ratio": None,
+                "conversion_ratio": None,
             }
 
             dividend = fetcher._fetch_dividend_from_web_crawler(stock_code)
@@ -63,8 +59,10 @@ class TestDividendFetching:
             mock_cache.return_value = None
 
             # Mock网页爬虫返回
-            with patch.object(fetcher.web_crawler, "fetch_dividend") as mock_crawler:
-                mock_crawler.return_value = 0.3
+            with patch.object(
+                fetcher.web_crawler, "fetch_dividend_data"
+            ) as mock_crawler:
+                mock_crawler.return_value = {"dividend_per_share": 0.3}
 
                 dividend = fetcher._fetch_dividend_from_web_crawler(stock_code)
                 assert dividend == 0.3
@@ -81,27 +79,10 @@ class TestDividendFetching:
             fetcher.cache_manager, "get_latest_llm_extraction_for_stock"
         ) as mock_cache:
             mock_cache.return_value = {
-                "stock_code": stock_code,
-                "date": "2026-03-21",
-                "extracted_data": {
-                    "cash_dividend_per_share": 10.0,  # 高分红
-                    "bonus_share_ratio": None,
-                    "conversion_ratio": None,
-                },
+                "cash_dividend_per_share": 10.0,
+                "bonus_share_ratio": None,
+                "conversion_ratio": None,
             }
 
-            # Mock价格数据：股价30元，分红10元 => 33.33%股息率
-            with patch.object(fetcher, "_fetch_stock_price_data") as mock_price:
-                mock_price.return_value = {
-                    "close": 30.0,
-                    "high": 32.0,
-                    "low": 28.0,
-                    "open": 29.0,
-                }
-
-                # 应该记录警告但不返回None
-                dividend = fetcher._fetch_dividend_from_web_crawler(stock_code)
-                # 注意：_fetch_dividend_from_web_crawler只返回分红数据，不验证股息率
-                # 股息率验证在_fetch_fundamental_data中
-                # 这里我们只验证高分红数据被正确返回
-                assert dividend == 10.0
+            dividend = fetcher._fetch_dividend_from_web_crawler(stock_code)
+            assert dividend == 10.0

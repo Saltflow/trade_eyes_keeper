@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
 import pytest
 import yaml
 
@@ -17,6 +18,7 @@ from src.analysis.backtester import (
     simulate_portfolio,
 )
 from src.analysis.config import ExecutionConfig
+from src.analysis.search_interface import StrategyMarketData, TradePlan
 from src.analysis.optimizer import (
     GeneticOptimizer,
     ScoredEncoding,
@@ -25,6 +27,7 @@ from src.analysis.optimizer import (
     _passes_ranking_return_gate,
     _partition_window_indexes,
     _ranking_return_diagnostics,
+    _save_optimizer_result,
     _split_ranking_and_validation_stats,
 )
 from src.analysis.search_interface import ParamDim, ParamSpace, Params
@@ -245,6 +248,56 @@ def test_persisted_summary_converts_numpy_scalars_to_yaml(tmp_path):
     assert saved["validation"]["latest_holdings"]["pos_pct"] == 25.0
 
 
+def test_initial_optimizer_artifact_is_safe_yaml_with_numpy_scalars(tmp_path):
+    stat = WindowStats(
+        strategy_return=np.float64(8.5),
+        test_excess_return=np.float64(3.25),
+        max_drawdown_pct=np.float64(-4.0),
+        sharpe_ratio=np.float64(1.1),
+        total_trades=np.int64(7),
+        initial_asset=np.float64(100_000.0),
+        final_asset=np.float64(108_500.0),
+        final_cash=np.float64(8_500.0),
+        final_position_pct=np.float64(92.17),
+        final_shares=np.array([100.0]),
+        final_prices=np.array([1_000.0]),
+        cost_basis=np.array([900.0]),
+        benchmark_returns={"510300": np.float64(5.25)},
+    )
+    strategy = SimpleNamespace(
+        name="fake",
+        param_space=SimpleNamespace(dims=[]),
+        execution_params=lambda _params: {"buy_cash": np.float64(10_000.0)},
+    )
+    top = SimpleNamespace(
+        encoding=StrategyEncoding(genome=[], engine_name="fake"),
+        ranking_stats=[stat],
+        validation_stats=[stat],
+        purged_window_count=0,
+        wf_stats=[stat, stat],
+        wf_score=np.float64(2.5),
+        selection_score=np.float64(2.0),
+        ranking_diagnostics={"weighted_return": np.float64(8.5)},
+        sensitivity={"drop": np.float64(0.5)},
+    )
+
+    _save_optimizer_result(
+        [top],
+        strategy,
+        "a_share",
+        output_dir=tmp_path,
+        constraints=_constraints(),
+        strategy_codes=["510300"],
+    )
+
+    artifact = tmp_path / "a_share_best_params.yaml"
+    saved = yaml.safe_load(artifact.read_text(encoding="utf-8"))
+    assert saved["strategy_id"] == "fake"
+    assert saved["ranking_windows"][0]["benchmark_returns"] == {"510300": 5.25}
+    assert saved["execution"]["buy_cash"] == 10_000.0
+    assert "python/object" not in artifact.read_text(encoding="utf-8")
+
+
 def test_optimizer_history_preflight_requires_the_full_configured_horizon():
     constraints = StrategyConstraints(
         {
@@ -291,13 +344,18 @@ def test_walk_forward_holdout_is_anchored_to_the_newest_market_date():
     # Includes extra rows for rolling indicators.  The newest held-out window
     # must still end at the most recent row, rather than before that buffer.
     manager.T = 1_350
+    manager.dates = pd.bdate_range("2020-01-01", periods=manager.T)
 
     windows = manager.iter_windows()
 
     assert len(windows) == 14
-    assert windows[0].train_start == 90
-    assert windows[-1].test_start == 1_161
     assert windows[-1].test_end == manager.T
+    assert pd.Timestamp(windows[0].train_start_date) + pd.DateOffset(
+        months=12
+    ) == pd.Timestamp(windows[0].test_start_date)
+    assert pd.Timestamp(windows[-1].test_start_date) + pd.DateOffset(
+        months=9
+    ) - pd.Timedelta(days=1) == pd.Timestamp(windows[-1].test_end_date)
 
 
 def test_overlapping_windows_are_purged_from_strict_holdout_ranking():
@@ -354,27 +412,35 @@ def test_optimizer_execution_matches_daily_portfolio_execution():
         lot_sizes={"a_share": 100},
     )
     evaluator = FastEvaluator(execution, "a_share")
+    plan = TradePlan(
+        buy_signals=buy,
+        sell_signals=sell,
+        buy_priority=np.where(buy, 1.0, -np.inf),
+        sell_priority=np.where(sell, 1.0, -np.inf),
+        buy_cash_limit=45_000.0,
+        sell_cash_limit=45_000.0,
+        warmup_rows=0,
+    )
     fast = evaluator.evaluate(
         np.zeros((len(prices), 1, 16), dtype=np.float32),
         prices,
         np.full(len(prices), 100000.0),
-        buy_score_signals=buy,
-        sell_score_signals=sell,
-        execution={"position_frac": 0.45},
+        trade_plan=plan,
     )
     daily = simulate_portfolio(
-        buy.astype(float),
-        sell.astype(float),
-        prices,
+        plan,
+        StrategyMarketData(
+            indicator_matrix=np.empty((*prices.shape, 0), dtype=np.float32),
+            dates=[
+                f"2026-01-{index + 1:02d}" for index in range(len(prices))
+            ],
+            symbols=["000001"],
+            prices=prices,
+            tradable=np.ones_like(prices, dtype=bool),
+        ),
         initial_cash=100000.0,
-        buy_threshold=0.5,
-        sell_threshold=0.5,
-        position_frac=0.45,
         lot_size=100,
-        monthly_limit=15000.0,
         commission_rate=0.005,
-        dates=[f"2026-01-{index + 1:02d}" for index in range(len(prices))],
-        stock_codes=["000001"],
         min_holding_days=30,
     )
 

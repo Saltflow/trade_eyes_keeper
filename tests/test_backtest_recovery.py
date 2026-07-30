@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 
 import main
 from src.analysis.backtester import evaluate_all_groups
@@ -16,7 +17,7 @@ from src.analysis.strategy_artifacts import (
     publish_complete_run,
 )
 from src.interactive.commands import handlers
-from src.interactive.command_parser import OptimizeCommand, parse_command
+from src.interactive.command_parser import ErrorCommand, parse_command
 
 
 def _price_history(periods: int = 1_500) -> pd.DataFrame:
@@ -112,7 +113,7 @@ def test_optimizer_excludes_short_history_before_date_alignment(monkeypatch):
     assert calls == [("a_share", ["600000"])]
 
 
-def test_optimize_cli_defaults_to_a_share_and_keeps_all_markets_opt_in(monkeypatch):
+def test_optimize_cli_runs_configured_strategy_for_all_markets(monkeypatch):
     calls = []
 
     monkeypatch.setattr(main, "load_config", lambda: {})
@@ -122,18 +123,16 @@ def test_optimize_cli_defaults_to_a_share_and_keeps_all_markets_opt_in(monkeypat
     monkeypatch.setattr(
         main,
         "run_optimization",
-        lambda _config, strategy_name=None, target_groups=(): calls.append(
-            (strategy_name, target_groups)
-        ) or {"a_share": 1},
+        lambda _config, target_groups=(): calls.append(target_groups)
+        or {"a_share": 1},
     )
 
     main.main(["--optimize"])
-    main.main(["--optimize", "--all-markets"])
-
-    assert calls == [
-        (None, ("a_share",)),
-        (None, ("a_share", "hk", "us")),
-    ]
+    assert calls == [("a_share", "hk", "us")]
+    with pytest.raises(SystemExit):
+        main.main(["--optimize-v2"])
+    with pytest.raises(SystemExit):
+        main.main(["--optimize", "--all-markets"])
 
 
 def test_ref_portfolio_rebalance_accepts_configured_commission(tmp_path):
@@ -195,12 +194,24 @@ def test_evaluation_honors_requested_backtest_dates():
     )
 
 
-def test_optimizer_command_accepts_registered_strategy_and_preset():
+def test_optimizer_command_rejects_strategy_and_preset_arguments():
     command = parse_command("/optimize builder fast")
 
-    assert isinstance(command, OptimizeCommand)
-    assert command.strategy_name == "builder"
-    assert command.preset == "fast"
+    assert isinstance(command, ErrorCommand)
+    assert "不接受参数" in command.message
+
+
+def test_configured_optimizer_groups_only_include_eligible_markets(monkeypatch):
+    monkeypatch.setattr(main, "get_skip_search", lambda config: {"VOO"})
+    config = {
+        "stocks": [
+            {"code": "510880"},
+            {"code": "00700"},
+            {"code": "VOO"},
+        ]
+    }
+
+    assert main._configured_optimizer_groups(config) == ("a_share", "hk")
 
 
 def test_latest_complete_manifest_selects_newest_timestamp(tmp_path):

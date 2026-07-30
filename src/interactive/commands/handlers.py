@@ -526,34 +526,10 @@ def handle_brief(report_id: str = "morning_snapshot") -> str:
     return f"❌ {label}触发失败"
 
 
-def handle_optimize(preset: str = "v2", strategy_name: str | None = None) -> str:
-    from ...analysis.strategies import get_strategy
-
-    strategy = get_strategy(strategy_name) if strategy_name else None
-    strategy_label = f" · {strategy.label}" if strategy else ""
-    if preset == "v1":
-        label = f"策略优化{strategy_label}"
-        args = ["--optimize"]
-        env = {}
-    elif preset == "fast":
-        label = f"策略优化{strategy_label} 快速"
-        args = ["--optimize"]
-        env = {"OPTIMIZER_SAMPLES": "2000", "OPTIMIZER_GENERATIONS": "1"}
-    elif preset == "deep":
-        label = f"策略优化{strategy_label} 深度"
-        args = ["--optimize"]
-        env = {"OPTIMIZER_SAMPLES": "20000", "OPTIMIZER_GENERATIONS": "5"}
-    else:
-        label = f"策略优化{strategy_label}"
-        args = ["--optimize"]
-        env = {}
-
-    if strategy_name:
-        args.extend(["--strategy", strategy_name])
-
-    if _run_main(args, env):
-        return f"⏳ {label}已在后台启动。完成后自动推送三市场简报。"
-    return f"❌ {label}启动失败"
+def handle_optimize() -> str:
+    if _run_main(["--optimize"]):
+        return "⏳ 策略优化已在后台启动。完成后自动推送三市场简报。"
+    return "❌ 策略优化启动失败"
 
 
 def handle_daily() -> str:

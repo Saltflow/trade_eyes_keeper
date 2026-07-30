@@ -1,196 +1,100 @@
-"""Strategy signal contracts use one canonical decoder across all paths."""
+"""Contract tests for the only strategy decision interface."""
+
+from __future__ import annotations
 
 import numpy as np
-import sys
-import os
+import pandas as pd
+import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-os.environ["LOG_LEVEL"] = "ERROR"
+from src.analysis.search_interface import Params, StrategyMarketData, TradePlan
+from src.analysis.strategies import get_strategy
 
 
-def _make_indicator(T=100, N=3):
-    """构造 (T, N, 16) 随机指标矩阵。"""
+def _market_data(periods: int = 100, symbols: int = 2) -> StrategyMarketData:
     rng = np.random.RandomState(42)
-    ind = rng.randn(T, N, 16).astype(np.float32)
-    ind[:, :, 0] = 100 + np.cumsum(rng.randn(T, N), axis=0).astype(np.float32)
-    return ind
-
-
-# ═══════════════════════════════════════════════════════════════
-# 1. Percentile: 旧 optimizer 分支 vs 新 make_signals()
-# ═══════════════════════════════════════════════════════════════
-
-def test_percentile_signals():
-    """percentile 策略：旧 params→bool 逻辑 vs 新 make_signals() 必须一致。"""
-    from src.analysis.strategies.percentile.engine import PercentileSearchStrategy
-    from src.analysis.search_interface import Params
-
-    strategy = PercentileSearchStrategy()
-    ind = _make_indicator(T=60, N=2)
-
-    # 旧 optimizer 逻辑（复制自 optimizer.py:94-99）
-    params = Params(values={
-        "adx_pct_tau": 5, "adx_pct_w": 3, "rsi_pct_tau": 4, "rsi_pct_w": 3,
-        "deviation_pct_tau": 6, "deviation_pct_w": 2, "vol_ratio_pct_tau": 5,
-        "vol_ratio_pct_w": 2, "ma200_dev_pct_tau": 3, "ma200_dev_pct_w": 1,
-        "buy_score_thresh": 5, "sell_score_thresh": 5,
-        "buy_cash_tier": 2, "sell_cash_tier": 2,
-    }, _engine="percentile")
-
-    # ── 旧路径 ──
-    scores = strategy.evaluate(params, ind)
-    buy_th = params.values.get("buy_score_thresh", 5)
-    sell_th = params.values.get("sell_score_thresh", 5)
-    from src.analysis.strategies.percentile.engine import _decode_tau
-    old_buy = scores[:, :, 0] > _decode_tau(buy_th)
-    old_sell = scores[:, :, 1] > _decode_tau(sell_th)
-
-    # ── 新路径 ──
-    new_buy, new_sell = strategy.make_signals(params, ind)
-
-    assert np.array_equal(old_buy, new_buy), "percentile buy signals mismatch"
-    assert np.array_equal(old_sell, new_sell), "percentile sell signals mismatch"
-
-
-# ═══════════════════════════════════════════════════════════════
-# 2. Builder: 旧 FastEvaluator.evaluate(builders=...) vs 新 make_signals()
-# ═══════════════════════════════════════════════════════════════
-
-def test_builder_signals():
-    """builder 策略：旧 optimizer 编解码 → FastEvaluator 信号 vs 新 make_signals() 必须一致。"""
-    from src.analysis.strategies.builder.engine import BuilderSearchStrategy, CONDITION_BUILDERS_FAST, BUILDER_COUNT, THRESHOLD_LEVELS_BUILDER
-    from src.analysis.backtester import FastEvaluator
-    from src.analysis.search_interface import Params
-
-    strategy = BuilderSearchStrategy()
-    ind = _make_indicator(T=100, N=2)
-    price = ind[:, :, 0].copy()
-    cash_bs = np.ones(ind.shape[0]) * 100000
-
-    # 旧 optimizer 逻辑（复制自 optimizer.py:100-156）
-    buy_names = list(CONDITION_BUILDERS_FAST.keys())[:BUILDER_COUNT]
-    sell_names = list(CONDITION_BUILDERS_FAST.keys())[BUILDER_COUNT:BUILDER_COUNT + 6]
-
-    params = Params(values={
-        "buy_1_name": 0, "buy_1_threshold": 5,
-        "buy_2_name": 1, "buy_2_threshold": 5,
-        "buy_3_name": 2, "buy_3_threshold": 5,
-        "buy_4_name": 3, "buy_4_threshold": 7,
-        "buy_5_name": 7, "buy_5_threshold": 0,
-        "sell_1_name": 0, "sell_1_threshold": 5,
-        "sell_2_name": 1, "sell_2_threshold": 5,
-        "sell_3_name": 2, "sell_3_threshold": 5,
-        "buy_cash_tier": 1, "sell_cash_tier": 1,
-    }, _engine="builder")
-
-    # ── 旧路径 → 通过 FastEvaluator.evaluate() 获取信号 ──
-    buy_builders, buy_thresholds = [], []
-    for i in range(5):
-        n = params.values.get(f"buy_{i+1}_name", 0) % len(buy_names)
-        buy_builders.append(buy_names[n])
-        buy_thresholds.append(params.values.get(f"buy_{i+1}_threshold", 5) / (THRESHOLD_LEVELS_BUILDER - 1))
-    sell_builders, sell_thresholds = [], []
-    for i in range(3):
-        n = params.values.get(f"sell_{i+1}_name", 0) % len(sell_names)
-        sell_builders.append(sell_names[n])
-        sell_thresholds.append(params.values.get(f"sell_{i+1}_threshold", 5) / (THRESHOLD_LEVELS_BUILDER - 1))
-
-    from src.analysis.config import ExecutionConfig
-    mock_cfg = ExecutionConfig()
-    ev = FastEvaluator(mock_cfg)
-    old_stats = ev.evaluate(
-        indicator_matrix=ind, price_matrix=price, cash_baseline=cash_bs,
-        buy_builders=buy_builders, buy_thresholds=buy_thresholds,
-        sell_builders=sell_builders, sell_thresholds=sell_thresholds,
-    )
-    # 旧路径返回 WindowStats，有 total_trades。新路径返回 bool 矩阵。
-    # 验证：新 make_signals 产生的信号送入 evaluate → 相同 total_trades
-    new_buy, new_sell = strategy.make_signals(params, ind)
-    new_stats = ev.evaluate(
-        indicator_matrix=ind, price_matrix=price, cash_baseline=cash_bs,
-        buy_score_signals=new_buy, sell_score_signals=new_sell,
-    )
-    assert old_stats.total_trades == new_stats.total_trades, (
-        f"builder signals mismatch: old={old_stats.total_trades} new={new_stats.total_trades}"
+    indicators = rng.randn(periods, symbols, 16).astype(np.float32)
+    prices = 100 + np.cumsum(rng.randn(periods, symbols), axis=0)
+    indicators[:, :, 0] = prices
+    return StrategyMarketData(
+        indicator_matrix=indicators,
+        dates=[f"2026-01-{index + 1:03d}" for index in range(periods)],
+        symbols=[f"S{index}" for index in range(symbols)],
+        prices=prices.astype(np.float32),
+        tradable=np.ones((periods, symbols), dtype=bool),
     )
 
 
-# ═══════════════════════════════════════════════════════════════
-# 3. Simplified: 旧 optimizer 编解码 vs 新 make_signals()
-# ═══════════════════════════════════════════════════════════════
-
-def test_simplified_signals():
-    """simplified 策略：旧 optimizer 编解码 → FastEvaluator 信号 vs 新 make_signals() 必须一致。"""
-    from src.analysis.strategies.simplified.engine import SimplifiedSearchStrategy, BUY_BUILDERS_SIMP, SELL_BUILDERS_SIMP, THRESHOLD_LEVELS_SIMP
-    from src.analysis.backtester import FastEvaluator
-    from src.analysis.search_interface import Params
-
-    strategy = SimplifiedSearchStrategy()
-    ind = _make_indicator(T=100, N=2)
-    price = ind[:, :, 0].copy()
-    cash_bs = np.ones(ind.shape[0]) * 100000
-
-    params = Params(values={
-        "buy_1_name": 0, "buy_1_threshold": 5,
-        "buy_2_name": 1, "buy_2_threshold": 5,
-        "buy_3_name": 2, "buy_3_threshold": 5,
-        "buy_4_name": 3, "buy_4_threshold": 7,
-        "buy_5_name": 4, "buy_5_threshold": 0,
-        "sell_1_name": 0, "sell_1_threshold": 5,
-        "sell_2_name": 1, "sell_2_threshold": 5,
-        "sell_3_name": 2, "sell_3_threshold": 5,
-        "buy_cash_tier": 2, "sell_cash_tier": 2,
-    }, _engine="simplified")
-
-    # ── 旧路径 → 手动生成布尔信号 ──
-    buy_builders, buy_thresholds = [], []
-    for i in range(5):
-        n = params.values.get(f"buy_{i+1}_name", 0) % len(BUY_BUILDERS_SIMP)
-        buy_builders.append(BUY_BUILDERS_SIMP[n])
-        buy_thresholds.append(params.values.get(f"buy_{i+1}_threshold", 5) / (THRESHOLD_LEVELS_SIMP - 1))
-    sell_builders, sell_thresholds = [], []
-    for i in range(3):
-        n = params.values.get(f"sell_{i+1}_name", 0) % len(SELL_BUILDERS_SIMP)
-        sell_builders.append(SELL_BUILDERS_SIMP[n])
-        sell_thresholds.append(params.values.get(f"sell_{i+1}_threshold", 5) / (THRESHOLD_LEVELS_SIMP - 1))
-
-    # 旧路径：Run FastEvaluator.evaluate() with buy_limits, get trade count
-    from src.analysis.config import ExecutionConfig
-    mock_cfg = ExecutionConfig()
-    ev = FastEvaluator(mock_cfg)
-    ev.evaluate(
-        indicator_matrix=ind, price_matrix=price, cash_baseline=cash_bs,
-        buy_builders=buy_builders, buy_thresholds=buy_thresholds,
-        sell_builders=sell_builders, sell_thresholds=sell_thresholds,
+def _params(strategy) -> Params:
+    return Params(
+        values={
+            dim.name: min(1, max(dim.levels - 1, 0))
+            for dim in strategy.param_space.dims
+        }
     )
-    # 新路径：make_signals → 同样 builder 信号，但走 score_signals 路径（限制定价不同）
-    # 验证信号形状一致即可（限制定价逻辑不同，trade_count 可能不同）
-    new_buy, new_sell = strategy.make_signals(params, ind)
-    assert new_buy.shape == (ind.shape[0], ind.shape[1]), "buy signal shape wrong"
-    assert new_sell.shape == (ind.shape[0], ind.shape[1]), "sell signal shape wrong"
-    assert new_buy.any() or new_sell.any(), "should have at least some signals"
-    # 信号应该和旧路径的 builder → lock/reset/confirm 一致
-    # 验证至少有一些重叠（不是全零）
-    from src.analysis.backtester import _apply_lock_reset_numba, _apply_lock_reset, _apply_confirmation
-    from src.analysis.strategies.builder.engine import CONDITION_BUILDERS_FAST as CBF
-    try:
-        from numba import jit as _
 
-        HAS = True
-    except ImportError:
-        HAS = False
-    R = len(buy_builders)
-    bc = np.zeros((R,) + ind.shape[:2], dtype=bool)
-    br = np.zeros((R,) + ind.shape[:2], dtype=float)
-    for r in range(R):
-        fn = CBF.get(buy_builders[r])
-        if fn:
-            c, rs = fn(ind, buy_thresholds[r])
-            bc[r] = c
-            br[r] = rs
-    if HAS:
-        old_buy, _ = _apply_lock_reset_numba(bc, br)
-    else:
-        old_buy, _ = _apply_lock_reset(bc, br)
-    old_buy = _apply_confirmation(bc.any(axis=0), 3)
-    assert np.array_equal(old_buy, new_buy), "simplified buy signals must match builder pipeline"
+
+@pytest.mark.parametrize("strategy_id", ["builder", "percentile", "simplified"])
+def test_registered_strategy_returns_canonical_trade_plan(strategy_id: str):
+    strategy = get_strategy(strategy_id)
+    market_data = _market_data()
+
+    plan = strategy.make_signals(_params(strategy), market_data)
+
+    assert isinstance(plan, TradePlan)
+    assert plan.buy_signals.shape == plan.sell_signals.shape == (100, 2)
+    assert plan.buy_priority.shape == plan.sell_priority.shape == (100, 2)
+    assert plan.dates == market_data.dates
+    assert plan.symbols == market_data.symbols
+    assert plan.execution["model"] == "cash_cap"
+    assert plan.strategy_metadata["strategy_id"] == strategy_id
+    assert not np.any(plan.buy_signals & plan.sell_signals)
+
+
+def test_make_signals_rejects_raw_indicator_array():
+    strategy = get_strategy("percentile")
+    market_data = _market_data()
+
+    with pytest.raises(TypeError, match="StrategyMarketData"):
+        strategy.make_signals(_params(strategy), market_data.indicator_matrix)
+
+
+def test_today_scan_reads_last_row_of_same_trade_plan(monkeypatch):
+    strategy = get_strategy("percentile")
+    periods = strategy.warmup_rows + 1
+    market_data = _market_data(periods=periods, symbols=1)
+    buy = np.zeros((periods, 1), dtype=bool)
+    sell = np.zeros_like(buy)
+    buy[-1, 0] = True
+    expected = TradePlan(
+        buy_signals=buy,
+        sell_signals=sell,
+        buy_priority=np.where(buy, 7.0, -np.inf),
+        sell_priority=np.where(sell, 7.0, -np.inf),
+        buy_cash_limit=20_000.0,
+        sell_cash_limit=10_000.0,
+        warmup_rows=strategy.warmup_rows,
+        dates=market_data.dates,
+        symbols=market_data.symbols,
+    )
+    monkeypatch.setattr(
+        "src.data.technical_indicators.compute_all",
+        lambda stocks: {"scan": pd.DataFrame()},
+    )
+    monkeypatch.setattr(
+        "src.analysis.backtester._build_indicator_matrix",
+        lambda computed, codes: (
+            market_data.indicator_matrix,
+            market_data.prices,
+            market_data.dates,
+            market_data.tradable,
+        ),
+    )
+    monkeypatch.setattr(strategy, "make_signals", lambda params, data: expected)
+
+    results = strategy.scan_today(
+        _params(strategy), {}, pd.DataFrame({"close": np.arange(periods)})
+    )
+
+    assert [item["side"] for item in results] == ["buy"]
+    assert results[0]["priority"] == 7.0
+    assert "20000" in results[0]["detail"]

@@ -13,7 +13,8 @@ from datetime import datetime
 from .config import (
     StrategyConstraints, DiscreteSearchConfig, WindowStats, get_constraints,
 )
-from .search_interface import SearchStrategy, Params, TradePlan
+from .search_interface import SearchStrategy, Params, StrategyMarketData
+from .strategy_artifacts import as_yaml_primitives
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +200,17 @@ def _evaluate_encoding_wf(
     params = encoding.to_params(strategy)
     # Build against the complete aligned history so a test window inherits its
     # legitimate train-period warmup instead of being muted for 252 days.
-    full_plan = strategy.make_trade_plan(params, wf_manager.indicator_matrix)
+    full_plan = strategy.make_signals(
+        params,
+        StrategyMarketData(
+            indicator_matrix=wf_manager.indicator_matrix,
+            dates=[str(date.date()) for date in wf_manager.dates],
+            symbols=list(wf_manager.stock_codes),
+            prices=wf_manager.price_matrix,
+            tradable=np.isfinite(wf_manager.price_matrix)
+            & (wf_manager.price_matrix > 0),
+        ),
+    )
 
     for w in windows:
         test_ind = wf_manager.indicator_matrix[w.test_start:w.test_end]
@@ -207,15 +218,7 @@ def _evaluate_encoding_wf(
 
         # Slice the canonical full-history plan; no validation data is used to
         # rank candidates, only the signal state has its normal prior history.
-        trade_plan = TradePlan(
-            buy_signals=full_plan.buy_signals[w.test_start:w.test_end],
-            sell_signals=full_plan.sell_signals[w.test_start:w.test_end],
-            buy_priority=full_plan.buy_priority[w.test_start:w.test_end],
-            sell_priority=full_plan.sell_priority[w.test_start:w.test_end],
-            buy_cash_limit=full_plan.buy_cash_limit,
-            sell_cash_limit=full_plan.sell_cash_limit,
-            warmup_rows=full_plan.warmup_rows,
-        )
+        trade_plan = full_plan.sliced(w.test_start, w.test_end)
 
         cash_bs = evaluator.initial_cash * (
             1 + constraints.risk_free_rate / 252
@@ -588,6 +591,8 @@ def run_optimizer(
             output_dir=output_dir,
             validation_period=validation_period,
             constraints=constraints,
+            windows=windows,
+            strategy_codes=wf_manager.stock_codes,
         )
     return results, constraints
 
@@ -599,20 +604,85 @@ def _save_optimizer_result(
     output_dir=None,
     validation_period: dict[str, str] | None = None,
     constraints=None,
+    windows=None,
+    strategy_codes=None,
 ) -> None:
     """保存最优参数到 data/optimizer/{group}_best_params.yaml"""
     top = results[0]
     constraints = constraints or get_constraints()
     params = top.encoding.to_params(strategy)
+    windows = list(windows or [])
+    strategy_codes = list(strategy_codes or [])
+
+    def serialize_window(stat, window=None):
+        final_asset = float(getattr(stat, "final_asset", 0.0) or 0.0)
+        shares = np.asarray(getattr(stat, "final_shares", []), dtype=float)
+        prices = np.asarray(getattr(stat, "final_prices", []), dtype=float)
+        costs = np.asarray(getattr(stat, "cost_basis", []), dtype=float)
+        holdings = []
+        if len(shares) == len(prices) == len(costs) == len(strategy_codes):
+            for code, quantity, price, cost in zip(
+                strategy_codes, shares, prices, costs
+            ):
+                if quantity <= 0 or not np.isfinite(price) or price <= 0:
+                    continue
+                value = float(quantity * price)
+                holdings.append({
+                    "code": code,
+                    "shares": round(float(quantity), 4),
+                    "cost": round(float(cost), 4),
+                    "price": round(float(price), 4),
+                    "value": round(value, 2),
+                    "weight": round(value / final_asset * 100, 2)
+                    if final_asset else 0.0,
+                    "pnl": round((price - cost) * quantity, 2),
+                })
+        result = {
+            "return": float(stat.strategy_return),
+            "excess_return": float(stat.test_excess_return),
+            "max_drawdown": float(stat.max_drawdown_pct),
+            "sharpe_ratio": float(stat.sharpe_ratio),
+            "trade_count": int(stat.total_trades),
+            "initial_asset": float(getattr(stat, "initial_asset", 0.0)),
+            "final_asset": final_asset,
+            "final_cash": float(getattr(stat, "final_cash", 0.0)),
+            "final_position_pct": float(stat.final_position_pct),
+            "final_holdings": holdings,
+            "benchmark_returns": dict(stat.benchmark_returns),
+        }
+        if window is not None:
+            result["period"] = {
+                "train_start": window.train_start_date,
+                "train_end": window.train_end_date,
+                "test_start": window.test_start_date,
+                "test_end": window.test_end_date,
+            }
+        return result
+    ranking_reports = [
+        serialize_window(stat, windows[index] if index < len(windows) else None)
+        for index, stat in enumerate(top.ranking_stats)
+    ]
+    validation_offset = len(top.ranking_stats) + int(top.purged_window_count)
+    holdout_reports = [
+        serialize_window(
+            stat,
+            windows[validation_offset + index]
+            if validation_offset + index < len(windows)
+            else None,
+        )
+        for index, stat in enumerate(top.validation_stats)
+    ]
     data = {
         "timestamp": datetime.now().isoformat(),
         "group": group,
-        "engine": strategy.name,
+        "strategy_id": strategy.name,
         "schema_version": 2,
-        "params": {**params.values, "_engine": strategy.name},
+        "params": dict(params.values),
         "execution": strategy.execution_params(params),
         "validation_period": validation_period or {},
         "wf_score": top.wf_score,
+        "ranking_windows": ranking_reports,
+        "holdout_windows": holdout_reports,
         "search": {
             "total_window_count": len(top.wf_stats),
             "ranking_window_count": len(top.ranking_stats),
@@ -644,5 +714,12 @@ def _save_optimizer_result(
     out_dir = Path(output_dir) if output_dir is not None else Path("data/optimizer")
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{group}_best_params.yaml"
-    path.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+    path.write_text(
+        yaml.safe_dump(
+            as_yaml_primitives(data),
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
     logger.info(f"最优参数已保存: {path}")
