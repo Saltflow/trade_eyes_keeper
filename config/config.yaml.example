@@ -66,6 +66,27 @@ scheduler:
 # ── 监控标的 ──
 stocks: []           # 填入你的股票代码，例如 [601728, 000001, VOO]
 
+# ── 标的画像审计（不会进入策略搜参）──
+instrument_audit:
+  output_dir: data/instrument_audit
+  timeout_seconds: 20
+  show_in_daily_report: true
+  enrich_top_holdings: true
+  max_holding_profiles_per_fund: 10
+  # SEC 要求包含可联系邮箱的 User-Agent；未配置时会明确记录跳过原因
+  sec_user_agent: ""
+
+# 发行人接口彼此不统一；可按代码声明官方资料和持仓CSV。
+# instrument_catalog:
+#   VOO:
+#     instrument_type: index_etf
+#     issuer: Vanguard
+#     tracking_index: S&P 500
+#     asset_class: equity
+#     holdings_url: https://issuer.example/holdings.csv
+#     holdings_as_of: 2026-07-31
+#     holdings_columns: {code: ticker, name: name, weight: weight}
+
 # ── 策略搜索优化器 ──
 optimizer:
   enable: true

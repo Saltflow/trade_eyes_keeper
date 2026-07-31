@@ -12,9 +12,10 @@ A股 / 美股 / 港股量化监控系统。策略搜索优化器自动发现最�
 
 | 功能 | 说明 |
 |------|------|
-| **策略搜索优化器** | 贝叶斯优化自动搜索最优策略参数，条件构建器池 (RSI/MACD/Bollinger/ADX)，两阶段 (训练+测试) 防过拟合 |
-| **信号扫描器** | 每日自动加载最新优化结果，计算 Top-5 策略共识，对当日数据评估买入信号 |
-| **回测分析** | 用最新优化策略跑完整 24 月历史回测，3 阶段指标分拆，基准 ETF 对比 |
+| **策略搜索优化器** | 注册策略统一执行 14 窗 Walk-Forward，11 窗排名、2 窗隔离、1 窗留出 |
+| **信号扫描器** | 加载单一活动策略参数，直接读取统一 TradePlan 最后有效日事件 |
+| **回测分析** | 统一 Backtester 与无风险/510300/同池等权三重基准比较 |
+| **标的画像审计** | 公司财务推导、利润增长、ETF 前十大穿透及 REIT/商品/债券类型化画像 |
 | **条件检测** | 多锚点阈值报警 (MA60/WMA20/WMA30/WMA50) + 优化策略信号报警 |
 | **早盘/收盘简报** | 轻量价格+锚点快照，每日 09:50 / 14:30 自动发送，按偏离率升序排列 |
 | **邮件提醒** | 日报含信号扫描+回测+公式附录，xelatex LaTeX PDF 附件 (港式财报风格) |
@@ -39,6 +40,8 @@ cp config/.env.example config/.env   # 填入邮箱和 API Key (DeepSeek)
 python main.py --once                # 单次收盘日报
 python main.py --brief               # 单次早盘简报
 python main.py --optimize            # 策略搜索优化 (15-30 min)
+python main.py --activate-run RUN_ID # 人工激活完整且留出通过的候选
+python main.py --audit-instruments   # 全量标的画像 JSON + HTML 审计
 python main.py                       # 定时运行 (cron/APScheduler)
 ```
 
@@ -47,17 +50,16 @@ python main.py                       # 定时运行 (cron/APScheduler)
 ```
 src/
 ├── analysis/          # 策略优化器、信号扫描、指标库、规则引擎
-│   ├── strategy_optimizer.py   贝叶斯优化搜索
-│   ├── signal_scanner.py       每日共识信号扫描
-│   ├── portfolio_strategy.py   共享资金池模拟
-│   ├── rule_engine.py          YAML驱动规则引擎
-│   ├── indicator_library.py    RSI/MACD/ATR/ADX
-│   └── backtest_config.py     时间线模型
+│   ├── optimizer.py            统一 Walk-Forward 搜参和稳健性筛选
+│   ├── backtester.py           统一资金仿真、三基准与评价报告
+│   ├── search_interface.py     StrategyMarketData / TradePlan 契约
+│   └── strategies/             注册策略插件（含 regime_pullback）
 ├── core/              # 数据拉取、条件检查、调度管理
 ├── data/              # 多源爬虫 (新浪/腾讯/Yahoo)
 ├── alerting/          # 多层报警引擎 + 状态管理
 ├── session/           # Session 管理器
 ├── models/            # Pydantic 数据模型
+├── instruments/       # 类型化标的、财务推导、基金穿透和审计报告
 ├── notification/      # 邮件通知 + 图表生成
 ├── health_server/     # HTTP 健康检查 + 管理
 ├── utils/             # CJK 字体, ETF 检测
@@ -72,6 +74,8 @@ src/
 | `python main.py --once` | 单次收盘日报 |
 | `python main.py --brief [id]` | 早盘/收盘简报 (`morning_snapshot` / `afternoon_snapshot`) |
 | `python main.py --optimize` | 对配置活动策略执行三市场统一 Walk-Forward 搜参 |
+| `python main.py --activate-run RUN_ID` | 原子激活三市场完整、留出与稳健性均通过的候选 |
+| `python main.py --audit-instruments` | 对全量配置标的生成类型化 JSON 与详细 HTML 审计 |
 | `python main.py --health-server` | 仅启动健康服务器 |
 
 ## 配置

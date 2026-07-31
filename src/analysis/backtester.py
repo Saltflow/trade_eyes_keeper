@@ -1,7 +1,7 @@
 """统一回测引擎。
 
 输入天级数据 → 调用策略生成信号 → 模拟交易 → 输出 WindowStats / PortfolioTrace。
-所有搜参模式（percentile / builder / simplified）共用此引擎。
+所有注册策略共用此引擎。
 """
 
 from __future__ import annotations
@@ -56,13 +56,101 @@ IDX_RSI_PCT = 12
 IDX_DEVIATION_PCT = 13
 IDX_VOL_RATIO_PCT = 14
 IDX_MA200_DEV_PCT = 15
+IDX_HIGH = 16
+IDX_LOW = 17
+IDX_MA200 = 18
+IDX_MA200_SLOPE = 19
+IDX_PLUS_DI = 20
+IDX_MINUS_DI = 21
 
 INDICATOR_NAMES = [
     "close", "ma60", "deviation", "rsi", "macd", "macd_signal",
     "macd_hist", "vol_ratio", "boll_pct_b", "adx", "atr",
     "adx_pct", "rsi_pct", "deviation_pct", "vol_ratio_pct",
-    "ma200_dev_pct",
+    "ma200_dev_pct", "high", "low", "ma200", "ma200_slope",
+    "plus_di", "minus_di",
 ]
+
+
+def pessimistic_buy_prices(high_prices: np.ndarray) -> np.ndarray:
+    """Return max(high[t-1], high[t], high[t+1]); final row stays pending."""
+    values = np.asarray(high_prices, dtype=np.float64)
+    if values.ndim == 1:
+        values = values.reshape(-1, 1)
+    rows, columns = values.shape
+    result = np.full((rows, columns), np.nan, dtype=np.float64)
+    for row in range(rows - 1):
+        previous = values[row - 1] if row else values[row]
+        current = values[row]
+        following = values[row + 1]
+        valid = (
+            np.isfinite(previous)
+            & np.isfinite(current)
+            & np.isfinite(following)
+            & (previous > 0)
+            & (current > 0)
+            & (following > 0)
+        )
+        result[row, valid] = np.maximum(
+            np.maximum(previous[valid], current[valid]), following[valid]
+        )
+    return result
+
+
+def buy_and_hold_nav(
+    close_prices: np.ndarray,
+    buy_prices: np.ndarray,
+    initial_cash: float,
+    lot_size: int,
+    commission_rate: float,
+    weights: np.ndarray | None = None,
+) -> np.ndarray:
+    """Static buy-and-hold NAV using the same fee, lots and stress price."""
+    closes = np.asarray(close_prices, dtype=np.float64)
+    buys = np.asarray(buy_prices, dtype=np.float64)
+    if closes.ndim == 1:
+        closes = closes.reshape(-1, 1)
+    if buys.ndim == 1:
+        buys = buys.reshape(-1, 1)
+    rows, columns = closes.shape
+    if rows == 0 or columns == 0:
+        return np.zeros(rows, dtype=np.float64)
+    valuation = closes.copy()
+    for column in range(columns):
+        last = 0.0
+        for row in range(rows):
+            if np.isfinite(valuation[row, column]) and valuation[row, column] > 0:
+                last = valuation[row, column]
+            elif last > 0:
+                valuation[row, column] = last
+            else:
+                valuation[row, column] = 0.0
+    requested = (
+        np.asarray(weights, dtype=np.float64)
+        if weights is not None
+        else np.full(columns, 1.0 / columns, dtype=np.float64)
+    )
+    requested = np.where(np.isfinite(requested) & (requested > 0), requested, 0.0)
+    if requested.sum() > 0:
+        requested = requested / requested.sum()
+    shares = np.zeros(columns, dtype=np.float64)
+    cash = float(initial_cash)
+    for column in range(columns):
+        execution_price = buys[0, column]
+        if execution_price <= 0 or not np.isfinite(execution_price):
+            continue
+        budget = initial_cash * requested[column]
+        quantity = int(
+            budget / (execution_price * (1.0 + commission_rate)) / lot_size
+        ) * lot_size
+        if quantity <= 0:
+            continue
+        cost = quantity * execution_price * (1.0 + commission_rate)
+        if cost > cash:
+            continue
+        shares[column] = quantity
+        cash -= cost
+    return cash + valuation.dot(shares)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -326,6 +414,299 @@ else:
         raise NotImplementedError("numba required")
 
 
+if HAS_NUMBA:
+
+    @jit(nopython=True, parallel=False, cache=True, nogil=True)
+    def _simulate_target_plan_numba(
+        entry_events,
+        exit_events,
+        force_exit_signals,
+        conviction,
+        declared_target_weights,
+        use_declared_target_weights,
+        valuation_prices,
+        buy_prices,
+        sell_prices,
+        tradable,
+        date_ordinals,
+        initial_cash,
+        per_symbol_cap,
+        total_exposure_cap,
+        lot_size,
+        commission_rate,
+        min_holding_calendar_days,
+        snapshot_mask,
+    ):
+        """Shared-cap target-weight execution without symbol-order allocation."""
+        rows, columns = entry_events.shape
+        shares = np.zeros(columns, dtype=np.float64)
+        cost_basis = np.zeros(columns, dtype=np.float64)
+        active = np.zeros(columns, dtype=np.bool_)
+        active_score = np.zeros(columns, dtype=np.float64)
+        entry_date = np.full(columns, -1000000000, dtype=np.int64)
+        cash = float(initial_cash)
+        daily_values = np.zeros(rows, dtype=np.float64)
+        total_trades = 0
+        pending_orders = 0
+        position_fraction_sum = 0.0
+        position_fraction_days = 0
+
+        n_snapshots = 0
+        for row in range(rows):
+            if snapshot_mask[row]:
+                n_snapshots += 1
+        q_shares = np.zeros((n_snapshots, columns), dtype=np.float64)
+        q_cost_basis = np.zeros((n_snapshots, columns), dtype=np.float64)
+        q_cash = np.zeros(n_snapshots, dtype=np.float64)
+        q_nav = np.zeros(n_snapshots, dtype=np.float64)
+        q_prices = np.zeros((n_snapshots, columns), dtype=np.float64)
+        q_index = 0
+        targets = np.zeros(columns, dtype=np.float64)
+        desired_buys = np.zeros(columns, dtype=np.float64)
+
+        for row in range(rows):
+            state_changed = False
+            # Explicit exits always happen before allocation.  The strategy
+            # marks catastrophe exits separately so they bypass the 30-day
+            # ordinary holding lock.
+            for column in range(columns):
+                force = force_exit_signals[row, column]
+                ordinary = exit_events[row, column]
+                held_days = date_ordinals[row] - entry_date[column]
+                if not force and not (
+                    ordinary and held_days >= min_holding_calendar_days
+                ):
+                    continue
+                if active[column]:
+                    active[column] = False
+                    active_score[column] = 0.0
+                    state_changed = True
+                if shares[column] <= 0.0 or not tradable[row, column]:
+                    continue
+                execution_price = sell_prices[row, column]
+                if (
+                    execution_price <= 0.0
+                    or np.isnan(execution_price)
+                ):
+                    continue
+                quantity = int(shares[column] / lot_size) * lot_size
+                if quantity <= 0 and shares[column] > 0:
+                    quantity = int(shares[column])
+                if quantity <= 0:
+                    continue
+                value = quantity * execution_price
+                cash += value * (1.0 - commission_rate)
+                shares[column] -= quantity
+                if shares[column] <= 0.0:
+                    shares[column] = 0.0
+                    cost_basis[column] = 0.0
+                total_trades += 1
+
+            # A missing t+1 stress price means the one-shot event is pending,
+            # not a fill.  It never enters target allocation for this window.
+            for column in range(columns):
+                if not entry_events[row, column] or active[column]:
+                    continue
+                execution_price = buy_prices[row, column]
+                if (
+                    execution_price <= 0.0
+                    or np.isnan(execution_price)
+                    or not tradable[row, column]
+                ):
+                    pending_orders += 1
+                    continue
+                active[column] = True
+                active_score[column] = max(conviction[row, column], 0.000001)
+                entry_date[column] = date_ordinals[row]
+                state_changed = True
+
+            if state_changed:
+                for column in range(columns):
+                    targets[column] = 0.0
+                exposure_cap = min(max(total_exposure_cap, 0.0), 1.0)
+                if use_declared_target_weights:
+                    declared_total = 0.0
+                    for column in range(columns):
+                        if not active[column]:
+                            continue
+                        requested = declared_target_weights[row, column]
+                        if np.isnan(requested) or requested <= 0.0:
+                            continue
+                        targets[column] = min(requested, per_symbol_cap)
+                        declared_total += targets[column]
+                    if declared_total > exposure_cap and declared_total > 0.0:
+                        scale = exposure_cap / declared_total
+                        for column in range(columns):
+                            targets[column] *= scale
+                else:
+                    # Compatibility path for generic target-weight plans that
+                    # predate the explicit target_weights matrix.
+                    remaining = exposure_cap
+                    while remaining > 0.000000000001:
+                        score_sum = 0.0
+                        open_count = 0
+                        for column in range(columns):
+                            if (
+                                active[column]
+                                and active_score[column] > 0.0
+                                and targets[column]
+                                < per_symbol_cap - 0.000000000001
+                            ):
+                                score_sum += active_score[column]
+                                open_count += 1
+                        if open_count == 0 or score_sum <= 0.0:
+                            break
+                        used = 0.0
+                        for column in range(columns):
+                            if (
+                                not active[column]
+                                or active_score[column] <= 0.0
+                                or targets[column]
+                                >= per_symbol_cap - 0.000000000001
+                            ):
+                                continue
+                            proposal = (
+                                remaining * active_score[column] / score_sum
+                            )
+                            room = per_symbol_cap - targets[column]
+                            addition = min(proposal, room)
+                            targets[column] += addition
+                            used += addition
+                        if used <= 0.000000000001:
+                            break
+                        remaining -= used
+
+                nav_before = cash
+                for column in range(columns):
+                    nav_before += shares[column] * valuation_prices[row, column]
+
+                # Reductions use the trigger-day low.  Young ordinary
+                # holdings are never reduced merely to fund another signal.
+                for column in range(columns):
+                    current_value = shares[column] * valuation_prices[row, column]
+                    target_value = nav_before * targets[column]
+                    held_days = date_ordinals[row] - entry_date[column]
+                    if (
+                        current_value <= target_value
+                        or shares[column] <= 0.0
+                        or held_days < min_holding_calendar_days
+                        or not tradable[row, column]
+                    ):
+                        continue
+                    execution_price = sell_prices[row, column]
+                    if execution_price <= 0.0 or np.isnan(execution_price):
+                        continue
+                    excess_value = current_value - target_value
+                    quantity = int(excess_value / execution_price / lot_size)
+                    quantity *= lot_size
+                    max_quantity = int(shares[column] / lot_size) * lot_size
+                    quantity = min(quantity, max_quantity)
+                    if quantity <= 0:
+                        continue
+                    value = quantity * execution_price
+                    cash += value * (1.0 - commission_rate)
+                    shares[column] -= quantity
+                    total_trades += 1
+
+                nav_after_sells = cash
+                for column in range(columns):
+                    nav_after_sells += (
+                        shares[column] * valuation_prices[row, column]
+                    )
+                    desired_buys[column] = 0.0
+
+                required_cash = 0.0
+                for column in range(columns):
+                    if not active[column] or not tradable[row, column]:
+                        continue
+                    execution_price = buy_prices[row, column]
+                    close_price = valuation_prices[row, column]
+                    if (
+                        execution_price <= 0.0
+                        or close_price <= 0.0
+                        or np.isnan(execution_price)
+                    ):
+                        continue
+                    target_shares = nav_after_sells * targets[column] / close_price
+                    raw_quantity = max(target_shares - shares[column], 0.0)
+                    desired_buys[column] = raw_quantity
+                    required_cash += raw_quantity * execution_price * (
+                        1.0 + commission_rate
+                    )
+                scale = 1.0
+                if required_cash > cash and required_cash > 0.0:
+                    scale = cash / required_cash
+                for column in range(columns):
+                    execution_price = buy_prices[row, column]
+                    quantity = int(
+                        desired_buys[column] * scale / lot_size
+                    ) * lot_size
+                    if quantity <= 0 or execution_price <= 0.0:
+                        continue
+                    total_cost = quantity * execution_price * (
+                        1.0 + commission_rate
+                    )
+                    if total_cost > cash + 0.000001:
+                        continue
+                    old_shares = shares[column]
+                    shares[column] += quantity
+                    cost_basis[column] = (
+                        old_shares * cost_basis[column]
+                        + quantity * execution_price
+                    ) / shares[column]
+                    cash -= total_cost
+                    total_trades += 1
+
+            position_value = 0.0
+            for column in range(columns):
+                position_value += shares[column] * valuation_prices[row, column]
+            daily_values[row] = cash + position_value
+            if daily_values[row] > 0.0:
+                position_fraction_sum += position_value / daily_values[row]
+                position_fraction_days += 1
+
+            if snapshot_mask[row]:
+                for column in range(columns):
+                    q_shares[q_index, column] = shares[column]
+                    q_cost_basis[q_index, column] = cost_basis[column]
+                    q_prices[q_index, column] = valuation_prices[row, column]
+                q_cash[q_index] = cash
+                q_nav[q_index] = daily_values[row]
+                q_index += 1
+
+        average_position = 0.0
+        if position_fraction_days > 0:
+            average_position = (
+                position_fraction_sum / position_fraction_days * 100.0
+            )
+        final_position = 0.0
+        if rows > 0 and daily_values[rows - 1] > 0.0:
+            value = 0.0
+            for column in range(columns):
+                value += shares[column] * valuation_prices[rows - 1, column]
+            final_position = value / daily_values[rows - 1] * 100.0
+        return (
+            daily_values,
+            total_trades,
+            average_position,
+            final_position,
+            shares.copy(),
+            cash,
+            cost_basis.copy(),
+            q_shares,
+            q_cost_basis,
+            q_cash,
+            q_nav,
+            q_prices,
+            pending_orders,
+        )
+
+else:
+
+    def _simulate_target_plan_numba(*args, **kwargs):
+        raise NotImplementedError("numba required")
+
+
 # ═══════════════════════════════════════════════════════════════
 # FastEvaluator — 统一评估入口
 # ═══════════════════════════════════════════════════════════════
@@ -342,6 +723,7 @@ class FastEvaluator:
         self.lot_size = exec_cfg.lot_sizes.get(group, 100)
         self.commission_rate = exec_cfg.commission_rate
         self.min_holding_days = exec_cfg.min_holding_days
+        self.fx_rate = float(exec_cfg.fx_rates.get(group, 1.0))
         self.buy_confirmation_days = 3
         self.sell_confirmation_days = 1
 
@@ -351,10 +733,12 @@ class FastEvaluator:
         price_matrix: np.ndarray,
         cash_baseline: np.ndarray,
         benchmark_series: dict[str, np.ndarray] | None = None,
+        benchmark_initial_values: dict[str, float] | None = None,
+        benchmark_raw_returns: dict[str, float] | None = None,
         trade_plan: TradePlan | None = None,
         tradable: np.ndarray | None = None,
     ) -> WindowStats:
-        """统一评估入口（支持 builder + score 两种信号来源）。"""
+        """Evaluate one TradePlan through its declared execution model."""
         T, N = indicator_matrix.shape[:2]
         if N == 0 or T == 0:
             return WindowStats()
@@ -370,12 +754,18 @@ class FastEvaluator:
         sell_priority = np.asarray(trade_plan.sell_priority, dtype=np.float32)
         buy_cash_limit = float(trade_plan.buy_cash_limit)
         sell_cash_limit = float(trade_plan.sell_cash_limit)
-        if buy_cash_limit <= 0.0 or sell_cash_limit <= 0.0:
+        execution_model = str(trade_plan.execution.get("model", "cash_cap"))
+        if (
+            execution_model == "cash_cap"
+            and (buy_cash_limit <= 0.0 or sell_cash_limit <= 0.0)
+        ):
             return WindowStats()
         if tradable is None:
             tradable = np.isfinite(price_matrix) & (price_matrix > 0)
 
-        valuation_prices = np.asarray(price_matrix, dtype=np.float32).copy()
+        valuation_prices = (
+            np.asarray(price_matrix, dtype=np.float32) * self.fx_rate
+        ).copy()
         for n in range(N):
             last = 0.0
             for t in range(T):
@@ -386,7 +776,92 @@ class FastEvaluator:
                 else:
                     valuation_prices[t, n] = 0.0
 
-        if HAS_NUMBA:
+        pending_order_count = 0
+        if HAS_NUMBA and execution_model == "target_weight":
+            entry_events = (
+                trade_plan.entry_events
+                if trade_plan.entry_events is not None
+                else buy_signals
+            )
+            exit_events = (
+                trade_plan.exit_events
+                if trade_plan.exit_events is not None
+                else sell_signals
+            )
+            force_exits = (
+                trade_plan.force_exit_signals
+                if trade_plan.force_exit_signals is not None
+                else np.zeros(expected_shape, dtype=bool)
+            )
+            conviction = (
+                trade_plan.conviction
+                if trade_plan.conviction is not None
+                else np.where(entry_events, buy_priority, 0.0)
+            )
+            declared_target_weights = (
+                np.asarray(trade_plan.target_weights, dtype=np.float32)
+                if trade_plan.target_weights is not None
+                else np.zeros(expected_shape, dtype=np.float32)
+            )
+            buy_prices = (
+                np.asarray(trade_plan.buy_execution_prices, dtype=np.float32)
+                * self.fx_rate
+                if trade_plan.buy_execution_prices is not None
+                else valuation_prices
+            )
+            sell_prices = (
+                np.asarray(trade_plan.sell_execution_prices, dtype=np.float32)
+                * self.fx_rate
+                if trade_plan.sell_execution_prices is not None
+                else valuation_prices
+            )
+            if (
+                trade_plan.date_ordinals is not None
+                and len(trade_plan.date_ordinals) == T
+            ):
+                date_ordinals = np.asarray(
+                    trade_plan.date_ordinals, dtype=np.int64
+                )
+            elif len(trade_plan.dates) == T:
+                parsed = pd.to_datetime(trade_plan.dates, errors="coerce")
+                if not pd.isna(parsed).any():
+                    date_ordinals = (
+                        parsed.values.astype("datetime64[D]").astype(np.int64)
+                    )
+                else:
+                    date_ordinals = np.arange(T, dtype=np.int64)
+            else:
+                date_ordinals = np.arange(T, dtype=np.int64)
+            (
+                daily_values, trade_count, avg_pos_pct, final_pos_pct,
+                final_shares, final_cash, cost_basis,
+                quarter_shares, quarter_cost_basis, quarter_cash,
+                quarter_nav, quarter_prices, pending_order_count,
+            ) = _simulate_target_plan_numba(
+                np.ascontiguousarray(entry_events, dtype=np.bool_),
+                np.ascontiguousarray(exit_events, dtype=np.bool_),
+                np.ascontiguousarray(force_exits, dtype=np.bool_),
+                np.ascontiguousarray(conviction, dtype=np.float32),
+                np.ascontiguousarray(declared_target_weights, dtype=np.float32),
+                trade_plan.target_weights is not None,
+                np.ascontiguousarray(valuation_prices, dtype=np.float32),
+                np.ascontiguousarray(buy_prices, dtype=np.float32),
+                np.ascontiguousarray(sell_prices, dtype=np.float32),
+                np.ascontiguousarray(tradable, dtype=np.bool_),
+                np.ascontiguousarray(date_ordinals, dtype=np.int64),
+                float(self.initial_cash),
+                float(trade_plan.execution.get("per_symbol_cap", 0.20)),
+                float(trade_plan.execution.get("total_exposure_cap", 0.80)),
+                int(self.lot_size),
+                float(self.commission_rate),
+                int(
+                    trade_plan.execution.get(
+                        "min_holding_calendar_days", self.min_holding_days
+                    )
+                ),
+                np.zeros(T, dtype=np.bool_),
+            )
+        elif HAS_NUMBA:
             (
                 daily_values, trade_count, avg_pos_pct, final_pos_pct,
                 final_shares, final_cash, cost_basis,
@@ -411,11 +886,15 @@ class FastEvaluator:
             daily_values, valuation_prices, cash_baseline,
             trade_count, 0, avg_pos_pct=avg_pos_pct,
             benchmark_series=benchmark_series,
+            benchmark_initial_values=benchmark_initial_values,
+            benchmark_raw_returns=benchmark_raw_returns,
+            initial_asset=self.initial_cash,
             final_pos_pct=final_pos_pct, final_shares=final_shares,
             final_cash=final_cash, cost_basis=cost_basis,
             quarter_shares=quarter_shares, quarter_cash=quarter_cash,
             quarter_nav=quarter_nav, quarter_prices=quarter_prices,
             quarter_cost_basis=quarter_cost_basis,
+            pending_order_count=pending_order_count,
         )
 
 
@@ -427,6 +906,8 @@ def _compute_stats(
     signal_count,
     avg_pos_pct=None,
     benchmark_series=None,
+    benchmark_initial_values=None,
+    benchmark_raw_returns=None,
     final_pos_pct=None,
     final_shares=None,
     final_cash=None,
@@ -436,15 +917,25 @@ def _compute_stats(
     quarter_nav=None,
     quarter_prices=None,
     quarter_cost_basis=None,
+    pending_order_count=0,
+    initial_asset=None,
 ) -> WindowStats:
     """daily_values → WindowStats。"""
     T = len(daily_values)
 
     nav = daily_values
-    total_return = float((nav[-1] - nav[0]) / nav[0] * 100) if nav[0] > 0 else 0.0
-    peak = np.maximum.accumulate(nav)
+    base_asset = float(initial_asset) if initial_asset is not None else float(nav[0])
+    total_return = (
+        float((nav[-1] - base_asset) / base_asset * 100)
+        if len(nav) and base_asset > 0
+        else 0.0
+    )
+    drawdown_nav = np.concatenate(([base_asset], np.asarray(nav, dtype=float)))
+    peak = np.maximum.accumulate(drawdown_nav)
     with np.errstate(divide="ignore", invalid="ignore"):
-        dd_series = np.where(peak > 0, (nav - peak) / peak * 100.0, 0.0)
+        dd_series = np.where(
+            peak > 0, (drawdown_nav - peak) / peak * 100.0, 0.0
+        )
     dd_series = dd_series[np.isfinite(dd_series)]
     max_dd = float(np.min(dd_series)) if len(dd_series) > 0 else 0.0
 
@@ -459,12 +950,19 @@ def _compute_stats(
     excess_return = total_return
     if benchmark_series:
         for lbl, bs in benchmark_series.items():
-            if bs is not None and len(bs) > 1 and bs[0] > 0:
-                br = (bs[-1] - bs[0]) / bs[0] * 100
+            initial = float(
+                (benchmark_initial_values or {}).get(
+                    lbl, bs[0] if bs is not None and len(bs) else 0.0
+                )
+            )
+            if bs is not None and len(bs) > 1 and initial > 0:
+                br = (bs[-1] - initial) / initial * 100
                 benchmark_returns[lbl] = round(br, 2)
         if benchmark_returns:
-            primary = next(iter(benchmark_returns))
-            excess_return = total_return - benchmark_returns[primary]
+            strongest = max(
+                benchmark_returns, key=lambda label: benchmark_returns[label]
+            )
+            excess_return = total_return - benchmark_returns[strongest]
     elif (
         cash_baseline is not None
         and len(cash_baseline) > 1
@@ -477,6 +975,11 @@ def _compute_stats(
     if avg_pos_pct is None:
         avg_pos_pct = 0.0
 
+    strongest_benchmark = (
+        max(benchmark_returns, key=lambda label: benchmark_returns[label])
+        if benchmark_returns
+        else ""
+    )
     return WindowStats(
         test_excess_return=round(excess_return, 2),
         max_drawdown_pct=round(max_dd, 2),
@@ -485,7 +988,7 @@ def _compute_stats(
         total_trades=trade_count,
         benchmark_returns=benchmark_returns,
         strategy_return=round(total_return, 2),
-        initial_asset=round(float(nav[0]), 2) if len(nav) else 0.0,
+        initial_asset=round(base_asset, 2) if len(nav) else 0.0,
         final_asset=round(float(nav[-1]), 2) if len(nav) else 0.0,
         final_position_pct=round(final_pos_pct or 0.0, 2),
         final_shares=final_shares,
@@ -497,6 +1000,9 @@ def _compute_stats(
         quarter_nav=quarter_nav,
         quarter_prices=quarter_prices,
         quarter_cost_basis=quarter_cost_basis,
+        pending_order_count=int(pending_order_count),
+        strongest_benchmark=strongest_benchmark,
+        benchmark_raw_returns=dict(benchmark_raw_returns or {}),
     )
 
 
@@ -511,6 +1017,7 @@ def simulate_portfolio(
     lot_size: int,
     commission_rate: float,
     min_holding_days: int = 0,
+    execution_price_scale: float = 1.0,
 ) -> PortfolioTrace:
     """Execute the canonical strategy decision plan."""
     if market_data.prices is None:
@@ -525,6 +1032,7 @@ def simulate_portfolio(
     sell_priority = np.asarray(trade_plan.sell_priority, dtype=np.float32)
     buy_cash_limit = float(trade_plan.buy_cash_limit)
     sell_cash_limit = float(trade_plan.sell_cash_limit)
+    execution_model = str(trade_plan.execution.get("model", "cash_cap"))
     tradable = (
         np.asarray(market_data.tradable, dtype=bool)
         if market_data.tradable is not None
@@ -559,7 +1067,92 @@ def simulate_portfolio(
                 snapshot_mask[-1] = True
                 snapshot_indices.append(T - 1)
 
-    if HAS_NUMBA:
+    pending_order_count = 0
+    if HAS_NUMBA and execution_model == "target_weight":
+        entry_events = (
+            trade_plan.entry_events
+            if trade_plan.entry_events is not None
+            else buy_signals
+        )
+        exit_events = (
+            trade_plan.exit_events
+            if trade_plan.exit_events is not None
+            else sell_signals
+        )
+        force_exits = (
+            trade_plan.force_exit_signals
+            if trade_plan.force_exit_signals is not None
+            else np.zeros_like(buy_signals, dtype=bool)
+        )
+        conviction = (
+            trade_plan.conviction
+            if trade_plan.conviction is not None
+            else np.where(entry_events, buy_priority, 0.0)
+        )
+        declared_target_weights = (
+            np.asarray(trade_plan.target_weights, dtype=np.float32)
+            if trade_plan.target_weights is not None
+            else np.zeros_like(buy_signals, dtype=np.float32)
+        )
+        buy_prices = (
+            np.asarray(trade_plan.buy_execution_prices, dtype=np.float32)
+            * float(execution_price_scale)
+            if trade_plan.buy_execution_prices is not None
+            else valuation_price
+        )
+        sell_prices = (
+            np.asarray(trade_plan.sell_execution_prices, dtype=np.float32)
+            * float(execution_price_scale)
+            if trade_plan.sell_execution_prices is not None
+            else valuation_price
+        )
+        if (
+            trade_plan.date_ordinals is not None
+            and len(trade_plan.date_ordinals) == T
+        ):
+            date_ordinals = np.asarray(
+                trade_plan.date_ordinals, dtype=np.int64
+            )
+        elif len(dates) == T:
+            parsed = pd.to_datetime(dates, errors="coerce")
+            if not pd.isna(parsed).any():
+                date_ordinals = (
+                    parsed.values.astype("datetime64[D]").astype(np.int64)
+                )
+            else:
+                date_ordinals = np.arange(T, dtype=np.int64)
+        else:
+            date_ordinals = np.arange(T, dtype=np.int64)
+        (
+            daily_values, trade_count, avg_pos_pct, final_pos_pct,
+            final_shares, final_cash, cost_basis,
+            q_shares, q_cost_basis, q_cash, q_nav, q_prices,
+            pending_order_count,
+        ) = _simulate_target_plan_numba(
+            np.ascontiguousarray(entry_events, dtype=np.bool_),
+            np.ascontiguousarray(exit_events, dtype=np.bool_),
+            np.ascontiguousarray(force_exits, dtype=np.bool_),
+            np.ascontiguousarray(conviction, dtype=np.float32),
+            np.ascontiguousarray(declared_target_weights, dtype=np.float32),
+            trade_plan.target_weights is not None,
+            np.ascontiguousarray(valuation_price, dtype=np.float32),
+            np.ascontiguousarray(buy_prices, dtype=np.float32),
+            np.ascontiguousarray(sell_prices, dtype=np.float32),
+            np.ascontiguousarray(tradable, dtype=np.bool_),
+            np.ascontiguousarray(date_ordinals, dtype=np.int64),
+            float(initial_cash),
+            float(trade_plan.execution.get("per_symbol_cap", 0.20)),
+            float(trade_plan.execution.get("total_exposure_cap", 0.80)),
+            int(lot_size),
+            float(commission_rate),
+            int(
+                trade_plan.execution.get(
+                    "min_holding_calendar_days", min_holding_days
+                )
+            ),
+            np.ascontiguousarray(snapshot_mask),
+        )
+    elif HAS_NUMBA:
         (
             daily_values, trade_count, avg_pos_pct, final_pos_pct,
             final_shares, final_cash, cost_basis,
@@ -615,10 +1208,17 @@ def simulate_portfolio(
         })
 
     nav = daily_values
-    total_return = float((nav[-1] - nav[0]) / nav[0] * 100) if nav[0] > 0 else 0.0
-    peak = np.maximum.accumulate(nav)
+    total_return = (
+        float((nav[-1] - initial_cash) / initial_cash * 100)
+        if len(nav) and initial_cash > 0
+        else 0.0
+    )
+    drawdown_nav = np.concatenate(([float(initial_cash)], nav))
+    peak = np.maximum.accumulate(drawdown_nav)
     with np.errstate(divide="ignore", invalid="ignore"):
-        dd_series = np.where(peak > 0, (nav - peak) / peak * 100.0, 0.0)
+        dd_series = np.where(
+            peak > 0, (drawdown_nav - peak) / peak * 100.0, 0.0
+        )
     dd = float(np.min(dd_series[np.isfinite(dd_series)]))
     sharpe = 0.0
     if len(nav) > 5:
@@ -646,6 +1246,7 @@ def simulate_portfolio(
         final_shares=final_shares,
         final_prices=(valuation_price[-1].copy() if len(valuation_price) else None),
         final_cash=float(final_cash),
+        pending_order_count=int(pending_order_count),
     )
 
 
@@ -715,6 +1316,8 @@ class WalkForwardManager:
         )
         self.price_matrix = np.full((self.T, N), np.nan, dtype=np.float32)
         self.price_open_matrix = np.full((self.T, N), np.nan, dtype=np.float32)
+        self.price_high_matrix = np.full((self.T, N), np.nan, dtype=np.float32)
+        self.price_low_matrix = np.full((self.T, N), np.nan, dtype=np.float32)
 
         for i, code in enumerate(stock_codes):
             df = computed.get(code)
@@ -732,8 +1335,14 @@ class WalkForwardManager:
                 self.price_matrix[:, i] = aligned["close"].values
             if "open" in aligned.columns:
                 self.price_open_matrix[:, i] = aligned["open"].values
+            if "high" in aligned.columns:
+                self.price_high_matrix[:, i] = aligned["high"].values
+            if "low" in aligned.columns:
+                self.price_low_matrix[:, i] = aligned["low"].values
 
         self.benchmark_series: dict[str, np.ndarray] = {}
+        self.benchmark_high_series: dict[str, np.ndarray] = {}
+        self.benchmark_raw_returns: dict[str, np.ndarray] = {}
         for code, raw_df in self.benchmark_data.items():
             if raw_df is None or raw_df.empty or "close" not in raw_df.columns:
                 continue
@@ -747,6 +1356,26 @@ class WalkForwardManager:
             values = series.to_numpy(dtype=np.float64)
             if np.isfinite(values).any():
                 self.benchmark_series[str(code)] = values
+                self.benchmark_raw_returns[str(code)] = values.copy()
+            if "high" in benchmark.columns:
+                high_values = (
+                    pd.to_numeric(benchmark["high"], errors="coerce")
+                    .reindex(self.dates)
+                    .ffill()
+                    .to_numpy(dtype=np.float64)
+                )
+            else:
+                high_values = values.copy()
+            if np.isfinite(high_values).any():
+                self.benchmark_high_series[str(code)] = high_values
+
+        self.buy_execution_price_matrix = pessimistic_buy_prices(
+            self.price_high_matrix
+        )
+        self.benchmark_buy_prices = {
+            code: pessimistic_buy_prices(values).reshape(-1)
+            for code, values in self.benchmark_high_series.items()
+        }
 
     def build_matrices(self):
         return self.indicator_matrix, self.price_matrix, self.price_open_matrix
@@ -896,12 +1525,30 @@ class Backtester:
                 dates=list(market_data.dates),
                 symbols=list(market_data.symbols),
                 prices=prices * fx_rate,
+                highs=(
+                    np.asarray(market_data.highs, dtype=np.float32) * fx_rate
+                    if market_data.highs is not None
+                    else None
+                ),
+                lows=(
+                    np.asarray(market_data.lows, dtype=np.float32) * fx_rate
+                    if market_data.lows is not None
+                    else None
+                ),
+                benchmark_buy_prices=(
+                    np.asarray(
+                        market_data.benchmark_buy_prices, dtype=np.float32
+                    ) * fx_rate
+                    if market_data.benchmark_buy_prices is not None
+                    else None
+                ),
                 tradable=tradable,
             ),
             float(self.execution.initial_capital),
             lot_size=int(self.execution.lot_sizes.get(self.group, 100)),
             commission_rate=float(self.execution.commission_rate),
             min_holding_days=int(self.execution.min_holding_days),
+            execution_price_scale=fx_rate,
         )
 
     def run(
@@ -921,8 +1568,9 @@ class Backtester:
         benchmark_win_rates: dict[str, float] = {}
         benchmark_excess_returns: dict[str, float] = {}
         benchmark_details: dict[str, dict[str, object]] = {}
+        benchmark_raw_returns: dict[str, float] = {}
         for code in benchmark_codes or []:
-            if code == "risk_free":
+            if code in {"risk_free", "510300", "universe_equal_weight"}:
                 continue
             strategy_values, benchmark_values = _aligned_benchmark_values(
                 trace.nav_dates, trace.nav_series, benchmark_data.get(code)
@@ -938,11 +1586,95 @@ class Backtester:
             )
             if detail["win_rate"] is not None:
                 benchmark_win_rates[code] = float(detail["win_rate"])
+            benchmark_raw_returns[code] = float(detail["benchmark_return"])
+
+        # The tradable 510300 baseline pays the same fee and uses the same
+        # pessimistic high-price entry as the strategy execution contract.
+        benchmark_close, _benchmark_high = _aligned_benchmark_ohlc(
+            trace.nav_dates, benchmark_data.get("510300")
+        )
+        if len(benchmark_close) == len(trace.nav_series) and len(benchmark_close) > 1:
+            entry_prices = _benchmark_stress_prices(
+                trace.nav_dates, benchmark_data.get("510300")
+            )
+            detail = _tradable_benchmark_detail(
+                np.asarray(trace.nav_series, dtype=float),
+                benchmark_close,
+                entry_prices,
+                float(self.execution.initial_capital),
+                int(self.execution.lot_sizes.get("a_share", 100)),
+                float(self.execution.commission_rate),
+            )
+            if detail is not None:
+                raw_return = (
+                    benchmark_close[-1] / benchmark_close[0] - 1.0
+                ) * 100.0
+                detail["raw_price_return"] = round(float(raw_return), 2)
+                benchmark_details["510300"] = detail
+                benchmark_returns["510300"] = float(
+                    detail["benchmark_return"]
+                )
+                benchmark_excess_returns["510300"] = float(
+                    detail["strategy_excess_return"]
+                )
+                benchmark_raw_returns["510300"] = round(float(raw_return), 2)
+                if detail["win_rate"] is not None:
+                    benchmark_win_rates["510300"] = float(detail["win_rate"])
+
+        # Static equal-weight in the exact configured universe is the control
+        # for asset selection; only timing should earn excess return.
+        fx_rate = float(self.execution.fx_rates.get(self.group, 1.0))
+        universe_close = np.asarray(market_data.prices, dtype=float) * fx_rate
+        universe_high = (
+            np.asarray(market_data.highs, dtype=float) * fx_rate
+            if market_data.highs is not None
+            else universe_close
+        )
+        if len(universe_close) > 1 and universe_close.shape[1] > 0:
+            universe_buy_prices = (
+                np.asarray(market_data.benchmark_buy_prices, dtype=float)
+                if market_data.benchmark_buy_prices is not None
+                else pessimistic_buy_prices(universe_high)
+            )
+            detail = _tradable_benchmark_detail(
+                np.asarray(trace.nav_series, dtype=float),
+                universe_close,
+                universe_buy_prices,
+                float(self.execution.initial_capital),
+                int(self.execution.lot_sizes.get(self.group, 100)),
+                float(self.execution.commission_rate),
+            )
+            if detail is not None:
+                raw_components = []
+                for column in range(universe_close.shape[1]):
+                    values = universe_close[:, column]
+                    valid = values[np.isfinite(values) & (values > 0)]
+                    if len(valid) > 1:
+                        raw_components.append(valid[-1] / valid[0] - 1.0)
+                raw_return = (
+                    float(np.mean(raw_components) * 100.0)
+                    if raw_components
+                    else 0.0
+                )
+                detail["raw_price_return"] = round(raw_return, 2)
+                benchmark_details["universe_equal_weight"] = detail
+                benchmark_returns["universe_equal_weight"] = float(
+                    detail["benchmark_return"]
+                )
+                benchmark_excess_returns["universe_equal_weight"] = float(
+                    detail["strategy_excess_return"]
+                )
+                benchmark_raw_returns["universe_equal_weight"] = round(
+                    raw_return, 2
+                )
+                if detail["win_rate"] is not None:
+                    benchmark_win_rates["universe_equal_weight"] = float(
+                        detail["win_rate"]
+                    )
 
         cash_detail = _risk_free_detail(trace.nav_series, risk_free_rate)
         cash_return = 0.0
         if cash_detail is not None:
-            cash_detail["is_primary"] = primary_benchmark == "risk_free"
             benchmark_details["risk_free"] = cash_detail
             cash_return = float(cash_detail["benchmark_return"])
             benchmark_returns["risk_free"] = cash_return
@@ -959,7 +1691,30 @@ class Backtester:
         )
         holdings = _final_holdings(trace, list(market_data.symbols))
         holdings_value = sum(float(item["value"]) for item in holdings)
+        unified_candidates = [
+            code
+            for code in ("risk_free", "510300", "universe_equal_weight")
+            if code in benchmark_returns
+        ]
+        # Legacy reports without 510300 keep their configured display primary;
+        # native unified runs always select the strongest of the three controls.
+        if "510300" in benchmark_returns and unified_candidates:
+            primary_benchmark = max(
+                unified_candidates, key=lambda code: benchmark_returns[code]
+            )
         primary_return = benchmark_returns.get(primary_benchmark, cash_return)
+        for code, detail in benchmark_details.items():
+            detail["is_primary"] = code == primary_benchmark
+            detail["strategy_excess_return"] = round(
+                float(
+                    trace.total_return_pct
+                    - float(detail.get("benchmark_return", 0.0))
+                ),
+                2,
+            )
+            benchmark_excess_returns[code] = float(
+                detail["strategy_excess_return"]
+            )
         return EvaluationReport(
             group=self.group,
             engine_name=strategy_id,
@@ -971,6 +1726,7 @@ class Backtester:
             sharpe_ratio=round(trace.sharpe_ratio, 4),
             trade_count=int(trace.total_trades),
             avg_cash_pct=round(100.0 - trace.avg_position_pct, 2),
+            pending_order_count=int(trace.pending_order_count),
             initial_asset=round(float(self.execution.initial_capital), 2),
             final_asset=round(final_asset, 2),
             final_cash=round(float(trace.final_cash), 2),
@@ -981,6 +1737,7 @@ class Backtester:
             benchmark_win_rates=benchmark_win_rates,
             benchmark_excess_returns=benchmark_excess_returns,
             benchmark_details=benchmark_details,
+            benchmark_raw_returns=benchmark_raw_returns,
             primary_benchmark=primary_benchmark,
             composition=list(market_data.symbols),
             nav_series=list(trace.nav_series),
@@ -1028,6 +1785,11 @@ def _build_signal_plan(
         dates=list(dates),
         symbols=list(active_codes),
         prices=price,
+        highs=ind_mat[:, :, IDX_HIGH],
+        lows=ind_mat[:, :, IDX_LOW],
+        benchmark_buy_prices=pessimistic_buy_prices(
+            ind_mat[:, :, IDX_HIGH]
+        ),
         tradable=tradable,
     )
     trade_plan = strategy.make_signals(params, market_data)
@@ -1045,8 +1807,15 @@ def _build_signal_plan(
             trade_plan = trade_plan.sliced(int(selected[0]), int(selected[-1]) + 1)
         ind_mat = ind_mat[date_mask]
         price = price[date_mask]
+        highs = market_data.highs[date_mask]
+        lows = market_data.lows[date_mask]
+        benchmark_buy_prices = market_data.benchmark_buy_prices[date_mask]
         tradable = tradable[date_mask]
         dates = [date for date, keep in zip(dates, date_mask) if keep]
+    else:
+        highs = market_data.highs
+        lows = market_data.lows
+        benchmark_buy_prices = market_data.benchmark_buy_prices
 
     if not dates:
         return None, None, list(active_codes)
@@ -1056,6 +1825,9 @@ def _build_signal_plan(
         dates=list(dates),
         symbols=list(active_codes),
         prices=price,
+        highs=highs,
+        lows=lows,
+        benchmark_buy_prices=benchmark_buy_prices,
         tradable=tradable,
     )
     return trade_plan, report_market_data, list(active_codes)
@@ -1118,6 +1890,243 @@ def _aligned_benchmark_values(
     except (TypeError, ValueError, KeyError) as exc:
         logger.warning("Unable to align benchmark data: %s", exc)
         return np.array([], dtype=float), np.array([], dtype=float)
+
+
+def _aligned_benchmark_ohlc(
+    nav_dates: list[str],
+    benchmark_df: pd.DataFrame | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Backward-align benchmark close/high without borrowing future quotes."""
+    if (
+        benchmark_df is None
+        or benchmark_df.empty
+        or "close" not in benchmark_df.columns
+        or not nav_dates
+    ):
+        return np.array([], dtype=float), np.array([], dtype=float)
+    try:
+        target = pd.DataFrame(
+            {"date": pd.to_datetime(nav_dates, errors="coerce")}
+        ).dropna()
+        benchmark = benchmark_df.copy()
+        dates = (
+            pd.to_datetime(benchmark["date"], errors="coerce")
+            if "date" in benchmark.columns
+            else pd.to_datetime(benchmark.index, errors="coerce")
+        )
+        close = pd.to_numeric(benchmark["close"], errors="coerce")
+        high = (
+            pd.to_numeric(benchmark["high"], errors="coerce")
+            if "high" in benchmark.columns
+            else close
+        )
+        source = pd.DataFrame(
+            {"date": dates, "close": close, "high": high}
+        ).dropna()
+        source = source[
+            (source["close"] > 0) & (source["high"] > 0)
+        ].drop_duplicates("date", keep="last").sort_values("date")
+        if source.empty or len(target) != len(nav_dates):
+            return np.array([], dtype=float), np.array([], dtype=float)
+        aligned = pd.merge_asof(
+            target.sort_values("date"),
+            source,
+            on="date",
+            direction="backward",
+        )
+        if aligned[["close", "high"]].isna().any().any():
+            return np.array([], dtype=float), np.array([], dtype=float)
+        return (
+            aligned["close"].to_numpy(dtype=float),
+            aligned["high"].to_numpy(dtype=float),
+        )
+    except (TypeError, ValueError, KeyError) as exc:
+        logger.warning("Unable to align benchmark OHLC data: %s", exc)
+        return np.array([], dtype=float), np.array([], dtype=float)
+
+
+def _benchmark_entry_stress_price(
+    trigger_date: str,
+    benchmark_df: pd.DataFrame | None,
+) -> float:
+    """Resolve prior/current/next benchmark highs around the entry date."""
+    if benchmark_df is None or benchmark_df.empty:
+        return float("nan")
+    try:
+        frame = benchmark_df.copy()
+        dates = (
+            pd.to_datetime(frame["date"], errors="coerce")
+            if "date" in frame.columns
+            else pd.to_datetime(frame.index, errors="coerce")
+        )
+        high = pd.to_numeric(
+            frame["high"] if "high" in frame.columns else frame["close"],
+            errors="coerce",
+        )
+        source = pd.DataFrame({"date": dates, "high": high}).dropna()
+        source = source[source["high"] > 0].sort_values("date").reset_index(
+            drop=True
+        )
+        trigger = pd.Timestamp(trigger_date)
+        current_indexes = np.flatnonzero(
+            source["date"].to_numpy(dtype="datetime64[ns]")
+            <= trigger.to_datetime64()
+        )
+        next_indexes = np.flatnonzero(
+            source["date"].to_numpy(dtype="datetime64[ns]")
+            > trigger.to_datetime64()
+        )
+        if len(current_indexes) == 0 or len(next_indexes) == 0:
+            return float("nan")
+        current_index = int(current_indexes[-1])
+        if current_index == 0:
+            return float("nan")
+        next_index = int(next_indexes[0])
+        return float(
+            source.loc[
+                [current_index - 1, current_index, next_index], "high"
+            ].max()
+        )
+    except (TypeError, ValueError, KeyError):
+        return float("nan")
+
+
+def _benchmark_stress_prices(
+    trigger_dates: list[str],
+    benchmark_df: pd.DataFrame | None,
+) -> np.ndarray:
+    """Build one pessimistic executable entry price for every start date."""
+    result = np.full(len(trigger_dates), np.nan, dtype=float)
+    if benchmark_df is None or benchmark_df.empty or not trigger_dates:
+        return result
+    try:
+        frame = benchmark_df.copy()
+        dates = (
+            pd.to_datetime(frame["date"], errors="coerce")
+            if "date" in frame.columns
+            else pd.to_datetime(frame.index, errors="coerce")
+        )
+        high = pd.to_numeric(
+            frame["high"] if "high" in frame.columns else frame["close"],
+            errors="coerce",
+        )
+        source = pd.DataFrame({"date": dates, "high": high}).dropna()
+        source = source[source["high"] > 0].sort_values("date").drop_duplicates(
+            "date", keep="last"
+        )
+        source_dates = source["date"].to_numpy(dtype="datetime64[D]").astype(
+            np.int64
+        )
+        source_high = source["high"].to_numpy(dtype=float)
+        triggers = pd.to_datetime(
+            trigger_dates, errors="coerce"
+        ).values.astype("datetime64[D]").astype(np.int64)
+        current = np.searchsorted(source_dates, triggers, side="right") - 1
+        following = np.searchsorted(source_dates, triggers, side="right")
+        valid = (
+            (current > 0)
+            & (following < len(source_dates))
+        )
+        rows = np.flatnonzero(valid)
+        result[rows] = np.maximum(
+            np.maximum(
+                source_high[current[rows] - 1],
+                source_high[current[rows]],
+            ),
+            source_high[following[rows]],
+        )
+    except (TypeError, ValueError, KeyError):
+        return result
+    return result
+
+
+def _tradable_benchmark_detail(
+    strategy_values: np.ndarray,
+    close_prices: np.ndarray,
+    buy_prices: np.ndarray,
+    initial_cash: float,
+    lot_size: int,
+    commission_rate: float,
+    validation_days: int = 9 * 21,
+) -> dict[str, object] | None:
+    """Evaluate a tradable baseline, re-entering with costs at every start."""
+    strategy = np.asarray(strategy_values, dtype=float)
+    closes = np.asarray(close_prices, dtype=float)
+    buys = np.asarray(buy_prices, dtype=float)
+    if closes.ndim == 1:
+        closes = closes.reshape(-1, 1)
+    if buys.ndim == 1:
+        buys = buys.reshape(-1, 1)
+    if (
+        len(strategy) < 2
+        or len(strategy) != len(closes)
+        or buys.shape != closes.shape
+        or not np.isfinite(buys[0]).any()
+    ):
+        return None
+    full_nav = buy_and_hold_nav(
+        closes,
+        buys,
+        initial_cash,
+        lot_size,
+        commission_rate,
+    )
+    benchmark_return = (full_nav[-1] / initial_cash - 1.0) * 100.0
+    cut = max(0, len(strategy) - validation_days)
+    wins = 0
+    comparisons = 0
+    final_prices = closes[-1]
+    weights = np.full(closes.shape[1], 1.0 / closes.shape[1])
+    for start in range(cut, len(strategy) - 1):
+        if strategy[start] <= 0 or not np.isfinite(buys[start]).any():
+            continue
+        cash = float(initial_cash)
+        final_value = 0.0
+        for column in range(closes.shape[1]):
+            execution_price = buys[start, column]
+            final_price = final_prices[column]
+            if (
+                execution_price <= 0
+                or final_price <= 0
+                or not np.isfinite(execution_price)
+                or not np.isfinite(final_price)
+            ):
+                continue
+            budget = initial_cash * weights[column]
+            quantity = int(
+                budget
+                / (execution_price * (1.0 + commission_rate))
+                / lot_size
+            ) * lot_size
+            if quantity <= 0:
+                continue
+            cost = quantity * execution_price * (1.0 + commission_rate)
+            if cost > cash:
+                continue
+            cash -= cost
+            final_value += quantity * final_price
+        strategy_forward = strategy[-1] / strategy[start] - 1.0
+        benchmark_forward = (cash + final_value) / initial_cash - 1.0
+        if not (
+            np.isfinite(strategy_forward) and np.isfinite(benchmark_forward)
+        ):
+            continue
+        wins += int(strategy_forward > benchmark_forward)
+        comparisons += 1
+    return {
+        "benchmark_return": round(float(benchmark_return), 2),
+        "strategy_excess_return": round(
+            float((strategy[-1] / strategy[0] - 1.0) * 100.0)
+            - float(benchmark_return),
+            2,
+        ),
+        "win_rate": (
+            round(wins / comparisons * 100.0, 2) if comparisons else None
+        ),
+        "win_days": wins,
+        "comparison_days": comparisons,
+        "entry_cost_model": "fee_and_pessimistic_high_per_start",
+    }
 
 
 def _benchmark_return_and_win_rate(
@@ -1310,7 +2319,7 @@ def evaluate_all_groups(
     Args:
         stocks_data: {code: DataFrame} 已拉取的历史数据
         stock_codes: 全量标的代码列表
-        strategy: SearchStrategy 实例（percentile/builder/simplified）
+        strategy: registered SearchStrategy instance
         params: 策略参数
         exec_cfg: get_execution_config() 返回值
         benchmark_data: 基准价格数据

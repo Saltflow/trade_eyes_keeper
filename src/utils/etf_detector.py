@@ -39,11 +39,17 @@ def is_etf(stock_code: str) -> bool:
             return True
 
     # 特殊ETF代码列表（非标准前缀但仍然可能是ETF）
-    special_etfs = {"508091", "513910", "588000"}
+    special_etfs = {"513910", "588000"}
     if stock_code in special_etfs:
         return True
 
     return False
+
+def is_reit(stock_code: str) -> bool:
+    """Return whether a mainland instrument is an exchange-listed REIT."""
+    code = str(stock_code).strip()
+    return code.isdigit() and len(code) == 6 and code.startswith("508")
+
 
 
 def get_etf_adjustment_type(stock_code: str) -> str:

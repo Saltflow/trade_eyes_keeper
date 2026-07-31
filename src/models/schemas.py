@@ -85,7 +85,7 @@ class StockPriceData(BaseModel):
     earnings_growth: Optional[float] = None  # 业绩增长率（%）
     pe_ratio: Optional[float] = None  # 市盈率
     pb_ratio: Optional[float] = None  # 市净率
-    roe: Optional[float] = None  # 净资产收益率（%），由 PB/PE 计算得出
+    roe: Optional[float] = None  # 净资产收益率（%），仅接受财报口径或财报推导
 
     # ── 元数据 ──
     data_source: Optional[DataSource] = None

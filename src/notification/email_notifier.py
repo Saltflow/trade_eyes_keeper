@@ -819,6 +819,16 @@ def _build_optimizer_run_summary(report) -> str:
         lines.append(f"活动策略版本: {report.timestamp}（补发重建）")
     if report.activated:
         lines.append("<b>已发布:</b> 此运行已成为日报、简报和回测的当前告警策略。")
+    elif getattr(report, "candidate", False):
+        run_id = getattr(report, "run_id", "")
+        lines.append(
+            "<b>候选已保存:</b> 当前活动策略未切换。"
+            + (
+                f"人工确认后运行 python main.py --activate-run {run_id}。"
+                if run_id
+                else "通过验收后可人工激活。"
+            )
+        )
     else:
         lines.append("<b>未切换:</b> 三个市场未全部完成，系统继续使用上一次完整策略。")
 
@@ -1063,6 +1073,7 @@ class EmailNotifier(BaseNotifier):
                 evaluation_reports=evaluation_reports,
                 daily_mode=True,
                 placements=getattr(session, "placements", None),
+                instrument_audit=getattr(session, "instrument_audit", None),
             )
 
             # ── 参考持仓 ──
@@ -1151,7 +1162,7 @@ class EmailNotifier(BaseNotifier):
                 evaluation_reports=evaluation_reports,
                 daily_mode=True,
                 placements=getattr(session, "placements", None),
-                eval_cache=getattr(session, "_yaml_eval_cache", None),
+                instrument_audit=getattr(session, "instrument_audit", None),
             )
 
             # ── 参考持仓 ──
@@ -1924,6 +1935,7 @@ class EmailNotifier(BaseNotifier):
         evaluation_reports=None,
         daily_mode=False,
         placements=None,
+        instrument_audit=None,
     ):
         """
         构建邮件正文（完整版：表格 + 公告 + 图表）
@@ -2621,11 +2633,20 @@ class EmailNotifier(BaseNotifier):
 
         # 9. 替换主模板变量
         placement_section = self._build_placement_section(placements, stock_data)
+        try:
+            from ..instruments.audit import render_profile_section
+        except ImportError:
+            # Some legacy entry points expose ``src`` directly on sys.path and
+            # import this module as ``notification.email_notifier``.
+            from instruments.audit import render_profile_section
+
+        instrument_profile_section = render_profile_section(instrument_audit)
         html_content = email_template.format(
             current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             alert_section=alert_section,
             all_rows_price=all_rows_price,
             all_rows_fundamental=all_rows_fundamental,
+            instrument_profile_section=instrument_profile_section,
             all_rows_technical=all_rows_technical,
             price_table_header=price_table_header,
             announcements_section=announcements_section,

@@ -187,10 +187,26 @@ def test_evaluation_honors_requested_backtest_dates():
     assert report.nav_dates[0] == start
     assert report.nav_dates[-1] == end
     assert len(report.nav_dates) == len(report.nav_series) == 121
-    assert set(report.benchmark_returns) == {"510880", "510300", "risk_free"}
-    assert set(report.benchmark_win_rates) == {"510880", "510300", "risk_free"}
+    assert set(report.benchmark_returns) == {
+        "510880",
+        "510300",
+        "risk_free",
+        "universe_equal_weight",
+    }
+    assert set(report.benchmark_win_rates) == {
+        "510880",
+        "510300",
+        "risk_free",
+        "universe_equal_weight",
+    }
     assert report.excess_return == round(
-        report.total_return - report.benchmark_returns["510880"], 2
+        report.total_return
+        - report.benchmark_returns[report.primary_benchmark],
+        2,
+    )
+    assert report.primary_benchmark == max(
+        ("risk_free", "510300", "universe_equal_weight"),
+        key=lambda code: report.benchmark_returns[code],
     )
 
 

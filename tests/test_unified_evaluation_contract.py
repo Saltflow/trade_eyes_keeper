@@ -27,7 +27,12 @@ def test_every_registered_strategy_returns_trade_plan():
         prices=np.full((320, 2), 10.0, dtype=np.float32),
         tradable=np.ones((320, 2), dtype=bool),
     )
-    for strategy_id in ("percentile", "builder", "simplified"):
+    for strategy_id in (
+        "percentile",
+        "builder",
+        "simplified",
+        "regime_pullback",
+    ):
         strategy = get_strategy(strategy_id)
         params = strategy.random_params(np.random.RandomState(7))
         plan = strategy.make_signals(params, data)
@@ -178,7 +183,11 @@ def test_backtester_returns_complete_evaluation_report():
     assert report.final_holdings[0]["code"] == "000001"
     assert report.final_holdings[0]["shares"] > 0
     assert report.primary_benchmark == "510880"
-    assert set(report.benchmark_details) == {"risk_free", "510880"}
+    assert set(report.benchmark_details) == {
+        "risk_free",
+        "510880",
+        "universe_equal_weight",
+    }
     assert report.benchmark_details["510880"]["comparison_days"] > 0
     assert report.weekly_nav_ohlc["close"]
     assert report.nav_dates == dates

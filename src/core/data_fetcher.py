@@ -166,7 +166,7 @@ class StockDataFetcher:
             "dividend_yield": None,  # 当前价年化股息率（%）
             "pe_ratio": None,  # 市盈率 (PE)
             "pb_ratio": None,  # 市净率 (PB)
-            "roe": None,  # 净资产收益率 (ROE)，由 PB/PE 计算得出
+            "roe": None,  # ROE 必须由利润/平均净资产计算，旧快照不再伪造
         }
 
         # 确保股票代码是字符串
@@ -180,24 +180,14 @@ class StockDataFetcher:
         # 2. 获取业绩增长数据（暂时返回None，后续可通过web_crawler实现）
         # 保留为None，避免使用不可靠的API
 
-        # 3. 获取估值指标（PE、PB），ROE 由 PB/PE 计算
+        # 3. 获取行情源估值指标。ROE 不再由 PB/PE 伪造；完整画像由
+        # InstrumentAuditService 使用财报利润和平均净资产计算。
         valuation_data = self._fetch_valuation_from_web_crawler(stock_code)
         if valuation_data:
             pe = valuation_data.get("pe_ratio")
             pb = valuation_data.get("pb_ratio")
             fundamental_data["pe_ratio"] = pe  # type: ignore
             fundamental_data["pb_ratio"] = pb  # type: ignore
-            if pe is not None and pb is not None and pe != 0:
-                roe = (pb / pe) * 100
-                fundamental_data["roe"] = round(roe, 3)
-                logger.info(
-                    f"股票 {stock_code} ROE 计算: PE={pe:.2f}, PB={pb:.2f}, "
-                    f"ROE={roe:.2f}%"
-                )
-            else:
-                logger.warning(
-                    f"股票 {stock_code} PE/PB 为空，无法计算 ROE (PE={pe}, PB={pb})"
-                )
 
         logger.info(
             f"股票 {stock_code} 基本面数据获取完成: "

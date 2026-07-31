@@ -110,6 +110,103 @@ def test_absolute_return_gate_rejects_positive_excess_with_negative_strategy_ret
     assert not _passes_ranking_return_gate(diagnostics, constraints)
 
 
+def test_strongest_benchmark_gate_requires_seven_of_eleven_positive_windows():
+    constraints = _constraints()
+    constraints.genetic_search.min_weighted_strategy_return = -1.0
+    constraints.genetic_search.min_positive_return_windows = 0
+    constraints.genetic_search.min_winning_benchmark_windows = 7
+    passing = [
+        WindowStats(strategy_return=1.0, test_excess_return=value)
+        for value in ([0.2] * 7 + [-0.1] * 4)
+    ]
+    failing = [
+        WindowStats(strategy_return=1.0, test_excess_return=value)
+        for value in ([0.2] * 6 + [-0.1] * 5)
+    ]
+
+    passing_diagnostics = _ranking_return_diagnostics(passing, constraints)
+    failing_diagnostics = _ranking_return_diagnostics(failing, constraints)
+
+    assert passing_diagnostics["mean_strongest_benchmark_excess"] > 0.0
+    assert passing_diagnostics["strongest_benchmark_win_windows"] == 7
+    assert _passes_ranking_return_gate(passing_diagnostics, constraints)
+    assert failing_diagnostics["mean_strongest_benchmark_excess"] > 0.0
+    assert failing_diagnostics["strongest_benchmark_win_windows"] == 6
+    assert not _passes_ranking_return_gate(failing_diagnostics, constraints)
+
+
+def test_ga_never_evaluates_isolated_or_holdout_windows_until_final_candidate(
+    monkeypatch,
+):
+    constraints = StrategyConstraints(
+        {
+            "walk_forward": {
+                "num_windows": 14,
+                "validation_windows": 1,
+                "purge_overlapping_windows": True,
+            },
+            "genetic_search": {
+                "phase1_random_samples": 1,
+                "phase1_top_keep": 1,
+                "num_generations": 0,
+                "population_size": 1,
+                "offspring_size": 0,
+                "min_weighted_strategy_return": -1.0,
+                "min_positive_return_windows": 0,
+                "min_winning_benchmark_windows": 7,
+                "sensitivity_top_candidates": 1,
+            },
+        }
+    )
+    constraints.check_hard_constraints = lambda *_args: (True, [])
+    windows = [
+        SimpleNamespace(
+            train_start=index * 3,
+            test_start=index * 3,
+            test_end=index * 3 + 9,
+        )
+        for index in range(14)
+    ]
+    manager = SimpleNamespace(
+        iter_windows=lambda: windows,
+        stock_codes=[],
+        T=60,
+    )
+    strategy = _FakeStrategy()
+    calls = []
+
+    def fake_evaluate(
+        _encoding,
+        _strategy,
+        selected_windows,
+        *_args,
+        validation_window_count=None,
+        **_kwargs,
+    ):
+        calls.append((len(selected_windows), validation_window_count))
+        stats = [
+            WindowStats(strategy_return=1.0, test_excess_return=0.2)
+            for _ in selected_windows
+        ]
+        if len(selected_windows) == 14:
+            return stats, stats[:11], stats[-1:], 0.2
+        return stats, stats, [], 0.2
+
+    monkeypatch.setattr("src.analysis.optimizer._evaluate_encoding_wf", fake_evaluate)
+    monkeypatch.setattr(
+        "src.analysis.optimizer._random_encoding",
+        lambda _strategy: StrategyEncoding([1], "fake"),
+    )
+
+    results = GeneticOptimizer(strategy, constraints, manager, object()).run()
+
+    assert len(results) == 1
+    assert calls == [(11, 0), (14, None)]
+    assert len(results[0].ranking_stats) == 11
+    assert len(results[0].validation_stats) == 1
+    assert results[0].purged_window_count == 2
+
+
 class _FakeStrategy:
     name = "fake"
     param_space = ParamSpace([ParamDim("level", 3)])

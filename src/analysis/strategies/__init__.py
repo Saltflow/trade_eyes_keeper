@@ -7,11 +7,13 @@ main.py / optimizer.py / handlers.py 通过 get_strategy() / list_strategies()
 from .percentile.engine import PercentileSearchStrategy
 from .builder.engine import BuilderSearchStrategy
 from .simplified.engine import SimplifiedSearchStrategy
+from .regime_pullback.engine import RegimePullbackStrategy
 
 STRATEGIES: dict[str, type] = {
     "percentile": PercentileSearchStrategy,
     "builder": BuilderSearchStrategy,
     "simplified": SimplifiedSearchStrategy,
+    "regime_pullback": RegimePullbackStrategy,
 }
 
 

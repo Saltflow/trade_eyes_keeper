@@ -31,7 +31,7 @@ walk_forward:
   train_months: 12
   test_months: 9
   step_months: 3
-  # 13 ranking windows + 1 report-only hold-out window.
+  # 11 ranking + 2 overlap-isolation + 1 independent hold-out.
   num_windows: 14
   window_weights:
   - 1.0
@@ -44,9 +44,9 @@ walk_forward:
   data_years: 5
   # ``num_windows`` is the total number of windows.  The newest
   # ``validation_windows`` are held out for the daily-report validation.
-  # Adjacent nine-month tests intentionally overlap by six months.
+  # The two windows overlapping the newest hold-out are isolated.
   validation_windows: 1
-  purge_overlapping_windows: false
+  purge_overlapping_windows: true
 genetic_search:
   phase1_random_samples: 30000
   phase1_top_keep: 10000
@@ -63,10 +63,15 @@ genetic_search:
   sensitivity_top_candidates: 500
   sensitivity_samples: 10
   sensitivity_penalty_weight: 1.0
+  # Numba signal/execution kernels release the GIL; fixed-order thread maps
+  # preserve deterministic candidate order while using the local CPU.
+  evaluation_workers: 4
   # Ranking-window-only absolute-return gate.  The two purged windows and
   # newest validation window never participate in these checks.
   min_weighted_strategy_return: 0.0
   min_positive_return_windows: 8
+  # At least 7/11 ranking windows must beat that window's strongest control.
+  min_winning_benchmark_windows: 7
 discrete_search:
   buy_builders:
   - deviation_cross

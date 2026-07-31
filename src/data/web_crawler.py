@@ -1353,10 +1353,10 @@ class StockWebCrawler:
 
         # ── 源 1: QQ 实时行情 ──
         def fetch_from_qq(code):
-            """从腾讯实时行情获取 PE/PB (全市场支持, 失败重试1次)"""
+            """从腾讯实时行情获取 PE/PB，按市场解释字段。"""
             for attempt in range(2):
                 try:
-                    _, qq_symbol, _, _, _ = self._normalize_stock_code(code)
+                    market, qq_symbol, _, _, _ = self._normalize_stock_code(code)
                     url = f"http://qt.gtimg.cn/q={qq_symbol}"
                     headers = {"User-Agent": self.user_agent}
                     response = requests.get(url, headers=headers, timeout=self.timeout)
@@ -1367,14 +1367,18 @@ class StockWebCrawler:
                         items = data_str.split("~")
                         if len(items) > 46:
                             pe = _safe_float(items[39])
-                            pb = _safe_float(items[46])
+                            # QQ field 46 is PB for A shares.  HK/US payloads
+                            # use this position for the English company name.
+                            pb = (
+                                _safe_float(items[46])
+                                if market == "a_share"
+                                else None
+                            )
                             if pe is not None and (pe <= 0 or pe > 1000):
                                 raise ValueError(f"{stock_code} PE={pe} 超出合理范围")
                             if pb is not None and (pb <= 0 or pb > 50):
                                 raise ValueError(f"{stock_code} PB={pb} 超出合理范围")
                             return {"pe_ratio": pe, "pb_ratio": pb}
-                            if pe or pb:
-                                return {"pe_ratio": pe, "pb_ratio": pb}
                 except Exception as e:
                     if attempt == 0:
                         import time
@@ -1388,53 +1392,21 @@ class StockWebCrawler:
                     time.sleep(0.5)
             return None
 
-        # ── 源 2: Yahoo Finance (全市场) ──
-        def fetch_from_yahoo(code):
-            """从 Yahoo Finance 获取估值"""
-            try:
-                _, _, _, _, yahoo_symbol = self._normalize_stock_code(code)
-                if not yahoo_symbol:
-                    return None
-                url = (
-                    f"https://query1.finance.yahoo.com/v10/finance/"
-                    f"quoteSummary/{yahoo_symbol}"
-                    f"?modules=price"
-                )
-                headers = {"User-Agent": self.user_agent}
-                response = requests.get(url, headers=headers, timeout=10)
-                response.raise_for_status()
-                data = response.json()
-                price = (
-                    data.get("quoteSummary", {}).get("result", [{}])[0].get("price", {})
-                )
-                pe = price.get("trailingPE")
-                pb = price.get("priceToBook")
-                if pe is not None and (pe <= 0 or pe > 1000):
-                    raise ValueError(f"{code} PE={pe} 超出合理范围")
-                if pb is not None and (pb <= 0 or pb > 50):
-                    raise ValueError(f"{code} PB={pb} 超出合理范围")
-                return {"pe_ratio": pe, "pb_ratio": pb}
-            except Exception as e:
-                logger.info(f"Yahoo 估值 {code} 失败: {e}")
-            return None
-
-        # ── 降级链 ──
-        data_sources = [fetch_from_qq, fetch_from_yahoo]
-
-        for source_func in data_sources:
-            try:
-                logger.info(f"估值: 尝试 {source_func.__name__} → {stock_code}")
-                valuation_data = source_func(stock_code)
-                if valuation_data and any(
-                    v is not None for v in valuation_data.values()
-                ):
-                    logger.info(f"估值: {source_func.__name__} {stock_code} OK")
-                    return valuation_data
-            except Exception as e:
-                logger.warning(f"估值: {source_func.__name__} {stock_code} 失败: {e}")
-                continue
-
-        logger.warning(f"估值: 所有源失败 {stock_code}")
+        # Yahoo quoteSummary currently requires a cookie/crumb and the old
+        # implementation read PE/PB from the wrong ``price`` module.  The
+        # instrument audit derives fallback valuation from financial
+        # statements instead of returning misparsed values here.
+        try:
+            valuation_data = fetch_from_qq(stock_code)
+        except Exception as e:
+            logger.warning(f"估值: fetch_from_qq {stock_code} 失败: {e}")
+            valuation_data = None
+        if valuation_data:
+            return {
+                "pe_ratio": valuation_data.get("pe_ratio"),
+                "pb_ratio": valuation_data.get("pb_ratio"),
+            }
+        logger.warning(f"估值: QQ无有效字段 {stock_code}")
         return {"pe_ratio": None, "pb_ratio": None}
 
     def _fetch_dividend_from_sina(self, stock_code):

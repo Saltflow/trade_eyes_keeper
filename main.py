@@ -40,6 +40,7 @@ from src.analysis.helpers import _detect_fine_group, get_skip_search
 from src.core.ref_portfolio import RefPortfolioManager, REF_MONTHLY_LIMIT
 from src.analysis.optimizer import run_optimizer
 from src.analysis.strategy_artifacts import (
+    activate_run,
     OptimizerGroupSummary,
     OptimizerRunSummary,
     load_latest_strategy_run,
@@ -47,6 +48,8 @@ from src.analysis.strategy_artifacts import (
     persist_group_summary,
     publish_complete_run,
 )
+from src.instruments import InstrumentAuditService
+from src.instruments.audit import load_latest_audit
 
 
 OPTIMIZER_GROUPS = ("a_share", "hk", "us")
@@ -147,6 +150,9 @@ def _optimizer_validation_snapshot(report) -> dict[str, object]:
         "max_drawdown": float(report.max_drawdown),
         "sharpe_ratio": float(report.sharpe_ratio),
         "trade_count": int(report.trade_count),
+        "pending_order_count": int(
+            getattr(report, "pending_order_count", 0)
+        ),
         "avg_cash_pct": float(report.avg_cash_pct),
         "initial_asset": float(report.initial_asset),
         "final_asset": float(report.final_asset),
@@ -172,7 +178,11 @@ def _optimizer_validation_snapshot(report) -> dict[str, object]:
 def _load_optimizer_benchmarks(data_source, constraints, group: str, days: int) -> dict:
     """Fetch only configured tradable baselines for the optimizer validation."""
     result = {}
-    for code in constraints.benchmark_codes_for(group):
+    codes = list(dict.fromkeys([
+        *constraints.benchmark_codes_for(group),
+        "510300",
+    ]))
+    for code in codes:
         if code == "risk_free":
             continue
         try:
@@ -461,6 +471,9 @@ def run_optimization(
             try:
                 artifact_path = run_dir / f"{group}_best_params.yaml"
                 artifact = yaml.safe_load(artifact_path.read_text(encoding="utf-8")) or {}
+                activation = artifact.get("activation", {})
+                if isinstance(activation, dict):
+                    summaries[group].activation = dict(activation)
                 period = artifact.get("validation_period", {})
                 validation_start = (
                     str(period.get("start"))
@@ -503,19 +516,35 @@ def run_optimization(
             logger.warning("%s optimization completed without valid candidates", group)
             summaries[group].status = "no_candidates"
 
-    activated = publish_complete_run(
+    manual_activation = bool(getattr(strategy, "manual_activation", False))
+    publication_groups = (
+        OPTIMIZER_GROUPS if manual_activation else required_groups
+    )
+    published = publish_complete_run(
         run_id,
         strategy.name,
         started_at.isoformat(),
         summaries,
-        required_groups=required_groups,
-        all_groups=required_groups,
+        required_groups=publication_groups,
+        all_groups=publication_groups,
+        activate=not manual_activation,
     )
+    activated = bool(published and not manual_activation)
     if activated:
         logger.info("Published active optimizer run %s (%s)", run_id, strategy.name)
+    elif published and manual_activation:
+        logger.info(
+            "Saved candidate optimizer run %s (%s); activate explicitly with "
+            "python main.py --activate-run %s",
+            run_id,
+            strategy.name,
+            run_id,
+        )
     else:
         logger.warning(
-            "Optimizer run %s is incomplete; active alert strategy was not changed", run_id
+            "Optimizer run %s is incomplete or ineligible; active alert "
+            "strategy was not changed",
+            run_id,
         )
     _notify_optimizer_run(
         config,
@@ -526,6 +555,8 @@ def run_optimization(
             monotonic() - started,
             summaries,
             activated=activated,
+            run_id=run_id,
+            candidate=bool(published and manual_activation),
         ),
     )
 
@@ -690,6 +721,21 @@ def run_daily_task(force: bool = False):
             logger.warning("Session中无股票数据")
             return
         logger.info(f"股票数据获取完成: {len(session.stocks_data)}只股票")
+
+        # Current instrument profiles are reporting-only. Loading the latest
+        # completed audit avoids injecting current statements or current ETF
+        # constituents into historical optimization.
+        audit_config = config.get("instrument_audit", {}) or {}
+        if audit_config.get("show_in_daily_report", True):
+            audit = load_latest_audit(
+                audit_config.get("output_dir", "data/instrument_audit")
+            )
+            if audit is not None:
+                object.__setattr__(session, "instrument_audit", audit)
+                logger.info(
+                    "标的画像审计已加载: %s只",
+                    len(audit.profiles),
+                )
 
         # 3. 检查条件并存入Session
         logger.info("开始检查交易条件")
@@ -1249,6 +1295,16 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--optimize", action="store_true", help="run the configured strategy optimizer"
     )
+    mode.add_argument(
+        "--activate-run",
+        metavar="RUN_ID",
+        help="atomically activate a complete holdout-passed candidate run",
+    )
+    mode.add_argument(
+        "--audit-instruments",
+        action="store_true",
+        help="audit typed company/fund/REIT profiles without running strategies",
+    )
     mode.add_argument("--health-server", action="store_true", help="start health server")
     mode.add_argument("--interactive", action="store_true", help="start Telegram bot")
     return parser
@@ -1269,6 +1325,22 @@ def main(argv: list[str] | None = None):
     elif args.optimize:
         completed = run_optimization(config, target_groups=OPTIMIZER_GROUPS)
         logger.info("Optimization finished: %s", completed or "no group completed")
+    elif args.activate_run:
+        if activate_run(args.activate_run, groups=OPTIMIZER_GROUPS):
+            logger.info("Activated optimizer candidate: %s", args.activate_run)
+        else:
+            logger.error(
+                "Candidate activation rejected; current active strategy is unchanged"
+            )
+    elif args.audit_instruments:
+        report = InstrumentAuditService(config).run()
+        outputs = report.summary.get("output_files", {})
+        logger.info(
+            "Instrument audit complete: %s instruments, fill %.1f%%, HTML=%s",
+            len(report.profiles),
+            float(report.summary.get("fill_rate", 0.0)) * 100.0,
+            outputs.get("html", ""),
+        )
     elif args.health_server:
         from src.health_server import start_health_server
 

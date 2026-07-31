@@ -30,8 +30,8 @@
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │  分析策略层 (src/analysis/)                                      │
-│  - strategies/              builder/percentile/simplified 插件策略 │
-│  - optimizer.py             14窗口统一遗传搜参与排名             │
+│  - strategies/              四个独立注册策略插件                  │
+│  - optimizer.py             14窗口(11排名+2隔离+1留出)统一搜参   │
 │  - backtester.py            TradePlan 仿真 + EvaluationReport    │
 │  - strategy_artifacts.py    参数产物原子发布与旧 YAML 单点迁移   │
 │  - search_interface.py      StrategyMarketData/TradePlan 契约     │
@@ -73,9 +73,9 @@ main.py --once
         ├── condition_checker.check_from_session() → session.alerts
         │      └── alert_engine / alert_processor
         ├── signal_scanner.scan()                  → 共识信号（今日触发）
-        │      ├── 加载最新优化结果 (Top-5 策略, 02:00 cron 产出)
-        │      ├── 用 YAML rules 条件评估当日数据
-        │      └── 日报/简报直读 YAML 预估收益，不重新搜参
+        │      ├── 加载最近一次完整激活运行的单一策略参数
+        │      ├── 读取同一 TradePlan 最后有效交易日事件
+        │      └── 日报调用同一 Backtester，不重新搜参
         └── email_notifier.send_from_session()
                ├── _generate_daily_pdf()
                │      ├── report_daily.tex 模板注入数据
@@ -100,9 +100,9 @@ main.py --once
 | `condition_checker.py` | 基于 Session 数据判断警报条件 | **不修改** Session 中的原始数据 |
 | `email_notifier.py` | 构建并发送邮件、xelatex PDF 生成、图表生成 | **不抓取**外部数据 |
 | `strategies/` | 从市场数据生成统一 `TradePlan`，最后一日即今日信号 | **不计算**收益和持仓 |
-| `optimizer.py` | 12月训练/9月测试/3月步长的14窗口搜参 | **不实现**策略判断或通知算法 |
-| `backtester.py` | 统一资金仿真并生成 `EvaluationReport` | **不重新搜参**、**不按策略 ID 分支** |
-| `strategy_artifacts.py` | 原子发布新产物并兼容读取旧 YAML | **不执行**策略或回测 |
+| `optimizer.py` | 12/9/3月的11排名+2隔离+1留出搜参及统一三基准评价 | **不实现**策略判断或通知算法 |
+| `backtester.py` | 按计划声明执行 `cash_cap` / `target_weight` 并生成 `EvaluationReport` | **不重新搜参**、**不按策略 ID 分支** |
+| `strategy_artifacts.py` | 保存候选、校验门槛、原子激活并兼容读取旧 YAML | **不执行**策略或回测 |
 | `cache_manager.py` | 读写本地缓存、过期清理、完整性校验 | **不发起**网络请求 |
 
 ---

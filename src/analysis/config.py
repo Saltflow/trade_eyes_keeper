@@ -148,11 +148,17 @@ class GeneticSearchConfig:
         self.sensitivity_penalty_weight: float = max(
             0.0, float(data.get("sensitivity_penalty_weight", 1.0))
         )
+        self.evaluation_workers: int = max(
+            1, int(data.get("evaluation_workers", 4))
+        )
         self.min_weighted_strategy_return: float = float(
             data.get("min_weighted_strategy_return", 0.0)
         )
         self.min_positive_return_windows: int = max(
             0, int(data.get("min_positive_return_windows", 8))
+        )
+        self.min_winning_benchmark_windows: int = max(
+            0, int(data.get("min_winning_benchmark_windows", 7))
         )
 
 # ═══════════════════════════════════════════════════════════════
@@ -308,6 +314,9 @@ class WindowStats:
         quarter_nav: np.ndarray | None = None,
         quarter_prices: np.ndarray | None = None,
         quarter_cost_basis: np.ndarray | None = None,
+        pending_order_count: int = 0,
+        strongest_benchmark: str = "",
+        benchmark_raw_returns: dict[str, float] | None = None,
     ):
         self.test_excess_return = test_excess_return
         self.max_drawdown_pct = max_drawdown_pct
@@ -329,6 +338,9 @@ class WindowStats:
         self.quarter_nav = quarter_nav
         self.quarter_prices = quarter_prices
         self.quarter_cost_basis = quarter_cost_basis
+        self.pending_order_count = pending_order_count
+        self.strongest_benchmark = strongest_benchmark
+        self.benchmark_raw_returns = benchmark_raw_returns or {}
 
     @property
     def trades_per_month(self) -> float:

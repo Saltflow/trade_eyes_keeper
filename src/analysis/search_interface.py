@@ -98,7 +98,11 @@ class StrategyMarketData:
     dates: list[str] = field(default_factory=list)
     symbols: list[str] = field(default_factory=list)
     prices: np.ndarray | None = None
+    highs: np.ndarray | None = None
+    lows: np.ndarray | None = None
+    benchmark_buy_prices: np.ndarray | None = None
     tradable: np.ndarray | None = None
+    date_ordinals: np.ndarray | None = None
 
 
 @dataclass
@@ -121,8 +125,25 @@ class TradePlan:
     symbols: list[str] = field(default_factory=list)
     execution: dict[str, float | int | str] = field(default_factory=dict)
     strategy_metadata: dict[str, object] = field(default_factory=dict)
+    entry_events: np.ndarray | None = None
+    exit_events: np.ndarray | None = None
+    force_exit_signals: np.ndarray | None = None
+    conviction: np.ndarray | None = None
+    target_weights: np.ndarray | None = None
+    risk_atr: np.ndarray | None = None
+    buy_execution_prices: np.ndarray | None = None
+    sell_execution_prices: np.ndarray | None = None
+    date_ordinals: np.ndarray | None = None
 
     def sliced(self, start: int, end: int) -> "TradePlan":
+        def sliced_optional(value):
+            return None if value is None else value[start:end].copy()
+
+        buy_execution_prices = sliced_optional(self.buy_execution_prices)
+        # A buy on the final test date has no in-window t+1 observation. Even
+        # if full source history has a later row, the order remains pending.
+        if buy_execution_prices is not None and len(buy_execution_prices):
+            buy_execution_prices[-1] = np.nan
         return TradePlan(
             buy_signals=self.buy_signals[start:end],
             sell_signals=self.sell_signals[start:end],
@@ -135,6 +156,15 @@ class TradePlan:
             symbols=list(self.symbols),
             execution=dict(self.execution),
             strategy_metadata=dict(self.strategy_metadata),
+            entry_events=sliced_optional(self.entry_events),
+            exit_events=sliced_optional(self.exit_events),
+            force_exit_signals=sliced_optional(self.force_exit_signals),
+            conviction=sliced_optional(self.conviction),
+            target_weights=sliced_optional(self.target_weights),
+            risk_atr=sliced_optional(self.risk_atr),
+            buy_execution_prices=buy_execution_prices,
+            sell_execution_prices=sliced_optional(self.sell_execution_prices),
+            date_ordinals=sliced_optional(self.date_ordinals),
         )
 
 
@@ -161,6 +191,7 @@ class PortfolioTrace:
     final_shares: np.ndarray | None = None
     final_prices: np.ndarray | None = None
     final_cash: float = 0.0
+    pending_order_count: int = 0
 
 
 @dataclass
@@ -179,6 +210,7 @@ class EvaluationReport:
     sharpe_ratio: float
     trade_count: int
     avg_cash_pct: float
+    pending_order_count: int = 0
 
     initial_asset: float = 0.0
     final_asset: float = 0.0
@@ -192,6 +224,7 @@ class EvaluationReport:
     benchmark_win_rates: dict[str, float] = field(default_factory=dict)
     benchmark_excess_returns: dict[str, float] = field(default_factory=dict)
     benchmark_details: dict[str, dict[str, object]] = field(default_factory=dict)
+    benchmark_raw_returns: dict[str, float] = field(default_factory=dict)
     primary_benchmark: str = ""
 
     # 组合构成
@@ -222,8 +255,10 @@ class EvaluationReport:
             "benchmark_win_rates": dict(self.benchmark_win_rates),
             "benchmark_excess_returns": dict(self.benchmark_excess_returns),
             "benchmark_details": dict(self.benchmark_details),
+            "benchmark_raw_returns": dict(self.benchmark_raw_returns),
             "primary_benchmark": self.primary_benchmark,
             "trades": self.trade_count,
+            "pending_order_count": self.pending_order_count,
             "initial_asset": self.initial_asset,
             "final_asset": self.final_asset,
             "final_cash": self.final_cash,
@@ -408,6 +443,16 @@ class SearchStrategy(ABC):
                 dates=list(_dates),
                 symbols=["scan"],
                 prices=_prices,
+                highs=(
+                    indicator[:, :, 16]
+                    if indicator.shape[2] > 16
+                    else _prices
+                ),
+                lows=(
+                    indicator[:, :, 17]
+                    if indicator.shape[2] > 17
+                    else _prices
+                ),
                 tradable=_tradable,
             )
             plan = self.make_signals(params, market_data)
@@ -417,15 +462,22 @@ class SearchStrategy(ABC):
         row = len(plan.buy_signals) - 1
         results = []
         if plan.buy_signals[row, 0]:
+            if plan.execution.get("model") == "target_weight":
+                detail = (
+                    f"buy conviction {plan.buy_priority[row, 0]:.2f}; "
+                    f"target weight {plan.target_weights[row, 0]:.1%}"
+                )
+            else:
+                detail = (
+                    f"buy score {plan.buy_priority[row, 0]:.2f}; "
+                    f"max cash {plan.buy_cash_limit:.0f}"
+                )
             results.append(
                 {
                     "side": "buy",
                     "label": self.name,
                     "priority": float(plan.buy_priority[row, 0]),
-                    "detail": (
-                        f"buy score {plan.buy_priority[row, 0]:.2f}; "
-                        f"max cash {plan.buy_cash_limit:.0f}"
-                    ),
+                    "detail": detail,
                 }
             )
         if plan.sell_signals[row, 0]:
@@ -476,25 +528,48 @@ class SearchStrategy(ABC):
     def random_perturbations(
         self, params: Params, n: int = 10, rng=None
     ) -> list[Params]:
-        """Create report-only sensitivity variants around ``params``.
-
-        The historic percentile optimizer used ten full-parameter random
-        perturbations, moving each discrete parameter by ±1..3 levels.  The
-        default lives on the strategy interface so every newly registered
-        strategy automatically receives the same diagnostic without an
-        optimizer-side strategy branch.  Strategies may override it when a
-        dimension has coupled or invalid values.
-        """
-        r = rng or __import__("random")
+        """Create deterministic one-factor-at-a-time ±1 level variants."""
         variants: list[Params] = []
-        for _ in range(n):
-            values = dict(params.values)
-            for dim in self.param_space.dims:
-                delta = r.randint(-3, 3)
-                if delta == 0:
-                    continue
+        for dim in self.param_space.dims:
+            for delta in (-1, 1):
+                values = dict(params.values)
                 current = int(values.get(dim.name, 0))
                 max_level = max(dim.levels - 1, 0)
-                values[dim.name] = max(0, min(current + delta, max_level))
-            variants.append(Params(values=values, _engine=self.name))
+                changed = max(0, min(current + delta, max_level))
+                if changed == current:
+                    continue
+                values[dim.name] = changed
+                variants.append(Params(values=values, _engine=self.name))
         return variants
+
+
+def allocate_target_weights(
+    scores: np.ndarray,
+    active: np.ndarray,
+    per_symbol_cap: float,
+    total_exposure_cap: float,
+) -> np.ndarray:
+    """Allocate a shared exposure cap proportionally without order bias."""
+    values = np.asarray(scores, dtype=float)
+    enabled = np.asarray(active, dtype=bool) & np.isfinite(values) & (values > 0)
+    weights = np.zeros(values.shape, dtype=np.float64)
+    if not enabled.any():
+        return weights
+    remaining = min(max(float(total_exposure_cap), 0.0), 1.0)
+    cap = min(max(float(per_symbol_cap), 0.0), 1.0)
+    open_mask = enabled.copy()
+    while remaining > 1e-12 and open_mask.any():
+        open_scores = np.where(open_mask, values, 0.0)
+        score_sum = float(open_scores.sum())
+        if score_sum <= 0:
+            break
+        proposal = remaining * open_scores / score_sum
+        room = np.maximum(cap - weights, 0.0)
+        addition = np.minimum(proposal, room)
+        weights += addition
+        used = float(addition.sum())
+        if used <= 1e-12:
+            break
+        remaining -= used
+        open_mask &= weights < cap - 1e-12
+    return np.round(weights, 12)

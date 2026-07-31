@@ -63,6 +63,7 @@ class OptimizerGroupSummary:
     ranking_diagnostics: dict[str, object] = field(default_factory=dict)
     sensitivity: dict[str, object] = field(default_factory=dict)
     validation: dict[str, object] = field(default_factory=dict)
+    activation: dict[str, object] = field(default_factory=dict)
     status: str = "not_run"
     artifact: str | None = None
 
@@ -77,6 +78,8 @@ class OptimizerRunSummary:
     elapsed_seconds: float
     groups: dict[str, OptimizerGroupSummary]
     activated: bool = False
+    run_id: str = ""
+    candidate: bool = False
 
 
 @dataclass
@@ -209,7 +212,9 @@ def _manifest_candidates(root: Path) -> list[tuple[str, Path, dict]]:
         manifest = _load_yaml(path)
         if not manifest or not manifest.get("activated"):
             continue
-        timestamp = str(manifest.get("timestamp", ""))
+        timestamp = str(
+            manifest.get("activated_at") or manifest.get("timestamp", "")
+        )
         if timestamp:
             candidates.append((timestamp, path, manifest))
     return candidates
@@ -371,8 +376,9 @@ def publish_complete_run(
     required_groups: tuple[str, ...] = ("a_share", "hk", "us"),
     all_groups: tuple[str, ...] = ("a_share", "hk", "us"),
     root: Path | str | None = None,
+    activate: bool = True,
 ) -> bool:
-    """Publish validated artifacts atomically, retaining untouched markets.
+    """Persist a complete run and optionally make it active atomically.
 
     A default A-share-only optimization must not make the active resolver lose
     the most recently validated HK/US parameters.  Partial publication is
@@ -382,6 +388,7 @@ def publish_complete_run(
     base = _root(root)
     run_dir = base / RUNS_DIRNAME / run_id
     entries: dict[str, dict[str, str]] = {}
+    artifacts_eligible = True
     for group in required_groups:
         summary = groups.get(group)
         if summary is None or summary.status != "completed" or not summary.artifact:
@@ -390,6 +397,9 @@ def publish_complete_run(
         data = _load_yaml(artifact_path)
         if _parse_params(data or {}, strategy_name) is None:
             return False
+        activation = (data or {}).get("activation", {})
+        if isinstance(activation, dict) and "eligible" in activation:
+            artifacts_eligible &= bool(activation.get("eligible"))
         entries[group] = {
             "artifact": (Path(RUNS_DIRNAME) / run_id / summary.artifact).as_posix()
         }
@@ -428,12 +438,19 @@ def publish_complete_run(
         "run_id": run_id,
         "strategy": strategy_name,
         "timestamp": timestamp,
-        "activated": True,
+        "activated": bool(activate),
+        "candidate": not bool(activate),
+        "activation_eligible": bool(artifacts_eligible),
         "groups": entries,
     }
+    if activate:
+        manifest["activated_at"] = datetime.now().isoformat()
     run_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = run_dir / "manifest.yaml"
     manifest_path.write_text(yaml.safe_dump(manifest, allow_unicode=True), encoding="utf-8")
+
+    if not activate:
+        return True
 
     # ``replace`` makes the global pointer atomic on the same filesystem.
     base.mkdir(parents=True, exist_ok=True)
@@ -445,6 +462,82 @@ def publish_complete_run(
     # them once a manifest is available.
     for group, entry in entries.items():
         shutil.copy2(base / entry["artifact"], base / f"{group}_best_params.yaml")
+    return True
+
+
+def activate_run(
+    run_id: str,
+    groups: tuple[str, ...] = ("a_share", "hk", "us"),
+    root: Path | str | None = None,
+) -> bool:
+    """Atomically activate one complete, registered, holdout-passed candidate."""
+    base = _root(root)
+    if not run_id or Path(run_id).name != run_id:
+        logger.warning("Invalid optimizer run id: %s", run_id)
+        return False
+    run_dir = base / RUNS_DIRNAME / run_id
+    manifest_path = run_dir / "manifest.yaml"
+    manifest = _load_yaml(manifest_path)
+    if not manifest:
+        logger.warning("Optimizer candidate does not exist: %s", run_id)
+        return False
+    strategy_name = str(manifest.get("strategy", ""))
+    if get_strategy(strategy_name) is None:
+        logger.warning("Candidate uses unregistered strategy %s", strategy_name)
+        return False
+    if not manifest.get("activation_eligible"):
+        logger.warning("Candidate %s did not pass activation gates", run_id)
+        return False
+    entries = manifest.get("groups", {})
+    if not isinstance(entries, dict) or set(groups) - set(entries):
+        logger.warning("Candidate %s is not complete for %s", run_id, groups)
+        return False
+    for group in groups:
+        entry = entries.get(group, {})
+        artifact = entry.get("artifact") if isinstance(entry, dict) else None
+        path = _artifact_path(base, str(artifact)) if artifact else None
+        data = _load_yaml(path) if path is not None else None
+        if _parse_params(data or {}, strategy_name) is None:
+            return False
+        activation = (data or {}).get("activation", {})
+        holdout = (data or {}).get("holdout_windows", [])
+        if (
+            not isinstance(activation, dict)
+            or not activation.get("eligible")
+            or not activation.get("holdout_passed")
+            or not isinstance(holdout, list)
+            or len(holdout) != 1
+            or float(holdout[0].get("excess_return", 0.0)) <= 0.0
+        ):
+            logger.warning("%s candidate artifact failed holdout checks", group)
+            return False
+
+    activated = dict(manifest)
+    activated["activated"] = True
+    activated["candidate"] = False
+    activated["activated_at"] = datetime.now().isoformat()
+    base.mkdir(parents=True, exist_ok=True)
+    tmp_path = base / f".{LATEST_MANIFEST}.tmp"
+    tmp_path.write_text(
+        yaml.safe_dump(activated, allow_unicode=True), encoding="utf-8"
+    )
+    # The active pointer is the commit point.  Until this same-filesystem
+    # replace succeeds, every reader continues using the previous run.
+    tmp_path.replace(base / LATEST_MANIFEST)
+    try:
+        manifest_path.write_text(
+            yaml.safe_dump(activated, allow_unicode=True), encoding="utf-8"
+        )
+        for group in groups:
+            artifact = activated["groups"][group]["artifact"]
+            shutil.copy2(base / artifact, base / f"{group}_best_params.yaml")
+    except OSError:
+        # The pointer replacement above is the authoritative atomic commit.
+        # Legacy file synchronization is best-effort and must not turn a
+        # completed activation into a misleading failure response.
+        logger.exception(
+            "Candidate %s activated, but legacy artifact sync failed", run_id
+        )
     return True
 
 

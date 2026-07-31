@@ -95,6 +95,10 @@ cache/
 # Optimizer output
 data/optimizer/
 
+# Reproducible analysis and instrument-audit runtime output
+data/analysis/
+data/instrument_audit/
+
 # Runtime reference portfolios: server state, never deployment payload.
 data/ref_portfolio*.yaml
 

@@ -88,7 +88,7 @@ def handle_help() -> str:
         (
             "🔬 策略与搜参",
             [
-                ("/optimize [策略] [fast|deep]", "触发三市场策略优化并推送简报"),
+                ("/optimize", "优化配置中的活动策略并推送三市场候选报告"),
                 ("/switch_optimizer [引擎]", "查看/切换搜参引擎"),
                 ("/mode", "查看统一现金档位执行方式"),
                 ("/config [show|set K V|reset]", "查看/修改优化器配置"),

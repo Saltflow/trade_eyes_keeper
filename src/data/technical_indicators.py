@@ -433,7 +433,11 @@ def add_adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
 
     di_sum = plus_di + minus_di
     dx = np.where(di_sum > 0, 100.0 * np.abs(plus_di - minus_di) / di_sum, 0.0)
-    df[COL_ADX] = _wilder_smooth(pd.Series(dx), period)
+    df["plus_di"] = np.asarray(plus_di, dtype=float)
+    df["minus_di"] = np.asarray(minus_di, dtype=float)
+    df[COL_ADX] = np.asarray(
+        _wilder_smooth(pd.Series(dx), period), dtype=float
+    )
     return df
 
 
@@ -449,12 +453,14 @@ def add_volume_ratio(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
 
 
 def _add_ma60_and_deviation(df: pd.DataFrame) -> None:
-    """补 MA60 / 偏离 / MA200_偏离 — INDICATOR_NAMES 要求列"""
+    """补均线、偏离和因果 MA200 斜率。"""
     ma60 = df["close"].rolling(60, min_periods=1).mean()
     df["ma60"] = ma60
     df["deviation"] = (df["close"] - ma60) / ma60.replace(0, float("nan"))
     ma200 = df["close"].rolling(200, min_periods=1).mean()
+    df["ma200"] = ma200
     df["ma200_dev"] = (df["close"] - ma200) / ma200.replace(0, float("nan"))
+    df["ma200_slope"] = ma200 / ma200.shift(20).replace(0, float("nan")) - 1.0
 
 
 def _add_rolling_percentile_ranks(df: pd.DataFrame, window: int = 252) -> None:
