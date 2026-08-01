@@ -52,25 +52,23 @@ python main.py                       # 定时运行 (cron/APScheduler)
 
 ```
 src/
-├── analysis/          # 策略优化器、信号扫描、指标库、规则引擎
-│   ├── search_controller.py    Solver 无关的预算、缓存、档案和 checkpoint 编排
-│   ├── solvers/                 Genetic / Random / 单线 Simulated Annealing
-│   ├── evaluation_service.py   策略→TradePlan→Backtester 的标量/批量评价
-│   ├── batch_backtester.py      Numba prange 候选批量资金仿真后端
-│   ├── candidate_gates.py      hard / penalty / diagnostic 声明式 Gate
-│   ├── validation_controller.py 隔离窗、留出窗与局部/删标稳健性边界
-│   ├── search_contracts.py     ParameterSchema / CandidateBatch / SearchProblem
-│   ├── feature_registry.py     22 列因果、跨标的可比技术特征合同
-│   ├── optimizer.py            Walk-Forward 组装及旧 API 兼容层
-│   ├── backtester.py           统一资金仿真、三基准与评价报告
-│   ├── execution.py            统一买卖成交价、估值价和窗口末待执行策略
-│   ├── search_interface.py     StrategyMarketData / TradePlan 契约
-│   └── strategies/             注册策略插件（含 regime_pullback / technical_ensemble）
+├── strategy/          # TradingStrategy API、自动注册表和具体投资策略插件
+│   ├── api.py         # StrategyMarketData / TradePlan / TradingStrategy
+│   ├── registry.py    # 自动发现 plugins/，无需中央策略字典
+│   └── plugins/       # builder / percentile / regime_pullback / ...
+├── search/            # Solver API、搜索编排、Gate、验证和产物
+│   ├── api.py         # Candidate / SearchProblem / Solver 稳定公共合同
+│   ├── controller.py  # Solver 无关的 ask/tell 编排
+│   ├── registry.py    # 自动发现 solvers/
+│   └── solvers/       # Genetic / Random / 单线 Simulated Annealing
+├── backtest/          # 唯一成交、资金仿真和评价引擎
+├── experiments/       # 跨策略 benchmark 与搜索深度实验，不进入生产激活链
+├── markets.py         # 市场分组、手数和跳过配置
 ├── core/              # 数据拉取、条件检查、调度管理
-├── data/              # 多源爬虫 (新浪/腾讯/Yahoo)
+├── data/              # 多源行情、公告与 LLM 数据提取
 ├── alerting/          # 多层报警引擎 + 状态管理
-├── session/           # Session 管理器
-├── models/            # Pydantic 数据模型
+├── session/           # 当前日报运行上下文（待后续收敛命名）
+├── models/            # 当前日报 Pydantic 模型（待后续收敛命名）
 ├── instruments/       # 类型化标的、财务推导、基金穿透和审计报告
 ├── notification/      # 邮件通知 + 图表生成
 ├── health_server/     # HTTP 健康检查 + 管理

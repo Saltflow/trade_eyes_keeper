@@ -4,9 +4,9 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from src.analysis.config import StrategyConstraints
-from src.analysis.optimizer import run_optimizer
-from src.analysis.strategies import get_strategy
+from src.search.config import StrategyConstraints
+from src.search.workflow import run_optimizer
+from src.strategy import get_strategy
 
 
 def _history(rows=520):

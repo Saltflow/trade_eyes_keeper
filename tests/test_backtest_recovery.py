@@ -7,11 +7,11 @@ import pandas as pd
 import pytest
 
 import main
-from src.analysis.backtester import evaluate_all_groups
-from src.analysis.config import get_execution_config
-from src.analysis.search_interface import Params
-from src.analysis.strategies import get_strategy
-from src.analysis.strategy_artifacts import (
+from src.backtest.engine import evaluate_all_groups
+from src.search.config import get_execution_config
+from src.strategy import Params
+from src.strategy import get_strategy
+from src.search.artifacts import (
     OptimizerGroupSummary,
     load_latest_strategy_run,
     publish_complete_run,
@@ -51,9 +51,17 @@ def test_optimizer_runs_each_market_group(monkeypatch):
         strategy, stocks_data, stock_codes, group, _constraints, output_dir, **_kwargs
     ):
         calls.append((strategy.name, group, sorted(stock_codes)))
-        params = Params(values={"signal": 1}, _engine=strategy.name)
-        encoding = SimpleNamespace(to_params=lambda _: params)
-        return [SimpleNamespace(wf_score=1.25, encoding=encoding)], _constraints
+        return [
+            SimpleNamespace(
+                parameters={"signal": 1},
+                objective_score=1.25,
+                ranking_stats=[],
+                validation_stats=[],
+                purged_window_count=0,
+                ranking_metrics={},
+                sensitivity={},
+            )
+        ], _constraints
 
     monkeypatch.setattr("src.data.data_source.DataSource", FakeDataSource)
     monkeypatch.setattr(main, "run_optimizer", fake_run_optimizer)
@@ -93,9 +101,17 @@ def test_optimizer_excludes_short_history_before_date_alignment(monkeypatch):
         strategy, stocks_data, stock_codes, group, _constraints, output_dir, **_kwargs
     ):
         calls.append((group, sorted(stock_codes)))
-        params = Params(values={"signal": 1}, _engine=strategy.name)
-        encoding = SimpleNamespace(to_params=lambda _: params)
-        return [SimpleNamespace(wf_score=1.25, encoding=encoding)], _constraints
+        return [
+            SimpleNamespace(
+                parameters={"signal": 1},
+                objective_score=1.25,
+                ranking_stats=[],
+                validation_stats=[],
+                purged_window_count=0,
+                ranking_metrics={},
+                sensitivity={},
+            )
+        ], _constraints
 
     monkeypatch.setattr("src.data.data_source.DataSource", FakeDataSource)
     monkeypatch.setattr(main, "run_optimizer", fake_run_optimizer)
@@ -162,7 +178,10 @@ def test_evaluation_honors_requested_backtest_dates():
     history = _price_history()
     strategy = get_strategy("percentile")
     params = Params(
-        values={dim.name: max((dim.levels - 1) // 2, 0) for dim in strategy.param_space.dims},
+        values={
+            dim.name: max((dim.levels - 1) // 2, 0)
+            for dim in strategy.param_space.dims
+        },
         _engine=strategy.name,
     )
     start = history["date"].iloc[300].strftime("%Y-%m-%d")

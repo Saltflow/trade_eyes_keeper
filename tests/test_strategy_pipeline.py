@@ -1,6 +1,6 @@
 """策略无关性管线测试。
 
-验证 evaluate_all_groups 对任意 SearchStrategy 实例均产出有效 EvaluationReport。
+验证 evaluate_all_groups 对任意 TradingStrategy 实例均产出有效 EvaluationReport。
 仅走真数据路径（DataSource 网络拉取），禁止本地文件/Mock。
 """
 
@@ -14,10 +14,10 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 os.environ.setdefault("LOG_LEVEL", "ERROR")
 
-from src.analysis.strategies import get_strategy
-from src.analysis.backtester import evaluate_all_groups
-from src.analysis.config import get_execution_config
-from src.analysis.search_interface import EvaluationReport
+from src.strategy import get_strategy
+from src.backtest.engine import evaluate_all_groups
+from src.search.config import get_execution_config
+from src.strategy import EvaluationReport
 
 TEST_CODES = ["601088", "600938", "600795"]
 
@@ -57,7 +57,7 @@ class TestAllStrategiesPlugIntoPipeline:
         if strategy is None:
             pytest.skip(f"策略 {strategy_name} 不可用")
 
-        params = strategy.random_params()
+        params = strategy.sample_params()
         reports = evaluate_all_groups(
             real_stocks_data,
             list(real_stocks_data.keys()),

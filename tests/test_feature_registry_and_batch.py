@@ -4,11 +4,11 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from src.analysis.backtester import FastEvaluator
-from src.analysis.feature_registry import TECHNICAL_FEATURES
-from src.analysis.search_interface import Params, StrategyMarketData, TradePlan
-from src.analysis.strategies import get_strategy
-from src.analysis.strategies.builder.engine import SELL_BUILDER_NAMES
+from src.backtest.engine import FastEvaluator
+from src.strategy.features import TECHNICAL_FEATURES
+from src.strategy import Params, StrategyMarketData, TradePlan
+from src.strategy import get_strategy
+from src.strategy.plugins.builder import SELL_BUILDER_NAMES
 
 
 def _indicators(rows=300, columns=2):

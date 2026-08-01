@@ -201,7 +201,7 @@ def handle_skip(kind: str, codes: list[str], remove: bool = False) -> str:
 
 def _engine_brief(engine_key: str) -> str:
     """获取引擎买卖标准简介。"""
-    from ...analysis.strategies import get_strategy
+    from ...strategy import get_strategy
     s = get_strategy(engine_key)
     if s:
         return f"{s.label}\n  原理: {s.description}"
@@ -210,7 +210,7 @@ def _engine_brief(engine_key: str) -> str:
 
 def handle_switch_optimizer(kind: str | None = None) -> str:
     """切换搜参引擎。kind=None → 列出可用引擎。"""
-    from ...analysis.strategies import list_strategies, get_strategy
+    from ...strategy import list_strategies, get_strategy
     strategies = list_strategies()
 
     if kind is None:
@@ -311,8 +311,8 @@ def handle_remove(codes: list[str]) -> str:
 
 def _get_backtest_strategy(config: dict):
     """Resolve the newest complete strategy run before consulting defaults."""
-    from ...analysis.strategy_artifacts import load_latest_strategy_run
-    from ...analysis.strategies import get_strategy
+    from ...search.artifacts import load_latest_strategy_run
+    from ...strategy import get_strategy
 
     active = load_latest_strategy_run()
     if active and active.strategy is not None:
@@ -334,8 +334,8 @@ def _get_backtest_strategy(config: dict):
 
 def _get_backtest_params(group: str, strategy):
     """Load group-specific optimized parameters or use neutral valid values."""
-    from ...analysis.search_interface import Params
-    from ...analysis.strategy_artifacts import load_latest_strategy_run
+    from ...strategy import Params
+    from ...search.artifacts import load_latest_strategy_run
 
     active = load_latest_strategy_run()
     if active and active.strategy_name == strategy.name:
@@ -378,9 +378,9 @@ def handle_backtest(code: str, start: str, end: str) -> str:
     """单票回测（使用统一评估引擎 evaluate_all_groups）。"""
     try:
         from ...data.data_source import DataSource
-        from ...analysis.backtester import evaluate_all_groups
-        from ...analysis.config import get_execution_config
-        from ...analysis.helpers import _detect_fine_group
+        from ...backtest.engine import evaluate_all_groups
+        from ...search.config import get_execution_config
+        from ...markets import _detect_fine_group
         import pandas as pd
 
         config = _load_config()
@@ -781,7 +781,7 @@ def handle_config(action: str, key: str, value: str) -> str:
         _save_opt_config(cfg)
         # 刷新执行配置缓存（search/daily 两路径生效）
         try:
-            from ...analysis.config import reload_execution_config
+            from ...search.config import reload_execution_config
 
             reload_execution_config()
         except Exception as exc:

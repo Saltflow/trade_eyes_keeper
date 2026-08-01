@@ -33,13 +33,14 @@ from src.notification.manager import NotifierManager
 from src.core.scheduler_manager import SchedulerManager
 from src.data.announcement_fetcher import AnnouncementFetcher
 from src.session.session_manager import SessionManager
-from src.analysis.strategies import get_strategy
-from src.analysis.backtester import evaluate_all_groups
-from src.analysis.config import get_constraints, get_execution_config
-from src.analysis.helpers import _detect_fine_group, get_skip_search
+from src.strategy import get_strategy
+from src.backtest import evaluate_all_groups
+from src.search import get_constraints, get_execution_config
+from src.markets import _detect_fine_group, get_skip_search
 from src.core.ref_portfolio import RefPortfolioManager, REF_MONTHLY_LIMIT
-from src.analysis.optimizer import run_optimizer
-from src.analysis.strategy_artifacts import (
+from src.search import run_optimizer
+from src.strategy import Params
+from src.search.artifacts import (
     activate_run,
     OptimizerGroupSummary,
     OptimizerRunSummary,
@@ -75,24 +76,9 @@ def _configured_optimizer_groups(config: dict) -> tuple[str, ...]:
 
 
 def _get_configured_strategy(config: dict):
-    """Return the selected registered strategy, with legacy-config fallback.
-
-    ``optimizer.engine`` is written by ``/switch_optimizer``.  Older configs
-    used ``dashboard.strategy`` and some deployed configs still contain the
-    removed ``global`` engine, so only registered strategy names are accepted.
-    """
-    candidates = [
-        (config.get("optimizer", {}) or {}).get("engine"),
-        (config.get("dashboard", {}) or {}).get("strategy"),
-        "percentile",
-    ]
-    for name in candidates:
-        if not name:
-            continue
-        strategy = get_strategy(str(name))
-        if strategy is not None:
-            return strategy
-    return None
+    """Return the registered strategy selected by the optimizer config."""
+    name = (config.get("optimizer", {}) or {}).get("engine") or "percentile"
+    return get_strategy(str(name))
 
 
 def _optimizer_lookback_days(constraints) -> int:
@@ -108,7 +94,7 @@ def _optimizer_lookback_days(constraints) -> int:
 
 
 def _min_optimizer_history_rows(constraints) -> int:
-    """Compatibility estimate; window construction itself is calendar based."""
+    """Fast row-count preflight; window construction itself is calendar based."""
     return constraints.walk_forward.total_months_needed * 21
 
 
@@ -448,13 +434,16 @@ def run_optimization(
 
         completed[group] = len(results)
         if results:
-            params = results[0].encoding.to_params(strategy)
+            params = Params(
+                values=dict(results[0].parameters),
+                _engine=strategy.name,
+            )
             summaries[group] = OptimizerGroupSummary(
                 group=group,
                 candidate_count=len(results),
                 evaluated_count=evaluation_budget,
                 survivor_count=len(results),
-                wf_score=float(results[0].wf_score),
+                wf_score=float(results[0].objective_score),
                 params=dict(params.values),
                 execution=dict(strategy.execution_params(params)),
                 ranking_window_count=len(getattr(results[0], "ranking_stats", [])),
@@ -465,7 +454,7 @@ def run_optimization(
                     getattr(results[0], "purged_window_count", 0)
                 ),
                 ranking_diagnostics=dict(
-                    getattr(results[0], "ranking_diagnostics", {}) or {}
+                    getattr(results[0], "ranking_metrics", {}) or {}
                 ),
                 sensitivity=dict(getattr(results[0], "sensitivity", {}) or {}),
                 status="completed",
@@ -513,7 +502,7 @@ def run_optimization(
                 group,
                 evaluation_budget,
                 len(results),
-                results[0].wf_score,
+                results[0].objective_score,
             )
         else:
             logger.warning("%s optimization completed without valid candidates", group)

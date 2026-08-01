@@ -330,7 +330,7 @@ def parse_command(text: str):
         return SkipCommand(kind=kind, codes=codes, remove=remove)
 
     if cmd_name == "switch_optimizer":
-        from src.analysis.strategies import list_strategies
+        from src.strategy import list_strategies
 
         sub = args.strip()
         if not sub:

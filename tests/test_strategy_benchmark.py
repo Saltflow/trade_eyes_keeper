@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from src.analysis.strategy_benchmark import (
+from src.experiments.strategy_benchmark import (
     BenchmarkCandidate,
     aggregate_strategy_results,
     frame_fingerprint,
@@ -14,7 +14,7 @@ from src.analysis.strategy_benchmark import (
 
 def _candidate(score, *, return_gate=False, hard=False):
     return BenchmarkCandidate(
-        encoding=SimpleNamespace(),
+        params=SimpleNamespace(),
         ranking_stats=[],
         wf_score=score,
         ranking_diagnostics={},

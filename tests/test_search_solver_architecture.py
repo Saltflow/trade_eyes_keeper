@@ -6,9 +6,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from src.analysis.candidate_gates import CandidateGatePipeline
-from src.analysis.search_archive import SearchArchive
-from src.analysis.search_contracts import (
+from src.search.gates import CandidateGatePipeline
+from src.search.archive import SearchArchive
+from src.search.contracts import (
     Candidate,
     CandidateBatch,
     EvaluationBatch,
@@ -19,9 +19,9 @@ from src.analysis.search_contracts import (
     SearchProblem,
     SolverCapabilities,
 )
-from src.analysis.search_controller import SearchController
-from src.analysis.solvers import create_solver, list_solvers, register_solver
-from src.analysis.solvers.base import Solver
+from src.search.controller import SearchController
+from src.search import create_solver, list_solvers, register_solver
+from src.search.solver import Solver
 
 
 def _schema() -> ParameterSchema:

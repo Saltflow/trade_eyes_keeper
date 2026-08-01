@@ -25,14 +25,14 @@ from main import (  # noqa: E402
     _optimizer_lookback_days,
     load_config,
 )
-from src.analysis.backtester import FastEvaluator, WalkForwardManager  # noqa: E402
-from src.analysis.config import get_constraints  # noqa: E402
-from src.analysis.evaluation_service import EvaluationService  # noqa: E402
-from src.analysis.optimizer import _partition_window_indexes  # noqa: E402
-from src.analysis.resource_planner import ResourcePlanner  # noqa: E402
-from src.analysis.search_contracts import Candidate, CandidateBatch  # noqa: E402
-from src.analysis.strategies import get_strategy  # noqa: E402
-from src.analysis.strategy_benchmark import _configured_codes  # noqa: E402
+from src.backtest.engine import FastEvaluator, WalkForwardManager  # noqa: E402
+from src.search.config import get_constraints  # noqa: E402
+from src.search.evaluator import EvaluationService  # noqa: E402
+from src.search.workflow import _partition_window_indexes  # noqa: E402
+from src.search.resources import ResourcePlanner  # noqa: E402
+from src.search.contracts import Candidate, CandidateBatch  # noqa: E402
+from src.strategy import get_strategy  # noqa: E402
+from src.experiments.strategy_benchmark import _configured_codes  # noqa: E402
 from src.data.data_source import DataSource  # noqa: E402
 
 
@@ -96,7 +96,7 @@ def _prepare_a_share(config: dict, constraints):
 
 
 def _candidate_rows(strategy, count: int, seed: int) -> list[Candidate]:
-    schema = strategy.search_parameter_schema
+    schema = strategy.parameter_schema
     rng = random.Random(seed)
     return [
         Candidate.create(
@@ -194,7 +194,7 @@ def main() -> int:
         raise RuntimeError("throughput benchmark requires the 11+2+1 contract")
     ranking_windows = [windows[index] for index in ranking_indexes]
     strategy = get_strategy("technical_ensemble")
-    schema = strategy.search_parameter_schema
+    schema = strategy.parameter_schema
     candidates = _candidate_rows(strategy, args.candidates, args.seed)
     plan = ResourcePlanner().plan(
         "candidate_window",

@@ -537,10 +537,15 @@ def test_detailed_audit_renders_holding_fundamentals_and_coverage():
 
 
 def test_optimizer_package_does_not_import_current_instrument_profiles():
-    analysis_root = Path("src/analysis")
+    optimization_roots = (
+        Path("src/strategy"),
+        Path("src/search"),
+        Path("src/backtest"),
+    )
     text = "\n".join(
         path.read_text(encoding="utf-8")
-        for path in analysis_root.rglob("*.py")
+        for root in optimization_roots
+        for path in root.rglob("*.py")
     )
     assert "InstrumentAuditService" not in text
     assert "instrument_audit" not in text

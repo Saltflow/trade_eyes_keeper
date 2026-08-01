@@ -6,10 +6,10 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from src.analysis.backtester import _build_indicator_matrix, simulate_portfolio
-from src.analysis.search_interface import StrategyMarketData, TradePlan
-from src.analysis.strategies import get_strategy
-from src.analysis.strategy_artifacts import load_latest_strategy_run
+from src.backtest.engine import _build_indicator_matrix, simulate_portfolio
+from src.strategy import StrategyMarketData, TradePlan
+from src.strategy import get_strategy
+from src.search.artifacts import load_latest_strategy_run
 
 
 def _trace(

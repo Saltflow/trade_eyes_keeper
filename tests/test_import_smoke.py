@@ -8,9 +8,15 @@
 from pathlib import Path
 
 
-def test_analysis_imports():
-    """analysis 子包导入"""
-    assert True
+def test_extension_package_imports():
+    """Strategy, search and backtest expose stable package APIs."""
+    import src.backtest
+    import src.search
+    import src.strategy
+
+    assert src.strategy.list_strategy_ids()
+    assert src.search.list_solvers()
+    assert src.backtest.Backtester
 
 
 def test_health_server_imports():
@@ -22,12 +28,12 @@ def test_all_key_modules():
     """关键模块批量导入"""
     modules = [
         # analysis
-        "src.analysis.config",
-        "src.analysis.search_interface",
-        "src.analysis.backtester",
-        "src.analysis.optimizer",
-        "src.analysis.strategies",
-        "src.analysis.helpers",
+        "src.search.config",
+        "src.strategy",
+        "src.backtest.engine",
+        "src.search.workflow",
+        "src.strategy",
+        "src.markets",
         # health_server
         "src.health_server.core.global_instances",
         "src.health_server.core.health_server",
@@ -71,7 +77,10 @@ def test_project_structure():
         "config",
         "logs",
         "cache",
-        "src/analysis",
+        "src/strategy",
+        "src/search",
+        "src/backtest",
+        "src/experiments",
         "src/health_server/core",
         "src/health_server/handlers",
         "src/health_server/auth",

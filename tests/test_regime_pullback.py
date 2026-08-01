@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.analysis.backtester import (
+from src.backtest.engine import (
     IDX_ADX,
     IDX_ATR,
     IDX_BOLL_PCT_B,
@@ -22,14 +22,14 @@ from src.analysis.backtester import (
     INDICATOR_NAMES,
     simulate_portfolio,
 )
-from src.analysis.execution import DEFAULT_FILL_PRICE_POLICY
-from src.analysis.search_interface import (
+from src.backtest.execution import DEFAULT_FILL_PRICE_POLICY
+from src.strategy import (
     Params,
     StrategyMarketData,
     TradePlan,
     allocate_target_weights,
 )
-from src.analysis.strategies import get_strategy
+from src.strategy import get_strategy
 
 
 def _params():

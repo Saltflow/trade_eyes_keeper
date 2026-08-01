@@ -311,7 +311,7 @@ class TechnicalIndicators:
 
 # ════════════════════════════════════════════════════════════
 # 独立指标计算函数（纯 pandas，无类依赖）
-# 从 src/analysis/indicator_library.py 迁移而来
+# 从已删除的旧指标库迁移而来
 # ════════════════════════════════════════════════════════════
 
 COL_RSI = "rsi"
@@ -464,9 +464,7 @@ def _add_ma60_and_deviation(df: pd.DataFrame) -> None:
 
 
 def _add_rolling_percentile_ranks(df: pd.DataFrame, window: int = 252) -> None:
-    """计算滚动分位值 (0.0~1.0, 含多少天 ≤ 今日值)。
-    与 percentile/engine.py score_timeseries 同定义。
-    """
+    """计算供所有策略复用的因果滚动分位值（0.0～1.0）。"""
     for src_col, out_col in [
         ("adx", "adx_pct"), ("rsi", "rsi_pct"),
         ("deviation", "deviation_pct"), ("vol_ratio", "vol_ratio_pct"),

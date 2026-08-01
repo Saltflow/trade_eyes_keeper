@@ -5,10 +5,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from src.analysis.config import ExecutionConfig
-from src.analysis.execution import DEFAULT_FILL_PRICE_POLICY
-from src.analysis.search_interface import StrategyMarketData, TradePlan
-from src.analysis.backtester import FastEvaluator, simulate_portfolio
+from src.search.config import ExecutionConfig
+from src.backtest.execution import DEFAULT_FILL_PRICE_POLICY
+from src.strategy import StrategyMarketData, TradePlan
+from src.backtest.engine import FastEvaluator, simulate_portfolio
 
 
 def test_fill_policy_uses_window_edges_without_crossing_window_end():

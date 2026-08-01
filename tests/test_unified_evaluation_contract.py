@@ -2,20 +2,22 @@
 
 from types import SimpleNamespace
 
+import random
+
 import numpy as np
 import pandas as pd
 
-from src.analysis.backtester import (
+from src.backtest.engine import (
     Backtester,
     INDICATOR_NAMES,
     WalkForwardManager,
     _weekly_nav_ohlc,
     simulate_portfolio,
 )
-from src.analysis.config import ExecutionConfig, StrategyConstraints, WalkForwardConfig
-from src.analysis.optimizer import _partition_window_indexes
-from src.analysis.search_interface import StrategyMarketData, TradePlan
-from src.analysis.strategies import get_strategy
+from src.search.config import ExecutionConfig, StrategyConstraints, WalkForwardConfig
+from src.search.workflow import _partition_window_indexes
+from src.strategy import StrategyMarketData, TradePlan
+from src.strategy import get_strategy
 
 
 def test_every_registered_strategy_returns_trade_plan():
@@ -34,7 +36,7 @@ def test_every_registered_strategy_returns_trade_plan():
         "regime_pullback",
     ):
         strategy = get_strategy(strategy_id)
-        params = strategy.random_params(np.random.RandomState(7))
+        params = strategy.sample_params(random.Random(7))
         plan = strategy.make_signals(params, data)
         assert isinstance(plan, TradePlan)
         assert plan.buy_signals.shape == (320, 2)

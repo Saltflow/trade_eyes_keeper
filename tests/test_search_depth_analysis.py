@@ -1,6 +1,6 @@
 import pytest
 
-from src.analysis.search_depth_analysis import (
+from src.experiments.search_depth import (
     aggregate_market_records,
     build_depth_checkpoints,
     choose_balance_depth,

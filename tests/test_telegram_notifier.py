@@ -2,7 +2,7 @@
 
 from unittest.mock import Mock, patch
 
-from src.analysis.strategy_artifacts import OptimizerGroupSummary, OptimizerRunSummary
+from src.search.artifacts import OptimizerGroupSummary, OptimizerRunSummary
 from src.notification.email_notifier import build_optimizer_summary
 from src.notification.telegram_notifier import TelegramNotifier
 

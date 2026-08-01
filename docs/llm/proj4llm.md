@@ -6,6 +6,16 @@
 
 ### 通用搜索架构契约（2026-08-01）
 
+- 当前源码按扩展职责分为 `src/strategy`、`src/search`、
+  `src/backtest` 和 `src/experiments`。公共合同只从 `src.strategy` / `src.search`
+  导入；具体策略只放在 `strategy/plugins`，具体优化算法只放在
+  `search/solvers`。两类插件均自动发现，新增实现不得修改中央字典、
+  `SearchController`、`Backtester` 或 `main.py`。离线 benchmark 和搜索深度
+  分析位于 `src/experiments`，不得发布或激活生产参数。
+- 生产代码不再包含 `GeneticOptimizer`、`ScoredEncoding`、策略专属
+  `scanner.py` 转发层或 percentile 的独立评分扫描 API；候选参数直接以
+  `Params` 在统一评价和验证链路间传递。旧 YAML 字段转换只允许存在于
+  `src.search.artifacts` 读取/激活边界，核心搜索和策略实现不得回退到旧结构。
 - 生产搜索链路固定为
   `SearchController -> Solver.ask/tell -> EvaluationService -> CandidateGatePipeline
   -> ValidationController`。`SearchController` 只管理预算、缓存、排名窗调度、
@@ -50,7 +60,7 @@
   `config/config.yaml` 指定；一次运行该策略覆盖配置中全部有效的 A 股、
   港股和美股标的，各市场使用独立资金池、手数和汇率配置。
 - 唯一决策与仿真链路是
-  `StrategyMarketData -> SearchStrategy.make_signals -> TradePlan -> Backtester
+  `StrategyMarketData -> TradingStrategy.make_signals -> TradePlan -> Backtester
   -> EvaluationReport`。策略只输出逐日逐标的买卖事件、连续评分、目标仓位
   与通用执行声明；
   搜参、日报和今日扫描不得按策略 ID 分支，今日扫描只读取完整计划最后一个
@@ -91,7 +101,7 @@
   `python main.py --activate-run <run_id>` 原子激活。
 - 新产物写 `strategy_id`、参数结构标识、执行快照、11 个排名窗、2 个隔离窗、
   1 个留出窗、三重基准和删标的报告。旧 YAML 字段只能在
-  `strategy_artifacts` 读取边界迁移，不得泄漏进核心。
+  `src.search.artifacts` 读取边界迁移，不得泄漏进核心。
 
 ## 2026-07-31：类型化标的画像与财务/基金穿透契约
 
@@ -1131,7 +1141,7 @@ pytest tests/test_import_smoke.py         # 导入完整性
 
 ### 统一现金档位执行与动态自选（2026-07-27）
 
-- 所有注册策略的参数空间由 `SearchStrategy` 自动追加 `buy_cash_tier` 与 `sell_cash_tier`；`position_frac`、每规则比例和月度买入金额闸门不再参与当前策略执行。
+- 所有注册策略的参数空间由 `TradingStrategy` 自动追加 `buy_cash_tier` 与 `sell_cash_tier`；`position_frac`、每规则比例和月度买入金额闸门不再参与当前策略执行。
 - 策略输出统一为 `TradePlan`（买卖信号、强度、单笔买卖现金上限和预热期）。优化器、日报回测、简报及实时告警均消费同一份计划，避免扫描器另行解码阈值。
 - 同日候选按策略强度成交，代码仅作稳定平手裁决；先卖后买，严格遵守现金上限、手续费、交易单位与最短持有期。
 - 日报矩阵使用自选标的的日期并集与逐标的可交易掩码。新加入标的不会缩短既有标的历史，满足策略预热后自动加入；未满足者在报告中标为“预热中”。

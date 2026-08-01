@@ -5,7 +5,7 @@ from __future__ import annotations
 import yaml
 
 import main
-from src.analysis.strategy_artifacts import (
+from src.search.artifacts import (
     OptimizerGroupSummary,
     activate_run,
     load_latest_strategy_run,
@@ -85,7 +85,7 @@ def test_legacy_copy_failure_after_commit_does_not_rollback_active_pointer(
         raise OSError("legacy copy unavailable")
 
     monkeypatch.setattr(
-        "src.analysis.strategy_artifacts.shutil.copy2", fail_copy
+        "src.search.artifacts.shutil.copy2", fail_copy
     )
     assert activate_run("copy_failure", groups=GROUPS, root=tmp_path)
     active = load_latest_strategy_run(groups=GROUPS, root=tmp_path)

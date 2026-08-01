@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.analysis.search_interface import Params, StrategyMarketData, TradePlan
-from src.analysis.strategies import get_strategy
+from src.strategy import Params, StrategyMarketData, TradePlan
+from src.strategy import get_strategy
 
 
 def _market_data(periods: int = 100, symbols: int = 2) -> StrategyMarketData:
@@ -81,7 +81,7 @@ def test_today_scan_reads_last_row_of_same_trade_plan(monkeypatch):
         lambda stocks: {"scan": pd.DataFrame()},
     )
     monkeypatch.setattr(
-        "src.analysis.backtester._build_indicator_matrix",
+        "src.backtest.engine._build_indicator_matrix",
         lambda computed, codes: (
             market_data.indicator_matrix,
             market_data.prices,

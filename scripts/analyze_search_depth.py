@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from main import load_config  # noqa: E402
-from src.analysis.search_depth_analysis import (  # noqa: E402
+from src.experiments.search_depth import (  # noqa: E402
     build_depth_checkpoints,
     run_full_config_depth_analysis,
 )

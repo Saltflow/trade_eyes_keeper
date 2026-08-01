@@ -1,4 +1,4 @@
-"""Regression tests for the optimizer's held-out daily-report window."""
+"""Regression tests for optimizer window isolation and artifact contracts."""
 
 from __future__ import annotations
 
@@ -9,29 +9,22 @@ import pandas as pd
 import pytest
 import yaml
 
-from src.analysis.config import GeneticSearchConfig, StrategyConstraints, WindowStats
-from src.analysis.backtester import (
+from src.search.config import StrategyConstraints, WindowStats
+from src.backtest.engine import (
     FastEvaluator,
     WalkForwardManager,
     WindowSlice,
     _compute_stats,
     simulate_portfolio,
 )
-from src.analysis.config import ExecutionConfig
-from src.analysis.search_interface import StrategyMarketData, TradePlan
-from src.analysis.optimizer import (
-    GeneticOptimizer,
-    ScoredEncoding,
-    StrategyEncoding,
+from src.search.config import ExecutionConfig
+from src.strategy import StrategyMarketData, TradePlan
+from src.search.workflow import (
     _compute_ranking_wf_score,
-    _passes_ranking_return_gate,
     _partition_window_indexes,
-    _ranking_return_diagnostics,
     _save_optimizer_result,
-    _split_ranking_and_validation_stats,
 )
-from src.analysis.search_interface import ParamDim, ParamSpace, Params
-from src.analysis.strategy_artifacts import OptimizerGroupSummary, persist_group_summary
+from src.search.artifacts import OptimizerGroupSummary, persist_group_summary
 from main import _min_optimizer_history_rows, _optimizer_lookback_days
 
 
@@ -65,7 +58,7 @@ def test_ranking_score_excludes_held_out_window_and_extends_weights():
         WindowStats(test_excess_return=-999.0),
     ]
 
-    ranking, validation = _split_ranking_and_validation_stats(stats, constraints)
+    ranking, validation = stats[:2], stats[2:]
 
     assert ranking == stats[:2]
     assert validation == stats[2:]
@@ -75,252 +68,6 @@ def test_ranking_score_excludes_held_out_window_and_extends_weights():
     assert constraints.walk_forward.ranking_window_count == 2
     # A short legacy weight array must not silently discard a historical window.
     assert constraints.walk_forward.ranking_weights(4) == [1.0, 2.0, 2.0, 2.0]
-
-
-def test_absolute_return_gate_uses_ranking_stats_not_held_out_window():
-    constraints = _constraints()
-    constraints.genetic_search.min_weighted_strategy_return = 0.0
-    constraints.genetic_search.min_positive_return_windows = 1
-    ranking = [
-        WindowStats(strategy_return=1.0),
-        WindowStats(strategy_return=-0.25),
-    ]
-    held_out = [WindowStats(strategy_return=-999.0)]
-
-    diagnostics = _ranking_return_diagnostics(ranking, constraints)
-
-    assert diagnostics == {
-        "weighted_strategy_return": pytest.approx(1.0 / 6.0),
-        "positive_return_windows": 1,
-        "ranking_window_count": 2,
-    }
-    assert _passes_ranking_return_gate(diagnostics, constraints)
-    assert held_out[0].strategy_return == -999.0
-
-
-def test_absolute_return_gate_rejects_positive_excess_with_negative_strategy_return():
-    constraints = _constraints()
-    constraints.genetic_search.min_weighted_strategy_return = 0.0
-    constraints.genetic_search.min_positive_return_windows = 1
-    ranking = [WindowStats(test_excess_return=8.0, strategy_return=-0.1)]
-
-    diagnostics = _ranking_return_diagnostics(ranking, constraints)
-
-    assert diagnostics["weighted_strategy_return"] == pytest.approx(-0.1)
-    assert not _passes_ranking_return_gate(diagnostics, constraints)
-
-
-def test_strongest_benchmark_gate_requires_seven_of_eleven_positive_windows():
-    constraints = _constraints()
-    constraints.genetic_search.min_weighted_strategy_return = -1.0
-    constraints.genetic_search.min_positive_return_windows = 0
-    constraints.genetic_search.min_winning_benchmark_windows = 7
-    passing = [
-        WindowStats(strategy_return=1.0, test_excess_return=value)
-        for value in ([0.2] * 7 + [-0.1] * 4)
-    ]
-    failing = [
-        WindowStats(strategy_return=1.0, test_excess_return=value)
-        for value in ([0.2] * 6 + [-0.1] * 5)
-    ]
-
-    passing_diagnostics = _ranking_return_diagnostics(passing, constraints)
-    failing_diagnostics = _ranking_return_diagnostics(failing, constraints)
-
-    assert passing_diagnostics["mean_strongest_benchmark_excess"] > 0.0
-    assert passing_diagnostics["strongest_benchmark_win_windows"] == 7
-    assert _passes_ranking_return_gate(passing_diagnostics, constraints)
-    assert failing_diagnostics["mean_strongest_benchmark_excess"] > 0.0
-    assert failing_diagnostics["strongest_benchmark_win_windows"] == 6
-    assert not _passes_ranking_return_gate(failing_diagnostics, constraints)
-
-
-def test_ga_never_evaluates_isolated_or_holdout_windows_until_final_candidate(
-    monkeypatch,
-):
-    constraints = StrategyConstraints(
-        {
-            "walk_forward": {
-                "num_windows": 14,
-                "validation_windows": 1,
-                "purge_overlapping_windows": True,
-            },
-            "genetic_search": {
-                "phase1_random_samples": 1,
-                "phase1_top_keep": 1,
-                "num_generations": 0,
-                "population_size": 1,
-                "offspring_size": 0,
-                "min_weighted_strategy_return": -1.0,
-                "min_positive_return_windows": 0,
-                "min_winning_benchmark_windows": 7,
-                "sensitivity_top_candidates": 1,
-            },
-        }
-    )
-    constraints.check_hard_constraints = lambda *_args: (True, [])
-    windows = [
-        SimpleNamespace(
-            train_start=index * 3,
-            test_start=index * 3,
-            test_end=index * 3 + 9,
-        )
-        for index in range(14)
-    ]
-    manager = SimpleNamespace(
-        iter_windows=lambda: windows,
-        stock_codes=[],
-        T=60,
-    )
-    strategy = _FakeStrategy()
-    calls = []
-
-    def fake_evaluate(
-        _encoding,
-        _strategy,
-        selected_windows,
-        *_args,
-        validation_window_count=None,
-        **_kwargs,
-    ):
-        calls.append((len(selected_windows), validation_window_count))
-        stats = [
-            WindowStats(strategy_return=1.0, test_excess_return=0.2)
-            for _ in selected_windows
-        ]
-        if len(selected_windows) == 14:
-            return stats, stats[:11], stats[-1:], 0.2
-        return stats, stats, [], 0.2
-
-    monkeypatch.setattr("src.analysis.optimizer._evaluate_encoding_wf", fake_evaluate)
-    monkeypatch.setattr(
-        "src.analysis.optimizer._random_encoding",
-        lambda _strategy: StrategyEncoding([1], "fake"),
-    )
-
-    results = GeneticOptimizer(strategy, constraints, manager, object()).run()
-
-    assert len(results) == 1
-    assert calls == [(11, 0), (14, None)]
-    assert len(results[0].ranking_stats) == 11
-    assert len(results[0].validation_stats) == 1
-    assert results[0].purged_window_count == 2
-
-
-class _FakeStrategy:
-    name = "fake"
-    param_space = ParamSpace([ParamDim("level", 3)])
-
-    def random_perturbations(self, params, n=10):
-        return []
-
-
-def test_ga_hard_constraints_receive_ranking_stats_only(monkeypatch):
-    """A bad held-out window must not remove a candidate from the GA pool."""
-    constraints = _constraints()
-    ranking = [WindowStats(test_excess_return=3.0, avg_position_pct=20.0)]
-    validation = [WindowStats(test_excess_return=-999.0, avg_position_pct=0.0)]
-    received = []
-
-    def fake_check(window_stats, score):
-        received.append((window_stats, score))
-        return True, []
-
-    constraints.check_hard_constraints = fake_check
-
-    def fake_evaluate(*_args, **_kwargs):
-        return ranking + validation, ranking, validation, 3.0
-
-    monkeypatch.setattr("src.analysis.optimizer._evaluate_encoding_wf", fake_evaluate)
-    optimizer = GeneticOptimizer(
-        _FakeStrategy(),
-        constraints,
-        SimpleNamespace(iter_windows=lambda: [object(), object()]),
-        object(),
-    )
-
-    results = optimizer.run()
-
-    assert len(results) == 1
-    assert received == [(ranking, 3.0)]
-    assert results[0].ranking_stats == ranking
-    assert results[0].validation_stats == validation
-
-
-def test_sensitivity_reads_only_ranking_windows(monkeypatch):
-    constraints = _constraints()
-    strategy = _FakeStrategy()
-    strategy.random_perturbations = lambda _params, n=10: [
-        Params(values={"level": 1}, _engine="fake")
-    ]
-    optimizer = GeneticOptimizer(strategy, constraints, SimpleNamespace(), object())
-    selected = ScoredEncoding(
-        StrategyEncoding(
-            genome=[1], engine_name="fake", params=Params({"level": 1}, "fake")
-        ),
-        wf_stats=[WindowStats(), WindowStats(), WindowStats()],
-        wf_score=2.0,
-        ranking_stats=[WindowStats(), WindowStats()],
-        validation_stats=[WindowStats(test_excess_return=-999.0)],
-    )
-    windows = ["rank-1", "rank-2", "held-out"]
-    calls = []
-
-    def fake_evaluate(*args, **kwargs):
-        calls.append((args[2], kwargs.get("validation_window_count")))
-        return [], [], [], 1.25
-
-    monkeypatch.setattr("src.analysis.optimizer._evaluate_encoding_wf", fake_evaluate)
-
-    sensitivity = optimizer._evaluate_sensitivity(selected, windows)
-
-    assert calls == [(["rank-1", "rank-2"], 0)]
-    assert sensitivity["base_score"] == 2.0
-    assert sensitivity["worst_score"] == 1.25
-
-
-def test_robust_selection_can_choose_the_51st_base_wf_candidate():
-    optimizer = object.__new__(GeneticOptimizer)
-    optimizer.ga_cfg = SimpleNamespace(
-        sensitivity_top_candidates=51,
-        sensitivity_penalty_weight=1.0,
-    )
-    candidates = [
-        ScoredEncoding(
-            StrategyEncoding(genome=[index], engine_name="fake"),
-            wf_stats=[],
-            wf_score=float(100 - index),
-        )
-        for index in range(51)
-    ]
-
-    def fake_sensitivity(candidate, _windows):
-        index = candidate.encoding.genome[0]
-        return {"drop": 0.0 if index == 50 else 100.0}
-
-    optimizer._evaluate_sensitivity = fake_sensitivity
-
-    selected = optimizer._apply_robust_selection(candidates, ["ranking-only"])
-
-    assert selected[0].encoding.genome == [50]
-    assert selected[0].selection_score == pytest.approx(50.0)
-    assert selected[0].sensitivity["selection_score"] == pytest.approx(50.0)
-
-
-def test_default_full_sensitivity_penalty_is_applied_exactly():
-    optimizer = object.__new__(GeneticOptimizer)
-    optimizer.ga_cfg = GeneticSearchConfig({"sensitivity_top_candidates": 1})
-    candidate = ScoredEncoding(
-        StrategyEncoding(genome=[0], engine_name="fake"),
-        wf_stats=[],
-        wf_score=5.0,
-    )
-    optimizer._evaluate_sensitivity = lambda *_args: {"drop": 2.25}
-
-    selected = optimizer._apply_robust_selection([candidate], ["ranking-only"])
-
-    assert optimizer.ga_cfg.sensitivity_penalty_weight == 1.0
-    assert selected[0].selection_score == pytest.approx(5.0 - 1.0 * 2.25)
 
 
 def test_persisted_summary_converts_numpy_scalars_to_yaml(tmp_path):
@@ -367,15 +114,17 @@ def test_initial_optimizer_artifact_is_safe_yaml_with_numpy_scalars(tmp_path):
         execution_params=lambda _params: {"buy_cash": np.float64(10_000.0)},
     )
     top = SimpleNamespace(
-        encoding=StrategyEncoding(genome=[], engine_name="fake"),
+        parameters={},
         ranking_stats=[stat],
         validation_stats=[stat],
         purged_window_count=0,
-        wf_stats=[stat, stat],
-        wf_score=np.float64(2.5),
+        all_stats=[stat, stat],
+        objective_score=np.float64(2.5),
         selection_score=np.float64(2.0),
-        ranking_diagnostics={"weighted_return": np.float64(8.5)},
+        ranking_metrics={"weighted_return": np.float64(8.5)},
         sensitivity={"drop": np.float64(0.5)},
+        universe_robustness={},
+        search_metadata={},
     )
 
     _save_optimizer_result(

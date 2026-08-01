@@ -420,9 +420,9 @@ def _readable_signal(
     map_us 缺省时港美股共用 map_hk（向后兼容非A单组）。
     """
     try:
-        from ..analysis.helpers import _detect_fine_group
+        from ..markets import _detect_fine_group
     except (ImportError, ValueError):
-        from analysis.helpers import _detect_fine_group
+        from src.markets import _detect_fine_group
     g = _detect_fine_group(str(code))
     if g == "a_share":
         m = map_a
@@ -3684,7 +3684,7 @@ class EmailNotifier(BaseNotifier):
             table_rows = ""
             alert_codes = set(getattr(a, "stock_code", "") for a in sa)
 
-            from src.analysis.helpers import _detect_fine_group
+            from src.markets import _detect_fine_group
 
             report_codes = list(fundamentals)
             a_codes = sorted(

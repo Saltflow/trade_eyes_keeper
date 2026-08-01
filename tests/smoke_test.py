@@ -31,11 +31,11 @@ def check(desc: str, fn):
 def test_imports():
     modules = [
         "src.core.ref_portfolio",
-        "src.analysis.config",
-        "src.analysis.search_interface",
-        "src.analysis.backtester",
-        "src.analysis.optimizer",
-        "src.analysis.helpers",
+        "src.search.config",
+        "src.strategy",
+        "src.backtest.engine",
+        "src.search.workflow",
+        "src.markets",
         "src.notification.email_notifier",
         "src.notification.feishu_notifier",
         "src.notification.telegram_notifier",

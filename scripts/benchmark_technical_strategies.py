@@ -16,11 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.analysis.resource_planner import ResourcePlanner  # noqa: E402
+from src.search.resources import ResourcePlanner  # noqa: E402
 from main import load_config  # noqa: E402
-from src.analysis.strategies import STRATEGIES  # noqa: E402
-from src.analysis.solvers import list_solvers  # noqa: E402
-from src.analysis.strategy_benchmark import (  # noqa: E402
+from src.strategy import list_strategy_ids  # noqa: E402
+from src.search import list_solvers  # noqa: E402
+from src.experiments.strategy_benchmark import (  # noqa: E402
     BENCHMARK_GROUPS,
     prepare_benchmark_data,
     run_market_benchmark_from_snapshot,
@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--strategies",
         nargs="+",
-        default=list(STRATEGIES),
+        default=list(list_strategy_ids()),
     )
     parser.add_argument("--depth", type=int, default=1000)
     parser.add_argument(
@@ -65,7 +65,7 @@ def main() -> int:
     args = build_parser().parse_args()
     if args.evaluation_workers != 1:
         raise SystemExit("cross-strategy benchmark requires --evaluation-workers 1")
-    unknown = sorted(set(args.strategies) - set(STRATEGIES))
+    unknown = sorted(set(args.strategies) - set(list_strategy_ids()))
     if unknown:
         raise SystemExit(f"unknown registered strategies: {', '.join(unknown)}")
     if args.depth <= 0:

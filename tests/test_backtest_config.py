@@ -1,6 +1,6 @@
 """tests for backtest_config.py"""
 
-from src.analysis.config import (
+from src.search.config import (
     BacktestConfig,
     elapsed_months,
     make_training_config,

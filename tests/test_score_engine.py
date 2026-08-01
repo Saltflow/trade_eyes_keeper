@@ -21,8 +21,8 @@ import pandas as pd
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 os.environ.setdefault("LOG_LEVEL", "ERROR")
 
-from analysis.backtester import simulate_portfolio  # noqa: E402
-from analysis.search_interface import StrategyMarketData, TradePlan  # noqa: E402
+from src.backtest.engine import simulate_portfolio  # noqa: E402
+from src.strategy import StrategyMarketData, TradePlan  # noqa: E402
 
 INF = float("inf")
 
