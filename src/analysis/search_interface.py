@@ -100,9 +100,11 @@ class StrategyMarketData:
     prices: np.ndarray | None = None
     highs: np.ndarray | None = None
     lows: np.ndarray | None = None
-    benchmark_buy_prices: np.ndarray | None = None
     tradable: np.ndarray | None = None
     date_ordinals: np.ndarray | None = None
+    market: str = "a_share"
+    fundamental_features: np.ndarray | None = None
+    fundamental_availability_mask: np.ndarray | None = None
 
 
 @dataclass
@@ -131,19 +133,12 @@ class TradePlan:
     conviction: np.ndarray | None = None
     target_weights: np.ndarray | None = None
     risk_atr: np.ndarray | None = None
-    buy_execution_prices: np.ndarray | None = None
-    sell_execution_prices: np.ndarray | None = None
     date_ordinals: np.ndarray | None = None
 
     def sliced(self, start: int, end: int) -> "TradePlan":
         def sliced_optional(value):
             return None if value is None else value[start:end].copy()
 
-        buy_execution_prices = sliced_optional(self.buy_execution_prices)
-        # A buy on the final test date has no in-window t+1 observation. Even
-        # if full source history has a later row, the order remains pending.
-        if buy_execution_prices is not None and len(buy_execution_prices):
-            buy_execution_prices[-1] = np.nan
         return TradePlan(
             buy_signals=self.buy_signals[start:end],
             sell_signals=self.sell_signals[start:end],
@@ -162,8 +157,6 @@ class TradePlan:
             conviction=sliced_optional(self.conviction),
             target_weights=sliced_optional(self.target_weights),
             risk_atr=sliced_optional(self.risk_atr),
-            buy_execution_prices=buy_execution_prices,
-            sell_execution_prices=sliced_optional(self.sell_execution_prices),
             date_ordinals=sliced_optional(self.date_ordinals),
         )
 
@@ -290,6 +283,9 @@ class SearchStrategy(ABC):
     label: str = ""
     description: str = ""
     warmup_rows: int = 60
+    feature_dependencies: tuple[str, ...] = ()
+    fundamental_feature_dependencies: tuple[str, ...] = ()
+    parameter_schema: str = "legacy/1"
 
     def with_execution_dims(self, dims: list[ParamDim]) -> ParamSpace:
         """Attach the shared cash-tier dimensions to a strategy's signal space.
@@ -391,6 +387,27 @@ class SearchStrategy(ABC):
                 "parameters": dict(params.values),
             },
         )
+
+    @property
+    def search_parameter_schema(self):
+        """Typed solver contract, adapted from historical ParamDim by default."""
+        from .search_contracts import ParameterSchema
+
+        return ParameterSchema.from_param_space(self.param_space)
+
+    def evaluate_one(
+        self, params: Params, market_data: StrategyMarketData
+    ) -> TradePlan:
+        """Correctness fallback shared by every strategy and evaluator."""
+        return self.make_signals(params, market_data)
+
+    def prepare(self, market_data: StrategyMarketData):
+        """Optionally return an object exposing evaluate_batch(params).
+
+        Scalar strategies return None.  The controller never branches on the
+        strategy id; EvaluationService discovers this capability at runtime.
+        """
+        return None
 
     # ══════════ 搜索空间 ══════════
 

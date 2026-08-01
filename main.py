@@ -130,6 +130,9 @@ def _has_optimizer_history(data: pd.DataFrame, constraints) -> bool:
 
 def _optimizer_evaluation_budget(constraints) -> int:
     """Return the configured number of parameter evaluations per market."""
+    solver_config = constraints.search.solver_config()
+    if solver_config.get("budget") is not None:
+        return max(1, int(solver_config["budget"]))
     ga = constraints.genetic_search
     return ga.phase1_random_samples + ga.num_generations * ga.offspring_size
 

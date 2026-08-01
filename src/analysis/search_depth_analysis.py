@@ -12,24 +12,21 @@ from __future__ import annotations
 import csv
 import json
 import logging
-import random
+import math
 from datetime import datetime
+from functools import reduce
 from pathlib import Path
-from time import monotonic
 from typing import Iterable
 
 import numpy as np
 
 from .backtester import FastEvaluator, WalkForwardManager
+from .benchmark_search import run_ranking_benchmark_search
 from .helpers import _detect_fine_group, get_skip_search
-from .optimizer import (
-    GeneticOptimizer,
-    _partition_window_indexes,
-    _passes_ranking_return_gate,
-    _random_encoding,
-    _ranking_return_diagnostics,
-)
+from .optimizer import _partition_window_indexes
+from .resource_planner import ResourcePlanner
 from .strategies import get_strategy
+from .strategy_benchmark import frame_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -85,9 +82,7 @@ def choose_balance_depth(
     """
     if not depths:
         raise ValueError("at least one depth is required")
-    if not (
-        len(depths) == len(marginal_improvements) == len(ranking_eligible)
-    ):
+    if not (len(depths) == len(marginal_improvements) == len(ranking_eligible)):
         raise ValueError("depth, improvement and deployable lengths must match")
     if len(depths) == 1:
         return depths[0]
@@ -100,20 +95,18 @@ def choose_balance_depth(
         ]
         if not future_improvements:
             continue
-        later_becomes_eligible = (
-            not ranking_eligible[current_index - 1]
-            and any(ranking_eligible[current_index:])
+        later_becomes_eligible = not ranking_eligible[current_index - 1] and any(
+            ranking_eligible[current_index:]
         )
-        if (
-            not later_becomes_eligible
-            and all(value < threshold_pct for value in future_improvements)
+        if not later_becomes_eligible and all(
+            value < threshold_pct for value in future_improvements
         ):
             return depths[current_index - 1]
     return depths[-1]
 
 
-def _candidate_outcome(result, constraints) -> dict[str, object]:
-    if result is None:
+def _candidate_outcome(result) -> dict[str, object]:
+    if result is None or not result.ranking_stats:
         return {
             "evaluated": False,
             "wf_score": None,
@@ -122,29 +115,22 @@ def _candidate_outcome(result, constraints) -> dict[str, object]:
             "eligible": False,
             "ranking_diagnostics": {},
         }
-    _all_stats, ranking_stats, _validation_stats, score = result
-    diagnostics = _ranking_return_diagnostics(ranking_stats, constraints)
-    return_gate_passed = _passes_ranking_return_gate(diagnostics, constraints)
-    hard_constraints_passed, violations = constraints.check_hard_constraints(
-        ranking_stats, score
-    )
+    diagnostics = dict(result.ranking_metrics)
+    gate_passed = bool(result.gate_feasible)
+    violations = [item["rule_id"] for item in result.gate_results if not item["passed"]]
     return {
         "evaluated": True,
-        "wf_score": float(score),
-        "return_gate_passed": bool(return_gate_passed),
-        "hard_constraints_passed": bool(hard_constraints_passed),
-        "eligible": bool(return_gate_passed and hard_constraints_passed),
+        "wf_score": float(result.objective_score),
+        "return_gate_passed": gate_passed,
+        "hard_constraints_passed": gate_passed,
+        "eligible": gate_passed,
         "ranking_diagnostics": diagnostics,
         "hard_constraint_violations": list(violations),
     }
 
 
 def _best_by_score(outcomes: Iterable[dict[str, object]]):
-    scored = [
-        outcome
-        for outcome in outcomes
-        if outcome.get("wf_score") is not None
-    ]
+    scored = [outcome for outcome in outcomes if outcome.get("wf_score") is not None]
     return max(scored, key=lambda item: float(item["wf_score"])) if scored else None
 
 
@@ -158,16 +144,12 @@ def summarize_prefix(
     prefix = outcomes[:depth]
     evaluated = [item for item in prefix if item["evaluated"]]
     return_gate = [item for item in evaluated if item["return_gate_passed"]]
-    hard_pass = [
-        item for item in evaluated if item["hard_constraints_passed"]
-    ]
+    hard_pass = [item for item in evaluated if item["hard_constraints_passed"]]
     eligible = [item for item in evaluated if item["eligible"]]
     best_raw = _best_by_score(evaluated)
     best_gate = _best_by_score(return_gate)
     best_eligible = _best_by_score(eligible)
-    diagnostics = (
-        dict(best_raw.get("ranking_diagnostics", {})) if best_raw else {}
-    )
+    diagnostics = dict(best_raw.get("ranking_diagnostics", {})) if best_raw else {}
     return {
         "depth": int(depth),
         "generated_candidates": len(prefix),
@@ -176,9 +158,7 @@ def summarize_prefix(
         "return_gate_pass_count": len(return_gate),
         "hard_constraint_pass_count": len(hard_pass),
         "eligible_candidate_count": len(eligible),
-        "best_raw_wf_score": (
-            float(best_raw["wf_score"]) if best_raw else None
-        ),
+        "best_raw_wf_score": (float(best_raw["wf_score"]) if best_raw else None),
         "best_return_gate_wf_score": (
             float(best_gate["wf_score"]) if best_gate else None
         ),
@@ -188,9 +168,7 @@ def summarize_prefix(
         "best_raw_weighted_strategy_return": diagnostics.get(
             "weighted_strategy_return"
         ),
-        "best_raw_positive_return_windows": diagnostics.get(
-            "positive_return_windows"
-        ),
+        "best_raw_positive_return_windows": diagnostics.get("positive_return_windows"),
         "best_raw_mean_strongest_benchmark_excess": diagnostics.get(
             "mean_strongest_benchmark_excess"
         ),
@@ -218,9 +196,7 @@ def aggregate_market_records(
         ]
         if len(scores) != len(groups):
             raise RuntimeError(f"missing raw score at search depth {depth}")
-        eligible_markets = sum(
-            int(row["eligible_candidate_count"]) > 0 for row in rows
-        )
+        eligible_markets = sum(int(row["eligible_candidate_count"]) > 0 for row in rows)
         row = {
             "depth": depth,
             "compute_multiple_vs_1000": depth / 1000.0,
@@ -231,9 +207,7 @@ def aggregate_market_records(
             "total_eligible_candidates": sum(
                 int(item["eligible_candidate_count"]) for item in rows
             ),
-            "cumulative_seconds": sum(
-                float(item["elapsed_seconds"]) for item in rows
-            ),
+            "cumulative_seconds": sum(float(item["elapsed_seconds"]) for item in rows),
             "incremental_score_gain": None,
             "marginal_effect_improvement_pct": None,
         }
@@ -242,17 +216,14 @@ def aggregate_market_records(
             current_score = float(row["mean_best_raw_wf_score"])
             previous_score = float(previous["mean_best_raw_wf_score"])
             row["incremental_score_gain"] = current_score - previous_score
-            row["marginal_effect_improvement_pct"] = (
-                marginal_effect_improvement(previous_score, current_score)
+            row["marginal_effect_improvement_pct"] = marginal_effect_improvement(
+                previous_score, current_score
             )
         aggregate.append(row)
 
     balance = choose_balance_depth(
         depths,
-        [
-            row["marginal_effect_improvement_pct"]
-            for row in aggregate
-        ],
+        [row["marginal_effect_improvement_pct"] for row in aggregate],
         [bool(row["all_markets_ranking_eligible"]) for row in aggregate],
         threshold_pct=threshold_pct,
     )
@@ -315,16 +286,16 @@ def _plot_result(
         label="Cross-market mean",
     )
     axes[0].set_ylabel("Best raw ranking WF score")
-    axes[0].set_title(
-        "regime_pullback: Marginal Effect of Phase-1 Search Depth"
-    )
+    axes[0].set_title("Marginal Effect of Ranking-only Search Depth")
     axes[0].grid(alpha=0.25)
     axes[0].legend(ncol=4, fontsize=9)
 
     marginal = [
-        0.0
-        if row["marginal_effect_improvement_pct"] is None
-        else float(row["marginal_effect_improvement_pct"])
+        (
+            0.0
+            if row["marginal_effect_improvement_pct"] is None
+            else float(row["marginal_effect_improvement_pct"])
+        )
         for row in aggregate
     ]
     axes[1].bar(
@@ -346,9 +317,7 @@ def _plot_result(
     axes[1].grid(axis="y", alpha=0.25)
     axes[1].legend(fontsize=9)
 
-    eligible = [
-        int(row["total_eligible_candidates"]) for row in aggregate
-    ]
+    eligible = [int(row["total_eligible_candidates"]) for row in aggregate]
     axes[2].bar(
         depths,
         eligible,
@@ -444,9 +413,7 @@ def run_full_config_depth_analysis(
         raise ValueError("a fixed genetic_search.random_seed is required")
     lookback_days = _optimizer_lookback_days(constraints)
     skipped = get_skip_search(config)
-    configured_groups: dict[str, list[str]] = {
-        group: [] for group in OPTIMIZER_GROUPS
-    }
+    configured_groups: dict[str, list[str]] = {group: [] for group in OPTIMIZER_GROUPS}
     for stock in config.get("stocks", []) or []:
         code = _stock_code(stock)
         if not code or code in skipped:
@@ -501,9 +468,10 @@ def run_full_config_depth_analysis(
             list(stocks_data),
             benchmark_data=benchmarks,
         )
+        wf_manager.market_group = group
         windows = wf_manager.iter_windows()
-        ranking_indexes, purged_indexes, validation_indexes = (
-            _partition_window_indexes(windows, constraints)
+        ranking_indexes, purged_indexes, validation_indexes = _partition_window_indexes(
+            windows, constraints
         )
         ranking_windows = [windows[index] for index in ranking_indexes]
         if len(ranking_windows) != 11:
@@ -512,40 +480,59 @@ def run_full_config_depth_analysis(
             )
 
         evaluator = FastEvaluator(constraints.execution, group)
-        optimizer = GeneticOptimizer(
-            strategy, constraints, wf_manager, evaluator
+        batch_size = reduce(math.gcd, depths)
+        searched, service, gate_pipeline, problem, solver_config = (
+            run_ranking_benchmark_search(
+                strategy=strategy,
+                constraints=constraints,
+                manager=wf_manager,
+                evaluator=evaluator,
+                ranking_windows=ranking_windows,
+                group=group,
+                search_depth=depths[-1],
+                random_seed=seed,
+                evaluation_workers=max(
+                    1,
+                    int(constraints.search.workers or ResourcePlanner().physical_cores),
+                ),
+                input_fingerprints={
+                    "stocks": {
+                        code: frame_fingerprint(frame)
+                        for code, frame in stocks_data.items()
+                    },
+                    "benchmarks": {
+                        code: frame_fingerprint(frame)
+                        for code, frame in benchmarks.items()
+                    },
+                },
+                solver_id="random",
+                batch_size=batch_size,
+            )
         )
-        random.seed(seed)
-        encodings = [
-            _random_encoding(strategy) for _ in range(depths[-1])
+        results_by_id = {item.candidate_id: item for item in searched}
+        if set(service.evaluation_order) != set(results_by_id):
+            raise RuntimeError("depth benchmark lost evaluated candidates")
+        outcomes = [
+            _candidate_outcome(results_by_id[candidate_id])
+            for candidate_id in service.evaluation_order
         ]
-        outcomes: list[dict[str, object]] = []
+        events_by_depth = {
+            int(event["requested_candidates"]): event
+            for event in service.progress_events
+        }
         records: list[dict[str, object]] = []
-        started = monotonic()
-        previous_depth = 0
         for depth in depths:
-            logger.info(
-                "Search-depth experiment %s: evaluating nested prefix %d",
-                group,
-                depth,
-            )
-            chunk = encodings[previous_depth:depth]
-            chunk_results = optimizer._evaluate_many(
-                chunk, ranking_windows
-            )
-            outcomes.extend(
-                _candidate_outcome(result, constraints)
-                for result in chunk_results
-            )
+            event = events_by_depth.get(depth)
+            if event is None:
+                raise RuntimeError(f"no progress event at search depth {depth}")
             records.append(
                 summarize_prefix(
                     outcomes,
                     depth,
-                    len(optimizer._wf_result_cache),
-                    monotonic() - started,
+                    int(event["unique_evaluations"]),
+                    float(event["wall_seconds"]),
                 )
             )
-            previous_depth = depth
 
         market_records[group] = records
         market_metadata[group] = {
@@ -555,12 +542,12 @@ def run_full_config_depth_analysis(
             "ranking_window_count": len(ranking_indexes),
             "purged_window_count": len(purged_indexes),
             "holdout_window_count": len(validation_indexes),
-            "first_ranking_test_start": windows[
-                ranking_indexes[0]
-            ].test_start_date,
-            "last_ranking_test_end": windows[
-                ranking_indexes[-1]
-            ].test_end_date,
+            "first_ranking_test_start": windows[ranking_indexes[0]].test_start_date,
+            "last_ranking_test_end": windows[ranking_indexes[-1]].test_end_date,
+            "solver_id": "random",
+            "solver_config": solver_config,
+            "gate_profile": gate_pipeline.profile_id,
+            "search_contract_hash": problem.contract_hash,
         }
 
     aggregate, balance_depth = aggregate_market_records(
@@ -591,7 +578,8 @@ def run_full_config_depth_analysis(
         "strategy_id": strategy_name,
         "created_at": datetime.now().isoformat(),
         "experiment": {
-            "variable": "phase1_random_candidate_evaluations",
+            "variable": "random_solver_candidate_evaluations",
+            "solver_id": "random",
             "nested_prefixes": True,
             "depths": depths,
             "random_seed": seed,
@@ -601,9 +589,7 @@ def run_full_config_depth_analysis(
             "production_phase1_random_samples": (
                 constraints.genetic_search.phase1_random_samples
             ),
-            "production_phase1_top_keep": (
-                constraints.genetic_search.phase1_top_keep
-            ),
+            "production_phase1_top_keep": (constraints.genetic_search.phase1_top_keep),
             "production_total_configured_evaluations": (
                 constraints.genetic_search.phase1_random_samples
                 + constraints.genetic_search.num_generations

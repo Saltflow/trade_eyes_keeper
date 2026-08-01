@@ -3,8 +3,8 @@
 锁定主链路量化执行语义（历史需求：commit b01233f 3日确认+均价执行，
 以及分位引擎接入后的同日互斥/月额度/回补规则）：
 
-1. 买入执行价 = 近3日收盘均价（含当日；不足3日用现有天数）
-2. 卖出执行价 = 单日收盘价（触发日）
+1. 买入执行价 = max(high[t-1], high[t], high[t+1])，窗口末买单待执行
+2. 卖出执行价 = low[t]，NAV 仍按 close[t] 估值
 3. 同日既触发买又触发卖 → 双向跳过（同日互斥）
 4. 月度买入额度默认不限制 (inf)
 5. 卖出后允许回补（无 shares==0 永久壁垒）
@@ -39,15 +39,21 @@ def _sim(
     lot=1,
     monthly=INF,
     comm=0.0,
+    highs=None,
+    lows=None,
 ):
     """便捷封装：单/多标的评分矩阵 → PortfolioTrace。"""
     buy = np.asarray(buy, dtype=np.float64)
     sell = np.asarray(sell, dtype=np.float64)
     price = np.asarray(price, dtype=np.float64)
+    highs = np.asarray(price if highs is None else highs, dtype=np.float64)
+    lows = np.asarray(price if lows is None else lows, dtype=np.float64)
     if buy.ndim == 1:
         buy = buy.reshape(-1, 1)
         sell = sell.reshape(-1, 1)
         price = price.reshape(-1, 1)
+        highs = highs.reshape(-1, 1)
+        lows = lows.reshape(-1, 1)
     T, N = buy.shape
     dates = pd.bdate_range("2025-01-02", periods=T).strftime(
         "%Y-%m-%d"
@@ -72,6 +78,8 @@ def _sim(
         dates=dates,
         symbols=codes,
         prices=price,
+        highs=highs,
+        lows=lows,
         tradable=np.isfinite(price) & (price > 0),
     )
     return simulate_portfolio(
@@ -84,42 +92,48 @@ def _sim(
 
 
 class TestBuyExecutionPrice3DayMax:
-    """需求1（v1.20）：买入执行价 = 近3日收盘最高价（含滑点）。"""
+    """买入执行价使用触发日前一日、当日、后一日最高价的最大值。"""
 
-    def test_buy_uses_3day_close_max(self):
-        # close = [10, 20, 30], 第3天(t=2)触发买入
-        # 最高价 = max(10,20,30) = 30，全仓 100000/30 ≈ 3333 股
+    def test_final_row_buy_is_pending_without_next_session_high(self):
+        # t=2 缺少 t+1 high，因此窗口末买单必须保持待执行。
         tr = _sim([0, 0, 1], [0, 0, 0], [10.0, 20.0, 30.0])
-        assert tr.total_trades == 1
-        assert tr.final_shares[0] == 3333  # 100000/30
+        assert tr.total_trades == 0
+        assert tr.pending_order_count == 1
+        assert tr.final_shares[0] == 0
 
     def test_buy_window_shorter_when_insufficient_history(self):
-        # 第1天(t=0)触发，只有1天历史 → max=10 → 10000 股
+        # t=0 没有 t-1，买价取 max(high[t], high[t+1]) = 20。
         tr = _sim([1, 0, 0], [0, 0, 0], [10.0, 20.0, 30.0], cash=100000.0)
         assert tr.total_trades == 1
-        assert tr.final_shares[0] == 10000  # 100000/10
+        assert tr.final_shares[0] == 5000  # max(high[t], high[t+1]) = 20
 
     def test_buy_2day_window(self):
-        # 第2天(t=1)触发，2天历史 → max(10,20)=20 → 100000/20=5000股
+        # t=1 买价取 max(high[t-1], high[t], high[t+1]) = 30。
         tr = _sim([0, 1, 0], [0, 0, 0], [10.0, 20.0, 30.0], lot=1)
         assert tr.total_trades == 1
-        assert tr.final_shares[0] == 5000  # 100000/20
+        assert tr.final_shares[0] == 3333  # max(high[t-1:t+1]) = 30
 
 
 class TestSellExecutionPriceSingleDay:
-    """需求2：卖出执行价 = 单日收盘价（触发日），不平滑。"""
+    """卖出执行价使用触发日最低价，不与 NAV 收盘估值混用。"""
 
-    def test_sell_uses_trigger_day_close(self):
-        # t=0 买入(价10), t=4 卖出(价50). 卖出按当日50, 不是3日均价。
-        # 现金档位限制单笔卖出金额，故为部分卖出。
+    def test_sell_uses_trigger_day_low(self):
+        # t=0 按 t/t+1 最高价20买入5000股；t=4 按最低价40部分卖出。
         buy = [1, 0, 0, 0, 0]
         sell = [0, 0, 0, 0, 1]
         price = [10.0, 20.0, 30.0, 40.0, 50.0]
-        tr = _sim(buy, sell, price, frac=1.0, lot=1)
-        # 买入 10000 股 @10; t=4 按 100000 元单笔上限卖出 @50。
+        tr = _sim(
+            buy,
+            sell,
+            price,
+            frac=1.0,
+            lot=1,
+            lows=[10.0, 20.0, 30.0, 40.0, 40.0],
+        )
+        # t=4 按 100000 元单笔上限卖出 2500 股，NAV 仍按收盘价50估值。
         assert tr.total_trades == 2
-        assert tr.final_shares[0] == 8000
-        assert tr.final_cash > 99000  # 卖在50而非3日均价40
+        assert tr.final_shares[0] == 2500
+        assert tr.final_cash == 100000.0
 
 
 class TestSameDayMutualExclusion:
@@ -165,9 +179,9 @@ class TestReentryAllowed:
 
     def test_rebuy_after_sell(self):
         # t=0 买, t=2 全卖, t=4 再买 → 3 笔交易，最终持仓 > 0
-        buy = [1, 0, 0, 0, 1]
-        sell = [0, 0, 1, 0, 0]
-        price = [10.0, 10.0, 10.0, 10.0, 10.0]
+        buy = [1, 0, 0, 0, 1, 0]
+        sell = [0, 0, 1, 0, 0, 0]
+        price = [10.0, 10.0, 10.0, 10.0, 10.0, 10.0]
         tr = _sim(buy, sell, price, frac=1.0)
         assert tr.total_trades == 3  # 买+卖+再买
         assert tr.final_shares[0] > 0  # 回补成功

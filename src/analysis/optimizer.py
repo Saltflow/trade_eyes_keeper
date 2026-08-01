@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import random
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import yaml
 from joblib import Parallel, delayed
-from datetime import datetime
 
 from .config import (
-    StrategyConstraints, DiscreteSearchConfig, WindowStats, get_constraints,
+    StrategyConstraints,
+    DiscreteSearchConfig,
+    WindowStats,
+    get_constraints,
 )
+from .execution import DEFAULT_FILL_PRICE_POLICY
 from .search_interface import SearchStrategy, Params, StrategyMarketData
 from .strategy_artifacts import as_yaml_primitives
 
@@ -25,9 +31,11 @@ logger = logging.getLogger(__name__)
 # 策略编码
 # ═══════════════════════════════════════════════════════════════
 
+
 @dataclass
 class StrategyEncoding:
     """策略的扁平编码 — 纯整数数组，适配 GA。"""
+
     genome: list[int]  # 扁平编码
     engine_name: str = ""
     params: Params | None = None  # 解码后的 Params（懒求值）
@@ -46,6 +54,7 @@ class StrategyEncoding:
 # GA 核心
 # ═══════════════════════════════════════════════════════════════
 
+
 def _random_encoding(strategy: SearchStrategy) -> StrategyEncoding:
     genome = []
     r = random
@@ -61,7 +70,9 @@ def _crossover(p1: StrategyEncoding, p2: StrategyEncoding) -> StrategyEncoding:
     return StrategyEncoding(genome=child, engine_name=p1.engine_name)
 
 
-def _mutate(enc: StrategyEncoding, strategy: SearchStrategy, rate: float = 0.15) -> StrategyEncoding:
+def _mutate(
+    enc: StrategyEncoding, strategy: SearchStrategy, rate: float = 0.15
+) -> StrategyEncoding:
     new_genome = list(enc.genome)
     for i, d in enumerate(strategy.param_space.dims):
         if i < len(new_genome) and random.random() < rate:
@@ -169,14 +180,21 @@ def _ranking_return_diagnostics(
         "positive_return_windows": sum(value > 0.0 for value in returns),
         "ranking_window_count": len(returns),
     }
-    if len(ranking_stats) == 11:
+    has_benchmark_contract = any(
+        bool(getattr(stat, "strongest_benchmark", ""))
+        or bool(getattr(stat, "benchmark_returns", {}))
+        for stat in ranking_stats
+    )
+    has_benchmark_contract = has_benchmark_contract or (
+        len(ranking_stats) >= constraints.genetic_search.min_winning_benchmark_windows
+        and any(float(stat.test_excess_return) != 0.0 for stat in ranking_stats)
+    )
+    if has_benchmark_contract:
         excess = [float(stat.test_excess_return) for stat in ranking_stats]
         diagnostics.update(
             {
                 "mean_strongest_benchmark_excess": float(np.mean(excess)),
-                "strongest_benchmark_win_windows": sum(
-                    value > 0.0 for value in excess
-                ),
+                "strongest_benchmark_win_windows": sum(value > 0.0 for value in excess),
             }
         )
     return diagnostics
@@ -192,12 +210,11 @@ def _passes_ranking_return_gate(
         and int(diagnostics["positive_return_windows"])
         >= constraints.genetic_search.min_positive_return_windows
     )
-    if int(diagnostics.get("ranking_window_count", 0)) != 11:
+    if "mean_strongest_benchmark_excess" not in diagnostics:
         return absolute_pass
-    return (
-        absolute_pass
-        and float(diagnostics.get("mean_strongest_benchmark_excess", 0.0)) > 0.0
-        and int(diagnostics.get("strongest_benchmark_win_windows", 0))
+    return absolute_pass and (
+        float(diagnostics["mean_strongest_benchmark_excess"]) > 0.0
+        and int(diagnostics["strongest_benchmark_win_windows"])
         >= constraints.genetic_search.min_winning_benchmark_windows
     )
 
@@ -205,6 +222,7 @@ def _passes_ranking_return_gate(
 # ═══════════════════════════════════════════════════════════════
 # WF 窗口评估
 # ═══════════════════════════════════════════════════════════════
+
 
 def _prepare_wf_evaluation_contexts(
     windows: list,
@@ -216,9 +234,7 @@ def _prepare_wf_evaluation_contexts(
     """Cache parameter-independent window inputs and executable baselines."""
     from .backtester import buy_and_hold_nav
 
-    geometry = tuple(
-        (w.train_start, w.test_start, w.test_end) for w in windows
-    )
+    geometry = tuple((w.train_start, w.test_start, w.test_end) for w in windows)
     cache_key = (
         state_scope,
         geometry,
@@ -238,16 +254,12 @@ def _prepare_wf_evaluation_contexts(
 
     parsed_dates = pd.to_datetime(wf_manager.dates)
     date_strings = [str(pd.Timestamp(date).date()) for date in parsed_dates]
-    date_ordinals = (
-        parsed_dates.values.astype("datetime64[D]").astype(np.int64)
-    )
+    date_ordinals = parsed_dates.values.astype("datetime64[D]").astype(np.int64)
     symbols = list(wf_manager.stock_codes)
     price_matrix = wf_manager.price_matrix
     high_matrix = wf_manager.price_high_matrix
     low_matrix = wf_manager.price_low_matrix
-    buy_matrix = getattr(
-        wf_manager, "buy_execution_price_matrix", price_matrix
-    )
+    market_group = str(getattr(wf_manager, "market_group", "a_share"))
     full_market_data = StrategyMarketData(
         indicator_matrix=wf_manager.indicator_matrix,
         dates=date_strings,
@@ -255,13 +267,13 @@ def _prepare_wf_evaluation_contexts(
         prices=price_matrix,
         highs=high_matrix,
         lows=low_matrix,
-        benchmark_buy_prices=buy_matrix,
         tradable=np.isfinite(price_matrix) & (price_matrix > 0),
         date_ordinals=date_ordinals,
+        market=market_group,
     )
 
     available_benchmarks = getattr(wf_manager, "benchmark_series", {})
-    benchmark_buy_prices = getattr(wf_manager, "benchmark_buy_prices", {})
+    benchmark_high_series = getattr(wf_manager, "benchmark_high_series", {})
     contexts: list[dict[str, object]] = []
     for window in windows:
         test_slice = slice(window.test_start, window.test_end)
@@ -278,9 +290,16 @@ def _prepare_wf_evaluation_contexts(
             prices=state_prices,
             highs=high_matrix[state_slice],
             lows=low_matrix[state_slice],
-            benchmark_buy_prices=buy_matrix[state_slice],
             tradable=np.isfinite(state_prices) & (state_prices > 0),
             date_ordinals=date_ordinals[state_slice],
+            market=market_group,
+        )
+        execution_prices = DEFAULT_FILL_PRICE_POLICY.build(
+            price_matrix,
+            high_matrix,
+            low_matrix,
+            start=window.test_start,
+            end=window.test_end,
         )
 
         cash_baseline = evaluator.initial_cash * (
@@ -289,35 +308,46 @@ def _prepare_wf_evaluation_contexts(
         benchmark_series = {"risk_free": cash_baseline}
         benchmark_initial_values = {"risk_free": evaluator.initial_cash}
         benchmark_raw_returns = {
-            "risk_free": float(
-                (cash_baseline[-1] / cash_baseline[0] - 1.0) * 100.0
-            )
+            "risk_free": float((cash_baseline[-1] / cash_baseline[0] - 1.0) * 100.0)
         }
-        if "510300" in available_benchmarks and "510300" in benchmark_buy_prices:
+        if "510300" in available_benchmarks:
+            raw_close = np.asarray(available_benchmarks["510300"], dtype=np.float64)
+            raw_high = np.asarray(
+                benchmark_high_series.get("510300", raw_close),
+                dtype=np.float64,
+            )
+            benchmark_execution = DEFAULT_FILL_PRICE_POLICY.build(
+                raw_close,
+                raw_high,
+                raw_close,
+                start=window.test_start,
+                end=window.test_end,
+            )
+            benchmark_close = benchmark_execution.valuation_prices[:, 0]
+            benchmark_buy = benchmark_execution.buy_prices[:, 0]
             benchmark_series["510300"] = buy_and_hold_nav(
-                available_benchmarks["510300"][test_slice],
-                benchmark_buy_prices["510300"][test_slice],
+                benchmark_close,
+                benchmark_buy,
                 evaluator.initial_cash,
                 int(constraints.execution.lot_sizes.get("a_share", 100)),
                 evaluator.commission_rate,
                 weights=np.array([1.0]),
             )
             benchmark_initial_values["510300"] = evaluator.initial_cash
-            raw_510300 = available_benchmarks["510300"][test_slice]
+            raw_510300 = benchmark_close
             if len(raw_510300) > 1 and raw_510300[0] > 0:
                 benchmark_raw_returns["510300"] = float(
                     (raw_510300[-1] / raw_510300[0] - 1.0) * 100.0
                 )
+        resolved_execution = execution_prices.scaled(evaluator.fx_rate)
         benchmark_series["universe_equal_weight"] = buy_and_hold_nav(
-            test_prices * evaluator.fx_rate,
-            buy_matrix[test_slice] * evaluator.fx_rate,
+            resolved_execution.valuation_prices,
+            resolved_execution.buy_prices,
             evaluator.initial_cash,
             evaluator.lot_size,
             evaluator.commission_rate,
         )
-        benchmark_initial_values["universe_equal_weight"] = (
-            evaluator.initial_cash
-        )
+        benchmark_initial_values["universe_equal_weight"] = evaluator.initial_cash
         raw_components = []
         for column in range(test_prices.shape[1]):
             values = test_prices[:, column]
@@ -333,6 +363,7 @@ def _prepare_wf_evaluation_contexts(
                 "relative_test_start": window.test_start - state_start,
                 "relative_test_end": window.test_end - state_start,
                 "test_indicators": test_indicators,
+                "execution_prices": execution_prices,
                 "test_prices": test_prices,
                 "cash_baseline": cash_baseline,
                 "benchmark_series": benchmark_series,
@@ -376,9 +407,7 @@ def _evaluate_encoding_wf(
 
     for w, context in zip(windows, prepared["windows"]):
         if state_scope == "train":
-            state_plan = strategy.make_signals(
-                params, context["signal_market_data"]
-            )
+            state_plan = strategy.make_signals(params, context["signal_market_data"])
             trade_plan = state_plan.sliced(
                 context["relative_test_start"],
                 context["relative_test_end"],
@@ -392,6 +421,7 @@ def _evaluate_encoding_wf(
             indicator_matrix=context["test_indicators"],
             price_matrix=context["test_prices"],
             cash_baseline=context["cash_baseline"],
+            execution_prices=context["execution_prices"],
             trade_plan=trade_plan,
             benchmark_series=context["benchmark_series"],
             benchmark_initial_values=context["benchmark_initial_values"],
@@ -418,6 +448,7 @@ def _evaluate_encoding_wf(
 # 遗传搜索
 # ═══════════════════════════════════════════════════════════════
 
+
 @dataclass
 class ScoredEncoding:
     encoding: StrategyEncoding
@@ -432,6 +463,7 @@ class ScoredEncoding:
     sensitivity: dict[str, float | int] = field(default_factory=dict)
     universe_robustness: dict[str, object] = field(default_factory=dict)
     selection_score: float | None = None
+    search_metadata: dict[str, object] = field(default_factory=dict)
 
 
 class GeneticOptimizer:
@@ -477,8 +509,7 @@ class GeneticOptimizer:
         if not encodings:
             return []
         ordered_keys = [
-            tuple(int(value) for value in encoding.genome)
-            for encoding in encodings
+            tuple(int(value) for value in encoding.genome) for encoding in encodings
         ]
         missing: dict[tuple[int, ...], StrategyEncoding] = {}
         for key, encoding in zip(ordered_keys, encodings):
@@ -567,7 +598,9 @@ class GeneticOptimizer:
             return []
 
         # Phase 1: 随机采样
-        logger.info("[Phase 1] Random sampling %d strategies", self.ga_cfg.phase1_random_samples)
+        logger.info(
+            "[Phase 1] Random sampling %d strategies", self.ga_cfg.phase1_random_samples
+        )
         scored = []
         absolute_return_rejections = 0
         encodings = [
@@ -606,7 +639,8 @@ class GeneticOptimizer:
         scored = scored[: self.ga_cfg.phase1_top_keep]
         logger.info(
             "[Phase 1] Top after filter: %d (absolute-return rejections=%d)",
-            len(scored), absolute_return_rejections,
+            len(scored),
+            absolute_return_rejections,
         )
 
         # Phase 2: 遗传迭代
@@ -678,20 +712,22 @@ class GeneticOptimizer:
             scored[0].universe_robustness = self._evaluate_universe_robustness(
                 scored[0], ranking_windows
             )
-            worst_drop = float(
-                scored[0].universe_robustness.get("worst_drop", 0.0)
-            )
+            worst_drop = float(scored[0].universe_robustness.get("worst_drop", 0.0))
             if scored[0].selection_score is None:
                 scored[0].selection_score = scored[0].wf_score
-            scored[0].selection_score -= (
-                self.ga_cfg.sensitivity_penalty_weight * max(worst_drop, 0.0)
+            scored[0].selection_score -= self.ga_cfg.sensitivity_penalty_weight * max(
+                worst_drop, 0.0
             )
             logger.info(
                 "Robust selection: evaluated top %d by sensitivity, selected wf_score=%.2f, "
                 "selection_score=%.2f",
                 min(self.ga_cfg.sensitivity_top_candidates, len(scored)),
                 scored[0].wf_score,
-                scored[0].selection_score if scored[0].selection_score is not None else scored[0].wf_score,
+                (
+                    scored[0].selection_score
+                    if scored[0].selection_score is not None
+                    else scored[0].wf_score
+                ),
             )
 
             # Only the final selected parameter set may see the two isolated
@@ -733,13 +769,10 @@ class GeneticOptimizer:
             manager.price_matrix = self.wf_manager.price_matrix[:, indexes]
             manager.price_high_matrix = self.wf_manager.price_high_matrix[:, indexes]
             manager.price_low_matrix = self.wf_manager.price_low_matrix[:, indexes]
-            manager.buy_execution_price_matrix = (
-                self.wf_manager.buy_execution_price_matrix[:, indexes]
-            )
             manager.stock_codes = [codes[index] for index in indexes]
             manager.dates = self.wf_manager.dates
             manager.benchmark_series = self.wf_manager.benchmark_series
-            manager.benchmark_buy_prices = self.wf_manager.benchmark_buy_prices
+            manager.benchmark_high_series = self.wf_manager.benchmark_high_series
             return manager
 
         params = selected.encoding.to_params(self.strategy)
@@ -802,8 +835,7 @@ class GeneticOptimizer:
         else:
             for removed_index, removed_code in enumerate(codes):
                 indexes = [
-                    index for index in range(len(codes))
-                    if index != removed_index
+                    index for index in range(len(codes)) if index != removed_index
                 ]
                 result = _evaluate_encoding_wf(
                     encoding,
@@ -816,9 +848,7 @@ class GeneticOptimizer:
                     validation_window_count=0,
                 )
                 mean_excess = (
-                    float(np.mean([
-                        stat.test_excess_return for stat in result[1]
-                    ]))
+                    float(np.mean([stat.test_excess_return for stat in result[1]]))
                     if result is not None and result[1]
                     else float("-inf")
                 )
@@ -861,12 +891,9 @@ class GeneticOptimizer:
             )
             drop = float(candidate.sensitivity.get("drop", 0.0))
             candidate.selection_score = (
-                candidate.wf_score
-                - self.ga_cfg.sensitivity_penalty_weight * drop
+                candidate.wf_score - self.ga_cfg.sensitivity_penalty_weight * drop
             )
-            candidate.sensitivity["selection_score"] = float(
-                candidate.selection_score
-            )
+            candidate.sensitivity["selection_score"] = float(candidate.selection_score)
         finalists.sort(
             key=lambda item: (
                 item.selection_score
@@ -910,9 +937,7 @@ class GeneticOptimizer:
                     params=perturbed,
                 )
             )
-        for result in self._evaluate_many(
-            perturbation_encodings, ranking_windows
-        ):
+        for result in self._evaluate_many(perturbation_encodings, ranking_windows):
             if result is not None:
                 scores.append(float(result[3]))
 
@@ -933,6 +958,7 @@ class GeneticOptimizer:
 # 编排器
 # ═══════════════════════════════════════════════════════════════
 
+
 def run_optimizer(
     strategy: SearchStrategy,
     stocks_data: dict,
@@ -942,26 +968,197 @@ def run_optimizer(
     output_dir=None,
     benchmark_data: dict | None = None,
 ) -> tuple[list[ScoredEncoding], StrategyConstraints]:
-    """运行完整搜参流程：数据 → 窗口 → GA → 排序结果。"""
+    """Run the configured Solver through the stable SearchController."""
     from .backtester import WalkForwardManager, FastEvaluator
+    from .candidate_gates import CandidateGatePipeline
     from .config import get_constraints
+    from .evaluation_service import EvaluationService
+    from .feature_registry import TECHNICAL_FEATURES
+    from .resource_planner import ResourcePlanner
+    from .search_archive import SearchArchive
+    from .search_contracts import SearchProblem, SolverCapabilities, stable_hash
+    from .search_controller import SearchController
+    from .solvers import create_solver
+    from .validation_controller import ValidationController
 
     if _constraints is not None:
         constraints = _constraints
     else:
         constraints = get_constraints()
-        constraints.set_group(group)
+    constraints.set_group(group)
     exec_cfg = constraints.execution
 
     wf_manager = WalkForwardManager(
         stocks_data, constraints, stock_codes, benchmark_data=benchmark_data
     )
+    wf_manager.market_group = group
     evaluator = FastEvaluator(exec_cfg, group)
+    windows = wf_manager.iter_windows()
+    ranking_indexes, purged_indexes, validation_indexes = _partition_window_indexes(
+        windows, constraints
+    )
+    ranking_windows = [windows[index] for index in ranking_indexes]
+    if not ranking_windows:
+        logger.warning("No independent ranking windows are available")
+        return [], constraints
 
-    opt = GeneticOptimizer(strategy, constraints, wf_manager, evaluator)
-    results = opt.run()
+    schema = strategy.search_parameter_schema
+    gate_pipeline = CandidateGatePipeline.from_config(
+        constraints._raw_config, constraints.search.gate_profile
+    )
+    solver_config = constraints.search.solver_config()
+    legacy_budget = (
+        constraints.genetic_search.phase1_random_samples
+        + constraints.genetic_search.num_generations
+        * constraints.genetic_search.offspring_size
+    )
+    budget = max(1, int(solver_config.get("budget", legacy_budget)))
+
+    data_hasher = hashlib.sha256()
+    for array in (
+        wf_manager.indicator_matrix,
+        wf_manager.price_matrix,
+        wf_manager.price_high_matrix,
+        wf_manager.price_low_matrix,
+    ):
+        contiguous = np.ascontiguousarray(array)
+        data_hasher.update(str(contiguous.shape).encode("ascii"))
+        data_hasher.update(str(contiguous.dtype).encode("ascii"))
+        data_hasher.update(contiguous.view(np.uint8))
+    data_hasher.update("|".join(wf_manager.stock_codes).encode("utf-8"))
+    data_hasher.update("|".join(map(str, wf_manager.dates)).encode("utf-8"))
+    data_hash = data_hasher.hexdigest()
+    window_hash = stable_hash(
+        [
+            {
+                "train_start": window.train_start,
+                "test_start": window.test_start,
+                "test_end": window.test_end,
+            }
+            for window in windows
+        ]
+    )
+    execution_hash = stable_hash(
+        {
+            "initial_capital": exec_cfg.initial_capital,
+            "commission_rate": exec_cfg.commission_rate,
+            "min_holding_days": exec_cfg.min_holding_days,
+            "lot_size": exec_cfg.lot_sizes.get(group, 100),
+            "fx_rate": exec_cfg.fx_rates.get(group, 1.0),
+            "fill_policy": DEFAULT_FILL_PRICE_POLICY.name,
+        }
+    )
+    dependencies = tuple(getattr(strategy, "feature_dependencies", ()) or ())
+    feature_hash = (
+        TECHNICAL_FEATURES.hash
+        if dependencies == TECHNICAL_FEATURES.names
+        else stable_hash({"strategy": strategy.name, "features": dependencies})
+    )
+    problem = SearchProblem(
+        schema=schema,
+        objective_id="weighted-strongest-excess-stability-sharpe/1",
+        gate_profile_id=gate_pipeline.hash,
+        budget=budget,
+        data_hash=data_hash,
+        execution_hash=execution_hash,
+        window_hash=window_hash,
+        feature_hash=feature_hash,
+        requirements=SolverCapabilities(
+            batched=True,
+            conditional_parameters=any(item.active_if for item in schema.parameters),
+        ),
+        metadata={"strategy_id": strategy.name, "market": group},
+    )
+    planner = ResourcePlanner()
+    resource_plan = planner.plan(
+        constraints.search.parallel_axis,
+        constraints.search.workers,
+        constraints.search.batch_size,
+    )
+    base_output = Path(output_dir) if output_dir is not None else Path("data/optimizer")
+    archive = SearchArchive(base_output / f"{group}_search_archive.jsonl", problem)
+    checkpoint_path = (
+        base_output / f"{group}_search_checkpoint.yaml"
+        if constraints.search.checkpoint
+        else None
+    )
+    service = EvaluationService(
+        strategy,
+        constraints,
+        wf_manager,
+        evaluator,
+        ranking_windows,
+        workers=resource_plan.outer_workers,
+    )
+    solver = create_solver(constraints.search.solver_id)
+    controller = SearchController(
+        problem,
+        solver,
+        service,
+        gate_pipeline,
+        solver_config=solver_config,
+        batch_size=resource_plan.batch_size,
+        archive=archive,
+        checkpoint_path=checkpoint_path,
+    )
+    with planner.apply(resource_plan):
+        searched = controller.run(
+            finalist_limit=constraints.genetic_search.sensitivity_top_candidates
+        )
+        validated = ValidationController(
+            strategy,
+            constraints,
+            wf_manager,
+            evaluator,
+            schema,
+            service,
+            gate_pipeline,
+            windows,
+        ).run(searched)
+
+    search_metadata = {
+        "solver_id": solver.solver_id,
+        "solver_config": solver_config,
+        "gate_profile": gate_pipeline.profile_id,
+        "gate_profile_hash": gate_pipeline.hash,
+        "gate_activation_eligible": gate_pipeline.activation_eligible,
+        "search_contract_hash": problem.contract_hash,
+        "parameter_schema_hash": schema.hash,
+        "feature_contract_hash": feature_hash,
+        "data_contract_hash": data_hash,
+        "execution_contract_hash": execution_hash,
+        "window_contract_hash": window_hash,
+        "ranking_window_indexes": ranking_indexes,
+        "purged_window_count": len(purged_indexes),
+        "validation_window_count": len(validation_indexes),
+        "resource_plan": resource_plan.__dict__,
+        "performance": service.performance_snapshot(),
+        "budget": budget,
+    }
+    results = []
+    for item in validated:
+        params = Params(values=dict(item.parameters), _engine=strategy.name)
+        encoding = StrategyEncoding(
+            genome=[int(params.values[dim.name]) for dim in strategy.param_space.dims],
+            engine_name=strategy.name,
+            params=params,
+        )
+        results.append(
+            ScoredEncoding(
+                encoding=encoding,
+                wf_stats=item.all_stats,
+                wf_score=item.objective_score,
+                ranking_stats=item.ranking_stats,
+                validation_stats=item.validation_stats,
+                purged_window_count=item.purged_window_count,
+                ranking_diagnostics=item.ranking_metrics,
+                sensitivity=item.sensitivity,
+                universe_robustness=item.universe_robustness,
+                selection_score=item.selection_score,
+                search_metadata=dict(search_metadata),
+            )
+        )
     if results:
-        windows = wf_manager.iter_windows()
         validation_period = {}
         if windows:
             held_out = windows[-1]
@@ -1012,16 +1209,19 @@ def _save_optimizer_result(
                 if quantity <= 0 or not np.isfinite(price) or price <= 0:
                     continue
                 value = float(quantity * price)
-                holdings.append({
-                    "code": code,
-                    "shares": round(float(quantity), 4),
-                    "cost": round(float(cost), 4),
-                    "price": round(float(price), 4),
-                    "value": round(value, 2),
-                    "weight": round(value / final_asset * 100, 2)
-                    if final_asset else 0.0,
-                    "pnl": round((price - cost) * quantity, 2),
-                })
+                holdings.append(
+                    {
+                        "code": code,
+                        "shares": round(float(quantity), 4),
+                        "cost": round(float(cost), 4),
+                        "price": round(float(price), 4),
+                        "value": round(value, 2),
+                        "weight": (
+                            round(value / final_asset * 100, 2) if final_asset else 0.0
+                        ),
+                        "pnl": round((price - cost) * quantity, 2),
+                    }
+                )
         result = {
             "return": float(stat.strategy_return),
             "excess_return": float(stat.test_excess_return),
@@ -1037,12 +1237,8 @@ def _save_optimizer_result(
             "benchmark_raw_returns": dict(
                 getattr(stat, "benchmark_raw_returns", {}) or {}
             ),
-            "strongest_benchmark": str(
-                getattr(stat, "strongest_benchmark", "") or ""
-            ),
-            "pending_order_count": int(
-                getattr(stat, "pending_order_count", 0)
-            ),
+            "strongest_benchmark": str(getattr(stat, "strongest_benchmark", "") or ""),
+            "pending_order_count": int(getattr(stat, "pending_order_count", 0)),
         }
         if window is not None:
             result["period"] = {
@@ -1052,6 +1248,7 @@ def _save_optimizer_result(
                 "test_end": window.test_end_date,
             }
         return result
+
     ranking_reports = [
         serialize_window(stat, windows[index] if index < len(windows) else None)
         for index, stat in enumerate(top.ranking_stats)
@@ -1070,15 +1267,16 @@ def _save_optimizer_result(
     holdout_reports = [
         serialize_window(
             stat,
-            windows[validation_offset + index]
-            if validation_offset + index < len(windows)
-            else None,
+            (
+                windows[validation_offset + index]
+                if validation_offset + index < len(windows)
+                else None
+            ),
         )
         for index, stat in enumerate(top.validation_stats)
     ]
     holdout_passed = bool(top.validation_stats) and all(
-        stat.test_excess_return > 0
-        and bool(getattr(stat, "strongest_benchmark", ""))
+        stat.test_excess_return > 0 and bool(getattr(stat, "strongest_benchmark", ""))
         for stat in top.validation_stats
     )
     required_benchmarks = {"risk_free", "510300", "universe_equal_weight"}
@@ -1089,21 +1287,20 @@ def _save_optimizer_result(
     local_robustness_passed = bool(top.sensitivity) and (
         float(top.sensitivity.get("worst_score", float("-inf"))) > 0
         and float(
-            top.selection_score
-            if top.selection_score is not None
-            else float("-inf")
-        ) > 0
+            top.selection_score if top.selection_score is not None else float("-inf")
+        )
+        > 0
     )
-    universe_robustness = dict(
-        getattr(top, "universe_robustness", {}) or {}
-    )
+    universe_robustness = dict(getattr(top, "universe_robustness", {}) or {})
     universe_robustness_passed = bool(universe_robustness) and (
         bool(universe_robustness.get("symbol_order_invariant"))
         and bool(universe_robustness.get("leave_one_out_passed"))
     )
+    search_metadata = dict(getattr(top, "search_metadata", {}) or {})
     activation_eligible = bool(
         holdout_passed
         and benchmarks_complete
+        and bool(search_metadata.get("gate_activation_eligible", True))
         and local_robustness_passed
         and universe_robustness_passed
     )
@@ -1113,8 +1310,18 @@ def _save_optimizer_result(
         "strategy_id": strategy.name,
         "schema_version": 2,
         "parameter_schema": getattr(strategy, "parameter_schema", "legacy/1"),
+        "solver_id": search_metadata.get("solver_id", "genetic"),
+        "solver_config": dict(search_metadata.get("solver_config", {})),
+        "gate_profile": search_metadata.get("gate_profile", "standard"),
+        "contracts": {
+            key: value
+            for key, value in search_metadata.items()
+            if key.endswith("_hash")
+        },
         "params": dict(params.values),
         "execution": strategy.execution_params(params),
+        "resource_plan": dict(search_metadata.get("resource_plan", {})),
+        "performance": dict(search_metadata.get("performance", {})),
         "validation_period": validation_period or {},
         "wf_score": top.wf_score,
         "ranking_windows": ranking_reports,
@@ -1135,6 +1342,9 @@ def _save_optimizer_result(
             "ranking_window_count": len(top.ranking_stats),
             "validation_window_count": len(top.validation_stats),
             "purged_overlap_window_count": top.purged_window_count,
+            "budget": int(search_metadata.get("budget", 0)),
+            "solver_id": search_metadata.get("solver_id", "genetic"),
+            "gate_profile": search_metadata.get("gate_profile", "standard"),
             "score_formula": (
                 "weighted_strongest_benchmark_excess - stability_penalty * std "
                 "- sharpe_penalty"

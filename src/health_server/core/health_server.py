@@ -36,10 +36,13 @@ class HealthServer:
         self.thread = None
         self._watchdog_thread = None
         self._watchdog_failures = 0
+        self._watchdog_stop = threading.Event()
 
     def start(self, daemon=True):
         """启动健康服务器"""
         try:
+            self._watchdog_stop.clear()
+            self._watchdog_failures = 0
 
             def handler_factory(*args, **kwargs):
                 return HealthHandler(*args, health_server=self, **kwargs)
@@ -108,20 +111,30 @@ class HealthServer:
 
     def stop(self):
         """停止健康服务器"""
+        self._watchdog_stop.set()
         if self.server:
             self.server.shutdown()
             self.server.server_close()
             logger.info("健康服务器已停止")
+            self.server = None
+
+
+        watchdog = self._watchdog_thread
+        if watchdog and watchdog is not threading.current_thread():
+            watchdog.join(timeout=5)
+        self._watchdog_thread = None
 
     def _watchdog_loop(self):
         """自检循环：每 60s 检查 /health，连续 3 次失败则 exit。"""
         interval = 60
         max_failures = 3
-        while True:
-            time.sleep(interval)
+        while not self._watchdog_stop.wait(interval):
             self._watchdog_step(max_failures)
 
     def _watchdog_step(self, max_failures=3):
+        if self._watchdog_stop.is_set():
+            return
+
         try:
             import urllib.request as ur
 
@@ -133,11 +146,16 @@ class HealthServer:
                 return
         except Exception as exc:
             logger.debug("Watchdog health request failed: %s", exc)
+        if self._watchdog_stop.is_set():
+            return
         self._watchdog_failures += 1
         logger.warning(
             f"Watchdog: /health 自检失败 ({self._watchdog_failures}/{max_failures})"
         )
-        if self._watchdog_failures >= max_failures:
+        if (
+            self._watchdog_failures >= max_failures
+            and not self._watchdog_stop.is_set()
+        ):
             logger.critical(f"Watchdog: 连续 {max_failures} 次自检失败，强制退出")
             os._exit(1)
 

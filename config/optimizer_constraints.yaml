@@ -72,6 +72,100 @@ genetic_search:
   min_positive_return_windows: 8
   # At least 7/11 ranking windows must beat that window's strongest control.
   min_winning_benchmark_windows: 7
+# Solver selection is independent of strategies, evaluation and gates.  A new
+# algorithm registers itself under src/analysis/solvers and is selected here.
+search:
+  solver_id: genetic
+  gate_profile: standard
+  batch_size: 256
+  parallel_axis: candidate_window
+  # null means all physical cores.  Numba stays single-threaded inside each
+  # task so the process never creates a nested parallel region.
+  workers: null
+  checkpoint: true
+  solvers:
+    genetic:
+      budget: 155000
+      gene_mutation_rate: 0.15
+    random:
+      budget: 10000
+      random_seed: 20260726
+    simulated_annealing:
+      budget: 10000
+      initialization_samples: 64
+      random_seed: 20260726
+
+# Gates consume immutable raw ranking-window metrics.  They never receive the
+# two isolated windows or the final holdout.  Operators are a fixed safe set;
+# YAML cannot execute expressions.
+gate_profiles:
+  standard:
+    activation_eligible: true
+    rules:
+    - id: positive_weighted_return
+      metric: weighted_strategy_return
+      mode: hard
+      operator: gt
+      value: 0.0
+    - id: positive_return_windows
+      metric: positive_return_windows
+      mode: hard
+      operator: ge
+      value: 8
+    - id: positive_mean_strongest_excess
+      metric: mean_strongest_benchmark_excess
+      mode: hard
+      operator: gt
+      value: 0.0
+    - id: strongest_benchmark_win_windows
+      metric: strongest_benchmark_win_windows
+      mode: hard
+      operator: ge
+      value: 7
+    - id: minimum_average_position
+      metric: average_position_pct
+      mode: hard
+      operator: ge
+      value: 5.0
+    - id: maximum_drawdown
+      metric: minimum_drawdown_pct
+      mode: hard
+      operator: ge
+      value: -40.0
+    - id: maximum_excess_instability
+      metric: excess_return_std_pct
+      mode: hard
+      operator: le
+      value: 15.0
+    - id: sharpe_quality
+      metric: mean_sharpe_ratio
+      mode: diagnostic
+      operator: ge
+      value: 0.5
+    - id: trade_density
+      metric: minimum_trade_count
+      mode: diagnostic
+      operator: ge
+      value: 0
+  exploratory:
+    activation_eligible: false
+    rules:
+    - id: weighted_return_penalty
+      metric: weighted_strategy_return
+      mode: penalty
+      operator: gt
+      value: 0.0
+      penalty: 2.0
+    - id: maximum_drawdown
+      metric: minimum_drawdown_pct
+      mode: hard
+      operator: ge
+      value: -40.0
+    - id: benchmark_win_ratio
+      metric: strongest_benchmark_win_ratio
+      mode: diagnostic
+      operator: ge
+      value: 0.5
 discrete_search:
   buy_builders:
   - deviation_cross

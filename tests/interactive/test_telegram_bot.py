@@ -20,8 +20,12 @@ def _make_bot_config(allowed_ids=None):
 
 class TestTelegramBot:
     def test_run_starts_without_token_does_not_crash(self):
-        bot = TelegramBot({"interactive": {"telegram": {}}})
-        bot.run()  # should log error and return immediately
+        with patch.dict(
+            "os.environ",
+            {"TELEGRAM_BOT_TOKEN": "", "TELEGRAM_CHAT_ID": ""},
+        ):
+            bot = TelegramBot({"interactive": {"telegram": {}}})
+            bot.run()  # should log error and return immediately
 
     def test_bot_dispatches_help(self):
         bot = TelegramBot(_make_bot_config())

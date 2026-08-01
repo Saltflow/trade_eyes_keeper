@@ -68,8 +68,8 @@ def _build_trend_follow(indicator, threshold_norm):
 
 def _build_absolute_discount(indicator, threshold_norm):
     close = indicator[:, :, IDX_CLOSE]
-    T, N = close.shape
-    ath = np.maximum.accumulate(close[::-1], axis=0)[::-1]
+    # Historical running high only. Reversing the series leaks future peaks.
+    ath = np.fmax.accumulate(close, axis=0)
     discount = (close - ath) / np.maximum(ath, 1e-6)
     t = -0.20 - threshold_norm * 0.30
     c = discount < t
@@ -157,8 +157,29 @@ CONDITION_BUILDERS_FAST: dict[str, callable] = {
     "sell_profit_taking": _build_sell_profit_taking,
 }
 
-BUILDER_COUNT = 8  # 买入 builder 数量（前8个）
-SELL_BUILDER_COUNT = 6  # 卖出 builder 数量
+# Parameter decoding must never depend on dictionary insertion order.  The
+# former slice started at index 8, accidentally placing ``deep_value`` in the
+# sell pool and dropping ``sell_profit_taking``.
+BUY_BUILDER_NAMES = (
+    "none",
+    "deviation_cross",
+    "rsi_signal",
+    "bollinger_signal",
+    "volume_spike",
+    "deviation_absolute",
+    "trend_follow",
+    "absolute_discount",
+)
+SELL_BUILDER_NAMES = (
+    "sell_deviation_cross",
+    "sell_rsi_signal",
+    "sell_bollinger_signal",
+    "sell_absolute",
+    "sell_trend_reverse",
+    "sell_profit_taking",
+)
+BUILDER_COUNT = len(BUY_BUILDER_NAMES)
+SELL_BUILDER_COUNT = len(SELL_BUILDER_NAMES)
 THRESHOLD_LEVELS_BUILDER = 10
 
 
@@ -207,8 +228,8 @@ class BuilderSearchStrategy(SearchStrategy):
             HAS_NUMBA = False
 
         T, N = indicator_matrix.shape[:2]
-        buy_names = list(CONDITION_BUILDERS_FAST.keys())[:BUILDER_COUNT]
-        sell_names = list(CONDITION_BUILDERS_FAST.keys())[BUILDER_COUNT:BUILDER_COUNT + 6]
+        buy_names = list(BUY_BUILDER_NAMES)
+        sell_names = list(SELL_BUILDER_NAMES)
 
         # Decode buy params
         buy_builders, buy_thresholds = [], []

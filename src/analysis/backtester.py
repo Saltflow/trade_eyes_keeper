@@ -22,6 +22,7 @@ from .search_interface import (
     TradePlan,
 )
 from .helpers import _detect_fine_group, RISK_FREE_A, RISK_FREE_NON_A
+from .execution import DEFAULT_FILL_PRICE_POLICY, ExecutionPriceSlice
 
 logger = logging.getLogger(__name__)
 
@@ -73,28 +74,8 @@ INDICATOR_NAMES = [
 
 
 def pessimistic_buy_prices(high_prices: np.ndarray) -> np.ndarray:
-    """Return max(high[t-1], high[t], high[t+1]); final row stays pending."""
-    values = np.asarray(high_prices, dtype=np.float64)
-    if values.ndim == 1:
-        values = values.reshape(-1, 1)
-    rows, columns = values.shape
-    result = np.full((rows, columns), np.nan, dtype=np.float64)
-    for row in range(rows - 1):
-        previous = values[row - 1] if row else values[row]
-        current = values[row]
-        following = values[row + 1]
-        valid = (
-            np.isfinite(previous)
-            & np.isfinite(current)
-            & np.isfinite(following)
-            & (previous > 0)
-            & (current > 0)
-            & (following > 0)
-        )
-        result[row, valid] = np.maximum(
-            np.maximum(previous[valid], current[valid]), following[valid]
-        )
-    return result
+    """Compatibility wrapper around the one shared fill-price policy."""
+    return DEFAULT_FILL_PRICE_POLICY.buy_prices(high_prices)
 
 
 def buy_and_hold_nav(
@@ -256,13 +237,15 @@ def _apply_confirmation(conditions, confirmation_days):
 # Canonical cash-cap simulator used by optimizer and daily evaluation.
 if HAS_NUMBA:
 
-    @jit(nopython=True, parallel=False, cache=True)
+    @jit(nopython=True, parallel=False, cache=True, nogil=True)
     def _simulate_cash_plan_numba(
         buy_signals,
         sell_signals,
         buy_priority,
         sell_priority,
-        prices,
+        valuation_prices,
+        buy_prices,
+        sell_prices,
         tradable,
         initial_cash,
         buy_cash_limit,
@@ -279,6 +262,7 @@ if HAS_NUMBA:
         cash = float(initial_cash)
         daily_values = np.zeros(T, dtype=np.float64)
         total_trades = 0
+        pending_order_count = 0
         position_fraction_sum = 0.0
         position_fraction_days = 0
 
@@ -316,7 +300,7 @@ if HAS_NUMBA:
                     continue
                 if t - last_buy_day[n] < min_holding_days:
                     continue
-                price = prices[t, n]
+                price = sell_prices[t, n]
                 if price <= 0.0 or np.isnan(price):
                     continue
                 desired_value = min(sell_cash_limit, shares[n] * price)
@@ -353,8 +337,10 @@ if HAS_NUMBA:
                 n = order[oi]
                 if cash <= 0.0 or not tradable[t, n]:
                     continue
-                price = prices[t, n]
+                price = buy_prices[t, n]
                 if price <= 0.0 or np.isnan(price):
+                    if np.isnan(price):
+                        pending_order_count += 1
                     continue
                 gross_budget = min(buy_cash_limit, cash)
                 qty = int(gross_budget / (price * (1.0 + commission_rate)) / lot_size)
@@ -377,7 +363,7 @@ if HAS_NUMBA:
 
             pos_value = 0.0
             for n in range(N):
-                price = prices[t, n]
+                price = valuation_prices[t, n]
                 if price > 0.0 and not np.isnan(price):
                     pos_value += shares[n] * price
             daily_values[t] = cash + pos_value
@@ -389,7 +375,7 @@ if HAS_NUMBA:
                 for n in range(N):
                     q_shares[q_idx, n] = shares[n]
                     q_cost_basis[q_idx, n] = cost_basis[n]
-                    q_prices[q_idx, n] = prices[t, n]
+                    q_prices[q_idx, n] = valuation_prices[t, n]
                 q_cash[q_idx] = cash
                 q_nav[q_idx] = daily_values[t]
                 q_idx += 1
@@ -401,12 +387,13 @@ if HAS_NUMBA:
         if T > 0 and daily_values[T - 1] > 0.0:
             final_value = 0.0
             for n in range(N):
-                final_value += shares[n] * prices[T - 1, n]
+                final_value += shares[n] * valuation_prices[T - 1, n]
             final_pos_pct = final_value / daily_values[T - 1] * 100.0
         return (
             daily_values, total_trades, avg_pos_pct, final_pos_pct,
             shares.copy(), cash, cost_basis.copy(),
             q_shares, q_cost_basis, q_cash, q_nav, q_prices,
+            pending_order_count,
         )
 
 else:
@@ -736,6 +723,7 @@ class FastEvaluator:
         benchmark_initial_values: dict[str, float] | None = None,
         benchmark_raw_returns: dict[str, float] | None = None,
         trade_plan: TradePlan | None = None,
+        execution_prices: ExecutionPriceSlice | None = None,
         tradable: np.ndarray | None = None,
     ) -> WindowStats:
         """Evaluate one TradePlan through its declared execution model."""
@@ -760,12 +748,24 @@ class FastEvaluator:
             and (buy_cash_limit <= 0.0 or sell_cash_limit <= 0.0)
         ):
             return WindowStats()
+        if execution_prices is None:
+            execution_prices = DEFAULT_FILL_PRICE_POLICY.build(price_matrix)
+        resolved_prices = execution_prices.scaled(self.fx_rate)
+        if resolved_prices.valuation_prices.shape != expected_shape:
+            raise ValueError(
+                "ExecutionPriceSlice and evaluator matrix shapes do not match"
+            )
         if tradable is None:
-            tradable = np.isfinite(price_matrix) & (price_matrix > 0)
-
-        valuation_prices = (
-            np.asarray(price_matrix, dtype=np.float32) * self.fx_rate
+            tradable = resolved_prices.tradable
+        valuation_prices = np.asarray(
+            resolved_prices.valuation_prices, dtype=np.float32
         ).copy()
+        buy_prices = np.asarray(
+            resolved_prices.buy_prices, dtype=np.float32
+        )
+        sell_prices = np.asarray(
+            resolved_prices.sell_prices, dtype=np.float32
+        )
         for n in range(N):
             last = 0.0
             for t in range(T):
@@ -802,18 +802,6 @@ class FastEvaluator:
                 np.asarray(trade_plan.target_weights, dtype=np.float32)
                 if trade_plan.target_weights is not None
                 else np.zeros(expected_shape, dtype=np.float32)
-            )
-            buy_prices = (
-                np.asarray(trade_plan.buy_execution_prices, dtype=np.float32)
-                * self.fx_rate
-                if trade_plan.buy_execution_prices is not None
-                else valuation_prices
-            )
-            sell_prices = (
-                np.asarray(trade_plan.sell_execution_prices, dtype=np.float32)
-                * self.fx_rate
-                if trade_plan.sell_execution_prices is not None
-                else valuation_prices
             )
             if (
                 trade_plan.date_ordinals is not None
@@ -866,13 +854,15 @@ class FastEvaluator:
                 daily_values, trade_count, avg_pos_pct, final_pos_pct,
                 final_shares, final_cash, cost_basis,
                 quarter_shares, quarter_cost_basis, quarter_cash,
-                quarter_nav, quarter_prices,
+                quarter_nav, quarter_prices, pending_order_count,
             ) = _simulate_cash_plan_numba(
                 np.ascontiguousarray(buy_signals, dtype=np.bool_),
                 np.ascontiguousarray(sell_signals, dtype=np.bool_),
                 np.ascontiguousarray(buy_priority, dtype=np.float32),
                 np.ascontiguousarray(sell_priority, dtype=np.float32),
                 np.ascontiguousarray(valuation_prices, dtype=np.float32),
+                np.ascontiguousarray(buy_prices, dtype=np.float32),
+                np.ascontiguousarray(sell_prices, dtype=np.float32),
                 np.ascontiguousarray(tradable, dtype=np.bool_),
                 float(self.initial_cash), buy_cash_limit, sell_cash_limit,
                 int(self.lot_size), float(self.commission_rate),
@@ -896,6 +886,40 @@ class FastEvaluator:
             quarter_cost_basis=quarter_cost_basis,
             pending_order_count=pending_order_count,
         )
+
+    def evaluate_batch(
+        self,
+        trade_plans: list[TradePlan],
+        *,
+        workers: int = 1,
+        **window_inputs,
+    ) -> list[WindowStats]:
+        """Evaluate one columnar candidate batch on a shared window.
+
+        Each Numba simulator remains strictly serial along dates.  Candidate
+        evaluations share the immutable price/benchmark arrays and occupy the
+        selected outer CPU axis, avoiding process copies and nested pools.
+        """
+        if not trade_plans:
+            return []
+        from .batch_backtester import evaluate_cash_batch
+
+        cash_batch = evaluate_cash_batch(self, trade_plans, window_inputs)
+        if cash_batch is not None:
+            return cash_batch
+        worker_count = min(max(1, int(workers)), len(trade_plans))
+        if worker_count == 1:
+            return [
+                self.evaluate(trade_plan=plan, **window_inputs)
+                for plan in trade_plans
+            ]
+        from concurrent.futures import ThreadPoolExecutor
+
+        def evaluate_plan(plan):
+            return self.evaluate(trade_plan=plan, **window_inputs)
+
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            return list(pool.map(evaluate_plan, trade_plans))
 
 
 def _compute_stats(
@@ -1018,6 +1042,7 @@ def simulate_portfolio(
     commission_rate: float,
     min_holding_days: int = 0,
     execution_price_scale: float = 1.0,
+    execution_prices: ExecutionPriceSlice | None = None,
 ) -> PortfolioTrace:
     """Execute the canonical strategy decision plan."""
     if market_data.prices is None:
@@ -1033,14 +1058,29 @@ def simulate_portfolio(
     buy_cash_limit = float(trade_plan.buy_cash_limit)
     sell_cash_limit = float(trade_plan.sell_cash_limit)
     execution_model = str(trade_plan.execution.get("model", "cash_cap"))
+    if execution_prices is None:
+        execution_prices = DEFAULT_FILL_PRICE_POLICY.build(
+            price,
+            market_data.highs,
+            market_data.lows,
+        )
+    resolved_prices = execution_prices.scaled(execution_price_scale)
+    if resolved_prices.valuation_prices.shape != buy_signals.shape:
+        raise ValueError(
+            "ExecutionPriceSlice and TradePlan shapes do not match"
+        )
     tradable = (
         np.asarray(market_data.tradable, dtype=bool)
         if market_data.tradable is not None
-        else np.isfinite(price) & (price > 0)
+        else resolved_prices.tradable
     )
     dates = list(market_data.dates)
     stock_codes = list(market_data.symbols)
-    valuation_price = np.asarray(price, dtype=np.float32).copy()
+    valuation_price = np.asarray(
+        resolved_prices.valuation_prices, dtype=np.float32
+    ).copy()
+    buy_prices = np.asarray(resolved_prices.buy_prices, dtype=np.float32)
+    sell_prices = np.asarray(resolved_prices.sell_prices, dtype=np.float32)
     for n in range(N):
         last = 0.0
         for t in range(T):
@@ -1094,18 +1134,6 @@ def simulate_portfolio(
             if trade_plan.target_weights is not None
             else np.zeros_like(buy_signals, dtype=np.float32)
         )
-        buy_prices = (
-            np.asarray(trade_plan.buy_execution_prices, dtype=np.float32)
-            * float(execution_price_scale)
-            if trade_plan.buy_execution_prices is not None
-            else valuation_price
-        )
-        sell_prices = (
-            np.asarray(trade_plan.sell_execution_prices, dtype=np.float32)
-            * float(execution_price_scale)
-            if trade_plan.sell_execution_prices is not None
-            else valuation_price
-        )
         if (
             trade_plan.date_ordinals is not None
             and len(trade_plan.date_ordinals) == T
@@ -1157,12 +1185,15 @@ def simulate_portfolio(
             daily_values, trade_count, avg_pos_pct, final_pos_pct,
             final_shares, final_cash, cost_basis,
             q_shares, q_cost_basis, q_cash, q_nav, q_prices,
+            pending_order_count,
         ) = _simulate_cash_plan_numba(
             np.ascontiguousarray(buy_signals, dtype=np.bool_),
             np.ascontiguousarray(sell_signals, dtype=np.bool_),
             np.ascontiguousarray(buy_priority, dtype=np.float32),
             np.ascontiguousarray(sell_priority, dtype=np.float32),
             np.ascontiguousarray(valuation_price, dtype=np.float32),
+            np.ascontiguousarray(buy_prices, dtype=np.float32),
+            np.ascontiguousarray(sell_prices, dtype=np.float32),
             np.ascontiguousarray(tradable, dtype=np.bool_),
             float(initial_cash), float(buy_cash_limit), float(sell_cash_limit),
             int(lot_size), float(commission_rate), int(min_holding_days),
@@ -1369,13 +1400,6 @@ class WalkForwardManager:
             if np.isfinite(high_values).any():
                 self.benchmark_high_series[str(code)] = high_values
 
-        self.buy_execution_price_matrix = pessimistic_buy_prices(
-            self.price_high_matrix
-        )
-        self.benchmark_buy_prices = {
-            code: pessimistic_buy_prices(values).reshape(-1)
-            for code, values in self.benchmark_high_series.items()
-        }
 
     def build_matrices(self):
         return self.indicator_matrix, self.price_matrix, self.price_open_matrix
@@ -1507,48 +1531,22 @@ class Backtester:
         self,
         trade_plan: TradePlan,
         market_data: StrategyMarketData,
+        execution_prices: ExecutionPriceSlice | None = None,
     ) -> PortfolioTrace:
         prices = np.asarray(market_data.prices, dtype=np.float32)
-        tradable = (
-            np.asarray(market_data.tradable, dtype=bool)
-            if market_data.tradable is not None
-            else np.isfinite(prices) & (prices > 0)
-        )
         expected = prices.shape
         if trade_plan.buy_signals.shape != expected:
             raise ValueError("TradePlan and market price shapes do not match")
         fx_rate = float(self.execution.fx_rates.get(self.group, 1.0))
         return simulate_portfolio(
             trade_plan,
-            StrategyMarketData(
-                indicator_matrix=market_data.indicator_matrix,
-                dates=list(market_data.dates),
-                symbols=list(market_data.symbols),
-                prices=prices * fx_rate,
-                highs=(
-                    np.asarray(market_data.highs, dtype=np.float32) * fx_rate
-                    if market_data.highs is not None
-                    else None
-                ),
-                lows=(
-                    np.asarray(market_data.lows, dtype=np.float32) * fx_rate
-                    if market_data.lows is not None
-                    else None
-                ),
-                benchmark_buy_prices=(
-                    np.asarray(
-                        market_data.benchmark_buy_prices, dtype=np.float32
-                    ) * fx_rate
-                    if market_data.benchmark_buy_prices is not None
-                    else None
-                ),
-                tradable=tradable,
-            ),
+            market_data,
             float(self.execution.initial_capital),
             lot_size=int(self.execution.lot_sizes.get(self.group, 100)),
             commission_rate=float(self.execution.commission_rate),
             min_holding_days=int(self.execution.min_holding_days),
             execution_price_scale=fx_rate,
+            execution_prices=execution_prices,
         )
 
     def run(
@@ -1561,8 +1559,15 @@ class Backtester:
         risk_free_rate: float = 0.02,
         strategy_id: str = "",
         strategy_label: str = "",
+        execution_prices: ExecutionPriceSlice | None = None,
     ) -> EvaluationReport:
-        trace = self.simulate(trade_plan, market_data)
+        if execution_prices is None:
+            execution_prices = DEFAULT_FILL_PRICE_POLICY.build(
+                market_data.prices,
+                market_data.highs,
+                market_data.lows,
+            )
+        trace = self.simulate(trade_plan, market_data, execution_prices)
         benchmark_data = benchmark_data or {}
         benchmark_returns: dict[str, float] = {}
         benchmark_win_rates: dict[str, float] = {}
@@ -1624,22 +1629,13 @@ class Backtester:
         # Static equal-weight in the exact configured universe is the control
         # for asset selection; only timing should earn excess return.
         fx_rate = float(self.execution.fx_rates.get(self.group, 1.0))
-        universe_close = np.asarray(market_data.prices, dtype=float) * fx_rate
-        universe_high = (
-            np.asarray(market_data.highs, dtype=float) * fx_rate
-            if market_data.highs is not None
-            else universe_close
-        )
+        resolved_execution = execution_prices.scaled(fx_rate)
+        universe_close = resolved_execution.valuation_prices
         if len(universe_close) > 1 and universe_close.shape[1] > 0:
-            universe_buy_prices = (
-                np.asarray(market_data.benchmark_buy_prices, dtype=float)
-                if market_data.benchmark_buy_prices is not None
-                else pessimistic_buy_prices(universe_high)
-            )
             detail = _tradable_benchmark_detail(
                 np.asarray(trace.nav_series, dtype=float),
                 universe_close,
-                universe_buy_prices,
+                resolved_execution.buy_prices,
                 float(self.execution.initial_capital),
                 int(self.execution.lot_sizes.get(self.group, 100)),
                 float(self.execution.commission_rate),
@@ -1754,12 +1750,18 @@ def _build_signal_plan(
     params: Params,
     start_date: str | None = None,
     end_date: str | None = None,
-) -> tuple[TradePlan | None, StrategyMarketData | None, list[str]]:
+) -> tuple[
+    TradePlan | None,
+    StrategyMarketData | None,
+    ExecutionPriceSlice | None,
+    list[str],
+]:
     """Build the canonical decision plan for one market basket.
 
     Returns:
-        ``(trade_plan, market_data, codes)``.  Execution is owned by
-        :class:`Backtester`.
+        ``(trade_plan, market_data, execution_prices, codes)``.  Strategies
+        receive only market inputs and decisions; execution prices are built
+        once for the exact evaluation slice and owned by :class:`Backtester`.
     """
     from src.data.technical_indicators import compute_all
 
@@ -1777,7 +1779,7 @@ def _build_signal_plan(
     ind_mat, price, dates, tradable = _build_indicator_matrix(computed, active_codes)
     T, N = ind_mat.shape[:2]
     if T == 0 or N == 0:
-        return None, None, list(active_codes)
+        return None, None, None, list(active_codes)
 
     # 3. The same plan is used in the optimizer and live scan.
     market_data = StrategyMarketData(
@@ -1787,14 +1789,13 @@ def _build_signal_plan(
         prices=price,
         highs=ind_mat[:, :, IDX_HIGH],
         lows=ind_mat[:, :, IDX_LOW],
-        benchmark_buy_prices=pessimistic_buy_prices(
-            ind_mat[:, :, IDX_HIGH]
-        ),
         tradable=tradable,
     )
     trade_plan = strategy.make_signals(params, market_data)
 
     # 5. 仿真 (threshold=0.5 对 bool→float 天然等价)
+    window_start = 0
+    window_end = len(dates)
     if start_date is not None or end_date is not None:
         date_index = pd.DatetimeIndex(pd.to_datetime(dates))
         date_mask = np.ones(len(date_index), dtype=bool)
@@ -1804,21 +1805,35 @@ def _build_signal_plan(
             date_mask &= date_index <= pd.Timestamp(end_date)
         selected = np.flatnonzero(date_mask)
         if len(selected):
-            trade_plan = trade_plan.sliced(int(selected[0]), int(selected[-1]) + 1)
+            window_start = int(selected[0])
+            window_end = int(selected[-1]) + 1
+            trade_plan = trade_plan.sliced(window_start, window_end)
+        else:
+            return None, None, None, list(active_codes)
+        execution_prices = DEFAULT_FILL_PRICE_POLICY.build(
+            price,
+            market_data.highs,
+            market_data.lows,
+            start=window_start,
+            end=window_end,
+        )
         ind_mat = ind_mat[date_mask]
         price = price[date_mask]
         highs = market_data.highs[date_mask]
         lows = market_data.lows[date_mask]
-        benchmark_buy_prices = market_data.benchmark_buy_prices[date_mask]
         tradable = tradable[date_mask]
         dates = [date for date, keep in zip(dates, date_mask) if keep]
     else:
+        execution_prices = DEFAULT_FILL_PRICE_POLICY.build(
+            price,
+            market_data.highs,
+            market_data.lows,
+        )
         highs = market_data.highs
         lows = market_data.lows
-        benchmark_buy_prices = market_data.benchmark_buy_prices
 
     if not dates:
-        return None, None, list(active_codes)
+        return None, None, None, list(active_codes)
 
     report_market_data = StrategyMarketData(
         indicator_matrix=ind_mat,
@@ -1827,10 +1842,9 @@ def _build_signal_plan(
         prices=price,
         highs=highs,
         lows=lows,
-        benchmark_buy_prices=benchmark_buy_prices,
         tradable=tradable,
     )
-    return trade_plan, report_market_data, list(active_codes)
+    return trade_plan, report_market_data, execution_prices, list(active_codes)
 
 
 def _aligned_benchmark_values(
@@ -2364,7 +2378,7 @@ def evaluate_all_groups(
 
         fx = fx_map.get(group_name, 1.0)
         lot = lot_map.get(group_name, 100)
-        trade_plan, market_data, codes = _build_signal_plan(
+        trade_plan, market_data, execution_prices, codes = _build_signal_plan(
             group_data,
             active_codes,
             strategy,
@@ -2395,6 +2409,7 @@ def evaluate_all_groups(
             risk_free_rate=risk_free,
             strategy_id=engine_name,
             strategy_label=getattr(strategy, "label", engine_name),
+            execution_prices=execution_prices,
         )
         report.timestamp = timestamp
         warmup_rows = max(1, int(getattr(strategy, "warmup_rows", 1)))

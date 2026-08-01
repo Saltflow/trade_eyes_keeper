@@ -89,6 +89,20 @@ class TestConcurrency:
 
 
 class TestWatchdog:
+    def test_stop_terminates_watchdog(self):
+        """Stopping the server also terminates its watchdog thread."""
+        port = _free_port()
+        server = HealthServer({}, port=port)
+        server.start(daemon=True)
+        watchdog = server._watchdog_thread
+
+        server.stop()
+
+        assert server._watchdog_stop.is_set()
+        assert watchdog is not None
+        watchdog.join(timeout=0.5)
+        assert not watchdog.is_alive()
+
     def test_watchdog_not_triggered_when_healthy(self):
         """正常运行时 watchdog 不触发。"""
         port = _free_port()

@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://python.org)
 [![Version](https://img.shields.io/badge/version-1.17.1-green)]()
 
-> **English**: A cross-market quantitative monitoring system for A-shares, US stocks, and HK stocks. Features automatic strategy optimization (Bayesian + genetic search), daily xelatex PDF reports with signal scanning + backtesting analysis, and multi-channel notifications (Email / Telegram / Feishu). Mean-reversion oriented with MA60/WMA anchor deviation alerts.
+> **English**: A cross-market quantitative monitoring system for A-shares, US stocks, and HK stocks. Features solver-neutral strategy optimization (genetic, random, and simulated annealing), daily xelatex PDF reports, unified backtesting, and multi-channel notifications.
 
 A股 / 美股 / 港股量化监控系统。策略搜索优化器自动发现最优交易信号，每日 xelatex LaTeX PDF 日报含信号扫描 + 回测分析 + 公式方法论附录，支持 HTML 交互报告链接与 Telegram/飞书多渠道通知。
 
@@ -14,7 +14,7 @@ A股 / 美股 / 港股量化监控系统。策略搜索优化器自动发现最�
 |------|------|
 | **策略搜索优化器** | 注册策略统一执行 14 窗 Walk-Forward，11 窗排名、2 窗隔离、1 窗留出 |
 | **信号扫描器** | 加载单一活动策略参数，直接读取统一 TradePlan 最后有效日事件 |
-| **回测分析** | 统一 Backtester 与无风险/510300/同池等权三重基准比较 |
+| **回测分析** | 统一 Backtester、成交价策略与无风险/510300/同池等权三重基准比较 |
 | **标的画像审计** | 公司财务推导、利润增长、ETF 前十大穿透及 REIT/商品/债券类型化画像 |
 | **条件检测** | 多锚点阈值报警 (MA60/WMA20/WMA30/WMA50) + 优化策略信号报警 |
 | **早盘/收盘简报** | 轻量价格+锚点快照，每日 09:50 / 14:30 自动发送，按偏离率升序排列 |
@@ -42,6 +42,9 @@ python main.py --brief               # 单次早盘简报
 python main.py --optimize            # 策略搜索优化 (15-30 min)
 python main.py --activate-run RUN_ID # 人工激活完整且留出通过的候选
 python main.py --audit-instruments   # 全量标的画像 JSON + HTML 审计
+python scripts/benchmark_technical_strategies.py --solver random --depth 1000 --market-workers 12 --evaluation-workers 1  # 五策略统一基准
+python scripts/benchmark_search_throughput.py --candidates 1000  # 标量/批量吞吐验收
+python scripts/analyze_search_depth.py  # 1000→10000 搜索边际效应
 python main.py                       # 定时运行 (cron/APScheduler)
 ```
 
@@ -50,10 +53,19 @@ python main.py                       # 定时运行 (cron/APScheduler)
 ```
 src/
 ├── analysis/          # 策略优化器、信号扫描、指标库、规则引擎
-│   ├── optimizer.py            统一 Walk-Forward 搜参和稳健性筛选
+│   ├── search_controller.py    Solver 无关的预算、缓存、档案和 checkpoint 编排
+│   ├── solvers/                 Genetic / Random / 单线 Simulated Annealing
+│   ├── evaluation_service.py   策略→TradePlan→Backtester 的标量/批量评价
+│   ├── batch_backtester.py      Numba prange 候选批量资金仿真后端
+│   ├── candidate_gates.py      hard / penalty / diagnostic 声明式 Gate
+│   ├── validation_controller.py 隔离窗、留出窗与局部/删标稳健性边界
+│   ├── search_contracts.py     ParameterSchema / CandidateBatch / SearchProblem
+│   ├── feature_registry.py     22 列因果、跨标的可比技术特征合同
+│   ├── optimizer.py            Walk-Forward 组装及旧 API 兼容层
 │   ├── backtester.py           统一资金仿真、三基准与评价报告
+│   ├── execution.py            统一买卖成交价、估值价和窗口末待执行策略
 │   ├── search_interface.py     StrategyMarketData / TradePlan 契约
-│   └── strategies/             注册策略插件（含 regime_pullback）
+│   └── strategies/             注册策略插件（含 regime_pullback / technical_ensemble）
 ├── core/              # 数据拉取、条件检查、调度管理
 ├── data/              # 多源爬虫 (新浪/腾讯/Yahoo)
 ├── alerting/          # 多层报警引擎 + 状态管理
@@ -76,13 +88,16 @@ src/
 | `python main.py --optimize` | 对配置活动策略执行三市场统一 Walk-Forward 搜参 |
 | `python main.py --activate-run RUN_ID` | 原子激活三市场完整、留出与稳健性均通过的候选 |
 | `python main.py --audit-instruments` | 对全量配置标的生成类型化 JSON 与详细 HTML 审计 |
+| `python scripts/benchmark_technical_strategies.py --solver random --depth 1000 --market-workers 12 --evaluation-workers 1` | 冻结各市场行情快照，并行比较五个注册技术策略；可切换 GA/随机/退火，只写诊断产物 |
+| `python scripts/benchmark_search_throughput.py --candidates 1000` | 用完整 A 股冻结输入比较同一候选的标量与 CPU 批量评价吞吐、RSS 和一致性 |
+| `python scripts/analyze_search_depth.py` | 用同一 RandomSolver 候选流测量 1,000→10,000 搜索边际效果并绘图 |
 | `python main.py --health-server` | 仅启动健康服务器 |
 
 ## 配置
 
 - `config/config.yaml` — 监控标的、技术指标参数 (gitignored)
 - `config/.env` — 邮箱密码、API Key (gitignored)
-- `config/optimizer.yaml` — 搜索策略模板
+- `config/optimizer_constraints.yaml` — Solver、Gate、窗口、成交和资源合同
 - `config/alerts.yaml` — 多锚点报警配置
 
 ## 文档

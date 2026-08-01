@@ -35,9 +35,11 @@ DEFAULT_PATH = (
 # 执行配置
 # ═══════════════════════════════════════════════════════════════
 
+
 @dataclass
 class ExecutionConfig:
     """搜参/日回报测通用执行参数。"""
+
     # Compatibility field for old callers.  The unified cash-cap simulator
     # deliberately ignores it; per-trade tiers are now the only amount cap.
     monthly_buy_limit: float = 15000.0
@@ -51,12 +53,15 @@ class ExecutionConfig:
         default_factory=lambda: {"a_share": 1.0, "hk": 0.9, "us": 7.0}
     )
 
+
 # ═══════════════════════════════════════════════════════════════
 # Walk-Forward 窗口配置
 # ═══════════════════════════════════════════════════════════════
 
+
 class WalkForwardConfig:
     """Walk-Forward 窗口配置"""
+
     def __init__(self, data: dict):
         self.train_months: int = data.get("train_months", 12)
         self.test_months: int = data.get("test_months", 9)
@@ -111,7 +116,8 @@ class WalkForwardConfig:
     @property
     def total_months_needed(self) -> int:
         return (
-            self.train_months + self.test_months
+            self.train_months
+            + self.test_months
             + (self.num_windows - 1) * self.step_months
         )
 
@@ -119,9 +125,11 @@ class WalkForwardConfig:
     def test_months_calendar_days(self) -> int:
         return 273 if self.test_months == 9 else max(self.test_months * 30, 1)
 
+
 # ═══════════════════════════════════════════════════════════════
 # 遗传搜索配置
 # ═══════════════════════════════════════════════════════════════
+
 
 class GeneticSearchConfig:
     def __init__(self, data: dict):
@@ -135,49 +143,93 @@ class GeneticSearchConfig:
         self.mutation_builder_rate: float = data.get("mutation_builder_rate", 0.20)
         self.mutation_threshold_step: int = data.get("mutation_threshold_step", 2)
         self.random_seed: int | None = (
-            int(data["random_seed"])
-            if data.get("random_seed") is not None
-            else None
+            int(data["random_seed"]) if data.get("random_seed") is not None else None
         )
         self.sensitivity_top_candidates: int = max(
             1, int(data.get("sensitivity_top_candidates", 500))
         )
-        self.sensitivity_samples: int = max(
-            1, int(data.get("sensitivity_samples", 10))
-        )
+        self.sensitivity_samples: int = max(1, int(data.get("sensitivity_samples", 10)))
         self.sensitivity_penalty_weight: float = max(
             0.0, float(data.get("sensitivity_penalty_weight", 1.0))
         )
-        self.evaluation_workers: int = max(
-            1, int(data.get("evaluation_workers", 4))
-        )
+        self.evaluation_workers: int = max(1, int(data.get("evaluation_workers", 4)))
         self.min_weighted_strategy_return: float = float(
             data.get("min_weighted_strategy_return", 0.0)
         )
         self.min_positive_return_windows: int = max(
-            0, int(data.get("min_positive_return_windows", 8))
+            0, int(data.get("min_positive_return_windows", 0))
         )
         self.min_winning_benchmark_windows: int = max(
-            0, int(data.get("min_winning_benchmark_windows", 7))
+            0, int(data.get("min_winning_benchmark_windows", 0))
         )
+
+
+class SearchRuntimeConfig:
+    """Solver-neutral orchestration and CPU scheduling configuration."""
+
+    def __init__(self, data: dict, genetic: dict):
+        self.solver_id: str = str(data.get("solver_id", "genetic"))
+        self.gate_profile: str = str(data.get("gate_profile", "standard"))
+        self.batch_size: int = int(data.get("batch_size", 256))
+        if not 128 <= self.batch_size <= 512:
+            raise ValueError("search.batch_size must be between 128 and 512")
+        self.parallel_axis: str = str(data.get("parallel_axis", "candidate_window"))
+        self.workers: int | None = (
+            int(data["workers"]) if data.get("workers") is not None else None
+        )
+        self.checkpoint: bool = bool(data.get("checkpoint", True))
+        configured = data.get("solvers", {}) or {}
+        if not isinstance(configured, dict):
+            raise ValueError("search.solvers must be a mapping")
+        self._solver_configs = {
+            str(key): dict(value or {}) for key, value in configured.items()
+        }
+        # Preserve every historical GA setting through the generic solver
+        # configuration boundary.  Explicit ``search.solvers.genetic`` values
+        # take precedence.
+        self._genetic_defaults = dict(genetic)
+
+    def solver_config(self, solver_id: str | None = None) -> dict:
+        selected = str(solver_id or self.solver_id)
+        if selected == "genetic":
+            return {
+                **self._genetic_defaults,
+                **self._solver_configs.get(selected, {}),
+            }
+        return dict(self._solver_configs.get(selected, {}))
+
 
 # ═══════════════════════════════════════════════════════════════
 # 离散搜索空间配置
 # ═══════════════════════════════════════════════════════════════
 
+
 class DiscreteSearchConfig:
     def __init__(self, data: dict, cash_tiers: dict | None = None):
         self.buy_builders: list[str] = data.get(
             "buy_builders",
-            ["deviation_cross", "rsi_signal", "bollinger_signal",
-             "volume_spike", "deviation_absolute", "trend_follow", "none"],
+            [
+                "deviation_cross",
+                "rsi_signal",
+                "bollinger_signal",
+                "volume_spike",
+                "deviation_absolute",
+                "trend_follow",
+                "none",
+            ],
         )
         self.threshold_levels: int = data.get("threshold_levels", 10)
         self.num_buy_rules: int = data.get("num_buy_rules", 5)
         self.sell_builders: list[str] = data.get(
             "sell_builders",
-            ["deviation_cross", "rsi_signal", "bollinger_signal",
-             "deviation_absolute", "trend_follow", "none"],
+            [
+                "deviation_cross",
+                "rsi_signal",
+                "bollinger_signal",
+                "deviation_absolute",
+                "trend_follow",
+                "none",
+            ],
         )
         self.num_sell_rules: int = data.get("num_sell_rules", 3)
         ss = cash_tiers or data.get("simplified_search", {})
@@ -191,20 +243,20 @@ class DiscreteSearchConfig:
     @property
     def search_space_size(self) -> int:
         buy_singles = (
-            len(self.buy_builders) * self.threshold_levels
-            * len(self.buy_limit_levels)
+            len(self.buy_builders) * self.threshold_levels * len(self.buy_limit_levels)
         )
         sell_singles = (
-            len(self.sell_builders) * self.threshold_levels
+            len(self.sell_builders)
+            * self.threshold_levels
             * len(self.sell_limit_levels)
         )
-        return (buy_singles ** self.num_buy_rules) * (
-            sell_singles ** self.num_sell_rules
-        )
+        return (buy_singles**self.num_buy_rules) * (sell_singles**self.num_sell_rules)
+
 
 # ═══════════════════════════════════════════════════════════════
 # 策略约束检查器
 # ═══════════════════════════════════════════════════════════════
+
 
 class StrategyConstraints:
     def __init__(self, raw_config: dict | None = None):
@@ -219,6 +271,9 @@ class StrategyConstraints:
         self.min_sharpe: float = sc.get("min_sharpe", 0.5)
         self.sharpe_penalty_weight: float = sc.get("sharpe_penalty_weight", 0.3)
         self.walk_forward = WalkForwardConfig(raw_config.get("walk_forward", {}))
+        self.search = SearchRuntimeConfig(
+            raw_config.get("search", {}), raw_config.get("genetic_search", {})
+        )
         self.genetic_search = GeneticSearchConfig(raw_config.get("genetic_search", {}))
         self.discrete_search = DiscreteSearchConfig(
             raw_config.get("discrete_search", {}),
@@ -260,7 +315,9 @@ class StrategyConstraints:
         )
 
     def check_hard_constraints(
-        self, window_stats, walk_forward_score,
+        self,
+        window_stats,
+        walk_forward_score,
     ) -> tuple[bool, list[str]]:
         violations: list[str] = []
         avg_position = np.mean([ws.avg_position_pct for ws in window_stats])
@@ -287,9 +344,11 @@ class StrategyConstraints:
             return (self.min_sharpe - sharpe_ratio) * self.sharpe_penalty_weight
         return 0.0
 
+
 # ═══════════════════════════════════════════════════════════════
 # WindowStats
 # ═══════════════════════════════════════════════════════════════
+
 
 class WindowStats:
     def __init__(
@@ -354,14 +413,14 @@ class WindowStats:
 
     def excess_vs(self, bench_label: str) -> float:
         if bench_label in self.benchmark_returns:
-            return round(
-                self.strategy_return - self.benchmark_returns[bench_label], 2
-            )
+            return round(self.strategy_return - self.benchmark_returns[bench_label], 2)
         return self.test_excess_return
+
 
 # ═══════════════════════════════════════════════════════════════
 # BacktestConfig（从 backtest_config.py 迁移）
 # ═══════════════════════════════════════════════════════════════
+
 
 class BacktestConfig(_BaseModel):
     observe_end_month: int = 6
@@ -403,32 +462,42 @@ def elapsed_months(date_str, ref_date_str):
 
 def make_training_config():
     from collections import OrderedDict
+
     injections = OrderedDict()
     for m in range(6, 13):
         injections[m] = 20000.0
     return BacktestConfig(
-        observe_end_month=6, trade_end_month=12,
-        capital_injections=injections, initial_capital=100000.0,
-        monthly_buy_limit=float("inf"), monthly_sell_limit=float("inf"),
+        observe_end_month=6,
+        trade_end_month=12,
+        capital_injections=injections,
+        initial_capital=100000.0,
+        monthly_buy_limit=float("inf"),
+        monthly_sell_limit=float("inf"),
         commission_rate=0.002,
     )
 
 
 def make_default_optimizer_config():
     from collections import OrderedDict
+
     injections = OrderedDict()
     for m in range(6, 13):
         injections[m] = 20000.0
     return BacktestConfig(
-        observe_end_month=6, trade_end_month=18,
-        capital_injections=injections, initial_capital=100000.0,
-        monthly_buy_limit=float("inf"), monthly_sell_limit=float("inf"),
+        observe_end_month=6,
+        trade_end_month=18,
+        capital_injections=injections,
+        initial_capital=100000.0,
+        monthly_buy_limit=float("inf"),
+        monthly_sell_limit=float("inf"),
         commission_rate=0.002,
     )
+
 
 # ═══════════════════════════════════════════════════════════════
 # 单例加载
 # ═══════════════════════════════════════════════════════════════
+
 
 def load_constraints(path: Path | str | None = None) -> StrategyConstraints:
     config_path = Path(path) if path else DEFAULT_PATH
@@ -439,7 +508,9 @@ def load_constraints(path: Path | str | None = None) -> StrategyConstraints:
         raw = yaml.safe_load(f) or {}
     return StrategyConstraints(raw)
 
+
 _global_constraints: StrategyConstraints | None = None
+
 
 def get_constraints(path: Path | str | None = None) -> StrategyConstraints:
     global _global_constraints
@@ -447,13 +518,16 @@ def get_constraints(path: Path | str | None = None) -> StrategyConstraints:
         _global_constraints = load_constraints(path)
     return _global_constraints
 
+
 def reload_constraints(path: Path | str | None = None) -> StrategyConstraints:
     global _global_constraints
     _global_constraints = load_constraints(path)
     return _global_constraints
 
+
 def get_execution_config(path: Path | str | None = None) -> ExecutionConfig:
     return get_constraints(path).execution
+
 
 def reload_execution_config(path: Path | str | None = None) -> ExecutionConfig:
     reload_constraints(path)

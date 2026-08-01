@@ -52,29 +52,6 @@ def _calendar_ordinals(dates: list[str], rows: int) -> np.ndarray:
     return np.arange(rows, dtype=np.int64)
 
 
-def _stress_buy_prices(highs: np.ndarray) -> np.ndarray:
-    """Causal signal, pessimistic t-1/t/t+1 execution price."""
-    values = np.asarray(highs, dtype=np.float32)
-    rows, columns = values.shape
-    result = np.full((rows, columns), np.nan, dtype=np.float32)
-    for row in range(rows - 1):
-        current = values[row]
-        following = values[row + 1]
-        previous = values[row - 1] if row else current
-        valid = (
-            np.isfinite(previous)
-            & np.isfinite(current)
-            & np.isfinite(following)
-            & (previous > 0)
-            & (current > 0)
-            & (following > 0)
-        )
-        result[row, valid] = np.maximum(
-            np.maximum(previous[valid], current[valid]), following[valid]
-        )
-    return result
-
-
 if HAS_NUMBA:
 
     @jit(nopython=True, parallel=False, cache=True)
@@ -544,22 +521,6 @@ class RegimePullbackStrategy(SearchStrategy):
             float(execution["per_symbol_cap"]),
             float(execution["total_exposure_cap"]),
         )
-        highs = (
-            np.asarray(market_data.highs, dtype=np.float32)
-            if market_data.highs is not None
-            else market_data.indicator_matrix[:, :, IDX_CLOSE]
-        )
-        lows = (
-            np.asarray(market_data.lows, dtype=np.float32)
-            if market_data.lows is not None
-            else market_data.indicator_matrix[:, :, IDX_CLOSE]
-        )
-        buy_prices = (
-            np.asarray(market_data.benchmark_buy_prices, dtype=np.float32)
-            if market_data.benchmark_buy_prices is not None
-            else _stress_buy_prices(highs)
-        )
-        sell_prices = np.asarray(lows, dtype=np.float32).copy()
         sell_signals = exits | force_exits
         date_ordinals = (
             np.asarray(market_data.date_ordinals, dtype=np.int64)
@@ -591,8 +552,6 @@ class RegimePullbackStrategy(SearchStrategy):
             risk_atr=np.asarray(
                 market_data.indicator_matrix[:, :, IDX_ATR], dtype=np.float32
             ),
-            buy_execution_prices=buy_prices,
-            sell_execution_prices=sell_prices,
             date_ordinals=np.asarray(date_ordinals, dtype=np.int64),
         )
 

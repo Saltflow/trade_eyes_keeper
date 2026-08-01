@@ -4,6 +4,48 @@
 > V1/V2、16 窗口、隔离窗口、A 股默认子集、`--all-markets`、`--strategy`
 > 和 Bot preset 内容均为历史记录，已经废弃，不得作为当前实现依据。
 
+### 通用搜索架构契约（2026-08-01）
+
+- 生产搜索链路固定为
+  `SearchController -> Solver.ask/tell -> EvaluationService -> CandidateGatePipeline
+  -> ValidationController`。`SearchController` 只管理预算、缓存、排名窗调度、
+  排名档案和 checkpoint；其中不得按 Solver ID 或策略 ID 分支。新增优化算法只需
+  新增并注册一个实现 `initialize / ask / tell / should_stop / finalists /
+  state_dict / load_state_dict` 的 Solver 模块，再配置 `search.solver_id`。
+- 当前注册 Solver 为 `genetic`、`random` 和严格单线
+  `simulated_annealing`。要求梯度的未来 Solver 必须在启动前通过能力协商；当前
+  Evaluator 只声明 `cpu_scalar` 与 `cpu_batch`，无梯度、无 GPU 后端。神经网络若
+  输出候选参数可实现 Solver；若直接输出逐日买卖信号，则必须实现策略插件。
+- `ParameterSchema` 是唯一参数合同，声明类别、布尔、顺序、连续、权重、条件参数、
+  合法邻域、变异步长、参数组和 `transfer_key`。旧 `ParamDim` 只在适配边界转换。
+  稳健性检查使用 Schema 生成的逐参数相邻档位，不再调用策略随机改变整组参数。
+- `CandidateGatePipeline` 只消费不可变的排名窗原始指标。Gate Profile 的
+  `hard / penalty / diagnostic`、阈值、区间、窗口数量和比例完全由配置声明；代码
+  不硬编码 7/11。`standard` 当前配置为至少 7/11 胜最强基准，`exploratory`
+  不具备激活资格。隔离窗和留出窗永远不能进入 Solver、Gate、SearchArchive、
+  迁移先验、早停或代理模型。
+- `FeatureRegistry` 注册现有 22 列技术输入并转为跨标的可比特征；特征使用
+  `float32`/布尔 mask，现金和 NAV 使用 `float64`。`technical_ensemble` 是完整
+  22 列与批量内核的参考策略，固定因子经济方向且基本面依赖为空。
+- `EvaluationService` 优先调用 `prepare().evaluate_batch()`，否则使用
+  `evaluate_one()` 标量回退；两条路径必须得到完全一致的信号、成交和指标。
+  `ResourcePlanner` 每次只启用一个并行轴，禁止嵌套线程池超卖。
+- 新产物记录 Solver 配置及参数、特征、Gate、数据、成交、窗口和搜索合同哈希；
+  SearchArchive 只写排名窗。checkpoint 仅在合同哈希相同时恢复，finalist 仍由
+  排名窗 EvaluationService 重放，不读取隔离或留出数据。
+- 2026-08-01 CPU 批量验收使用完整 A 股配置中 11 个具备完整历史的标的、
+  11 个排名窗和同一组 1,000 个 `technical_ensemble` 候选。标量路径耗时
+  `49.887s`（`20.05 candidates/s`），Numba `prange` 批量路径耗时
+  `2.188s`（`456.95 candidates/s`），加速 `22.80x`；目标分最大误差为 `0`，
+  峰值 RSS 为 `0.363 GiB`。批量内核只接管通用 `cash_cap` 合同，日期循环仍在
+  每个候选内部串行；其他执行模型自动回退统一标量接口。
+- 同日以完全嵌套的 RandomSolver 候选流重新执行 `technical_ensemble` 搜索深度
+  实验，检查点为 `1,000 / 2,800 / 4,600 / 6,400 / 8,200 / 10,000`。三市场
+  平均最优原始 WF 分为 `-2.858 / -1.911 / -0.356 / -0.356 / -0.356 /
+  -0.356`；2,800 起三个市场均出现通过排名 Gate 的候选，4,600 后继续增加
+  算力未改善最优分。按 5% 持续边际提升规则，平衡点为每市场 **2,800** 个
+  候选。该实验不读取 2 个隔离窗或 1 个留出窗，不修改生产预算和活动策略。
+
 - 唯一优化入口是 `python main.py --optimize`。活动策略只由
   `config/config.yaml` 指定；一次运行该策略覆盖配置中全部有效的 A 股、
   港股和美股标的，各市场使用独立资金池、手数和汇率配置。
@@ -13,6 +55,12 @@
   与通用执行声明；
   搜参、日报和今日扫描不得按策略 ID 分支，今日扫描只读取完整计划最后一个
   有效交易日。
+- `TradePlan` 不携带具体成交价。唯一 `FillPricePolicy` 由 `Backtester` 和
+  优化器共享：买入价取触发日前一日、触发日、后一日最高价的最大值，后一日
+  只用于悲观成交定价而不进入策略信号；卖出价取触发日最低价，NAV 始终用
+  触发日收盘价估值。评价窗口最后一日缺少后一日价格时，买单标记待执行且
+  不计入窗口。`cash_cap`、`target_weight`、510300 可交易基准和同池静态等权
+  基准必须消费同一个窗口成交价切片，不得按策略或基准另建成交路径。
 - 权威搜参跨度为 60 个自然月：14 个窗口、12 个月训练、9 个月测试、
   3 个月步长。前 11 个测试窗参与排名，接下来 2 窗因与留出期重叠而隔离，
   最后 1 窗只作独立留出。隔离窗和留出窗不得参与排名、敏感性、删标的
@@ -20,8 +68,9 @@
 - 所有策略统一比较无风险复利、510300 直接买入持有和同配置标的池静态
   等权买入持有。两个可交易基准使用同样的 0.5% 单边费率、市场手数和
   悲观买价；每窗超额收益以三者中收益最高者为准，同时保留原始价格涨跌。
-- 排名要求 11 窗平均最强基准超额为正且至少 7/11 窗胜出，再应用回撤、
-  交易密度、绝对收益、稳定性和夏普约束。敏感性是逐参数 ±1 档；最终候选
+- 默认 `standard` Gate 要求 11 窗平均最强基准超额为正且至少 7/11 窗胜出；
+  该门槛完全来自配置，可替换 Profile 或改为比例，再应用回撤、交易密度、
+  绝对收益、稳定性和夏普约束。敏感性是逐参数 ±1 档；最终候选
   还要通过代码顺序不变性和逐一删标的（至少 80% 变体平均超额为正）检查。
 - 日报加载最近一次完整成功激活的参数，不重新搜索；各市场以自身最后有效
   交易日为终点，评估最近 273 个日历日。日报也使用同一三重基准；其他
@@ -32,10 +81,11 @@
 - `EvaluationReport` 是 HTML、PDF、邮件、飞书和 Telegram 的唯一数据源，
   显式包含测试期指标、各参考标的结果、初始/期末资产与现金、期末持仓、
   日 NAV、周 NAV OHLC、季末模拟持仓和胜率明细。
-- 注册策略包括 `percentile`、`builder`、`simplified` 和
-  `regime_pullback`。前三者保持历史决策并声明 `cash_cap`；
+- 注册策略包括 `percentile`、`builder`、`simplified`、
+  `regime_pullback` 和 `technical_ensemble`。前三者保持历史决策并声明 `cash_cap`；
   `regime_pullback` 声明 `target_weight`，实现 MA200 上升趋势中的
   回撤准备、三日恢复单次确认、30 日正常退出和固定 3ATR 灾难退出。
+  `technical_ensemble` 只作为 22 技术列、批量评价和跨 Solver 比较参考实现。
 - `regime_pullback` 搜参只保存三市场完整候选，绝不自动替换当前活动策略。
   候选必须留出胜出且通过全部稳健性门槛，之后由
   `python main.py --activate-run <run_id>` 原子激活。
@@ -112,6 +162,51 @@
   放宽门槛或激活候选的依据。
 - 可复现实验入口为 `python scripts/analyze_search_depth.py`；明细、JSON 和图
   位于 `data/analysis/search_depth/regime_pullback_20260731_011908/`。
+
+## 2026-07-31：注册技术策略统一基准
+
+- 可复现入口为
+  `python scripts/benchmark_technical_strategies.py --depth 1000
+  --market-workers 12 --evaluation-workers 1`。四个注册技术策略分别在
+  A 股、港股和美股使用相同随机种子、每市场 1,000 个 Phase 1 候选、
+  11 个排名窗、2 个隔离窗和 1 个留出窗；市场汇总使用等权口径。
+- 主进程先为每个市场抓取一份不可变行情与基准快照，再将同一快照复制给
+  四个策略进程。产物保存逐标的和基准 OHLC 指纹，防止并行数据刷新、缓存
+  竞争或数据源回退破坏可比性。每个任务内部只开 1 个评价 worker，避免
+  12 个外层进程再次嵌套多进程。
+- 参数只由 11 个排名窗选择。2 个隔离窗和最后 1 个留出窗只在参数选定后
+  评价；留出结果不反馈选参。运行只写
+  `data/analysis/strategy_benchmark/<timestamp>/` 下的 JSON/CSV，不写优化器
+  活动指针，不生成候选运行，也不自动激活策略。
+- 2026-07-31 首轮结果曾记录为：`builder +1.907%`（2/3 胜出）、
+  `percentile -0.927%`（2/3）、`regime_pullback -4.047%`（0/3）、
+  `simplified -9.810%`（0/3）。该次运行中旧策略、`regime_pullback` 和两个
+  可交易基准没有消费同一成交价路径，且 `builder.absolute_discount` 使用了
+  未来区间最大收盘价；因此该产物及其策略排序已作废，不得作为投资或激活依据。
+- 修复后的唯一成交合同为“买入三日最高、卖出当日最低、NAV 当日收盘、窗口
+  末买单待执行”。同时将 `builder.absolute_discount` 改为截至当日的历史运行
+  高点，不再读取未来。用相同冻结行情、种子、1,000 个 Phase 1 候选和
+  12 个外层进程重跑，三市场等权留出超额为：`regime_pullback -4.047%`
+  （0/3）、`percentile -4.170%`（2/3）、`simplified -4.497%`（2/3）、
+  `builder -9.980%`（0/3）。33 个排名窗平均超额依次为 `-13.225%`、
+  `+1.601%`、`+3.068%`、`+2.901%`。
+- `regime_pullback` 的结果与旧运行完全一致，因为它原先已经使用目标中的悲观
+  成交路径；其三市场均保持现金，仍在三个留出窗输给最强基准。`builder` 留出
+  均值从旧产物的 `+1.907%` 降至 `-9.980%`，且从 2/3 胜出变为 0/3，说明旧
+  正结果不可采信。该差值同时包含成交路径统一、基准成本统一和重新选参的共同
+  影响，不应全部归因于单一代码缺陷。
+- 修复后没有任何策略通过三个市场的独立留出：`percentile` 与 `simplified`
+  各胜 2/3，但分别在 A 股和港股发生显著负超额；`builder` 与
+  `regime_pullback` 为 0/3。因此本轮不激活任何候选，活动策略保持不变。
+- 修复后可复现产物位于
+  `data/analysis/strategy_benchmark/20260801_004324/`；12 个策略×市场任务的
+  并行纯计算耗时为 `76.625s`，数据预取发生在计时之前。生产配置仍为每市场
+  最多 `30,000 + 5 × 25,000 = 155,000` 次候选评估，本 benchmark 不修改
+  该配置。
+- 旧 `simplified` 结果曾出现 33 个排名窗平均超额 `+9.539%`、三个留出窗全败，
+  是明显的样本内选择偏差。`regime_pullback` 三市场均无排名合格候选，且
+  排名/留出均为负；结合 1,000→10,000 搜索深度边际实验，本问题应优先
+  修改策略状态机或参数空间，而不是增加搜索预算。
 
 ---
 

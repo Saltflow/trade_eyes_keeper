@@ -60,13 +60,15 @@ def _trace(
 
 
 def test_cash_cap_obeys_priority_not_input_stock_order():
-    buy = np.array([[True, True]])
+    buy = np.array([[True, True], [False, False]])
     sell = np.zeros_like(buy)
-    priority = np.array([[0.1, 0.9]], dtype=np.float32)
+    priority = np.array(
+        [[0.1, 0.9], [-np.inf, -np.inf]], dtype=np.float32
+    )
     trace = _trace(
         buy,
         sell,
-        np.array([[10.0, 10.0]]),
+        np.array([[10.0, 10.0], [10.0, 10.0]]),
         buy_limit=20_000.0,
         sell_limit=20_000.0,
         buy_priority=priority,

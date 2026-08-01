@@ -20,9 +20,9 @@ from src.analysis.backtester import (
     IDX_RSI,
     IDX_RSI_PCT,
     INDICATOR_NAMES,
-    pessimistic_buy_prices,
     simulate_portfolio,
 )
+from src.analysis.execution import DEFAULT_FILL_PRICE_POLICY
 from src.analysis.search_interface import (
     Params,
     StrategyMarketData,
@@ -141,7 +141,6 @@ def test_target_execution_uses_stress_high_low_fee_and_pending_final_buy():
     highs[1, 0] = 12.0
     highs[2, 0] = 13.0
     lows = np.full_like(close, 9.0)
-    buy_prices = pessimistic_buy_prices(highs)
     entry = np.zeros_like(close, dtype=bool)
     normal_exit = np.zeros_like(close, dtype=bool)
     entry[1, 0] = True
@@ -168,8 +167,6 @@ def test_target_execution_uses_stress_high_low_fee_and_pending_final_buy():
         exit_events=normal_exit,
         force_exit_signals=np.zeros_like(entry),
         conviction=conviction,
-        buy_execution_prices=buy_prices.astype(np.float32),
-        sell_execution_prices=lows,
     )
     trace = simulate_portfolio(
         plan,
@@ -186,6 +183,7 @@ def test_target_execution_uses_stress_high_low_fee_and_pending_final_buy():
         lot_size=100,
         commission_rate=0.005,
         min_holding_days=30,
+        execution_prices=DEFAULT_FILL_PRICE_POLICY.build(close, highs, lows),
     )
 
     # Target 20k at close=10 means 2,000 desired shares, scaled only if cash
@@ -222,8 +220,6 @@ def test_target_execution_consumes_plan_declared_target_weight():
         force_exit_signals=np.zeros_like(entry),
         conviction=np.where(entry, 1.0, 0.0).astype(np.float32),
         target_weights=np.full_like(close, 0.15),
-        buy_execution_prices=close,
-        sell_execution_prices=close,
     )
     trace = simulate_portfolio(
         plan,
@@ -238,13 +234,14 @@ def test_target_execution_consumes_plan_declared_target_weight():
         lot_size=100,
         commission_rate=0.005,
         min_holding_days=30,
+        execution_prices=DEFAULT_FILL_PRICE_POLICY.build(close),
     )
 
     # The execution cap permits 25%, but the plan explicitly asks for 15%.
     assert trace.final_shares[0] == 1_500
 
 
-def test_final_row_buy_price_is_always_pending_after_window_slice():
+def test_trade_plan_slice_contains_decisions_but_never_concrete_fill_prices():
     values = np.arange(1, 8, dtype=np.float32).reshape(-1, 1)
     plan = TradePlan(
         buy_signals=np.ones_like(values, dtype=bool),
@@ -254,7 +251,9 @@ def test_final_row_buy_price_is_always_pending_after_window_slice():
         buy_cash_limit=0,
         sell_cash_limit=0,
         warmup_rows=0,
-        buy_execution_prices=pessimistic_buy_prices(values).astype(np.float32),
     )
     sliced = plan.sliced(1, 5)
-    assert np.isnan(sliced.buy_execution_prices[-1, 0])
+    assert sliced.buy_signals.shape == (4, 1)
+    assert not hasattr(sliced, "buy_execution_prices")
+    assert not hasattr(sliced, "sell_execution_prices")
+    assert np.all(sliced.buy_signals)

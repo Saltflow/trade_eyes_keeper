@@ -8,12 +8,14 @@ from .percentile.engine import PercentileSearchStrategy
 from .builder.engine import BuilderSearchStrategy
 from .simplified.engine import SimplifiedSearchStrategy
 from .regime_pullback.engine import RegimePullbackStrategy
+from .technical_ensemble.engine import TechnicalEnsembleStrategy
 
 STRATEGIES: dict[str, type] = {
     "percentile": PercentileSearchStrategy,
     "builder": BuilderSearchStrategy,
     "simplified": SimplifiedSearchStrategy,
     "regime_pullback": RegimePullbackStrategy,
+    "technical_ensemble": TechnicalEnsembleStrategy,
 }
 
 
