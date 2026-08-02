@@ -126,6 +126,54 @@ class ParameterSpec:
         choices = [value for value in choices if value != current]
         return rng.choice(choices) if choices else current
 
+    def local_values(self, current: object, max_levels: int) -> tuple[object, ...]:
+        """Return every distinct legal value within the local step limit.
+
+        Ordered and numeric dimensions preserve their natural direction.
+        Categorical and boolean dimensions have no ordered distance, so every
+        other legal value is considered a one-step local alternative.
+        """
+        levels = int(max_levels)
+        if levels < 1:
+            raise ValueError("max_levels must be at least 1")
+        existing = self.coerce(current)
+        if self.kind == ParameterKind.ORDINAL:
+            index = self.values.index(existing)
+            alternatives = [
+                self.values[target]
+                for target in range(
+                    max(0, index - levels),
+                    min(len(self.values), index + levels + 1),
+                )
+                if target != index
+            ]
+        elif self.kind in {ParameterKind.CATEGORICAL, ParameterKind.BOOLEAN}:
+            alternatives = [value for value in self.values if value != existing]
+        else:
+            move = self.mutation_step or self.step
+            if move is None:
+                move = max(
+                    (float(self.high) - float(self.low)) * 0.05,
+                    1e-12,
+                )
+            alternatives = []
+            for offset in range(-levels, levels + 1):
+                if offset == 0:
+                    continue
+                value = self.coerce(float(existing) + offset * move)
+                if value != existing:
+                    alternatives.append(value)
+
+        unique = []
+        seen = set()
+        for value in alternatives:
+            key = repr(value)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(value)
+        return tuple(unique)
+
     def to_contract(self) -> dict[str, object]:
         return {
             "name": self.name,
@@ -359,6 +407,36 @@ class CandidateBatch:
             )
             for name, values in self.columns.items()
         }
+
+    def sliced(self, start: int, end: int) -> "CandidateBatch":
+        """Return a contiguous, IPC-friendly batch copy."""
+
+        lower = max(0, int(start))
+        upper = min(len(self), max(lower, int(end)))
+        return CandidateBatch(
+            candidate_ids=self.candidate_ids[lower:upper],
+            schema_hash=self.schema_hash,
+            columns={
+                name: np.ascontiguousarray(values[lower:upper])
+                for name, values in self.columns.items()
+            },
+            sources=self.sources[lower:upper],
+        )
+
+    def take(self, indexes: Iterable[int]) -> "CandidateBatch":
+        """Select rows while preserving the caller's deterministic order."""
+
+        selected = tuple(int(index) for index in indexes)
+        positions = list(selected)
+        return CandidateBatch(
+            candidate_ids=tuple(self.candidate_ids[index] for index in selected),
+            schema_hash=self.schema_hash,
+            columns={
+                name: np.ascontiguousarray(values[positions])
+                for name, values in self.columns.items()
+            },
+            sources=tuple(self.sources[index] for index in selected),
+        )
 
 
 @dataclass(frozen=True)

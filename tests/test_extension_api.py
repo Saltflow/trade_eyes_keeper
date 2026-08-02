@@ -14,7 +14,17 @@ def test_public_solver_api_and_automatic_discovery():
         "state_dict",
         "load_state_dict",
     }
-    assert list_solvers() == ("genetic", "random", "simulated_annealing")
+    production_solvers = tuple(
+        solver_id
+        for solver_id in list_solvers()
+        if not solver_id.startswith("test_")
+    )
+    assert production_solvers == (
+        "genetic",
+        "local_genetic",
+        "random",
+        "simulated_annealing",
+    )
 
 
 def test_public_strategy_api_and_automatic_discovery():
@@ -25,6 +35,7 @@ def test_public_strategy_api_and_automatic_discovery():
     }
     assert list_strategy_ids() == (
         "builder",
+        "ma60_band",
         "percentile",
         "regime_pullback",
         "simplified",

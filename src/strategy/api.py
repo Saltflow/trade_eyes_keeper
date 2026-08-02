@@ -181,6 +181,11 @@ class PortfolioTrace:
     final_prices: np.ndarray | None = None
     final_cash: float = 0.0
     pending_order_count: int = 0
+    signal_event_count: int = 0
+    cash_rejected_order_count: int = 0
+    concentration_hhi: float = 0.0
+    selected_basket_hold_return: float | None = None
+    timing_value_add: float | None = None
 
 
 @dataclass
@@ -200,6 +205,11 @@ class EvaluationReport:
     trade_count: int
     avg_cash_pct: float
     pending_order_count: int = 0
+    signal_event_count: int = 0
+    cash_rejected_order_count: int = 0
+    concentration_hhi: float = 0.0
+    selected_basket_hold_return: float | None = None
+    timing_value_add: float | None = None
 
     initial_asset: float = 0.0
     final_asset: float = 0.0
@@ -248,6 +258,11 @@ class EvaluationReport:
             "primary_benchmark": self.primary_benchmark,
             "trades": self.trade_count,
             "pending_order_count": self.pending_order_count,
+            "signal_event_count": self.signal_event_count,
+            "cash_rejected_order_count": self.cash_rejected_order_count,
+            "concentration_hhi": self.concentration_hhi,
+            "selected_basket_hold_return": self.selected_basket_hold_return,
+            "timing_value_add": self.timing_value_add,
             "initial_asset": self.initial_asset,
             "final_asset": self.final_asset,
             "final_cash": self.final_cash,
@@ -472,9 +487,14 @@ class TradingStrategy(ABC):
         results = []
         if plan.buy_signals[row, 0]:
             if plan.execution.get("model") == "target_weight":
+                target_weight = (
+                    float(plan.target_weights[row, 0])
+                    if plan.target_weights is not None
+                    else float(plan.execution.get("per_symbol_cap", 0.0))
+                )
                 detail = (
                     f"buy conviction {plan.buy_priority[row, 0]:.2f}; "
-                    f"target weight {plan.target_weights[row, 0]:.1%}"
+                    f"target cap {target_weight:.1%}"
                 )
             else:
                 detail = (

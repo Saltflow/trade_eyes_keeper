@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
@@ -50,9 +49,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--market-workers",
         type=int,
-        default=min(12, max(1, (os.cpu_count() or 4) - 2)),
+        default=None,
+        help=(
+            "parallel strategy/market jobs; mutually exclusive with "
+            "multi-process evaluation"
+        ),
     )
-    parser.add_argument("--evaluation-workers", type=int, default=1)
+    parser.add_argument(
+        "--evaluation-workers",
+        type=int,
+        default=None,
+        help="persistent candidate-scoring processes per job",
+    )
     parser.add_argument(
         "--output-root",
         type=Path,
@@ -63,8 +71,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    if args.evaluation_workers != 1:
-        raise SystemExit("cross-strategy benchmark requires --evaluation-workers 1")
     unknown = sorted(set(args.strategies) - set(list_strategy_ids()))
     if unknown:
         raise SystemExit(f"unknown registered strategies: {', '.join(unknown)}")
@@ -79,6 +85,28 @@ def main() -> int:
     jobs = [
         (strategy, group) for strategy in args.strategies for group in BENCHMARK_GROUPS
     ]
+    planner = ResourcePlanner()
+    if args.market_workers is None and args.evaluation_workers is None:
+        if len(jobs) >= planner.physical_cores:
+            market_workers = planner.physical_cores
+            evaluation_workers = 1
+        else:
+            market_workers = 1
+            evaluation_workers = planner.physical_cores
+    else:
+        market_workers = int(args.market_workers or 1)
+        evaluation_workers = int(args.evaluation_workers or 1)
+    if market_workers <= 0 or evaluation_workers <= 0:
+        raise SystemExit("worker counts must be positive")
+    if market_workers > 1 and evaluation_workers > 1:
+        raise SystemExit(
+            "choose one parallel axis: market workers or candidate evaluation workers"
+        )
+    resource_plan = planner.plan(
+        "strategy_market", market_workers, batch_size=256
+    )
+    workers = min(resource_plan.outer_workers, len(jobs))
+
     print("preparing immutable market snapshots before parallel evaluation")
     prepared = prepare_benchmark_data(load_config())
     prefetch_summary = summarize_prepared_data(prepared)
@@ -88,41 +116,61 @@ def main() -> int:
             f"{len(summary['missing_or_short_history_codes'])} unavailable"
         )
     print(f"solver={args.solver}, budget={args.depth} candidates per market")
-    resource_plan = ResourcePlanner().plan(
-        "strategy_market", args.market_workers, batch_size=256
+    print(
+        f"parallelism=market:{workers}, "
+        f"candidate_processes_per_job:{evaluation_workers}"
     )
-    workers = min(resource_plan.outer_workers, len(jobs))
     started = monotonic()
     results = []
     failures = []
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(
-                run_market_benchmark_from_snapshot,
-                strategy,
-                group,
-                prepared[group],
-                args.depth,
-                args.evaluation_workers,
-                args.solver,
-                None,
-            ): (strategy, group)
-            for strategy, group in jobs
-        }
-        for future in as_completed(futures):
-            strategy, group = futures[future]
+
+    def record_success(strategy, group, result):
+        results.append(result)
+        print(
+            f"completed {strategy}/{group}: "
+            f"wf={result['wf_score']:.3f}, "
+            f"holdout_excess="
+            f"{result['holdout_summary']['mean_excess_pct']:.3f}%"
+        )
+
+    if workers == 1:
+        for strategy, group in jobs:
             try:
-                result = future.result()
-                results.append(result)
-                print(
-                    f"completed {strategy}/{group}: "
-                    f"wf={result['wf_score']:.3f}, "
-                    f"holdout_excess="
-                    f"{result['holdout_summary']['mean_excess_pct']:.3f}%"
+                result = run_market_benchmark_from_snapshot(
+                    strategy,
+                    group,
+                    prepared[group],
+                    args.depth,
+                    evaluation_workers,
+                    args.solver,
+                    None,
                 )
+                record_success(strategy, group, result)
             except Exception as exc:
                 failures.append((strategy, group, str(exc)))
                 print(f"failed {strategy}/{group}: {exc}", file=sys.stderr)
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(
+                    run_market_benchmark_from_snapshot,
+                    strategy,
+                    group,
+                    prepared[group],
+                    args.depth,
+                    evaluation_workers,
+                    args.solver,
+                    None,
+                ): (strategy, group)
+                for strategy, group in jobs
+            }
+            for future in as_completed(futures):
+                strategy, group = futures[future]
+                try:
+                    record_success(strategy, group, future.result())
+                except Exception as exc:
+                    failures.append((strategy, group, str(exc)))
+                    print(f"failed {strategy}/{group}: {exc}", file=sys.stderr)
 
     if failures:
         for strategy, group, reason in failures:
@@ -133,7 +181,7 @@ def main() -> int:
         market_results=results,
         search_depth=args.depth,
         market_workers=workers,
-        evaluation_workers=args.evaluation_workers,
+        evaluation_workers=evaluation_workers,
         wall_seconds=monotonic() - started,
         prefetch_summary=prefetch_summary,
     )

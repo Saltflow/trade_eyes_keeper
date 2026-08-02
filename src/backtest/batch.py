@@ -65,6 +65,8 @@ if HAS_NUMBA_BATCH:
         final_cash = np.zeros(candidate_count, dtype=np.float64)
         cost_basis = np.zeros((candidate_count, symbol_count), dtype=np.float64)
         pending_orders = np.zeros(candidate_count, dtype=np.int64)
+        cash_rejected_orders = np.zeros(candidate_count, dtype=np.int64)
+        concentration_hhi = np.zeros(candidate_count, dtype=np.float64)
         snapshot_mask = np.zeros(row_count, dtype=np.bool_)
         for candidate_index in prange(candidate_count):
             result = _simulate_cash_plan_numba(
@@ -92,6 +94,8 @@ if HAS_NUMBA_BATCH:
             final_cash[candidate_index] = result[5]
             cost_basis[candidate_index] = result[6]
             pending_orders[candidate_index] = result[12]
+            cash_rejected_orders[candidate_index] = result[13]
+            concentration_hhi[candidate_index] = result[14]
         return (
             daily_values,
             trade_counts,
@@ -101,6 +105,8 @@ if HAS_NUMBA_BATCH:
             final_cash,
             cost_basis,
             pending_orders,
+            cash_rejected_orders,
+            concentration_hhi,
         )
 
 
@@ -121,7 +127,7 @@ def evaluate_cash_batch(
     ):
         return None
 
-    from .engine import WindowStats, _compute_stats
+    from .engine import WindowStats, _compute_stats, count_signal_events
 
     indicator_matrix = np.asarray(window_inputs["indicator_matrix"])
     price_matrix = np.asarray(window_inputs["price_matrix"])
@@ -187,7 +193,7 @@ def evaluate_cash_batch(
             valuation_prices,
             window_inputs.get("cash_baseline"),
             int(result[1][index]),
-            0,
+            count_signal_events(trade_plans[index]),
             avg_pos_pct=float(result[2][index]),
             benchmark_series=window_inputs.get("benchmark_series"),
             benchmark_initial_values=window_inputs.get("benchmark_initial_values"),
@@ -203,6 +209,8 @@ def evaluate_cash_batch(
             quarter_prices=empty_shares.copy(),
             quarter_cost_basis=empty_shares.copy(),
             pending_order_count=int(result[7][index]),
+            cash_rejected_order_count=int(result[8][index]),
+            concentration_hhi=float(result[9][index]),
         )
         for index in range(len(trade_plans))
     ]

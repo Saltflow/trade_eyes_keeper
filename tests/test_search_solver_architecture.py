@@ -109,6 +109,19 @@ class FakeEvaluationService:
             },
         ),
         (
+            "local_genetic",
+            12,
+            {
+                "random_seed": 7,
+                "phase1_random_samples": 4,
+                "phase1_top_keep": 4,
+                "num_generations": 2,
+                "population_size": 3,
+                "offspring_size": 4,
+                "random_immigrant_rate": 0.0,
+            },
+        ),
+        (
             "simulated_annealing",
             12,
             {"random_seed": 7, "initialization_samples": 4},

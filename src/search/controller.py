@@ -44,6 +44,7 @@ class SearchController:
         archive: SearchArchive | None = None,
         checkpoint_path: Path | str | None = None,
         include_infeasible_results: bool = False,
+        materialize_finalists: bool = True,
     ):
         self.problem = problem
         self.solver = solver
@@ -58,6 +59,7 @@ class SearchController:
         self.candidate_feasible: dict[str, bool] = {}
         self.candidate_parameters: dict[str, dict[str, object]] = {}
         self.include_infeasible_results = bool(include_infeasible_results)
+        self.materialize_finalists = bool(materialize_finalists)
         self._batch_count = 0
 
     def run(self, finalist_limit: int | None = None) -> list[SearchResult]:
@@ -148,7 +150,8 @@ class SearchController:
             finalist_ids.extend(extras)
             if finalist_limit is not None:
                 finalist_ids = finalist_ids[: max(0, int(finalist_limit))]
-        self._materialize_checkpoint_finalists(finalist_ids)
+        if self.materialize_finalists:
+            self._materialize_checkpoint_finalists(finalist_ids)
 
         results = []
         for candidate_id in finalist_ids:
@@ -195,6 +198,13 @@ class SearchController:
             candidate_id
             for candidate_id in finalist_ids
             if candidate_id not in self.evaluation_service.records
+            or not bool(
+                getattr(
+                    self.evaluation_service.records[candidate_id],
+                    "materialized",
+                    True,
+                )
+            )
         ]
         for start in range(0, len(missing), self.batch_size):
             rows = []
@@ -212,9 +222,13 @@ class SearchController:
                         "checkpoint/replay",
                     )
                 )
-            raw = self.evaluation_service.evaluate_batch(
-                CandidateBatch.from_candidates(rows, self.problem.schema)
+            batch = CandidateBatch.from_candidates(rows, self.problem.schema)
+            materialize = getattr(
+                self.evaluation_service,
+                "materialize_batch",
+                self.evaluation_service.evaluate_batch,
             )
+            raw = materialize(batch)
             for index, candidate_id in enumerate(raw.candidate_ids):
                 decision = self.gate_pipeline.evaluate(raw.raw_metrics[index])
                 self.gate_decisions[candidate_id] = decision

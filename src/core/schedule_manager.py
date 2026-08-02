@@ -63,7 +63,8 @@ class ScheduleManager:
 
         # 策略优化（每天凌晨 2:00）
         opt_time = sched_cfg.get("optimize_time", "02:00")
-        if sched_cfg.get("optimize_enabled", True):
+        # A full 155k-candidate run is opt-in; daily overlap can exhaust RAM.
+        if sched_cfg.get("optimize_enabled", False):
             self._add_job(
                 "optimize",
                 opt_time,

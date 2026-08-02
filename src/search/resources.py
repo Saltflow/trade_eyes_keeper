@@ -37,8 +37,9 @@ class ResourcePlanner:
         )
         if axis == "strategy_market":
             return ResourcePlan(axis, requested, 1, batch_size)
-        # The batch and scalar fallback share one candidate parallelism axis.
-        return ResourcePlan(axis, requested, requested, batch_size)
+        # Candidate workers are independent processes. Numba and BLAS stay
+        # single-threaded in each process to avoid nested oversubscription.
+        return ResourcePlan(axis, requested, 1, batch_size)
 
     @contextmanager
     def apply(self, plan: ResourcePlan):

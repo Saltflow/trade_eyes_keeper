@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional as _Optional
@@ -164,6 +165,46 @@ class GeneticSearchConfig:
         )
 
 
+class UniverseRobustnessConfig:
+    """Configurable leave-one-instrument-out finalist validation."""
+
+    def __init__(self, data: dict | None = None):
+        raw = data or {}
+        self.enabled: bool = bool(raw.get("enabled", True))
+        self.finalist_count: int = max(1, int(raw.get("finalist_count", 20)))
+        self.minimum_passing_ratio: float = float(
+            raw.get("minimum_passing_ratio", 0.80)
+        )
+        if not 0.0 <= self.minimum_passing_ratio <= 1.0:
+            raise ValueError(
+                "validation.universe_robustness.minimum_passing_ratio "
+                "must be between 0 and 1"
+            )
+        self.minimum_mean_majority_excess: float = float(
+            raw.get("minimum_mean_majority_excess", 0.0)
+        )
+        self.penalty_weight: float = max(
+            0.0, float(raw.get("penalty_weight", 2.0))
+        )
+        self.activation_required: bool = bool(
+            raw.get("activation_required", True)
+        )
+        self.require_order_invariance: bool = bool(
+            raw.get("require_order_invariance", True)
+        )
+
+    def to_contract(self) -> dict[str, object]:
+        return {
+            "enabled": self.enabled,
+            "finalist_count": self.finalist_count,
+            "minimum_passing_ratio": self.minimum_passing_ratio,
+            "minimum_mean_majority_excess": self.minimum_mean_majority_excess,
+            "penalty_weight": self.penalty_weight,
+            "activation_required": self.activation_required,
+            "require_order_invariance": self.require_order_invariance,
+        }
+
+
 class SearchRuntimeConfig:
     """Solver-neutral orchestration and CPU scheduling configuration."""
 
@@ -174,9 +215,19 @@ class SearchRuntimeConfig:
         if not 128 <= self.batch_size <= 512:
             raise ValueError("search.batch_size must be between 128 and 512")
         self.parallel_axis: str = str(data.get("parallel_axis", "candidate_window"))
-        self.workers: int | None = (
-            int(data["workers"]) if data.get("workers") is not None else None
+        self.evaluation_backend: str = str(
+            data.get("evaluation_backend", "process")
         )
+        if self.evaluation_backend not in {"process", "scalar"}:
+            raise ValueError(
+                "search.evaluation_backend must be 'process' or 'scalar'"
+            )
+        configured_workers = os.environ.get("SEARCH_WORKERS", data.get("workers"))
+        self.workers: int | None = (
+            int(configured_workers) if configured_workers is not None else None
+        )
+        if self.workers is not None and self.workers < 1:
+            raise ValueError("search.workers/SEARCH_WORKERS must be at least 1")
         self.checkpoint: bool = bool(data.get("checkpoint", True))
         configured = data.get("solvers", {}) or {}
         if not isinstance(configured, dict):
@@ -275,6 +326,10 @@ class StrategyConstraints:
             raw_config.get("search", {}), raw_config.get("genetic_search", {})
         )
         self.genetic_search = GeneticSearchConfig(raw_config.get("genetic_search", {}))
+        validation = raw_config.get("validation", {}) or {}
+        self.universe_robustness = UniverseRobustnessConfig(
+            validation.get("universe_robustness", {})
+        )
         self.discrete_search = DiscreteSearchConfig(
             raw_config.get("discrete_search", {}),
             raw_config.get("simplified_search", {}),
@@ -375,6 +430,11 @@ class WindowStats:
         quarter_prices: np.ndarray | None = None,
         quarter_cost_basis: np.ndarray | None = None,
         pending_order_count: int = 0,
+        signal_event_count: int = 0,
+        cash_rejected_order_count: int = 0,
+        concentration_hhi: float = 0.0,
+        selected_basket_hold_return: float | None = None,
+        timing_value_add: float | None = None,
         strongest_benchmark: str = "",
         benchmark_raw_returns: dict[str, float] | None = None,
     ):
@@ -399,6 +459,11 @@ class WindowStats:
         self.quarter_prices = quarter_prices
         self.quarter_cost_basis = quarter_cost_basis
         self.pending_order_count = pending_order_count
+        self.signal_event_count = signal_event_count
+        self.cash_rejected_order_count = cash_rejected_order_count
+        self.concentration_hhi = concentration_hhi
+        self.selected_basket_hold_return = selected_basket_hold_return
+        self.timing_value_add = timing_value_add
         self.strongest_benchmark = strongest_benchmark
         self.benchmark_raw_returns = benchmark_raw_returns or {}
 

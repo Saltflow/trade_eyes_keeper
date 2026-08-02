@@ -210,8 +210,8 @@ def _git_push():
     env = os.environ.copy()
     env["GIT_SSH_COMMAND"] = f"ssh -i {_get_ssh_key()} -o StrictHostKeyChecking=no"
 
-    # 先尝试普通 push
-    for force in (False, True):
+    # Deployment must never rewrite remote history automatically.
+    for force in (False,):
         cmd = ["git", "push"]
         if force:
             cmd.append("--force")
@@ -236,10 +236,10 @@ def _git_push():
                         print(f"  {line}")
                 return True
 
-            # 非 fast-forward → 自动 force push
+            # A non-fast-forward remote requires explicit human reconciliation.
             if "non-fast-forward" in result.stderr:
-                _info("Non-fast-forward detected, retrying with --force...")
-                continue
+                _info("Non-fast-forward detected; refusing automatic force push")
+                return False
 
             _info(f"Git push FAILED: {result.stderr}")
             print(f"  ERROR: {result.stderr}")
@@ -272,22 +272,19 @@ def _ensure_remote_repo():
     if not success:
         return False
 
-    # 如果仓库已有内容但无法更新工作树 (unborn HEAD / dirty working tree),
-    # 重置到可接受状态
+    # Never discard tracked production edits. Untracked diagnostics are safe
+    # to preserve and do not block receive.denyCurrentBranch=updateInstead.
     fix_cmd = (
         f"cd {REMOTE_DIR} && "
-        f"if git status --porcelain 2>/dev/null | grep -q '^'; then "
-        f"  echo 'Working tree has changes, resetting...'; "
-        f"  git checkout -f master 2>/dev/null || git symbolic-ref HEAD refs/heads/master; "
-        f"  echo '[OK] Working tree ready'; "
+        f"if ! git diff --quiet || ! git diff --cached --quiet; then "
+        f"  echo '[ERROR] Tracked production changes must be reconciled first'; "
+        f"  exit 2; "
         f"else "
-        f"  echo '[OK] Working tree clean'; "
-        f"fi; "
-        f"echo 'Restarting service to reload new code...'; "
-        f"systemctl restart trade-eyes 2>/dev/null && echo '[OK] Service restarted' || echo '[WARN] Service restart skipped (no systemd?)'"
+        f"  echo '[OK] Tracked working tree clean'; "
+        f"fi"
     )
-    _ssh_cmd(fix_cmd, "Ensure working tree is ready for push")
-    return True
+    ready, _, _ = _ssh_cmd(fix_cmd, "Ensure working tree is ready for push")
+    return ready
 
 
 # ── 部署流程 ────────────────────────────────────────────
@@ -342,8 +339,8 @@ def _pre_deploy_checks(dry_run):
         sys.executable, "-c",
         "import importlib,sys; "
         "[importlib.import_module(m) for m in "
-        "['src.analysis.optimizer','src.analysis.backtester',"
-        "'src.analysis.search_interface','src.analysis.strategy_artifacts',"
+        "['src.search.workflow','src.search.artifacts',"
+        "'src.backtest.engine','src.strategy.api',"
         "'src.notification.manager','src.health_server.core.health_server']]; "
         "print('OK')",
         timeout=15,
@@ -666,26 +663,23 @@ def deploy():
         _step("cron", not has_legacy,
               "legacy entries removed" if not has_legacy else "STILL HAS LEGACY ENTRIES!")
 
-        # ── 9c. 检查优化器数据, 首次部署触发初始运行 ──
+        # ── 9c. 检查统一优化器数据；候选搜索和激活必须显式执行 ──
         _info("Checking optimizer data...")
         opt_check = (
-            f"ls {REMOTE_DIR}/data/optimizer/*_strategies.yaml 2>/dev/null | wc -l"
+            f"find {REMOTE_DIR}/data/optimizer/runs -name manifest.yaml "
+            "-type f 2>/dev/null | wc -l"
         )
-        _, opt_count_out, _ = _ssh_cmd(opt_check, "Count optimizer YAML files")
+        _, opt_count_out, _ = _ssh_cmd(opt_check, "Count optimizer run manifests")
         opt_count = int(opt_count_out.strip() or "0")
         if opt_count == 0:
-            _info("No optimizer data found — starting initial optimization (background, ~30min)...")
-            _ssh_cmd(
-                f"cd {REMOTE_DIR} && nohup python3 main.py --optimize "
-                f"> {REMOTE_DIR}/logs/optimize_init.log 2>&1 &",
-                "Start initial optimizer in background",
-                timeout=10,
+            _info(
+                "No unified optimizer run found; leaving the current strategy "
+                "unchanged until an explicit --optimize and --activate-run"
             )
-            _info("Initial optimization running in background (check logs/optimize_init.log)")
-            _step("optimizer_data", None, "initial run started (30min)")
+            _step("optimizer_data", None, "no unified run; explicit search required")
         else:
-            _info(f"Optimizer data exists ({opt_count} files)")
-            _step("optimizer_data", True, f"{opt_count} strategy files")
+            _info(f"Optimizer data exists ({opt_count} run manifests)")
+            _step("optimizer_data", True, f"{opt_count} unified runs")
         check_archive = f"""timeout 10 bash -c '
 latest=$(ls -t {REMOTE_DIR}/data/email_archive/*.html 2>/dev/null | head -1)
 if [ -n "$latest" ]; then

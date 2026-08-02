@@ -392,6 +392,7 @@ def publish_complete_run(
     run_dir = base / RUNS_DIRNAME / run_id
     entries: dict[str, dict[str, str]] = {}
     artifacts_eligible = True
+    activation_refused = False
     for group in required_groups:
         summary = groups.get(group)
         if summary is None or summary.status != "completed" or not summary.artifact:
@@ -436,6 +437,14 @@ def publish_complete_run(
                 return False
             entries[group] = {"artifact": str(artifact)}
 
+    if activate and not artifacts_eligible:
+        logger.warning(
+            "Run %s is complete but failed activation gates; preserving it as "
+            "an inactive candidate",
+            run_id,
+        )
+        activate = False
+        activation_refused = True
     manifest = {
         "schema_version": 2,
         "run_id": run_id,
@@ -454,7 +463,7 @@ def publish_complete_run(
         manifest, allow_unicode=True), encoding="utf-8")
 
     if not activate:
-        return True
+        return not activation_refused
 
     # ``replace`` makes the global pointer atomic on the same filesystem.
     base.mkdir(parents=True, exist_ok=True)
@@ -505,13 +514,22 @@ def activate_run(
             return False
         activation = (data or {}).get("activation", {})
         holdout = (data or {}).get("holdout_windows", [])
+        holdout_majority_excess = (
+            float(
+                holdout[0].get(
+                    "majority_benchmark_excess", holdout[0].get("excess_return", 0.0)
+                )
+            )
+            if isinstance(holdout, list) and len(holdout) == 1
+            else -float("inf")
+        )
         if (
             not isinstance(activation, dict)
             or not activation.get("eligible")
             or not activation.get("holdout_passed")
             or not isinstance(holdout, list)
             or len(holdout) != 1
-            or float(holdout[0].get("excess_return", 0.0)) <= 0.0
+            or holdout_majority_excess <= 0.0
         ):
             logger.warning("%s candidate artifact failed holdout checks", group)
             return False

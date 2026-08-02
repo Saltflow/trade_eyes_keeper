@@ -38,6 +38,7 @@ from src.backtest import evaluate_all_groups
 from src.search import get_constraints, get_execution_config
 from src.markets import _detect_fine_group, get_skip_search
 from src.core.ref_portfolio import RefPortfolioManager, REF_MONTHLY_LIMIT
+from src.core.process_lock import exclusive_process_lock
 from src.search import run_optimizer
 from src.strategy import Params
 from src.search.artifacts import (
@@ -167,10 +168,7 @@ def _optimizer_validation_snapshot(report) -> dict[str, object]:
 def _load_optimizer_benchmarks(data_source, constraints, group: str, days: int) -> dict:
     """Fetch only configured tradable baselines for the optimizer validation."""
     result = {}
-    codes = list(dict.fromkeys([
-        *constraints.benchmark_codes_for(group),
-        "510300",
-    ]))
+    codes = list(dict.fromkeys(constraints.benchmark_codes_for(group)))
     for code in codes:
         if code == "risk_free":
             continue
@@ -1315,8 +1313,16 @@ def main(argv: list[str] | None = None):
         logger.info("Brief run: %s", args.brief)
         run_brief_report(args.brief)
     elif args.optimize:
-        completed = run_optimization(config, target_groups=OPTIMIZER_GROUPS)
-        logger.info("Optimization finished: %s", completed or "no group completed")
+        lock_path = Path("data/optimizer/.optimize.lock")
+        with exclusive_process_lock(lock_path) as acquired:
+            if not acquired:
+                logger.error(
+                    "Another optimizer process already holds %s; refusing overlap",
+                    lock_path,
+                )
+                return
+            completed = run_optimization(config, target_groups=OPTIMIZER_GROUPS)
+            logger.info("Optimization finished: %s", completed or "no group completed")
     elif args.activate_run:
         if activate_run(args.activate_run, groups=OPTIMIZER_GROUPS):
             logger.info("Activated optimizer candidate: %s", args.activate_run)

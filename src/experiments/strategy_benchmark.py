@@ -24,6 +24,7 @@ import pandas as pd
 
 from ..backtest.engine import FastEvaluator, WalkForwardManager
 from ..search.config import WindowStats, get_constraints
+from ..search.contracts import Candidate, CandidateBatch
 from ..markets import _detect_fine_group, get_skip_search
 from .benchmark_search import run_ranking_benchmark_search
 from ..search.workflow import _evaluate_params_wf, _partition_window_indexes
@@ -70,6 +71,96 @@ def select_benchmark_candidate(
     return max(pool, key=lambda item: item.wf_score), "best_raw_no_eligible"
 
 
+def summarize_search_progress(
+    results: Iterable[Any],
+    evaluation_order: Iterable[str],
+    checkpoints: Iterable[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Summarize cumulative ranking-only winners at explicit search stages.
+
+    The trace is reconstructed after search from the deterministic candidate
+    issue order. It never evaluates isolated or holdout windows, so reporting
+    a generation cannot influence selection or consume holdout information.
+    """
+
+    result_by_id = {str(item.candidate_id): item for item in results}
+    ordered_ids = [str(candidate_id) for candidate_id in evaluation_order]
+    rows: list[dict[str, object]] = []
+    previous_score: float | None = None
+    previous_actual = 0
+    previous_target = 0
+    for checkpoint in checkpoints:
+        stage = str(checkpoint.get("stage", ""))
+        target = int(checkpoint.get("requested_candidates", 0))
+        if not stage:
+            raise ValueError("search progress checkpoint requires a stage")
+        if target <= previous_target:
+            raise ValueError("search progress checkpoints must be increasing")
+
+        actual = min(target, len(ordered_ids))
+        prefix = [
+            result_by_id[candidate_id]
+            for candidate_id in ordered_ids[:actual]
+            if candidate_id in result_by_id
+        ]
+        feasible = [item for item in prefix if bool(item.gate_feasible)]
+        selection_pool = feasible or prefix
+        best = (
+            max(selection_pool, key=lambda item: float(item.selection_score))
+            if selection_pool
+            else None
+        )
+        score = float(best.selection_score) if best is not None else None
+        metrics = dict(best.ranking_metrics) if best is not None else {}
+        unique_parameters = {
+            json.dumps(
+                dict(item.parameters),
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+            for item in prefix
+        }
+        rows.append(
+            {
+                "stage": stage,
+                "requested_candidates": target,
+                "actual_candidates": actual,
+                "incremental_candidates": actual - previous_actual,
+                "reached": actual >= target,
+                "unique_parameters": len(unique_parameters),
+                "cache_hits": max(0, actual - len(unique_parameters)),
+                "feasible_candidates": len(feasible),
+                "selection_basis": (
+                    "best_feasible" if feasible else "best_raw_no_feasible"
+                ),
+                "best_candidate_id": (
+                    str(best.candidate_id) if best is not None else None
+                ),
+                "best_selection_score": score,
+                "best_objective_score": (
+                    float(best.objective_score) if best is not None else None
+                ),
+                "selection_score_improvement": (
+                    score - previous_score
+                    if score is not None and previous_score is not None
+                    else None
+                ),
+                "best_ranking_metrics": metrics,
+                "best_parameters": (
+                    dict(best.parameters) if best is not None else None
+                ),
+            }
+        )
+        if score is not None:
+            previous_score = score
+        previous_actual = actual
+        previous_target = target
+    return rows
+
+
+
+
 def summarize_windows(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """Aggregate already-serialized windows without changing metric meaning."""
 
@@ -84,6 +175,9 @@ def summarize_windows(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
             "worst_drawdown_pct": None,
             "mean_sharpe": None,
             "total_trades": 0,
+            "mean_signal_event_count": None,
+            "mean_cash_rejected_order_count": None,
+            "mean_concentration_hhi": None,
             "mean_final_asset": None,
         }
 
@@ -103,6 +197,17 @@ def summarize_windows(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "worst_drawdown_pct": min(float(row["max_drawdown_pct"]) for row in rows),
         "mean_sharpe": mean("sharpe_ratio"),
         "total_trades": sum(int(row["trade_count"]) for row in rows),
+        "mean_signal_event_count": float(
+            np.mean([float(row.get("signal_event_count", 0)) for row in rows])
+        ),
+        "mean_cash_rejected_order_count": float(
+            np.mean(
+                [float(row.get("cash_rejected_order_count", 0)) for row in rows]
+            )
+        ),
+        "mean_concentration_hhi": float(
+            np.mean([float(row.get("concentration_hhi", 0.0)) for row in rows])
+        ),
         "mean_final_asset": mean("final_asset"),
     }
 
@@ -315,6 +420,15 @@ def _serialize_window(
         "final_cash": float(stat.final_cash),
         "final_position_pct": float(stat.final_position_pct),
         "pending_order_count": int(stat.pending_order_count),
+        "signal_event_count": int(getattr(stat, "signal_event_count", 0)),
+        "cash_rejected_order_count": int(
+            getattr(stat, "cash_rejected_order_count", 0)
+        ),
+        "concentration_hhi": float(getattr(stat, "concentration_hhi", 0.0)),
+        "selected_basket_hold_return_pct": getattr(
+            stat, "selected_basket_hold_return", None
+        ),
+        "timing_value_add_pct": getattr(stat, "timing_value_add", None),
         "final_holdings": _holding_rows(stat, codes),
     }
 
@@ -329,6 +443,7 @@ def run_market_benchmark(
     prepared_market: dict[str, Any] | None = None,
     solver_id: str = "random",
     solver_config: dict[str, object] | None = None,
+    progress_checkpoints: Iterable[dict[str, object]] | None = None,
 ) -> dict[str, Any]:
     """Benchmark one strategy/market pair without writing optimizer artifacts."""
 
@@ -421,6 +536,7 @@ def run_market_benchmark(
         gate_pipeline,
         search_problem,
         effective_solver_config,
+        solver,
     ) = run_ranking_benchmark_search(
         strategy=strategy,
         constraints=constraints,
@@ -437,6 +553,11 @@ def run_market_benchmark(
         },
         solver_id=solver_id,
         solver_config=solver_config,
+    )
+    search_progress = summarize_search_progress(
+        searched,
+        service.evaluation_order,
+        progress_checkpoints or (),
     )
     candidates = []
     for item in searched:
@@ -455,6 +576,71 @@ def run_market_benchmark(
             )
         )
     selected, selection_basis = select_benchmark_candidate(candidates)
+    raw_return_candidate = max(
+        candidates,
+        key=lambda item: float(
+            item.ranking_diagnostics.get("weighted_strategy_return", -float("inf"))
+        ),
+    )
+    search_unique_evaluations = len(service.cache)
+    schema = strategy.parameter_schema
+    perturbations = schema.local_perturbations(selected.params.values)
+    local_candidates = [
+        Candidate.create(
+            parameters,
+            schema,
+            "benchmark/local-perturbation",
+            nonce=f"{group}:{index}",
+        )
+        for index, parameters in enumerate(perturbations)
+    ]
+    local_rows = []
+    if local_candidates:
+        local_batch = service.evaluate_batch(
+            CandidateBatch.from_candidates(local_candidates, schema)
+        )
+        for index, candidate in enumerate(local_candidates):
+            metrics = dict(local_batch.raw_metrics[index])
+            decision = gate_pipeline.evaluate(metrics)
+            feasible = bool(local_batch.feasible[index]) and decision.feasible
+            objective = float(local_batch.objective_scores[index])
+            selection_score = objective - float(decision.penalty)
+            changed = [
+                {
+                    "parameter": name,
+                    "from": selected.params.values[name],
+                    "to": candidate.parameters[name],
+                }
+                for name in schema.names
+                if selected.params.values[name] != candidate.parameters[name]
+            ]
+            local_rows.append(
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "changed": changed,
+                    "params": dict(candidate.parameters),
+                    "objective_score": objective,
+                    "selection_score": selection_score,
+                    "gate_feasible": feasible,
+                    "ranking_diagnostics": metrics,
+                    "failure_reasons": list(local_batch.failure_reasons[index])
+                    + list(decision.failure_reasons),
+                }
+            )
+    service.close()
+    local_rows.sort(
+        key=lambda row: (float(row["selection_score"]), row["candidate_id"]),
+        reverse=True,
+    )
+    selected_raw_return = float(
+        selected.ranking_diagnostics.get("weighted_strategy_return", 0.0)
+    )
+    improving_rows = [
+        row
+        for row in local_rows
+        if float(row["ranking_diagnostics"].get("weighted_strategy_return", 0.0))
+        > selected_raw_return
+    ]
     final_result = _evaluate_params_wf(
         selected.params,
         strategy,
@@ -462,6 +648,7 @@ def run_market_benchmark(
         constraints,
         evaluator,
         manager,
+        include_candidate_diagnostics=True,
     )
     if final_result is None:
         raise RuntimeError("selected candidate failed full-window evaluation")
@@ -496,7 +683,16 @@ def run_market_benchmark(
         "random_seed": int(seed),
         "solver_id": solver_id,
         "solver_config": effective_solver_config,
+        "solver_stop_reason": getattr(solver, "stop_reason", None),
+        "solver_total_issued": int(
+            getattr(solver, "total_issued", getattr(solver, "issued", search_depth))
+        ),
+        "solver_unique_parameters": len(
+            getattr(solver, "seen_parameter_keys", ())
+        )
+        or int(search_unique_evaluations),
         "performance": service.performance_snapshot(),
+        "search_progress": search_progress,
         "gate_profile": gate_pipeline.profile_id,
         "gate_profile_hash": gate_pipeline.hash,
         "search_contract_hash": search_problem.contract_hash,
@@ -508,7 +704,8 @@ def run_market_benchmark(
             "stocks": stock_fingerprints,
             "benchmarks": benchmark_fingerprints,
         },
-        "unique_evaluations": len(service.cache),
+        "unique_evaluations": search_unique_evaluations,
+        "diagnostic_evaluations": len(service.cache) - search_unique_evaluations,
         "evaluable_candidates": len(candidates),
         "return_gate_pass_count": sum(
             candidate.return_gate_passed for candidate in candidates
@@ -521,6 +718,15 @@ def run_market_benchmark(
         ),
         "selection_basis": selection_basis,
         "wf_score": float(wf_score),
+        "raw_return_candidate": {
+            "params": {
+                str(key): int(value)
+                for key, value in raw_return_candidate.params.values.items()
+            },
+            "ranking_eligible": raw_return_candidate.ranking_eligible,
+            "wf_score": float(raw_return_candidate.wf_score),
+            "ranking_diagnostics": dict(raw_return_candidate.ranking_diagnostics),
+        },
         "selected_candidate": {
             "params": {str(key): int(value) for key, value in params.values.items()},
             "execution": strategy.execution_params(params),
@@ -528,6 +734,13 @@ def run_market_benchmark(
             "return_gate_passed": selected.return_gate_passed,
             "hard_constraints_passed": selected.hard_constraints_passed,
             "ranking_diagnostics": dict(selected.ranking_diagnostics),
+        },
+        "local_neighborhood": {
+            "base_weighted_strategy_return": selected_raw_return,
+            "sample_count": len(local_rows),
+            "improving_raw_return_count": len(improving_rows),
+            "best_neighbor": local_rows[0] if local_rows else None,
+            "neighbors": local_rows,
         },
         "ranking_summary": summarize_windows(ranking_records),
         "isolated_summary": summarize_windows(isolated_records),
@@ -550,6 +763,7 @@ def run_market_benchmark_from_local_config(
     evaluation_workers: int,
     solver_id: str = "random",
     solver_config: dict[str, object] | None = None,
+    progress_checkpoints: Iterable[dict[str, object]] | None = None,
 ) -> dict[str, Any]:
     """Pickle-safe worker entry used by the Windows process pool."""
 
@@ -563,6 +777,7 @@ def run_market_benchmark_from_local_config(
         evaluation_workers=evaluation_workers,
         solver_id=solver_id,
         solver_config=solver_config,
+        progress_checkpoints=progress_checkpoints,
     )
 
 
@@ -574,6 +789,7 @@ def run_market_benchmark_from_snapshot(
     evaluation_workers: int,
     solver_id: str = "random",
     solver_config: dict[str, object] | None = None,
+    progress_checkpoints: Iterable[dict[str, object]] | None = None,
 ) -> dict[str, Any]:
     """Pickle-safe worker that cannot call or mutate the data-source cache."""
 
@@ -586,6 +802,7 @@ def run_market_benchmark_from_snapshot(
         prepared_market=prepared_market,
         solver_id=solver_id,
         solver_config=solver_config,
+        progress_checkpoints=progress_checkpoints,
     )
 
 

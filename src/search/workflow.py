@@ -17,6 +17,8 @@ from .config import (
     get_constraints,
 )
 from ..backtest.execution import DEFAULT_FILL_PRICE_POLICY
+from ..markets import _detect_fine_group
+from .gates import majority_benchmark_excess
 from ..strategy import TradingStrategy, Params, StrategyMarketData
 from .artifacts import as_yaml_primitives
 
@@ -112,7 +114,9 @@ def _prepare_wf_evaluation_contexts(
         int(evaluator.lot_size),
         float(evaluator.fx_rate),
         float(constraints.risk_free_rate),
-        int(constraints.execution.lot_sizes.get("a_share", 100)),
+        tuple(constraints.benchmark_codes),
+        tuple(sorted(constraints.execution.lot_sizes.items())),
+        tuple(sorted(constraints.execution.fx_rates.items())),
     )
     cache = getattr(wf_manager, "_evaluation_context_cache", None)
     if cache is None:
@@ -171,18 +175,30 @@ def _prepare_wf_evaluation_contexts(
             end=window.test_end,
         )
 
+        risk_free_daily = (1.0 + constraints.risk_free_rate) ** (1.0 / 252) - 1.0
         cash_baseline = evaluator.initial_cash * (
-            1 + constraints.risk_free_rate / 252
+            1.0 + risk_free_daily
         ) ** np.arange(test_indicators.shape[0], dtype=np.float64)
         benchmark_series = {"risk_free": cash_baseline}
         benchmark_initial_values = {"risk_free": evaluator.initial_cash}
         benchmark_raw_returns = {
             "risk_free": float((cash_baseline[-1] / cash_baseline[0] - 1.0) * 100.0)
         }
-        if "510300" in available_benchmarks:
-            raw_close = np.asarray(available_benchmarks["510300"], dtype=np.float64)
+        for benchmark_code in constraints.benchmark_codes:
+            if benchmark_code == "risk_free":
+                continue
+            if benchmark_code not in available_benchmarks:
+                logger.warning(
+                    "Configured benchmark %s is unavailable for %s",
+                    benchmark_code,
+                    market_group,
+                )
+                continue
+            raw_close = np.asarray(
+                available_benchmarks[benchmark_code], dtype=np.float64
+            )
             raw_high = np.asarray(
-                benchmark_high_series.get("510300", raw_close),
+                benchmark_high_series.get(benchmark_code, raw_close),
                 dtype=np.float64,
             )
             benchmark_execution = DEFAULT_FILL_PRICE_POLICY.build(
@@ -192,40 +208,40 @@ def _prepare_wf_evaluation_contexts(
                 start=window.test_start,
                 end=window.test_end,
             )
-            benchmark_close = benchmark_execution.valuation_prices[:, 0]
-            benchmark_buy = benchmark_execution.buy_prices[:, 0]
-            benchmark_series["510300"] = buy_and_hold_nav(
+            benchmark_market = _detect_fine_group(benchmark_code)
+            benchmark_fx = float(
+                constraints.execution.fx_rates.get(benchmark_market, 1.0)
+            )
+            benchmark_lot = int(
+                constraints.execution.lot_sizes.get(benchmark_market, 1)
+            )
+            resolved_benchmark = benchmark_execution.scaled(benchmark_fx)
+            benchmark_close = resolved_benchmark.valuation_prices[:, 0]
+            benchmark_buy = resolved_benchmark.buy_prices[:, 0]
+            if (
+                len(benchmark_close) < 2
+                or not np.isfinite(benchmark_buy[0])
+                or not np.isfinite(benchmark_close[[0, -1]]).all()
+                or np.any(benchmark_close[[0, -1]] <= 0)
+            ):
+                logger.warning(
+                    "Configured benchmark %s has no executable window entry",
+                    benchmark_code,
+                )
+                continue
+            benchmark_series[benchmark_code] = buy_and_hold_nav(
                 benchmark_close,
                 benchmark_buy,
                 evaluator.initial_cash,
-                int(constraints.execution.lot_sizes.get("a_share", 100)),
+                benchmark_lot,
                 evaluator.commission_rate,
                 weights=np.array([1.0]),
             )
-            benchmark_initial_values["510300"] = evaluator.initial_cash
-            raw_510300 = benchmark_close
-            if len(raw_510300) > 1 and raw_510300[0] > 0:
-                benchmark_raw_returns["510300"] = float(
-                    (raw_510300[-1] / raw_510300[0] - 1.0) * 100.0
-                )
-        resolved_execution = execution_prices.scaled(evaluator.fx_rate)
-        benchmark_series["universe_equal_weight"] = buy_and_hold_nav(
-            resolved_execution.valuation_prices,
-            resolved_execution.buy_prices,
-            evaluator.initial_cash,
-            evaluator.lot_size,
-            evaluator.commission_rate,
-        )
-        benchmark_initial_values["universe_equal_weight"] = evaluator.initial_cash
-        raw_components = []
-        for column in range(test_prices.shape[1]):
-            values = test_prices[:, column]
-            valid = values[np.isfinite(values) & (values > 0)]
-            if len(valid) > 1:
-                raw_components.append(valid[-1] / valid[0] - 1.0)
-        benchmark_raw_returns["universe_equal_weight"] = float(
-            np.mean(raw_components) * 100.0 if raw_components else 0.0
-        )
+            benchmark_initial_values[benchmark_code] = evaluator.initial_cash
+            raw_window = benchmark_execution.valuation_prices[:, 0]
+            benchmark_raw_returns[benchmark_code] = float(
+                (raw_window[-1] / raw_window[0] - 1.0) * 100.0
+            )
         contexts.append(
             {
                 "signal_market_data": signal_market_data,
@@ -256,6 +272,7 @@ def _evaluate_params_wf(
     evaluator,
     wf_manager,
     validation_window_count: int | None = None,
+    include_candidate_diagnostics: bool = False,
 ):
     """Evaluate one typed parameter set across the requested WF windows."""
     all_stats = []
@@ -294,6 +311,23 @@ def _evaluate_params_wf(
             benchmark_initial_values=context["benchmark_initial_values"],
             benchmark_raw_returns=context["benchmark_raw_returns"],
         )
+        if include_candidate_diagnostics:
+            from ..backtest.engine import selected_basket_hold_return
+
+            resolved = context["execution_prices"].scaled(evaluator.fx_rate)
+            basket_return = selected_basket_hold_return(
+                trade_plan,
+                resolved.valuation_prices,
+                resolved.buy_prices,
+                resolved.tradable,
+                float(evaluator.initial_cash),
+                int(evaluator.lot_size),
+                float(evaluator.commission_rate),
+            )
+            stats.selected_basket_hold_return = basket_return
+            stats.timing_value_add = round(
+                float(stats.strategy_return) - basket_return, 2
+            )
         all_stats.append(stats)
 
     if not all_stats:
@@ -384,6 +418,23 @@ def run_optimizer(
         data_hasher.update(contiguous.view(np.uint8))
     data_hasher.update("|".join(wf_manager.stock_codes).encode("utf-8"))
     data_hasher.update("|".join(map(str, wf_manager.dates)).encode("utf-8"))
+    data_hasher.update(
+        ("controls:" + "|".join(constraints.benchmark_codes)).encode("utf-8")
+    )
+    for benchmark_code in constraints.benchmark_codes:
+        for series_name, source in (
+            ("close", wf_manager.benchmark_series),
+            ("high", wf_manager.benchmark_high_series),
+        ):
+            values = source.get(benchmark_code)
+            data_hasher.update(f"{benchmark_code}:{series_name}:".encode("utf-8"))
+            if values is None:
+                data_hasher.update(b"missing")
+                continue
+            contiguous = np.ascontiguousarray(values)
+            data_hasher.update(str(contiguous.shape).encode("ascii"))
+            data_hasher.update(str(contiguous.dtype).encode("ascii"))
+            data_hasher.update(contiguous.view(np.uint8))
     data_hash = data_hasher.hexdigest()
     window_hash = stable_hash(
         [
@@ -403,6 +454,8 @@ def run_optimizer(
             "lot_size": exec_cfg.lot_sizes.get(group, 100),
             "fx_rate": exec_cfg.fx_rates.get(group, 1.0),
             "fill_policy": DEFAULT_FILL_PRICE_POLICY.name,
+            "risk_free_rate": constraints.risk_free_rate,
+            "control_benchmarks": constraints.benchmark_codes,
         }
     )
     dependencies = tuple(getattr(strategy, "feature_dependencies", ()) or ())
@@ -413,7 +466,7 @@ def run_optimizer(
     )
     problem = SearchProblem(
         schema=schema,
-        objective_id="weighted-strongest-excess-stability-sharpe/1",
+        objective_id="weighted-strongest-configured-excess-stability-sharpe/2",
         gate_profile_id=gate_pipeline.hash,
         budget=budget,
         data_hash=data_hash,
@@ -424,7 +477,11 @@ def run_optimizer(
             batched=True,
             conditional_parameters=any(item.active_if for item in schema.parameters),
         ),
-        metadata={"strategy_id": strategy.name, "market": group},
+        metadata={
+            "strategy_id": strategy.name,
+            "market": group,
+            "control_benchmarks": tuple(constraints.benchmark_codes),
+        },
     )
     planner = ResourcePlanner()
     resource_plan = planner.plan(
@@ -446,6 +503,7 @@ def run_optimizer(
         evaluator,
         ranking_windows,
         workers=resource_plan.outer_workers,
+        evaluation_backend=constraints.search.evaluation_backend,
     )
     solver = create_solver(constraints.search.solver_id)
     controller = SearchController(
@@ -458,24 +516,38 @@ def run_optimizer(
         archive=archive,
         checkpoint_path=checkpoint_path,
     )
-    with planner.apply(resource_plan):
-        searched = controller.run(
-            finalist_limit=constraints.genetic_search.sensitivity_top_candidates
-        )
-        validated = ValidationController(
-            strategy,
-            constraints,
-            wf_manager,
-            evaluator,
-            schema,
-            service,
-            gate_pipeline,
-            windows,
-        ).run(searched)
+    try:
+        with planner.apply(resource_plan):
+            searched = controller.run(
+                finalist_limit=constraints.genetic_search.sensitivity_top_candidates
+            )
+            validated = ValidationController(
+                strategy,
+                constraints,
+                wf_manager,
+                evaluator,
+                schema,
+                service,
+                gate_pipeline,
+                windows,
+            ).run(searched)
+    finally:
+        service.close()
 
+    performance = service.performance_snapshot()
     search_metadata = {
         "solver_id": solver.solver_id,
-        "solver_config": solver_config,
+        "solver_config": dict(
+            getattr(solver, "effective_config", solver_config)
+        ),
+        "solver_stop_reason": getattr(solver, "stop_reason", None),
+        "solver_total_issued": int(
+            getattr(solver, "total_issued", getattr(solver, "issued", budget))
+        ),
+        "solver_unique_parameters": len(
+            getattr(solver, "seen_parameter_keys", ())
+        )
+        or int(performance.get("evaluated", 0)),
         "gate_profile": gate_pipeline.profile_id,
         "gate_profile_hash": gate_pipeline.hash,
         "gate_activation_eligible": gate_pipeline.activation_eligible,
@@ -485,11 +557,12 @@ def run_optimizer(
         "data_contract_hash": data_hash,
         "execution_contract_hash": execution_hash,
         "window_contract_hash": window_hash,
+        "control_benchmarks": list(constraints.benchmark_codes),
         "ranking_window_indexes": ranking_indexes,
         "purged_window_count": len(purged_indexes),
         "validation_window_count": len(validation_indexes),
         "resource_plan": resource_plan.__dict__,
-        "performance": service.performance_snapshot(),
+        "performance": performance,
         "budget": budget,
     }
     for item in validated:
@@ -571,11 +644,23 @@ def _save_optimizer_result(
             "final_position_pct": float(stat.final_position_pct),
             "final_holdings": holdings,
             "benchmark_returns": dict(stat.benchmark_returns),
+            "majority_benchmark_excess": float(
+                majority_benchmark_excess(stat, constraints.benchmark_codes)
+            ),
             "benchmark_raw_returns": dict(
                 getattr(stat, "benchmark_raw_returns", {}) or {}
             ),
             "strongest_benchmark": str(getattr(stat, "strongest_benchmark", "") or ""),
             "pending_order_count": int(getattr(stat, "pending_order_count", 0)),
+            "signal_event_count": int(getattr(stat, "signal_event_count", 0)),
+            "cash_rejected_order_count": int(
+                getattr(stat, "cash_rejected_order_count", 0)
+            ),
+            "concentration_hhi": float(getattr(stat, "concentration_hhi", 0.0)),
+            "selected_basket_hold_return": getattr(
+                stat, "selected_basket_hold_return", None
+            ),
+            "timing_value_add": getattr(stat, "timing_value_add", None),
         }
         if window is not None:
             result["period"] = {
@@ -613,11 +698,14 @@ def _save_optimizer_result(
         for index, stat in enumerate(top.validation_stats)
     ]
     holdout_passed = bool(top.validation_stats) and all(
-        stat.test_excess_return > 0 and bool(getattr(stat, "strongest_benchmark", ""))
+        np.isfinite(majority_benchmark_excess(stat, constraints.benchmark_codes))
+        and majority_benchmark_excess(stat, constraints.benchmark_codes) > 0
         for stat in top.validation_stats
     )
-    required_benchmarks = {"risk_free", "510300", "universe_equal_weight"}
+    required_benchmarks = set(constraints.benchmark_codes)
     benchmarks_complete = all(
+        len(required_benchmarks) == 3
+        and
         required_benchmarks.issubset(set(stat.benchmark_returns))
         for stat in top.all_stats
     )
@@ -629,9 +717,13 @@ def _save_optimizer_result(
         > 0
     )
     universe_robustness = dict(getattr(top, "universe_robustness", {}) or {})
-    universe_robustness_passed = bool(universe_robustness) and (
-        bool(universe_robustness.get("symbol_order_invariant"))
-        and bool(universe_robustness.get("leave_one_out_passed"))
+    universe_config = constraints.universe_robustness
+    universe_robustness_passed = (
+        not universe_config.activation_required
+        or (
+            bool(universe_robustness)
+            and bool(universe_robustness.get("passed"))
+        )
     )
     search_metadata = dict(getattr(top, "search_metadata", {}) or {})
     activation_eligible = bool(
@@ -654,6 +746,7 @@ def _save_optimizer_result(
         "solver_id": search_metadata.get("solver_id", "genetic"),
         "solver_config": dict(search_metadata.get("solver_config", {})),
         "gate_profile": search_metadata.get("gate_profile", "standard"),
+        "control_benchmarks": list(constraints.benchmark_codes),
         "contracts": {
             key: value
             for key, value in search_metadata.items()
@@ -687,29 +780,21 @@ def _save_optimizer_result(
             "solver_id": search_metadata.get("solver_id", "genetic"),
             "gate_profile": search_metadata.get("gate_profile", "standard"),
             "score_formula": (
-                "weighted_strongest_benchmark_excess - stability_penalty * std "
+                "weighted_strongest_configured_benchmark_excess "
+                "- stability_penalty * std "
                 "- sharpe_penalty"
             ),
             "selection_formula": (
                 f"wf_score - {constraints.genetic_search.sensitivity_penalty_weight:g} "
-                "* sensitivity_drop"
+                "* parameter_sensitivity_drop - "
+                f"{universe_config.penalty_weight:g} * universe_sensitivity_drop"
             ),
-            "absolute_return_gate": {
-                "min_weighted_strategy_return": (
-                    constraints.genetic_search.min_weighted_strategy_return
-                ),
-                "min_positive_return_windows": (
-                    constraints.genetic_search.min_positive_return_windows
-                ),
-            },
+            "universe_robustness_config": universe_config.to_contract(),
             "selection_score": top.selection_score,
             "ranking_diagnostics": dict(top.ranking_metrics),
-            "strongest_benchmark_gate": {
-                "min_mean_excess": 0.0,
-                "min_winning_windows": (
-                    constraints.genetic_search.min_winning_benchmark_windows
-                ),
-            },
+            "gate_results": [
+                dict(item) for item in getattr(top, "gate_results", ())
+            ],
         },
         "sensitivity": dict(top.sensitivity),
         "universe_robustness": universe_robustness,

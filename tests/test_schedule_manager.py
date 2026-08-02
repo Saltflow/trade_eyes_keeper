@@ -47,7 +47,22 @@ class TestScheduleManager:
             assert "daily" in job_ids
             assert "brief_morning_snapshot" in job_ids
             assert "brief_afternoon_snapshot" in job_ids
-            assert "optimize" in job_ids
+            assert "optimize" not in job_ids
+        finally:
+            mgr.stop()
+
+    def test_optimizer_schedule_requires_explicit_enable(self, tmp_path):
+        config, cfg_path = _make_config(tmp_path)
+        config["scheduler"]["optimize_enabled"] = True
+        with open(cfg_path, "w", encoding="utf-8") as handle:
+            yaml.dump(config, handle, allow_unicode=True)
+        mgr = ScheduleManager(config, config_path=cfg_path)
+        mgr.start()
+        try:
+            job = mgr.scheduler.get_job("optimize")
+            assert job is not None
+            assert job.next_run_time.hour == 2
+            assert job.next_run_time.minute == 0
         finally:
             mgr.stop()
 

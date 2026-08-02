@@ -8,6 +8,7 @@ from src.experiments.strategy_benchmark import (
     aggregate_strategy_results,
     frame_fingerprint,
     select_benchmark_candidate,
+    summarize_search_progress,
     summarize_windows,
 )
 
@@ -125,3 +126,66 @@ def test_frame_fingerprint_changes_with_market_input():
 
     assert frame_fingerprint(first) == frame_fingerprint(same)
     assert frame_fingerprint(first) != frame_fingerprint(changed)
+
+
+def test_search_progress_uses_deterministic_prefix_and_no_holdout_metrics():
+    def result(
+        candidate_id,
+        parameters,
+        selection_score,
+        *,
+        feasible,
+    ):
+        return SimpleNamespace(
+            candidate_id=candidate_id,
+            parameters=parameters,
+            selection_score=selection_score,
+            objective_score=selection_score + 0.5,
+            gate_feasible=feasible,
+            ranking_metrics={
+                "mean_majority_benchmark_excess": selection_score,
+                "majority_benchmark_win_windows": 6,
+            },
+        )
+
+    first = result(
+        "first",
+        {"threshold": 1},
+        1.0,
+        feasible=True,
+    )
+    duplicate = result(
+        "duplicate",
+        {"threshold": 1},
+        2.0,
+        feasible=False,
+    )
+    winner = result(
+        "winner",
+        {"threshold": 2},
+        3.0,
+        feasible=True,
+    )
+    rows = summarize_search_progress(
+        [winner, duplicate, first],
+        ["first", "duplicate", "winner"],
+        [
+            {"stage": "initialization", "requested_candidates": 2},
+            {"stage": "generation_1", "requested_candidates": 3},
+            {"stage": "generation_2", "requested_candidates": 4},
+        ],
+    )
+
+    assert rows[0]["best_candidate_id"] == "first"
+    assert rows[0]["unique_parameters"] == 1
+    assert rows[0]["cache_hits"] == 1
+    assert rows[0]["feasible_candidates"] == 1
+    assert rows[1]["best_candidate_id"] == "winner"
+    assert rows[1]["selection_score_improvement"] == pytest.approx(2.0)
+    assert rows[1]["best_ranking_metrics"] == {
+        "mean_majority_benchmark_excess": 3.0,
+        "majority_benchmark_win_windows": 6,
+    }
+    assert rows[2]["actual_candidates"] == 3
+    assert not rows[2]["reached"]
+    assert "holdout" not in rows[1]

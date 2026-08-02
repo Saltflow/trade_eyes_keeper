@@ -27,12 +27,18 @@ METRICS = {
     "mean_strongest_benchmark_excess",
     "strongest_benchmark_win_windows",
     "strongest_benchmark_win_ratio",
+    "mean_majority_benchmark_excess",
+    "majority_benchmark_win_windows",
+    "majority_benchmark_win_ratio",
     "average_position_pct",
     "minimum_drawdown_pct",
     "excess_return_std_pct",
     "mean_sharpe_ratio",
     "minimum_trade_count",
     "average_trade_count",
+    "average_signal_event_count",
+    "average_cash_rejected_order_count",
+    "average_concentration_hhi",
     "objective_score",
 }
 
@@ -177,10 +183,25 @@ class CandidateGatePipeline:
         )
 
 
+def majority_benchmark_excess(
+    stat: object, control_benchmarks: Iterable[str]
+) -> float:
+    """Return excess over the median configured control (beat any two of three)."""
+    benchmark_returns = dict(getattr(stat, "benchmark_returns", {}) or {})
+    controls = tuple(dict.fromkeys(str(name) for name in control_benchmarks))
+    if len(controls) != 3 or not all(name in benchmark_returns for name in controls):
+        return float("nan")
+    hurdle = float(
+        np.median([float(benchmark_returns[name]) for name in controls])
+    )
+    return float(getattr(stat, "strategy_return", 0.0)) - hurdle
+
+
 def aggregate_ranking_metrics(
     ranking_stats: Iterable[object],
     objective_score: float,
     weights: Iterable[float] | None = None,
+    control_benchmarks: Iterable[str] = (),
 ) -> dict[str, float | int]:
     """Create the only metric namespace accepted by gate profiles."""
     stats = list(ranking_stats)
@@ -193,6 +214,11 @@ def aggregate_ranking_metrics(
         [float(getattr(stat, "test_excess_return", 0.0)) for stat in stats],
         dtype=np.float64,
     )
+    majority_excess = np.asarray(
+        [majority_benchmark_excess(stat, control_benchmarks) for stat in stats],
+        dtype=np.float64,
+    )
+    majority_complete = bool(count) and bool(np.all(np.isfinite(majority_excess)))
     configured_weights = list(weights or [])
     if count:
         if not configured_weights:
@@ -218,6 +244,17 @@ def aggregate_ranking_metrics(
         "mean_strongest_benchmark_excess": float(np.mean(excess)) if count else 0.0,
         "strongest_benchmark_win_windows": int(np.sum(excess > 0.0)),
         "strongest_benchmark_win_ratio": float(np.mean(excess > 0.0)) if count else 0.0,
+        "mean_majority_benchmark_excess": (
+            float(np.mean(majority_excess)) if majority_complete else -float("inf")
+        ),
+        "majority_benchmark_win_windows": (
+            int(np.sum(majority_excess > 0.0)) if majority_complete else -1
+        ),
+        "majority_benchmark_win_ratio": (
+            float(np.mean(majority_excess > 0.0))
+            if majority_complete
+            else -1.0
+        ),
         "average_position_pct": (
             float(
                 np.mean(
@@ -249,6 +286,36 @@ def aggregate_ranking_metrics(
         ),
         "average_trade_count": (
             float(np.mean([int(getattr(stat, "total_trades", 0)) for stat in stats]))
+            if count
+            else 0.0
+        ),
+        "average_signal_event_count": (
+            float(
+                np.mean(
+                    [int(getattr(stat, "signal_event_count", 0)) for stat in stats]
+                )
+            )
+            if count
+            else 0.0
+        ),
+        "average_cash_rejected_order_count": (
+            float(
+                np.mean(
+                    [
+                        int(getattr(stat, "cash_rejected_order_count", 0))
+                        for stat in stats
+                    ]
+                )
+            )
+            if count
+            else 0.0
+        ),
+        "average_concentration_hhi": (
+            float(
+                np.mean(
+                    [float(getattr(stat, "concentration_hhi", 0.0)) for stat in stats]
+                )
+            )
             if count
             else 0.0
         ),

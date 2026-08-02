@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from time import perf_counter
 
 import numpy as np
-from joblib import Parallel, delayed
 
 from .gates import aggregate_ranking_metrics
 from .workflow import (
@@ -32,18 +31,11 @@ class EvaluationRecord:
     objective_score: float
     raw_metrics: dict[str, object]
     failure_reasons: tuple[str, ...] = ()
+    materialized: bool = True
 
 
 class EvaluationService:
     """Evaluate candidates without exposing strategy internals to solvers."""
-
-    capabilities = EvaluatorCapabilities(
-        backends=("cpu_scalar", "cpu_batch"),
-        active_backend="cpu_batch",
-        batched=True,
-        gradients=False,
-        gpu=False,
-    )
 
     def __init__(
         self,
@@ -53,6 +45,7 @@ class EvaluationService:
         evaluator,
         ranking_windows: list,
         workers: int = 1,
+        evaluation_backend: str = "process",
     ):
         self.strategy = strategy
         self.constraints = constraints
@@ -60,6 +53,20 @@ class EvaluationService:
         self.evaluator = evaluator
         self.ranking_windows = list(ranking_windows)
         self.workers = max(1, int(workers))
+        self.evaluation_backend = str(evaluation_backend)
+        if self.evaluation_backend not in {"process", "scalar"}:
+            raise ValueError(
+                "search evaluation_backend must be 'process' or 'scalar'"
+            )
+        self._active_backend = "cpu_scalar"
+        self.capabilities = EvaluatorCapabilities(
+            backends=("cpu_scalar", "cpu_batch", "cpu_process"),
+            active_backend=self._active_backend,
+            batched=True,
+            gradients=False,
+            gpu=False,
+        )
+        self._process_pool = None
         self.cache: dict[tuple[object, ...], EvaluationRecord] = {}
         self.records: dict[str, EvaluationRecord] = {}
         self._prepared_kernel = None
@@ -73,6 +80,10 @@ class EvaluationService:
             "scheduling_seconds": 0.0,
             "cache_hits": 0,
             "evaluated": 0,
+            "worker_cpu_seconds": 0.0,
+            "worker_wall_seconds": 0.0,
+            "process_task_count": 0,
+            "process_batch_count": 0,
         }
 
     def performance_snapshot(self) -> dict[str, object]:
@@ -83,7 +94,20 @@ class EvaluationService:
             float(snapshot["cache_hits"]) / total if total else 0.0
         )
         snapshot["evaluator_capabilities"] = self.capabilities.__dict__
+        snapshot["process_workers"] = (
+            self.workers if self._active_backend == "cpu_process" else 0
+        )
         return snapshot
+
+    def _activate_backend(self, backend: str) -> None:
+        self._active_backend = str(backend)
+        self.capabilities = EvaluatorCapabilities(
+            backends=("cpu_scalar", "cpu_batch", "cpu_process"),
+            active_backend=self._active_backend,
+            batched=True,
+            gradients=False,
+            gpu=False,
+        )
 
     def _key(self, parameters: dict[str, object]) -> tuple[object, ...]:
         return tuple(parameters[name] for name in sorted(parameters))
@@ -106,6 +130,7 @@ class EvaluationService:
                 cached.objective_score,
                 cached.raw_metrics,
                 cached.failure_reasons,
+                cached.materialized,
             )
             self.records[candidate_id] = record
             return record
@@ -138,6 +163,7 @@ class EvaluationService:
                 ranking_stats,
                 score,
                 self.constraints.walk_forward.ranking_weights(len(ranking_stats)),
+                self.constraints.benchmark_codes,
             )
             record = EvaluationRecord(
                 candidate_id,
@@ -174,22 +200,25 @@ class EvaluationService:
                 cached.objective_score,
                 cached.raw_metrics,
                 cached.failure_reasons,
+                cached.materialized,
             )
             records_by_index[index] = record
             self.records[candidate_id] = record
 
         prepared_records = self._evaluate_prepared(missing)
         if prepared_records is None:
-            if self.workers > 1 and len(missing) > 1:
-                produced = Parallel(
-                    n_jobs=self.workers,
-                    prefer="threads",
-                    batch_size=max(1, min(16, len(missing) // self.workers)),
-                )(
-                    delayed(self.evaluate_one)(candidate_id, parameters)
-                    for _index, candidate_id, parameters in missing
+            if (
+                self.evaluation_backend == "process"
+                and self.workers > 1
+                and len(missing) > 1
+            ):
+                produced = self._evaluate_processes(
+                    candidates.take(index for index, _id, _params in missing),
+                    missing,
+                    materialize=False,
                 )
             else:
+                self._activate_backend("cpu_scalar")
                 produced = [
                     self.evaluate_one(candidate_id, parameters)
                     for _index, candidate_id, parameters in missing
@@ -225,6 +254,118 @@ class EvaluationService:
             failure_reasons=tuple(record.failure_reasons for record in records),
         )
 
+    def materialize_batch(self, candidates: CandidateBatch) -> EvaluationBatch:
+        """Populate complete WindowStats only for selected/final candidates."""
+
+        records_by_index: list[EvaluationRecord | None] = [None] * len(candidates)
+        missing = []
+        for index, candidate_id in enumerate(candidates.candidate_ids):
+            parameters = candidates.parameters_at(index)
+            cached = self.records.get(candidate_id)
+            if cached is not None and cached.materialized:
+                records_by_index[index] = cached
+            else:
+                missing.append((index, candidate_id, parameters))
+
+        if missing:
+            if (
+                self.evaluation_backend == "process"
+                and self.workers > 1
+                and len(missing) > 1
+            ):
+                produced = self._evaluate_processes(
+                    candidates.take(index for index, _id, _params in missing),
+                    missing,
+                    materialize=True,
+                )
+            else:
+                produced = []
+                for _index, candidate_id, parameters in missing:
+                    key = self._key(parameters)
+                    self.cache.pop(key, None)
+                    self.records.pop(candidate_id, None)
+                    produced.append(self.evaluate_one(candidate_id, parameters))
+            for (index, _candidate_id, parameters), record in zip(missing, produced):
+                records_by_index[index] = record
+                self.cache[self._key(parameters)] = record
+                self.records[record.candidate_id] = record
+
+        records = [record for record in records_by_index if record is not None]
+        neutral = tuple(
+            GateDecision(feasible=not record.failure_reasons) for record in records
+        )
+        return EvaluationBatch(
+            candidate_ids=tuple(record.candidate_id for record in records),
+            raw_metrics=tuple(record.raw_metrics for record in records),
+            objective_scores=np.asarray(
+                [record.objective_score for record in records], dtype=np.float64
+            ),
+            gate_decisions=neutral,
+            feasible=np.asarray(
+                [not record.failure_reasons for record in records], dtype=bool
+            ),
+            failure_reasons=tuple(record.failure_reasons for record in records),
+        )
+
+    def _evaluate_processes(
+        self,
+        batch: CandidateBatch,
+        missing,
+        *,
+        materialize: bool,
+    ) -> list[EvaluationRecord]:
+        if self._process_pool is None:
+            from .evaluation_pool import ProcessEvaluationPool
+
+            self._process_pool = ProcessEvaluationPool(
+                strategy=self.strategy,
+                constraints=self.constraints,
+                wf_manager=self.wf_manager,
+                ranking_windows=self.ranking_windows,
+                market_group=str(
+                    getattr(self.wf_manager, "market_group", "a_share")
+                ),
+                workers=self.workers,
+            )
+        self._activate_backend("cpu_process")
+        result = self._process_pool.evaluate(batch, materialize=materialize)
+        self.timings["simulation_seconds"] += result.worker_simulation_seconds
+        self.timings["worker_cpu_seconds"] += result.worker_cpu_seconds
+        self.timings["worker_wall_seconds"] += result.worker_wall_seconds
+        self.timings["process_task_count"] += result.task_count
+        self.timings["process_batch_count"] += 1
+        self.timings["evaluated"] += len(result.rows)
+        records = []
+        for row, (_index, _candidate_id, parameters) in zip(result.rows, missing):
+            records.append(
+                EvaluationRecord(
+                    candidate_id=row.candidate_id,
+                    parameters=dict(parameters),
+                    all_stats=list(row.all_stats or ()),
+                    ranking_stats=list(row.ranking_stats or ()),
+                    objective_score=float(row.objective_score),
+                    raw_metrics=dict(row.raw_metrics),
+                    failure_reasons=tuple(row.failure_reasons),
+                    materialized=bool(materialize),
+                )
+            )
+        return records
+
+    def close(self, *, cancel_futures: bool = False) -> None:
+        """Stop persistent workers and release their market snapshots."""
+
+        if self._process_pool is None:
+            return
+        pool = self._process_pool
+        self._process_pool = None
+        pool.close(cancel_futures=cancel_futures)
+
+    def __enter__(self) -> "EvaluationService":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close(cancel_futures=exc is not None)
+
     def _evaluate_prepared(self, missing):
         """Use a strategy's optional columnar signal kernel when available."""
         state_scope = str(getattr(self.strategy, "window_state_scope", "continuous"))
@@ -248,6 +389,7 @@ class EvaluationService:
         evaluate_batch = getattr(kernel, "evaluate_batch", None)
         if not callable(evaluate_batch):
             return None
+        self._activate_backend("cpu_batch")
         params = [self._params(parameters) for _index, _id, parameters in missing]
         plans = evaluate_batch(params)
         if len(plans) != len(missing):
@@ -297,6 +439,7 @@ class EvaluationService:
                 all_stats,
                 score,
                 self.constraints.walk_forward.ranking_weights(len(all_stats)),
+                self.constraints.benchmark_codes,
             )
             records.append(
                 EvaluationRecord(

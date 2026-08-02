@@ -100,3 +100,78 @@ def test_run_optimizer_uses_configured_solver_and_persists_contracts(tmp_path):
         .read_text(encoding="utf-8")
         .lower()
     )
+
+
+def test_process_candidate_workers_match_scalar_results(tmp_path):
+    def run(workers: int, backend: str, output_name: str):
+        raw = {
+            "benchmarks": {
+                "a_share": ["510300", "risk_free"],
+                "risk_free_rates": {"a_share": 0.02},
+            },
+            "walk_forward": {
+                "train_months": 6,
+                "test_months": 3,
+                "step_months": 2,
+                "num_windows": 3,
+                "validation_windows": 1,
+                "purge_overlapping_windows": False,
+                "window_weights": [1, 1],
+            },
+            "genetic_search": {
+                "sensitivity_top_candidates": 1,
+                "sensitivity_samples": 2,
+                "evaluation_workers": workers,
+            },
+            "search": {
+                "solver_id": "random",
+                "gate_profile": "test_off",
+                "batch_size": 128,
+                "parallel_axis": "candidate_window",
+                "evaluation_backend": backend,
+                "workers": workers,
+                "checkpoint": False,
+                "solvers": {"random": {"budget": 4, "random_seed": 29}},
+            },
+            "gate_profiles": {
+                "test_off": {"activation_eligible": False, "rules": []}
+            },
+            "simplified_search": {
+                "buy_limit_levels": [10_000, 20_000],
+                "sell_limit_levels": [10_000, 20_000],
+            },
+            "execution_params": {
+                "initial_capital": 100_000,
+                "commission_rate": 0.005,
+                "min_holding_days": 30,
+                "lot_sizes": {"a_share": 100},
+                "fx_rates": {"a_share": 1.0},
+            },
+        }
+        history = _history()
+        results, _constraints = run_optimizer(
+            get_strategy("percentile"),
+            {"510880": history},
+            ["510880"],
+            group="a_share",
+            _constraints=StrategyConstraints(raw),
+            output_dir=tmp_path / output_name,
+            benchmark_data={"510300": history},
+        )
+        return results
+
+    scalar = run(1, "scalar", "scalar")
+    process = run(2, "process", "process")
+
+    assert [item.candidate_id for item in process] == [
+        item.candidate_id for item in scalar
+    ]
+    assert [item.parameters for item in process] == [
+        item.parameters for item in scalar
+    ]
+    assert [item.objective_score for item in process] == [
+        item.objective_score for item in scalar
+    ]
+    assert [item.ranking_metrics for item in process] == [
+        item.ranking_metrics for item in scalar
+    ]

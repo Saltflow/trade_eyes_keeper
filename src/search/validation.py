@@ -7,6 +7,7 @@ import math
 
 import numpy as np
 
+from .gates import aggregate_ranking_metrics
 from .workflow import _evaluate_params_wf, _partition_window_indexes
 from .contracts import Candidate, CandidateBatch, ParameterSchema
 from ..strategy import Params
@@ -80,14 +81,39 @@ class ValidationController:
             key=lambda item: (item.selection_score, item.candidate_id),
             reverse=True,
         )
-        selected = validated[0]
-        selected.universe_robustness = self._universe_robustness(selected)
-        worst_drop = float(selected.universe_robustness.get("worst_drop", 0.0))
-        if math.isfinite(worst_drop):
-            selected.selection_score -= (
-                self.constraints.genetic_search.sensitivity_penalty_weight
-                * max(worst_drop, 0.0)
+        universe_config = self.constraints.universe_robustness
+        if universe_config.enabled:
+            universe_limit = min(len(validated), universe_config.finalist_count)
+            for result in validated[:universe_limit]:
+                result.universe_robustness = self._universe_robustness(result)
+                worst_drop = float(
+                    result.universe_robustness.get("worst_drop", float("inf"))
+                )
+                if math.isfinite(worst_drop):
+                    result.selection_score -= (
+                        universe_config.penalty_weight * max(worst_drop, 0.0)
+                    )
+                else:
+                    result.selection_score = -float("inf")
+                result.universe_robustness["selection_score"] = (
+                    result.selection_score
+                )
+            validated[:universe_limit] = sorted(
+                validated[:universe_limit],
+                key=lambda item: (
+                    bool(item.universe_robustness.get("passed")),
+                    item.selection_score,
+                    item.candidate_id,
+                ),
+                reverse=True,
             )
+        else:
+            validated[0].universe_robustness = {
+                "enabled": False,
+                "passed": True,
+                "activation_required": universe_config.activation_required,
+            }
+        selected = validated[0]
         self._evaluate_full_windows(selected)
         return validated
 
@@ -160,12 +186,16 @@ class ValidationController:
         manager.dates = self.wf_manager.dates
         manager.benchmark_series = self.wf_manager.benchmark_series
         manager.benchmark_high_series = self.wf_manager.benchmark_high_series
+        manager.market_group = getattr(
+            self.wf_manager, "market_group", "a_share"
+        )
         return manager
 
     def _universe_robustness(
         self, selected: ValidatedSearchResult
     ) -> dict[str, object]:
         codes = list(getattr(self.wf_manager, "stock_codes", []) or [])
+        config = self.constraints.universe_robustness
         if not self.ranking_windows or not codes:
             return {}
         params = self._params(selected)
@@ -203,15 +233,26 @@ class ValidationController:
                     order_invariant = False
                     break
 
-        base_mean = float(
-            np.mean([stat.test_excess_return for stat in selected.ranking_stats])
+        base_metrics = aggregate_ranking_metrics(
+            selected.ranking_stats,
+            selected.objective_score,
+            self.constraints.walk_forward.ranking_weights(
+                len(selected.ranking_stats)
+            ),
+            self.constraints.benchmark_codes,
         )
+        base_mean = float(base_metrics["mean_majority_benchmark_excess"])
         variants = []
         positive = 0
         drops = []
         if len(codes) == 1:
             variants.append(
-                {"removed": codes[0], "mean_excess": base_mean, "not_applicable": True}
+                {
+                    "removed": codes[0],
+                    "mean_majority_excess": base_mean,
+                    "not_applicable": True,
+                    "passed": True,
+                }
             )
             positive = 1
         else:
@@ -228,30 +269,64 @@ class ValidationController:
                     self._subset_manager(indexes),
                     validation_window_count=0,
                 )
-                mean_excess = (
-                    float(np.mean([stat.test_excess_return for stat in result[1]]))
+                metrics = (
+                    aggregate_ranking_metrics(
+                        result[1],
+                        result[3],
+                        self.constraints.walk_forward.ranking_weights(
+                            len(result[1])
+                        ),
+                        self.constraints.benchmark_codes,
+                    )
                     if result is not None and result[1]
-                    else -float("inf")
+                    else {}
                 )
-                if mean_excess > 0:
+                mean_excess = float(
+                    metrics.get(
+                        "mean_majority_benchmark_excess", -float("inf")
+                    )
+                )
+                passed = bool(
+                    math.isfinite(mean_excess)
+                    and mean_excess > config.minimum_mean_majority_excess
+                )
+                if passed:
                     positive += 1
                 drop = (
                     base_mean - mean_excess
-                    if math.isfinite(mean_excess)
+                    if math.isfinite(base_mean) and math.isfinite(mean_excess)
                     else float("inf")
                 )
                 drops.append(drop)
+                gate = self.gate_pipeline.evaluate(metrics) if metrics else None
                 variants.append(
-                    {"removed": removed_code, "mean_excess": mean_excess, "drop": drop}
+                    {
+                        "removed": removed_code,
+                        "mean_majority_excess": mean_excess,
+                        "drop": drop,
+                        "passed": passed,
+                        "gate_feasible": bool(gate and gate.feasible),
+                    }
                 )
-        required = max(1, int(np.ceil(len(codes) * 0.80)))
+        required = max(
+            1,
+            int(np.ceil(len(codes) * config.minimum_passing_ratio)),
+        )
+        leave_one_out_passed = positive >= required
+        passed = bool(
+            leave_one_out_passed
+            and (order_invariant or not config.require_order_invariance)
+        )
         return {
+            "enabled": True,
+            "config": config.to_contract(),
+            "passed": passed,
             "symbol_order_invariant": order_invariant,
             "variant_count": len(codes),
             "positive_variant_count": positive,
             "required_positive_variant_count": required,
-            "leave_one_out_passed": positive >= required,
-            "base_mean_excess": base_mean,
+            "leave_one_out_passed": leave_one_out_passed,
+            "base_mean_majority_excess": base_mean,
             "worst_drop": max(drops) if drops else 0.0,
             "variants": variants,
         }
@@ -264,6 +339,7 @@ class ValidationController:
             self.constraints,
             self.evaluator,
             self.wf_manager,
+            include_candidate_diagnostics=True,
         )
         if result is None:
             raise RuntimeError("final full-window evaluation failed")

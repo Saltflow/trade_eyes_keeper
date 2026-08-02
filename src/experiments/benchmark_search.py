@@ -98,19 +98,32 @@ def run_ranking_benchmark_search(
         evaluator,
         ranking_windows,
         workers=resource_plan.outer_workers,
+        evaluation_backend=constraints.search.evaluation_backend,
     )
+    solver = create_solver(solver_id)
     controller = SearchController(
         problem,
-        create_solver(solver_id),
+        solver,
         service,
         gate_pipeline,
         solver_config=effective_solver_config,
         batch_size=resource_plan.batch_size,
         include_infeasible_results=True,
+        materialize_finalists=False,
     )
     with planner.apply(resource_plan):
         results = controller.run(finalist_limit=int(search_depth))
-    return results, service, gate_pipeline, problem, effective_solver_config
+    recorded_solver_config = dict(
+        getattr(solver, "effective_config", effective_solver_config)
+    )
+    return (
+        results,
+        service,
+        gate_pipeline,
+        problem,
+        recorded_solver_config,
+        solver,
+    )
 
 
 def _benchmark_solver_config(

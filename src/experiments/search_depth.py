@@ -481,7 +481,7 @@ def run_full_config_depth_analysis(
 
         evaluator = FastEvaluator(constraints.execution, group)
         batch_size = reduce(math.gcd, depths)
-        searched, service, gate_pipeline, problem, solver_config = (
+        searched, service, gate_pipeline, problem, solver_config, _solver = (
             run_ranking_benchmark_search(
                 strategy=strategy,
                 constraints=constraints,

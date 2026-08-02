@@ -66,27 +66,55 @@ genetic_search:
   # Numba signal/execution kernels release the GIL; fixed-order thread maps
   # preserve deterministic candidate order while using the local CPU.
   evaluation_workers: 4
-  # Ranking-window-only absolute-return gate.  The two purged windows and
-  # newest validation window never participate in these checks.
+  # Legacy artifact mirrors. gate_profiles.standard is authoritative.
   min_weighted_strategy_return: 0.0
-  min_positive_return_windows: 8
-  # At least 7/11 ranking windows must beat that window's strongest control.
-  min_winning_benchmark_windows: 7
+  min_positive_return_windows: 6
+  min_winning_benchmark_windows: 6
+validation:
+  universe_robustness:
+    enabled: true
+    # Re-evaluate enough finalists for a fragile first-place candidate to
+    # fall back to a more universe-stable alternative.
+    finalist_count: 20
+    minimum_passing_ratio: 0.80
+    minimum_mean_majority_excess: 0.0
+    # Universe composition matters more than a one-level parameter move.
+    penalty_weight: 2.0
+    activation_required: true
+    require_order_invariance: true
 # Solver selection is independent of strategies, evaluation and gates.  A new
-# algorithm registers itself under src/analysis/solvers and is selected here.
+# algorithm registers itself under src/search/solvers and is selected here.
 search:
-  solver_id: genetic
+  solver_id: local_genetic
   gate_profile: standard
   batch_size: 256
   parallel_axis: candidate_window
-  # null means all physical cores.  Numba stays single-threaded inside each
-  # task so the process never creates a nested parallel region.
+  # Candidate scoring uses persistent worker processes. Each worker receives
+  # the immutable ranking snapshot once; IPC then carries only parameter
+  # batches and compact metrics, bypassing the Python GIL.
+  evaluation_backend: process
+  # null means all physical cores. Numba/BLAS stay single-threaded inside each
+  # process so the runtime never creates nested parallel regions.
   workers: null
   checkpoint: true
   solvers:
     genetic:
       budget: 155000
       gene_mutation_rate: 0.15
+    local_genetic:
+      budget: 155000
+      phase1_random_samples: 30000
+      phase1_top_keep: 10000
+      num_generations: 5
+      population_size: 5000
+      offspring_size: 25000
+      crossover_rate: 0.7
+      gene_mutation_rate: 0.15
+      max_local_step: 3
+      step_schedule: linear_to_one
+      random_immigrant_rate: 0.10
+      duplicate_retry_limit: 64
+      random_seed: 20260726
     random:
       budget: 10000
       random_seed: 20260726
@@ -111,17 +139,17 @@ gate_profiles:
       metric: positive_return_windows
       mode: hard
       operator: ge
-      value: 8
-    - id: positive_mean_strongest_excess
-      metric: mean_strongest_benchmark_excess
+      value: 6
+    - id: positive_mean_majority_excess
+      metric: mean_majority_benchmark_excess
       mode: hard
       operator: gt
       value: 0.0
-    - id: strongest_benchmark_win_windows
-      metric: strongest_benchmark_win_windows
+    - id: majority_benchmark_win_windows
+      metric: majority_benchmark_win_windows
       mode: hard
       operator: ge
-      value: 7
+      value: 6
     - id: minimum_average_position
       metric: average_position_pct
       mode: hard
