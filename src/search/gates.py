@@ -32,6 +32,9 @@ METRICS = {
     "majority_benchmark_win_ratio",
     "average_position_pct",
     "minimum_drawdown_pct",
+    "strategy_return_range_pct",
+    "strongest_excess_range_pct",
+    "majority_excess_range_pct",
     "excess_return_std_pct",
     "mean_sharpe_ratio",
     "minimum_trade_count",
@@ -271,6 +274,17 @@ def aggregate_ranking_metrics(
                 )
             )
             if count
+            else 0.0
+        ),
+        "strategy_return_range_pct": (
+            float(np.max(returns) - np.min(returns)) if count >= 2 else 0.0
+        ),
+        "strongest_excess_range_pct": (
+            float(np.max(excess) - np.min(excess)) if count >= 2 else 0.0
+        ),
+        "majority_excess_range_pct": (
+            float(np.max(majority_excess) - np.min(majority_excess))
+            if count >= 2 and majority_complete
             else 0.0
         ),
         "excess_return_std_pct": float(np.std(excess)) if count >= 2 else 0.0,

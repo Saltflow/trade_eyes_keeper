@@ -51,6 +51,7 @@ def test_summarize_windows_keeps_core_contract():
             {
                 "strategy_return_pct": 8.0,
                 "strongest_benchmark_excess_pct": 2.0,
+                "majority_benchmark_excess_pct": 4.0,
                 "max_drawdown_pct": -4.0,
                 "sharpe_ratio": 1.2,
                 "trade_count": 3,
@@ -59,6 +60,7 @@ def test_summarize_windows_keeps_core_contract():
             {
                 "strategy_return_pct": -2.0,
                 "strongest_benchmark_excess_pct": -5.0,
+                "majority_benchmark_excess_pct": -1.0,
                 "max_drawdown_pct": -9.0,
                 "sharpe_ratio": -0.2,
                 "trade_count": 1,
@@ -71,6 +73,9 @@ def test_summarize_windows_keeps_core_contract():
     assert summary["mean_excess_pct"] == pytest.approx(-1.5)
     assert summary["worst_excess_pct"] == pytest.approx(-5.0)
     assert summary["winning_windows"] == 1
+    assert summary["mean_majority_excess_pct"] == pytest.approx(1.5)
+    assert summary["worst_majority_excess_pct"] == pytest.approx(-1.0)
+    assert summary["majority_winning_windows"] == 1
     assert summary["worst_drawdown_pct"] == pytest.approx(-9.0)
     assert summary["mean_sharpe"] == pytest.approx(0.5)
     assert summary["total_trades"] == 4

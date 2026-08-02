@@ -99,8 +99,36 @@ class StrategyMarketData:
     tradable: np.ndarray | None = None
     date_ordinals: np.ndarray | None = None
     market: str = "a_share"
+    observation_counts: np.ndarray | None = None
     fundamental_features: np.ndarray | None = None
     fundamental_availability_mask: np.ndarray | None = None
+
+    def eligibility_mask(self, minimum_rows: int) -> np.ndarray:
+        """Return lifetime-history eligibility without resetting on a slice.
+
+        ``observation_counts`` is computed on the complete market history by
+        the caller before a state/test slice is taken.  Legacy callers that do
+        not provide it retain the local cumulative-count behaviour.
+        """
+        matrix = np.asarray(self.indicator_matrix)
+        if matrix.ndim != 3:
+            raise ValueError("indicator_matrix must have shape (date, symbol, feature)")
+        if self.prices is not None:
+            prices = np.asarray(self.prices)
+            if prices.shape != matrix.shape[:2]:
+                raise ValueError("prices shape must match indicator_matrix")
+            valid = np.isfinite(prices) & (prices > 0)
+        else:
+            valid = np.isfinite(matrix[:, :, 0])
+        if self.observation_counts is None:
+            observed = np.cumsum(valid, axis=0, dtype=np.int64)
+        else:
+            observed = np.asarray(self.observation_counts)
+            if observed.shape != valid.shape:
+                raise ValueError(
+                    "observation_counts shape must match indicator_matrix dates/symbols"
+                )
+        return valid & (observed >= max(1, int(minimum_rows)))
 
 
 @dataclass
@@ -373,9 +401,7 @@ class TradingStrategy(ABC):
         # A simultaneous signal is an exit decision, never a sell-then-buy
         # churn transaction.  Invalid/pre-warmup rows cannot generate orders.
         buy_signals[sell_signals] = False
-        valid = np.isfinite(indicator_matrix[:, :, 0])
-        observed = np.cumsum(valid, axis=0)
-        eligible = observed >= max(1, int(self.warmup_rows))
+        eligible = market_data.eligibility_mask(self.warmup_rows)
         buy_signals &= eligible
         sell_signals &= eligible
 

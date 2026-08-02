@@ -156,8 +156,7 @@ class TechnicalEnsembleStrategy(TradingStrategy):
     ) -> TradePlan:
         buy_threshold = self._decode(params, "buy_threshold")
         sell_threshold = self._decode(params, "sell_threshold")
-        valid = np.isfinite(market_data.indicator_matrix[:, :, 0])
-        eligible = np.cumsum(valid, axis=0) >= self.warmup_rows
+        eligible = market_data.eligibility_mask(self.warmup_rows)
         condition = (score >= buy_threshold) & eligible
         confirmed = np.zeros_like(condition, dtype=bool)
         confirmed[2:] = condition[2:] & condition[1:-1] & condition[:-2]

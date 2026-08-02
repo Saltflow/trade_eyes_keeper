@@ -25,6 +25,7 @@ import pandas as pd
 from ..backtest.engine import FastEvaluator, WalkForwardManager
 from ..search.config import WindowStats, get_constraints
 from ..search.contracts import Candidate, CandidateBatch
+from ..search.gates import majority_benchmark_excess
 from ..markets import _detect_fine_group, get_skip_search
 from .benchmark_search import run_ranking_benchmark_search
 from ..search.workflow import _evaluate_params_wf, _partition_window_indexes
@@ -172,6 +173,9 @@ def summarize_windows(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
             "mean_excess_pct": None,
             "worst_excess_pct": None,
             "winning_windows": 0,
+            "mean_majority_excess_pct": None,
+            "worst_majority_excess_pct": None,
+            "majority_winning_windows": 0,
             "worst_drawdown_pct": None,
             "mean_sharpe": None,
             "total_trades": 0,
@@ -193,6 +197,13 @@ def summarize_windows(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
         ),
         "winning_windows": sum(
             float(row["strongest_benchmark_excess_pct"]) > 0.0 for row in rows
+        ),
+        "mean_majority_excess_pct": mean("majority_benchmark_excess_pct"),
+        "worst_majority_excess_pct": min(
+            float(row["majority_benchmark_excess_pct"]) for row in rows
+        ),
+        "majority_winning_windows": sum(
+            float(row["majority_benchmark_excess_pct"]) > 0.0 for row in rows
         ),
         "worst_drawdown_pct": min(float(row["max_drawdown_pct"]) for row in rows),
         "mean_sharpe": mean("sharpe_ratio"),
@@ -299,8 +310,11 @@ def frame_fingerprint(frame: pd.DataFrame) -> str:
     return digest.hexdigest()
 
 
-def prepare_benchmark_data(config: dict) -> dict[str, dict[str, Any]]:
-    """Fetch each market once and return immutable worker snapshots."""
+def prepare_benchmark_data(
+    config: dict,
+    groups: Iterable[str] = BENCHMARK_GROUPS,
+) -> dict[str, dict[str, Any]]:
+    """Fetch requested markets once and return immutable worker snapshots."""
 
     from main import (
         _has_optimizer_history,
@@ -312,8 +326,12 @@ def prepare_benchmark_data(config: dict) -> dict[str, dict[str, Any]]:
     constraints = get_constraints()
     data_source = DataSource(config)
     configured = _configured_codes(config)
+    requested_groups = tuple(dict.fromkeys(str(group) for group in groups))
+    unknown_groups = sorted(set(requested_groups) - set(BENCHMARK_GROUPS))
+    if unknown_groups:
+        raise ValueError(f"unknown benchmark groups: {unknown_groups}")
     result = {}
-    for group in BENCHMARK_GROUPS:
+    for group in requested_groups:
         constraints.set_group(group)
         lookback_days = _optimizer_lookback_days(constraints)
         stocks_data = {}
@@ -396,6 +414,7 @@ def _serialize_window(
     stat: WindowStats,
     window: Any,
     codes: list[str],
+    control_benchmarks: Iterable[str],
 ) -> dict[str, Any]:
     return {
         "window": index + 1,
@@ -408,6 +427,9 @@ def _serialize_window(
         },
         "strategy_return_pct": float(stat.strategy_return),
         "strongest_benchmark_excess_pct": float(stat.test_excess_return),
+        "majority_benchmark_excess_pct": float(
+            majority_benchmark_excess(stat, control_benchmarks)
+        ),
         "strongest_benchmark": str(stat.strongest_benchmark),
         "benchmark_returns": {
             str(name): float(value) for name, value in stat.benchmark_returns.items()
@@ -666,6 +688,7 @@ def run_market_benchmark(
             stat,
             windows[index],
             list(manager.stock_codes),
+            constraints.benchmark_codes,
         )
         for index, stat in enumerate(all_stats)
     ]
@@ -697,6 +720,7 @@ def run_market_benchmark(
         "gate_profile_hash": gate_pipeline.hash,
         "search_contract_hash": search_problem.contract_hash,
         "evaluation_workers": int(evaluation_workers),
+        "control_benchmarks": list(constraints.benchmark_codes),
         "configured_codes": configured,
         "evaluated_codes": list(manager.stock_codes),
         "missing_or_short_history_codes": missing_codes,
@@ -828,11 +852,10 @@ def write_benchmark_artifacts(
             "selection_windows": 11,
             "isolated_windows": 2,
             "holdout_windows": 1,
-            "benchmarks": [
-                "risk_free",
-                "510300",
-                "universe_equal_weight",
-            ],
+            "benchmarks_by_market": {
+                str(item["market"]): list(item.get("control_benchmarks", []))
+                for item in market_results
+            },
             "selection_uses_holdout": False,
             "market_weighting": "equal",
             "solver_ids": sorted({item["solver_id"] for item in market_results}),
@@ -879,9 +902,21 @@ def write_benchmark_artifacts(
                 "ranking_mean_return_pct": result["ranking_summary"]["mean_return_pct"],
                 "ranking_mean_excess_pct": result["ranking_summary"]["mean_excess_pct"],
                 "ranking_wins": result["ranking_summary"]["winning_windows"],
+                "ranking_mean_majority_excess_pct": result["ranking_summary"][
+                    "mean_majority_excess_pct"
+                ],
+                "ranking_majority_wins": result["ranking_summary"][
+                    "majority_winning_windows"
+                ],
                 "holdout_return_pct": result["holdout_summary"]["mean_return_pct"],
                 "holdout_excess_pct": result["holdout_summary"]["mean_excess_pct"],
                 "holdout_wins": result["holdout_summary"]["winning_windows"],
+                "holdout_majority_excess_pct": result["holdout_summary"][
+                    "mean_majority_excess_pct"
+                ],
+                "holdout_majority_wins": result["holdout_summary"][
+                    "majority_winning_windows"
+                ],
                 "elapsed_seconds": result["elapsed_seconds"],
             }
         )

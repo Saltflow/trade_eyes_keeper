@@ -27,7 +27,7 @@ def _history(rows=520):
 def test_run_optimizer_uses_configured_solver_and_persists_contracts(tmp_path):
     raw = {
         "benchmarks": {
-            "a_share": ["510300", "risk_free"],
+            "a_share": ["510880", "510300", "risk_free"],
             "risk_free_rates": {"a_share": 0.02},
         },
         "walk_forward": {
@@ -73,7 +73,7 @@ def test_run_optimizer_uses_configured_solver_and_persists_contracts(tmp_path):
         group="a_share",
         _constraints=StrategyConstraints(raw),
         output_dir=tmp_path,
-        benchmark_data={"510300": history},
+        benchmark_data={"510880": history, "510300": history},
     )
 
     assert results
@@ -106,7 +106,7 @@ def test_process_candidate_workers_match_scalar_results(tmp_path):
     def run(workers: int, backend: str, output_name: str):
         raw = {
             "benchmarks": {
-                "a_share": ["510300", "risk_free"],
+                "a_share": ["510880", "510300", "risk_free"],
                 "risk_free_rates": {"a_share": 0.02},
             },
             "walk_forward": {
@@ -156,7 +156,7 @@ def test_process_candidate_workers_match_scalar_results(tmp_path):
             group="a_share",
             _constraints=StrategyConstraints(raw),
             output_dir=tmp_path / output_name,
-            benchmark_data={"510300": history},
+            benchmark_data={"510880": history, "510300": history},
         )
         return results
 

@@ -28,7 +28,9 @@ soft_constraints:
   min_sharpe: 0.5
   sharpe_penalty_weight: 0.3
 walk_forward:
-  train_months: 12
+  # Per-window indicator/signal-state lookback; Solver selection sees the
+  # first 51 calendar months and never sees the final 9-month holdout.
+  state_lookback_months: 12
   test_months: 9
   step_months: 3
   # 11 ranking + 2 overlap-isolation + 1 independent hold-out.
@@ -40,7 +42,7 @@ walk_forward:
   - 1.0
   - 1.0
   - 1.0
-  stability_penalty: 0.5
+  window_range_penalty: 0.5
   data_years: 5
   # ``num_windows`` is the total number of windows.  The newest
   # ``validation_windows`` are held out for the daily-report validation.
@@ -162,7 +164,7 @@ gate_profiles:
       value: -40.0
     - id: maximum_excess_instability
       metric: excess_return_std_pct
-      mode: hard
+      mode: diagnostic
       operator: le
       value: 15.0
     - id: sharpe_quality

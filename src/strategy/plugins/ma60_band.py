@@ -59,8 +59,7 @@ class Ma60BandStrategy(TradingStrategy):
         close = matrix[:, :, IDX_CLOSE].astype(np.float64)
         ma60 = matrix[:, :, IDX_MA60].astype(np.float64)
         valid = np.isfinite(close) & np.isfinite(ma60) & (ma60 > 0.0)
-        observed_close = np.cumsum(np.isfinite(close), axis=0)
-        eligible = valid & (observed_close >= self.warmup_rows)
+        eligible = valid & market_data.eligibility_mask(self.warmup_rows)
 
         price_to_ma60 = np.full(close.shape, np.nan, dtype=np.float64)
         np.divide(close, ma60, out=price_to_ma60, where=valid)

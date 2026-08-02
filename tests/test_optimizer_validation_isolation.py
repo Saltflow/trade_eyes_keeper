@@ -29,8 +29,12 @@ from main import _min_optimizer_history_rows, _optimizer_lookback_days
 
 
 def _constraints() -> StrategyConstraints:
-    return StrategyConstraints(
+    constraints = StrategyConstraints(
         {
+            "benchmarks": {
+                "a_share": ["510880", "510300", "risk_free"],
+                "risk_free_rates": {"a_share": 0.02},
+            },
             "walk_forward": {
                 "num_windows": 3,
                 "validation_windows": 1,
@@ -48,23 +52,26 @@ def _constraints() -> StrategyConstraints:
             },
         }
     )
+    constraints.set_group("a_share")
+    return constraints
 
 
 def test_ranking_score_excludes_held_out_window_and_extends_weights():
     constraints = _constraints()
+    controls = {"510880": 6.0, "510300": 4.0, "risk_free": 2.0}
     stats = [
-        WindowStats(test_excess_return=2.0),
-        WindowStats(test_excess_return=8.0),
-        WindowStats(test_excess_return=-999.0),
+        WindowStats(strategy_return=8.0, benchmark_returns=controls),
+        WindowStats(strategy_return=14.0, benchmark_returns=controls),
+        WindowStats(strategy_return=-999.0, benchmark_returns=controls),
     ]
 
     ranking, validation = stats[:2], stats[2:]
 
     assert ranking == stats[:2]
     assert validation == stats[2:]
-    # Weighted mean = (2 * 1 + 8 * 2) / 3 = 6; stability penalty = 1.5;
-    # default Sharpe shortfall adds a 0.15 soft penalty.
-    assert _compute_ranking_wf_score(ranking, constraints) == pytest.approx(4.35)
+    # Median-control excess is 4 and 10. Weighted mean is 8; the
+    # best-minus-worst range is 6, so lambda=0.5 produces a score of 5.
+    assert _compute_ranking_wf_score(ranking, constraints) == pytest.approx(5.0)
     assert constraints.walk_forward.ranking_window_count == 2
     # A short legacy weight array must not silently discard a historical window.
     assert constraints.walk_forward.ranking_weights(4) == [1.0, 2.0, 2.0, 2.0]
@@ -159,6 +166,9 @@ def test_optimizer_history_preflight_requires_the_full_configured_horizon():
     # The final (14th) window must include its complete test horizon, not
     # merely reach its start.  Otherwise a short-history symbol can reduce a
     # market to 12 ranking windows plus a partial held-out window.
+    assert constraints.walk_forward.total_months_needed == 60
+    assert constraints.walk_forward.search_history_months == 51
+    assert constraints.walk_forward.state_lookback_months == 12
     assert _min_optimizer_history_rows(constraints) == 1260
     # The calendar lookback must retain margin beyond the exact WF horizon;
     # otherwise date intersections can leave a market a few trading days short.

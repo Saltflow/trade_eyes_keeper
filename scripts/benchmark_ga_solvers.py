@@ -37,6 +37,18 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("--strategy", default="technical_ensemble")
+    parser.add_argument(
+        "--markets",
+        nargs="+",
+        choices=BENCHMARK_GROUPS,
+        default=list(BENCHMARK_GROUPS),
+    )
+    parser.add_argument(
+        "--solvers",
+        nargs="+",
+        choices=SOLVERS,
+        default=list(SOLVERS),
+    )
     parser.add_argument("--budget", type=int, default=12000)
     parser.add_argument("--generations", type=int, default=5)
     parser.add_argument("--generation-size", type=int, default=1000)
@@ -201,7 +213,12 @@ def _comparison_rows(
         for item in results
     }
     rows = []
-    for market in BENCHMARK_GROUPS:
+    markets = sorted({str(item["market"]) for item in results})
+    for market in markets:
+        if ("genetic", market) not in indexed or (
+            "local_genetic", market
+        ) not in indexed:
+            continue
         old = indexed[("genetic", market)]
         local = indexed[("local_genetic", market)]
         old_init = old["search_progress"][0]
@@ -334,13 +351,13 @@ def main() -> int:
         args.generation_size,
     )
     print("preparing immutable full-config market snapshots", flush=True)
-    prepared = prepare_benchmark_data(load_config())
+    prepared = prepare_benchmark_data(load_config(), groups=args.markets)
     prefetch = summarize_prepared_data(prepared)
     started = monotonic()
     results: list[dict[str, object]] = []
     progress_rows: list[dict[str, object]] = []
-    for market in BENCHMARK_GROUPS:
-        for solver_id in SOLVERS:
+    for market in args.markets:
+        for solver_id in args.solvers:
             solver_config = _solver_config(
                 solver_id,
                 initial_samples=initial_samples,
@@ -407,7 +424,8 @@ def main() -> int:
         "created_at": datetime.now().isoformat(),
         "contract": {
             "strategy_id": args.strategy,
-            "solvers": list(SOLVERS),
+            "solvers": list(args.solvers),
+            "markets": list(args.markets),
             "budget_per_solver_market": args.budget,
             "initial_samples": initial_samples,
             "generations": args.generations,

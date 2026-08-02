@@ -1,3 +1,29 @@
+## Authoritative time and ranking contract (2026-08-02)
+
+> This section supersedes every historical description below that calls the
+> 12-month period Solver training, treats 13 windows as ranking windows, or
+> puts standard deviation and Sharpe directly into the primary objective.
+
+- The fixed horizon is 60 calendar months. The final 9 months are a one-time
+  holdout; only the preceding 51 months are observable during selection.
+- There are 14 rolling windows, each with 12 months of state lookback and 9
+  months of evaluation, advanced by 3 months. The first 11 windows rank
+  candidates, the next 2 are isolated because they overlap the holdout, and
+  the final window is evaluated only after selection.
+- `state_lookback_months: 12` initializes indicators, confirmation streaks,
+  and signal locks. It is not Solver training data. Legacy `train_months` is
+  accepted only as a configuration-read compatibility alias.
+- The 252-session instrument eligibility count is computed over the complete
+  instrument lifetime and must not reset at a state-slice boundary.
+- For ranking window i, define `M_i` as strategy return minus the median return
+  of the three configured controls. The primary objective is
+  `weighted_mean(M_i) - window_range_penalty * (max(M_i) - min(M_i))`; the
+  configured penalty is 0.5.
+- Sharpe and cross-window standard deviation remain diagnostics/Gate inputs;
+  they are not duplicate objective penalties. The standard Gate still requires
+  positive return in at least 6/11 windows, beating any two controls in at least
+  6/11 windows, and positive mean `M_i`.
+
 ## 当前唯一权威契约（2026-07-30）
 
 > 本节是搜参、回测、日报与今日扫描的唯一当前契约。本文后续按日期记录的

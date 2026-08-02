@@ -75,11 +75,16 @@ def _partition_window_indexes(
 def _compute_ranking_wf_score(
     ranking_stats: list[WindowStats], constraints: StrategyConstraints
 ) -> float | None:
-    """Original WF formula: weighted excess return minus stability penalty."""
+    """Score median-control excess and penalize its cross-window range."""
     if not ranking_stats:
         return None
 
-    returns = [float(stat.excess_return) for stat in ranking_stats]
+    returns = [
+        majority_benchmark_excess(stat, constraints.benchmark_codes)
+        for stat in ranking_stats
+    ]
+    if not all(np.isfinite(value) for value in returns):
+        return None
     weights = constraints.walk_forward.ranking_weights(len(returns))
     total_weight = sum(weights)
     if total_weight <= 0:
@@ -87,12 +92,13 @@ def _compute_ranking_wf_score(
     else:
         weights = [weight / total_weight for weight in weights]
 
-    score = float(sum(value * weight for value, weight in zip(returns, weights)))
-    if len(returns) >= 2 and constraints.walk_forward.stability_penalty > 0:
-        score -= float(np.std(returns)) * constraints.walk_forward.stability_penalty
-    mean_sharpe = float(np.mean([stat.sharpe_ratio for stat in ranking_stats]))
-    score -= constraints.compute_soft_penalty(mean_sharpe)
-    return score
+    weighted_mean = float(
+        sum(value * weight for value, weight in zip(returns, weights))
+    )
+    window_range = float(max(returns) - min(returns)) if len(returns) >= 2 else 0.0
+    return weighted_mean - (
+        constraints.walk_forward.window_range_penalty * window_range
+    )
 
 
 def _prepare_wf_evaluation_contexts(
@@ -133,6 +139,9 @@ def _prepare_wf_evaluation_contexts(
     high_matrix = wf_manager.price_high_matrix
     low_matrix = wf_manager.price_low_matrix
     market_group = str(getattr(wf_manager, "market_group", "a_share"))
+    lifetime_observation_counts = np.cumsum(
+        np.isfinite(price_matrix) & (price_matrix > 0), axis=0, dtype=np.int32
+    )
     full_market_data = StrategyMarketData(
         indicator_matrix=wf_manager.indicator_matrix,
         dates=date_strings,
@@ -143,6 +152,7 @@ def _prepare_wf_evaluation_contexts(
         tradable=np.isfinite(price_matrix) & (price_matrix > 0),
         date_ordinals=date_ordinals,
         market=market_group,
+        observation_counts=lifetime_observation_counts,
     )
 
     available_benchmarks = getattr(wf_manager, "benchmark_series", {})
@@ -166,6 +176,7 @@ def _prepare_wf_evaluation_contexts(
             tradable=np.isfinite(state_prices) & (state_prices > 0),
             date_ordinals=date_ordinals[state_slice],
             market=market_group,
+            observation_counts=lifetime_observation_counts[state_slice],
         )
         execution_prices = DEFAULT_FILL_PRICE_POLICY.build(
             price_matrix,
@@ -466,7 +477,7 @@ def run_optimizer(
     )
     problem = SearchProblem(
         schema=schema,
-        objective_id="weighted-strongest-configured-excess-stability-sharpe/2",
+        objective_id="weighted-majority-excess-window-range/1",
         gate_profile_id=gate_pipeline.hash,
         budget=budget,
         data_hash=data_hash,
@@ -481,6 +492,19 @@ def run_optimizer(
             "strategy_id": strategy.name,
             "market": group,
             "control_benchmarks": tuple(constraints.benchmark_codes),
+            "window_range_penalty": (
+                constraints.walk_forward.window_range_penalty
+            ),
+            "time_contract": {
+                "total_months": constraints.walk_forward.total_months_needed,
+                "search_history_months": (
+                    constraints.walk_forward.search_history_months
+                ),
+                "state_lookback_months": (
+                    constraints.walk_forward.state_lookback_months
+                ),
+                "holdout_months": constraints.walk_forward.test_months,
+            },
         },
     )
     planner = ResourcePlanner()
@@ -780,10 +804,25 @@ def _save_optimizer_result(
             "solver_id": search_metadata.get("solver_id", "genetic"),
             "gate_profile": search_metadata.get("gate_profile", "standard"),
             "score_formula": (
-                "weighted_strongest_configured_benchmark_excess "
-                "- stability_penalty * std "
-                "- sharpe_penalty"
+                "weighted_majority_benchmark_excess - "
+                "window_range_penalty * "
+                "(max_majority_excess - min_majority_excess)"
             ),
+            "score_parameters": {
+                "window_range_penalty": (
+                    constraints.walk_forward.window_range_penalty
+                )
+            },
+            "time_contract": {
+                "total_months": constraints.walk_forward.total_months_needed,
+                "search_history_months": (
+                    constraints.walk_forward.search_history_months
+                ),
+                "state_lookback_months": (
+                    constraints.walk_forward.state_lookback_months
+                ),
+                "holdout_months": constraints.walk_forward.test_months,
+            },
             "selection_formula": (
                 f"wf_score - {constraints.genetic_search.sensitivity_penalty_weight:g} "
                 "* parameter_sensitivity_drop - "

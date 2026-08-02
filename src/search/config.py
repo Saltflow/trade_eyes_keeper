@@ -64,14 +64,26 @@ class WalkForwardConfig:
     """Walk-Forward 窗口配置"""
 
     def __init__(self, data: dict):
-        self.train_months: int = data.get("train_months", 12)
+        legacy_train_months = data.get("train_months", 12)
+        self.state_lookback_months: int = int(
+            data.get("state_lookback_months", legacy_train_months)
+        )
+        # Compatibility alias for old artifacts/tests. This period initializes
+        # indicators and signal state; it never contains Solver observations.
+        self.train_months: int = self.state_lookback_months
         self.test_months: int = data.get("test_months", 9)
         self.step_months: int = data.get("step_months", 3)
         self.num_windows: int = data.get("num_windows", 6)
         self.window_weights: list[float] = data.get(
             "window_weights", [1.0] * self.num_windows
         )
-        self.stability_penalty: float = data.get("stability_penalty", 0.5)
+        legacy_stability_penalty = data.get("stability_penalty", 0.5)
+        self.window_range_penalty: float = float(
+            data.get("window_range_penalty", legacy_stability_penalty)
+        )
+        # Compatibility alias. New contracts use window_range_penalty because
+        # the penalty is the best-minus-worst window spread, not volatility.
+        self.stability_penalty: float = self.window_range_penalty
         self.data_years: float = max(
             1.0,
             float(data.get("data_years", self.total_months_needed / 12)),
@@ -115,9 +127,14 @@ class WalkForwardConfig:
         return weights[:count]
 
     @property
+    def search_history_months(self) -> int:
+        """Calendar months observable by candidate selection (60 - holdout 9)."""
+        return max(0, self.total_months_needed - self.test_months)
+
+    @property
     def total_months_needed(self) -> int:
         return (
-            self.train_months
+            self.state_lookback_months
             + self.test_months
             + (self.num_windows - 1) * self.step_months
         )

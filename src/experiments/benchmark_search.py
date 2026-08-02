@@ -49,7 +49,7 @@ def run_ranking_benchmark_search(
     execution = constraints.execution
     problem = SearchProblem(
         schema=schema,
-        objective_id="weighted-strongest-excess-stability-sharpe/1",
+        objective_id="weighted-majority-excess-window-range/1",
         gate_profile_id=gate_pipeline.hash,
         budget=int(search_depth),
         data_hash=stable_hash(input_fingerprints),
@@ -83,6 +83,9 @@ def run_ranking_benchmark_search(
             "market": group,
             "resource_axis": resource_plan.axis,
             "resource_workers": resource_plan.outer_workers,
+            "window_range_penalty": (
+                constraints.walk_forward.window_range_penalty
+            ),
         },
     )
     effective_solver_config = _benchmark_solver_config(

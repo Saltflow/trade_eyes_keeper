@@ -91,6 +91,35 @@ def test_training_entry_event_is_not_replayed_into_flat_test_account():
     assert trace.final_shares[0] == 0
 
 
+def test_lifetime_eligibility_is_not_reset_by_state_lookback_slice():
+    strategy = get_strategy("technical_ensemble")
+    market = _market(rows=300)
+    market.observation_counts = np.cumsum(market.tradable, axis=0, dtype=np.int32)
+    score = np.ones((300, 1), dtype=np.float32)
+    full_plan = strategy._plan_from_score(_params(strategy), market, score)
+
+    state_start = 60
+    state_market = StrategyMarketData(
+        indicator_matrix=market.indicator_matrix[state_start:],
+        dates=market.dates[state_start:],
+        symbols=market.symbols,
+        prices=market.prices[state_start:],
+        highs=market.highs[state_start:],
+        lows=market.lows[state_start:],
+        tradable=market.tradable[state_start:],
+        date_ordinals=market.date_ordinals[state_start:],
+        observation_counts=market.observation_counts[state_start:],
+    )
+    state_plan = strategy._plan_from_score(
+        _params(strategy), state_market, score[state_start:]
+    )
+
+    np.testing.assert_array_equal(
+        state_plan.entry_events, full_plan.entry_events[state_start:]
+    )
+    assert np.flatnonzero(state_plan.entry_events[:, 0]).tolist() == [193]
+
+
 def test_score_allocation_respects_shared_caps_and_symbol_permutation():
     strategy = get_strategy("technical_ensemble")
     market = _market(columns=5)

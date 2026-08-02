@@ -1649,7 +1649,7 @@ class WalkForwardManager:
                 months=wi * self.wf_config.step_months
             )
             test_start_date = train_start_date + pd.DateOffset(
-                months=self.wf_config.train_months
+                months=self.wf_config.state_lookback_months
             )
             test_end_date = test_start_date + pd.DateOffset(
                 months=self.wf_config.test_months
@@ -2004,7 +2004,13 @@ def _build_signal_plan(
     if T == 0 or N == 0:
         return None, None, None, list(active_codes)
 
-    # 3. The same plan is used in the optimizer and live scan.
+    # 3. Eligibility is based on the complete instrument lifetime, before
+    # any report window is sliced from the common market date axis.
+    observation_counts = np.cumsum(tradable, axis=0, dtype=np.int32)
+    date_ordinals = (
+        pd.to_datetime(dates).values.astype("datetime64[D]").astype(np.int64)
+    )
+    market_group = _detect_fine_group(active_codes[0])
     market_data = StrategyMarketData(
         indicator_matrix=ind_mat,
         dates=list(dates),
@@ -2013,6 +2019,9 @@ def _build_signal_plan(
         highs=ind_mat[:, :, IDX_HIGH],
         lows=ind_mat[:, :, IDX_LOW],
         tradable=tradable,
+        date_ordinals=date_ordinals,
+        market=market_group,
+        observation_counts=observation_counts,
     )
     trade_plan = strategy.make_signals(params, market_data)
 
@@ -2045,6 +2054,8 @@ def _build_signal_plan(
         highs = market_data.highs[date_mask]
         lows = market_data.lows[date_mask]
         tradable = tradable[date_mask]
+        observation_counts = observation_counts[date_mask]
+        date_ordinals = date_ordinals[date_mask]
         dates = [date for date, keep in zip(dates, date_mask) if keep]
     else:
         execution_prices = DEFAULT_FILL_PRICE_POLICY.build(
@@ -2066,6 +2077,9 @@ def _build_signal_plan(
         highs=highs,
         lows=lows,
         tradable=tradable,
+        date_ordinals=date_ordinals,
+        market=market_group,
+        observation_counts=observation_counts,
     )
     return trade_plan, report_market_data, execution_prices, list(active_codes)
 

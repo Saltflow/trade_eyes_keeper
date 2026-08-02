@@ -200,7 +200,7 @@ if HAS_NUMBA:
     def _signal_state_from_matrix_numba(
         matrix,
         dates,
-        warmup_rows,
+        eligibility,
         adx_min,
         rsi_pullback_pct,
         deviation_pullback,
@@ -227,7 +227,6 @@ if HAS_NUMBA:
         locked = np.zeros(columns, dtype=np.bool_)
         active = np.zeros(columns, dtype=np.bool_)
         streak = np.zeros(columns, dtype=np.int16)
-        observed = np.zeros(columns, dtype=np.int32)
         entry_date = np.full(columns, -1000000000, dtype=np.int64)
         peak = np.full(columns, np.nan, dtype=np.float64)
         active_score = np.zeros(columns, dtype=np.float32)
@@ -247,9 +246,7 @@ if HAS_NUMBA:
                 close = matrix[row, column, IDX_CLOSE]
                 ma200 = matrix[row, column, IDX_MA200]
                 valid = not np.isnan(close) and not np.isnan(ma200)
-                if valid:
-                    observed[column] += 1
-                if observed[column] < warmup_rows:
+                if not eligibility[row, column]:
                     continue
 
                 ma200_slope = matrix[row, column, IDX_MA200_SLOPE]
@@ -489,7 +486,9 @@ class RegimePullbackStrategy(TradingStrategy):
         return _signal_state_from_matrix_numba(
             matrix,
             np.ascontiguousarray(dates, dtype=np.int64),
-            int(self.warmup_rows),
+            np.ascontiguousarray(
+                market_data.eligibility_mask(self.warmup_rows), dtype=np.bool_
+            ),
             float(self._decode(params, "adx_min")),
             float(self._decode(params, "rsi_pullback_pct")),
             float(self._decode(params, "deviation_pullback")),
