@@ -53,6 +53,31 @@ class TestTelegramTransport:
             ok, msg = notifier._send("标题", "正文")
             assert not ok
 
+    def test_transport_error_redacts_bot_token(self, caplog):
+        """第三方异常中的请求 URL 不能把 bot token 写入日志或返回值。"""
+        token = "123456:SECRET-TOKEN"
+        notifier = TelegramNotifier(
+            {
+                "notification": {
+                    "telegram": {
+                        "bot_token": token,
+                        "chat_id": "yyy",
+                    }
+                }
+            }
+        )
+        error = RuntimeError(
+            f"connection failed: https://api.telegram.org/bot{token}/sendMessage"
+        )
+
+        with patch("requests.post", side_effect=error):
+            ok, msg = notifier._send("标题", "正文")
+
+        assert not ok
+        assert token not in msg
+        assert token not in caplog.text
+        assert "<redacted>" in msg
+
     def test_send_telegram_not_ok_returns_false(self):
         """Telegram ok=False 返回失败"""
         notifier = TelegramNotifier(

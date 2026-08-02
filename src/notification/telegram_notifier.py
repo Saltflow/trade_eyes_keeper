@@ -23,6 +23,14 @@ DOWN = "\U0001f534"  # 🔴 下跌
 FLAT = "\u26aa"  # ⚪ 持平/无数据
 
 
+def _redact_transport_error(error: Exception, bot_token: str) -> str:
+    """Return a log-safe transport error without Telegram credentials."""
+    message = str(error)
+    if bot_token:
+        message = message.replace(bot_token, "<redacted>")
+    return re.sub(r"/bot[^/\s]+/", "/bot<redacted>/", message)
+
+
 class TelegramNotifier(BaseNotifier):
     """Telegram Bot 通知器，通过 sendMessage API 推送 HTML 格式消息"""
 
@@ -68,8 +76,9 @@ class TelegramNotifier(BaseNotifier):
                 logger.error("Telegram 请求超时")
                 return False, "Telegram 请求超时"
             except Exception as e:
-                logger.error(f"Telegram 发送失败: {e}")
-                return False, str(e)
+                safe_error = _redact_transport_error(e, self.bot_token)
+                logger.error("Telegram 发送失败: %s", safe_error)
+                return False, safe_error
 
         return True, "ok"
 

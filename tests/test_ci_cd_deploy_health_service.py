@@ -21,3 +21,4 @@ def test_deploy_flow_does_not_start_a_health_server_nohup_loop():
     deploy_source = source[source.index("def deploy()") :]
     assert "nohup python3 main.py --health-server" not in deploy_source
     assert "_build_health_systemd_command()" in deploy_source
+    assert "SKIP_NOTIFICATIONS=true timeout 180 python3 main.py --once" in deploy_source

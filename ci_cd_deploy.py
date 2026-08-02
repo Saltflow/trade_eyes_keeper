@@ -633,10 +633,11 @@ def deploy():
         _step("deps", ok, "installed" if ok else "pip install failed")
 
         # ── 7. 系统测试 (真验证: 全量输出, grep 错误) ──
-        _info("Running system test (SKIP_EMAIL mode, full output)...")
+        # 部署验证只检查业务链路，不应依赖 SMTP/飞书/Telegram 外网。
+        _info("Running system test (SKIP_NOTIFICATIONS mode, full output)...")
         sys_test_cmd = (
             f"cd {REMOTE_DIR} && "
-            f"SKIP_EMAIL=true timeout 180 python3 main.py --once "
+            f"SKIP_NOTIFICATIONS=true timeout 180 python3 main.py --once "
             f"> /tmp/system_test.log 2>&1; "
             f"rc=$?; "
             f"echo '---EXIT:' $rc '---'; "
