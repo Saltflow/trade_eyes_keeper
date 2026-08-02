@@ -139,6 +139,39 @@ def _get_ssh_key():
     return default.replace("\\", "/")  # 不存在也返回，让SSH报错
 
 
+def _build_health_systemd_command():
+    """Build the remote command that installs the sole health-server service."""
+    unit = f"""[Unit]
+Description=Trade Eyes Keeper health server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={REMOTE_DIR}
+ExecStart=/usr/bin/python3 {REMOTE_DIR}/main.py --health-server
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONUTF8=1
+
+[Install]
+WantedBy=multi-user.target"""
+    return f"""set -e
+pkill -f '^bash -c while true; do .*main.py --health-server' 2>/dev/null || true
+pkill -f '^bash -c if ! kill -0 .*main.py --health-server' 2>/dev/null || true
+pkill -f '^python3 main.py --health-server$' 2>/dev/null || true
+rm -f /tmp/hs.pid
+systemctl stop trade-eyes-health.service 2>/dev/null || true
+systemctl reset-failed trade-eyes-health.service 2>/dev/null || true
+printf '%s\n' '{unit}' > /etc/systemd/system/trade-eyes-health.service
+systemctl daemon-reload
+systemctl enable trade-eyes-health.service
+systemctl restart trade-eyes-health.service
+systemctl is-active --quiet trade-eyes-health.service
+systemctl show trade-eyes-health.service -p MainPID -p ActiveState -p SubState"""
+
+
 # ── SSH 工具 ────────────────────────────────────────────
 
 
@@ -758,42 +791,21 @@ print('[HS_CONFIG_OK]')
 """
         _ssh_cmd(health_check, "Health server config check")
 
-        # ── 13. 停止旧健康服务器 ──
-        _info("Stopping old health server...")
-        stop_cmds = [
-            # 用 PID 文件精确杀
-            "if [ -f /tmp/hs.pid ]; then kill $(cat /tmp/hs.pid) 2>/dev/null; rm -f /tmp/hs.pid; fi",
-            # 兜底：pkill 模糊匹配
-            "pkill -f 'python.*main.py.*--health-server' 2>/dev/null || true",
-        ]
-        for cmd in stop_cmds:
-            _ssh_cmd(cmd, "Stop health server processes")
-        time.sleep(2)
-
-        # ── 14. 启动健康服务器 (nohup + PID + 异常退出自动重启) ──
-        start_cmd = (
-            f"cd {REMOTE_DIR} && "
-            f"bash -c '"
-            f"while true; do "
-            f"  nohup python3 main.py --health-server >> /tmp/hs.log 2>&1; "
-            f"  echo $! > /tmp/hs.pid; "
-            f"  rc=$?; "
-            f"  echo \"[$(date)] health-server exited with code=$rc, restarting in 5s...\" >> /tmp/hs.log;"
-            f"  sleep 5; "
-            f"done &'"
+        # ── 13-14. 由 systemd 独占管理健康服务器 ──
+        # 旧版部署器同时启动 nohup 循环和 systemd 服务，会造成端口竞争。
+        # 部署时清理旧循环并安装唯一的持久化 unit，由 Restart=always 接管恢复。
+        _info("Installing health server systemd service...")
+        ok, out, err = _ssh_cmd(
+            _build_health_systemd_command(),
+            "Install and restart health server service",
+            timeout=30,
         )
-        _ssh_cmd(start_cmd, "Start health server", timeout=10)
-        time.sleep(4)
-
-        # 验证进程存在，失败重试一次
-        _ssh_cmd(
-            "bash -c 'if ! kill -0 $(cat /tmp/hs.pid) 2>/dev/null; then"
-            f" cd {REMOTE_DIR} &&"
-            f" nohup python3 main.py --health-server > /tmp/hs.log 2>&1 &"
-            f" echo $! > /tmp/hs.pid;"
-            " echo RETRIED; else echo OK; fi'",
-            "Verify health server alive",
-        )
+        if not ok:
+            _step(
+                "health_service",
+                False,
+                f"systemd install failed: {(err or out or '')[:120]}",
+            )
         time.sleep(3)
 
         verify_cmd = f"""cd {REMOTE_DIR} && python3 -c "

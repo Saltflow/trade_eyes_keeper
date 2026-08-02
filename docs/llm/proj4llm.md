@@ -441,6 +441,7 @@
 ### 2. 消灭重复调度 → 只有 health server 内嵌 APScheduler
 - `ci_cd_deploy.py` 删除 cron 安装逻辑，改为**清理**旧 cron 条目
 - `src/core/scheduler_manager.py` 移除 `_start_health_server()` 调用（health server 由 `--health-server` 显式启动）
+- 生产健康进程只允许由持久化 `trade-eyes-health.service` 管理；部署器必须清理旧 `nohup` 循环，禁止 systemd 与 PID 文件双重拉起
 - 结果：不再同时跑 crontab + OLD SchedulerManager + NEW ScheduleManager 三套调度
 
 ### 3. 简报信号名修复：用 hk/us 分开扫描
