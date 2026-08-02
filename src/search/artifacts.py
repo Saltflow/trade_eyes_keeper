@@ -220,7 +220,20 @@ def _manifest_candidates(root: Path) -> list[tuple[str, Path, dict]]:
     return candidates
 
 
-def _load_active_manifest(root: Path) -> tuple[Path, dict] | None:
+def _load_active_manifest(
+    root: Path,
+    run_id: str | None = None,
+) -> tuple[Path, dict] | None:
+    if run_id is not None:
+        path = root / RUNS_DIRNAME / run_id / "manifest.yaml"
+        manifest = _load_yaml(path)
+        if (
+            not manifest
+            or not manifest.get("activated")
+            or str(manifest.get("run_id", "")) != run_id
+        ):
+            return None
+        return path, manifest
     candidates = _manifest_candidates(root)
     if not candidates:
         return None
@@ -243,6 +256,8 @@ def _artifact_path(base: Path, artifact: str) -> Path | None:
 def load_latest_strategy_run(
     groups: tuple[str, ...] = ("a_share", "hk", "us"),
     root: Path | str | None = None,
+    *,
+    _manifest_run_id: str | None = None,
 ) -> ActiveStrategyRun | None:
     """Load the newest complete optimizer run, falling back to legacy files.
 
@@ -252,7 +267,7 @@ def load_latest_strategy_run(
     next complete optimization run publishes a manifest.
     """
     base = _root(root)
-    found = _load_active_manifest(base)
+    found = _load_active_manifest(base, _manifest_run_id)
     if found:
         _manifest_path, manifest = found
         strategy_name = str(manifest.get("strategy", ""))
@@ -317,6 +332,9 @@ def load_latest_strategy_run(
             selection_by_group=selection_by_group,
         )
 
+    if _manifest_run_id is not None:
+        return None
+
     # Compatibility for artifacts written before run manifests existed.  Pick
     # the newest timestamp, then only accept a coherent strategy across every
     # requested market.
@@ -368,6 +386,21 @@ def load_latest_strategy_run(
         "legacy",
         validation_by_group,
         selection_by_group,
+    )
+
+
+def load_strategy_run(
+    run_id: str,
+    groups: tuple[str, ...] = ("a_share", "hk", "us"),
+    root: Path | str | None = None,
+) -> ActiveStrategyRun | None:
+    """Load one exact activated run without substituting newer or legacy data."""
+    if not run_id or Path(run_id).name != run_id or run_id == "legacy":
+        return None
+    return load_latest_strategy_run(
+        groups,
+        root,
+        _manifest_run_id=run_id,
     )
 
 

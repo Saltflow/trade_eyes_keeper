@@ -107,6 +107,24 @@
 - 新产物记录 Solver 配置及参数、特征、Gate、数据、成交、窗口和搜索合同哈希；
   SearchArchive 只写排名窗。checkpoint 仅在合同哈希相同时恢复，finalist 仍由
   排名窗 EvaluationService 重放，不读取隔离或留出数据。
+- 交互配置只允许修改实际生效且通过 Schema 校验的字段：solver、budget、
+  gate_profile、positive_windows、majority_windows、min_pos、max_dd、
+  window_range_penalty、workers、batch_size，以及统一现金档位、手续费和
+  初始本金。/switch_optimizer 只选择下一次 --optimize 的候选策略，不改变当前
+  生产运行；data_years、旧 hard_constraints 和策略专属规则槽位不再对 Bot 暴露。
+  配置先写临时 YAML 并调用正式 load_constraints() 校验，失败时不得替换原文件。
+- 参考持仓是独立的持久化模拟账户。只有手动 /ref_date 重置会清仓并把 A/HK/US
+  三个资金池绑定到当时最新的三市场完整已激活 run_id；后续搜参或激活不会静默
+  切换既有参考持仓。绑定同时记录策略、参数哈希和完整执行合同哈希（本金、手续费、
+  最短持有期、市场手数、汇率及策略执行参数）；任一合同无法恢复或变化时必须
+  停单并提示再次手动重置。旧 YAML 没有绑定信息时可继续只读展示，但禁止交易。
+- 简报参考持仓不得消费逐标的 scan_today 告警或自定义 20%/25% 仓位规则。
+  它按固定 run 的全市场数据调用公开
+  build_trade_plan -> TradingStrategy.make_signals，只执行计划最后有效交易日，
+  并按 cash_cap 或 target_weight 通用声明成交。实盘参考账户买入使用触发日已知
+  最高价、卖出使用触发日最低价、估值使用收盘价；同一
+  run_id/date/symbol/side 事件只处理一次，避免早盘和午盘简报重复成交。
+  日报继续只读，不调仓。
 - 以下两项 CPU 批量和搜索深度结果属于 `technical-ensemble/1` 的历史
   `cash_cap` 合同，仅用于解释旧候选，不能作为 `technical-ensemble/2`
   一次性事件与 `target_weight` 合同的当前性能或收益依据。

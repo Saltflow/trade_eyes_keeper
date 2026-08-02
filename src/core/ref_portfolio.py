@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
+import numpy as np
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,22 @@ DATA_DIR = Path("data")
 PORTFOLIO_FILE = DATA_DIR / "ref_portfolio.yaml"
 
 
+def reference_execution_contract(
+    strategy_execution: dict,
+    execution_config,
+    market_group: str,
+) -> dict:
+    """Return the complete execution contract pinned by a manual reset."""
+    return {
+        "strategy_execution": dict(strategy_execution),
+        "initial_capital": float(execution_config.initial_capital),
+        "commission_rate": float(execution_config.commission_rate),
+        "min_holding_days": int(execution_config.min_holding_days),
+        "lot_size": int(execution_config.lot_sizes.get(market_group, 100)),
+        "fx_rate": float(execution_config.fx_rates.get(market_group, 1.0)),
+    }
+
+
 # ── 数据模型 ──────────────────────────────────────────────────
 
 
@@ -41,7 +58,8 @@ class Holding:
 
     code: str
     shares: int
-    avg_cost: float  # 每股平均成本（含手续费摊销）
+    avg_cost: float  # 每股平均成交价；手续费单独计入现金和 Trade
+    last_buy_date: str = ""
 
 
 @dataclass
@@ -56,6 +74,9 @@ class Trade:
     cost: float  # 总金额（买入为正，卖出为负）
     reason: str  # 触发信号 rule_id
     commission: float = 0.0
+    event_id: str = ""
+    run_id: str = ""
+    strategy_id: str = ""
 
 
 @dataclass
@@ -70,6 +91,22 @@ class RefPortfolio:
     last_reset_date: str = ""  # 最近一次手动重置日期
     holdings: dict[str, Holding] = field(default_factory=dict)
     trade_log: list[Trade] = field(default_factory=list)
+    processed_events: list[str] = field(default_factory=list)
+    market_group: str = ""
+    strategy_run_id: str = ""
+    strategy_id: str = ""
+    strategy_timestamp: str = ""
+    params_hash: str = ""
+    execution_hash: str = ""
+
+    @property
+    def is_bound(self) -> bool:
+        return bool(
+            self.market_group
+            and self.strategy_run_id
+            and self.strategy_run_id != "legacy"
+            and self.strategy_id
+        )
 
     def total_market_value(self, prices: dict[str, float]) -> float:
         """当前持仓市值。"""
@@ -98,8 +135,19 @@ class RefPortfolio:
             "trading_days": self.trading_days,
             "last_rebalance_date": self.last_rebalance_date,
             "last_reset_date": self.last_reset_date,
+            "market_group": self.market_group,
+            "strategy_run_id": self.strategy_run_id,
+            "strategy_id": self.strategy_id,
+            "strategy_timestamp": self.strategy_timestamp,
+            "params_hash": self.params_hash,
+            "execution_hash": self.execution_hash,
+            "processed_events": list(dict.fromkeys(self.processed_events)),
             "holdings": {
-                code: {"shares": h.shares, "avg_cost": round(h.avg_cost, 4)}
+                code: {
+                    "shares": h.shares,
+                    "avg_cost": round(h.avg_cost, 4),
+                    "last_buy_date": h.last_buy_date,
+                }
                 for code, h in self.holdings.items()
             },
             "trade_log": [
@@ -112,6 +160,9 @@ class RefPortfolio:
                     "cost": round(t.cost, 2),
                     "reason": t.reason,
                     "commission": round(t.commission, 4),
+                    "event_id": t.event_id,
+                    "run_id": t.run_id,
+                    "strategy_id": t.strategy_id,
                 }
                 for t in self.trade_log
             ],
@@ -127,12 +178,20 @@ class RefPortfolio:
             trading_days=d.get("trading_days", 0),
             last_rebalance_date=d.get("last_rebalance_date", ""),
             last_reset_date=d.get("last_reset_date", ""),
+            processed_events=list(d.get("processed_events") or []),
+            market_group=str(d.get("market_group", "")),
+            strategy_run_id=str(d.get("strategy_run_id", "")),
+            strategy_id=str(d.get("strategy_id", "")),
+            strategy_timestamp=str(d.get("strategy_timestamp", "")),
+            params_hash=str(d.get("params_hash", "")),
+            execution_hash=str(d.get("execution_hash", "")),
         )
         for code, hd in (d.get("holdings") or {}).items():
             pf.holdings[code] = Holding(
                 code=code,
                 shares=hd["shares"],
                 avg_cost=hd["avg_cost"],
+                last_buy_date=str(hd.get("last_buy_date", "")),
             )
         for td in d.get("trade_log") or []:
             pf.trade_log.append(
@@ -145,6 +204,9 @@ class RefPortfolio:
                     cost=td["cost"],
                     reason=td.get("reason", ""),
                     commission=td.get("commission", 0.0),
+                    event_id=td.get("event_id", ""),
+                    run_id=td.get("run_id", ""),
+                    strategy_id=td.get("strategy_id", ""),
                 )
             )
         return pf
@@ -209,6 +271,13 @@ class RefPortfolioManager:
         self,
         initial_capital: float = DEFAULT_INITIAL_CAPITAL,
         inception_date: str | None = None,
+        *,
+        market_group: str = "",
+        strategy_run_id: str = "",
+        strategy_id: str = "",
+        strategy_timestamp: str = "",
+        params_hash: str = "",
+        execution_hash: str = "",
     ) -> RefPortfolio:
         """重置参考持仓：清空标的、恢复初始现金、设置期初日期。
 
@@ -228,14 +297,27 @@ class RefPortfolioManager:
             initial_capital=initial_capital,
             trading_days=0,
             last_reset_date=now_str,
+            market_group=market_group,
+            strategy_run_id=strategy_run_id,
+            strategy_id=strategy_id,
+            strategy_timestamp=strategy_timestamp,
+            params_hash=params_hash,
+            execution_hash=execution_hash,
         )
         self.save(pf)
         logger.info(
-            f"参考持仓已重置: 初始资金={initial_capital}, 期初={inception_date}"
+            f"参考持仓已重置: 初始资金={initial_capital}, 期初={inception_date}, "
+            f"市场={market_group}, 运行={strategy_run_id}"
         )
         return pf
 
     # ── 调仓 ──
+
+    @staticmethod
+    def _alert_value(alert, key: str, default=""):
+        if isinstance(alert, dict):
+            return alert.get(key, default)
+        return getattr(alert, key, default)
 
     def rebalance(
         self,
@@ -289,16 +371,31 @@ class RefPortfolioManager:
         skipped_alerts = 0
 
         for alert in alerts:
-            code = str(getattr(alert, "stock_code", ""))
-            rid = str(getattr(alert, "rule_id", ""))
-            rtype = str(getattr(alert, "type", ""))
-            rlabel = str(getattr(alert, "rule_label", ""))
+            code = str(self._alert_value(alert, "stock_code", ""))
+            rid = str(self._alert_value(alert, "rule_id", ""))
+            side = str(self._alert_value(alert, "side", "")).lower()
+            rtype = str(self._alert_value(alert, "type", ""))
+            rlabel = str(
+                self._alert_value(
+                    alert,
+                    "rule_label",
+                    self._alert_value(alert, "label", ""),
+                )
+            )
             if not code:
                 skipped_alerts += 1
                 continue
 
-            is_buy = rtype == "strategy_buy" or "buy" in rid.lower()
-            is_sell = rtype == "strategy_sell" or "sell" in rid.lower()
+            is_buy = (
+                side == "buy"
+                or rtype == "strategy_buy"
+                or "buy" in rid.lower()
+            )
+            is_sell = (
+                side == "sell"
+                or rtype == "strategy_sell"
+                or "sell" in rid.lower()
+            )
 
             if is_buy and not is_sell:
                 buy_signals.append((code, rid))
@@ -341,8 +438,16 @@ class RefPortfolioManager:
             trading_days=pf.trading_days,
             last_rebalance_date=pf.last_rebalance_date,
             last_reset_date=pf.last_reset_date,
+            processed_events=list(pf.processed_events),
+            market_group=pf.market_group,
+            strategy_run_id=pf.strategy_run_id,
+            strategy_id=pf.strategy_id,
+            strategy_timestamp=pf.strategy_timestamp,
+            params_hash=pf.params_hash,
+            execution_hash=pf.execution_hash,
             holdings={
-                k: Holding(v.code, v.shares, v.avg_cost) for k, v in pf.holdings.items()
+                k: Holding(v.code, v.shares, v.avg_cost, v.last_buy_date)
+                for k, v in pf.holdings.items()
             },
             trade_log=list(pf.trade_log),
         )
@@ -460,11 +565,13 @@ class RefPortfolioManager:
                 total_cost_basis = h.shares * h.avg_cost + total_cost
                 h.shares += buy_shares
                 h.avg_cost = total_cost_basis / h.shares if h.shares > 0 else price_cny
+                h.last_buy_date = trade_date
             else:
                 new_pf.holdings[code] = Holding(
                     code=code,
                     shares=buy_shares,
                     avg_cost=price_cny,
+                    last_buy_date=trade_date,
                 )
 
             trade = Trade(
@@ -495,6 +602,549 @@ class RefPortfolioManager:
             f"参考持仓{tag} 调仓结束: {len(trades)}笔交易, "
             f"持仓{len(new_pf.holdings)}只, cash={new_pf.cash:,.0f}"
         )
+        return new_pf, trades
+
+    @staticmethod
+    def _copy_portfolio(pf: RefPortfolio) -> RefPortfolio:
+        return RefPortfolio(
+            inception_date=pf.inception_date,
+            cash=pf.cash,
+            initial_capital=pf.initial_capital,
+            trading_days=pf.trading_days,
+            last_rebalance_date=pf.last_rebalance_date,
+            last_reset_date=pf.last_reset_date,
+            holdings={
+                code: Holding(
+                    holding.code,
+                    holding.shares,
+                    holding.avg_cost,
+                    holding.last_buy_date,
+                )
+                for code, holding in pf.holdings.items()
+            },
+            trade_log=list(pf.trade_log),
+            processed_events=list(pf.processed_events),
+            market_group=pf.market_group,
+            strategy_run_id=pf.strategy_run_id,
+            strategy_id=pf.strategy_id,
+            strategy_timestamp=pf.strategy_timestamp,
+            params_hash=pf.params_hash,
+            execution_hash=pf.execution_hash,
+        )
+
+    @staticmethod
+    def _rebalance_target_plan(
+        new_pf,
+        trade_plan,
+        row,
+        plan_date,
+        symbols,
+        prices,
+        highs,
+        lows,
+        tradable,
+        processed,
+        event_id,
+        sell,
+        buy,
+        lot,
+        fee_rate,
+        fx_rate,
+        min_holding_days,
+    ) -> None:
+        """Mirror the Backtester target-weight transition for one live row."""
+        entries = np.asarray(
+            trade_plan.entry_events
+            if trade_plan.entry_events is not None
+            else trade_plan.buy_signals,
+            dtype=bool,
+        )
+        exits = np.asarray(
+            trade_plan.exit_events
+            if trade_plan.exit_events is not None
+            else trade_plan.sell_signals,
+            dtype=bool,
+        )
+        force_exits = np.asarray(
+            trade_plan.force_exit_signals
+            if trade_plan.force_exit_signals is not None
+            else np.zeros_like(exits),
+            dtype=bool,
+        )
+        conviction = np.asarray(
+            trade_plan.conviction
+            if trade_plan.conviction is not None
+            else trade_plan.buy_priority,
+            dtype=float,
+        )
+        columns = len(symbols)
+        active = np.zeros(columns, dtype=bool)
+        active_score = np.zeros(columns, dtype=float)
+
+        # Reconstruct strategy state only from rows before today's event.  The
+        # plan is sliced at the portfolio inception date by the caller, so a
+        # manual reset never inherits a training-period position.
+        for history_row in range(row):
+            leave = exits[history_row] | force_exits[history_row]
+            active[leave] = False
+            active_score[leave] = 0.0
+            enter = entries[history_row] & ~active
+            active[enter] = True
+            active_score[enter] = np.maximum(
+                conviction[history_row, enter],
+                0.000001,
+            )
+
+        min_calendar_days = int(
+            trade_plan.execution.get(
+                "min_holding_calendar_days",
+                min_holding_days,
+            )
+        )
+        state_changed = False
+
+        # Exits precede entries, exactly as in the unified simulator.
+        for column in range(columns):
+            forced = bool(force_exits[row, column])
+            ordinary = bool(exits[row, column])
+            if not forced and not ordinary:
+                continue
+            eid = event_id(column, "force_sell" if forced else "sell")
+            if eid in processed:
+                continue
+            processed.add(eid)
+            holding = new_pf.holdings.get(symbols[column])
+            held_days = 10**9
+            if holding is not None and holding.last_buy_date:
+                try:
+                    held_days = (
+                        datetime.strptime(plan_date, "%Y-%m-%d")
+                        - datetime.strptime(holding.last_buy_date, "%Y-%m-%d")
+                    ).days
+                except ValueError:
+                    held_days = 10**9
+            if not forced and held_days < min_calendar_days:
+                continue
+            if active[column]:
+                active[column] = False
+                active_score[column] = 0.0
+                state_changed = True
+            if holding is not None and holding.shares > 0:
+                quantity = int(holding.shares / lot) * lot
+                if quantity <= 0:
+                    quantity = holding.shares
+                sell(
+                    column,
+                    quantity,
+                    "trade_plan_force_exit" if forced else "trade_plan_exit",
+                    eid,
+                )
+
+        for column in range(columns):
+            if not entries[row, column] or active[column]:
+                continue
+            eid = event_id(column, "buy")
+            if eid in processed:
+                continue
+            processed.add(eid)
+            raw_price = float(highs[row, column])
+            if (
+                not tradable[row, column]
+                or not np.isfinite(raw_price)
+                or raw_price <= 0
+            ):
+                continue
+            active[column] = True
+            active_score[column] = max(
+                float(conviction[row, column]),
+                0.000001,
+            )
+            state_changed = True
+
+        if not state_changed:
+            return
+
+        per_symbol_cap = max(
+            0.0,
+            float(trade_plan.execution.get("per_symbol_cap", 0.20)),
+        )
+        total_cap = min(
+            1.0,
+            max(
+                0.0,
+                float(trade_plan.execution.get("total_exposure_cap", 0.80)),
+            ),
+        )
+        targets = np.zeros(columns, dtype=float)
+        if trade_plan.target_weights is not None:
+            declared = np.asarray(trade_plan.target_weights, dtype=float)[row]
+            valid = active & np.isfinite(declared) & (declared > 0)
+            targets[valid] = np.minimum(declared[valid], per_symbol_cap)
+            total = float(targets.sum())
+            if total > total_cap and total > 0:
+                targets *= total_cap / total
+        else:
+            from ..strategy import allocate_target_weights
+
+            targets = allocate_target_weights(
+                np.maximum(active_score, 0.000001),
+                active,
+                per_symbol_cap,
+                total_cap,
+            )
+
+        close_cny = np.asarray(prices[row], dtype=float) * fx_rate
+        nav_before = new_pf.cash
+        for column, code in enumerate(symbols):
+            holding = new_pf.holdings.get(code)
+            close = close_cny[column]
+            if (
+                holding is not None
+                and np.isfinite(close)
+                and close > 0
+            ):
+                nav_before += holding.shares * close
+
+        # Do not reduce young ordinary holdings merely to finance a new event.
+        for column, code in enumerate(symbols):
+            holding = new_pf.holdings.get(code)
+            close = close_cny[column]
+            if (
+                holding is None
+                or holding.shares <= 0
+                or not np.isfinite(close)
+                or close <= 0
+                or not tradable[row, column]
+            ):
+                continue
+            held_days = 10**9
+            if holding.last_buy_date:
+                try:
+                    held_days = (
+                        datetime.strptime(plan_date, "%Y-%m-%d")
+                        - datetime.strptime(holding.last_buy_date, "%Y-%m-%d")
+                    ).days
+                except ValueError:
+                    held_days = 10**9
+            current_value = holding.shares * close
+            target_value = nav_before * targets[column]
+            if current_value <= target_value or held_days < min_calendar_days:
+                continue
+            sell_price = float(lows[row, column]) * fx_rate
+            if not np.isfinite(sell_price) or sell_price <= 0:
+                continue
+            quantity = int(
+                (current_value - target_value) / sell_price / lot
+            ) * lot
+            quantity = min(quantity, int(holding.shares / lot) * lot)
+            if quantity > 0:
+                sell(
+                    column,
+                    quantity,
+                    "trade_plan_target_reduce",
+                    f"{new_pf.strategy_run_id}:{plan_date}:{code}:target_reduce",
+                )
+
+        nav_after_sells = new_pf.cash
+        current_shares = np.zeros(columns, dtype=float)
+        for column, code in enumerate(symbols):
+            holding = new_pf.holdings.get(code)
+            if holding is not None:
+                current_shares[column] = holding.shares
+            close = close_cny[column]
+            if holding is not None and np.isfinite(close) and close > 0:
+                nav_after_sells += holding.shares * close
+
+        desired = np.zeros(columns, dtype=float)
+        required_cash = 0.0
+        buy_prices = np.asarray(highs[row], dtype=float) * fx_rate
+        for column in range(columns):
+            close = close_cny[column]
+            price = buy_prices[column]
+            if (
+                not active[column]
+                or not tradable[row, column]
+                or not np.isfinite(close)
+                or close <= 0
+                or not np.isfinite(price)
+                or price <= 0
+            ):
+                continue
+            target_shares = nav_after_sells * targets[column] / close
+            desired[column] = max(
+                target_shares - current_shares[column],
+                0.0,
+            )
+            required_cash += desired[column] * price * (1.0 + fee_rate)
+        cash_scale = 1.0
+        if required_cash > new_pf.cash and required_cash > 0:
+            cash_scale = new_pf.cash / required_cash
+        for column in range(columns):
+            quantity = int(desired[column] * cash_scale / lot) * lot
+            if quantity <= 0:
+                continue
+            buy(
+                column,
+                quantity,
+                "trade_plan_target_increase",
+                (
+                    f"{new_pf.strategy_run_id}:{plan_date}:"
+                    f"{symbols[column]}:target_increase"
+                ),
+            )
+
+    def rebalance_plan(
+        self,
+        pf: RefPortfolio,
+        trade_plan,
+        market_data,
+        trade_date: str,
+        *,
+        run_id: str,
+        strategy_id: str,
+        lot_size: int = 100,
+        commission_rate: float = DEFAULT_COMMISSION_RATE,
+        min_holding_days: int = 0,
+        fx_rate: float = 1.0,
+        label: str = "",
+        force: bool = False,
+    ) -> tuple[RefPortfolio, list[Trade]]:
+        """Execute the final effective row of the canonical market TradePlan.
+
+        The persistent account is pinned to one activated optimizer run.  It
+        therefore rejects a plan from any other run until a manual reset binds
+        the new run.  Live fills use the trigger-day high for buys, low for
+        sells and close for valuation, matching the reference-account policy.
+        """
+        tag = f"[{label}]" if label else ""
+        if (
+            not pf.is_bound
+            or pf.strategy_run_id != run_id
+            or pf.strategy_id != strategy_id
+        ):
+            logger.warning(
+                "参考持仓%s 未绑定或运行不匹配，跳过调仓: pinned=%s/%s plan=%s/%s",
+                tag,
+                pf.strategy_run_id,
+                pf.strategy_id,
+                run_id,
+                strategy_id,
+            )
+            return pf, []
+        try:
+            parsed_trade_date = datetime.strptime(trade_date[:10], "%Y-%m-%d")
+        except ValueError:
+            logger.warning("参考持仓%s 无法解析日期 %s", tag, trade_date)
+            return pf, []
+        if not force and parsed_trade_date.weekday() >= 5:
+            return pf, []
+
+        dates = [str(value)[:10] for value in trade_plan.dates]
+        rows = [index for index, value in enumerate(dates) if value <= trade_date[:10]]
+        if not rows:
+            return pf, []
+        row = rows[-1]
+        plan_date = dates[row]
+        symbols = list(trade_plan.symbols or market_data.symbols)
+        prices = np.asarray(market_data.prices, dtype=float)
+        if prices.ndim != 2 or prices.shape != trade_plan.buy_signals.shape:
+            raise ValueError("TradePlan and live market prices must have equal shapes")
+        highs = (
+            prices
+            if market_data.highs is None
+            else np.asarray(market_data.highs, dtype=float)
+        )
+        lows = (
+            prices
+            if market_data.lows is None
+            else np.asarray(market_data.lows, dtype=float)
+        )
+        tradable = (
+            np.isfinite(prices) & (prices > 0)
+            if market_data.tradable is None
+            else np.asarray(market_data.tradable, dtype=bool)
+        )
+        if any(value.shape != prices.shape for value in (highs, lows, tradable)):
+            raise ValueError("Live close/high/low/tradable matrices must align")
+
+        new_pf = self._copy_portfolio(pf)
+        processed = set(new_pf.processed_events)
+        trades: list[Trade] = []
+        lot = max(1, int(lot_size))
+        fee_rate = max(0.0, float(commission_rate))
+        scale = float(fx_rate)
+
+        def event_id(column: int, side: str) -> str:
+            return f"{run_id}:{plan_date}:{symbols[column]}:{side}"
+
+        def sell(column: int, quantity: int, reason: str, eid: str) -> bool:
+            code = symbols[column]
+            holding = new_pf.holdings.get(code)
+            raw_price = float(lows[row, column])
+            if (
+                holding is None
+                or holding.shares <= 0
+                or quantity <= 0
+                or not tradable[row, column]
+                or not np.isfinite(raw_price)
+                or raw_price <= 0
+            ):
+                return False
+            quantity = min(int(quantity), holding.shares)
+            price = raw_price * scale
+            gross = quantity * price
+            commission = gross * fee_rate
+            holding.shares -= quantity
+            new_pf.cash += gross - commission
+            if holding.shares <= 0:
+                del new_pf.holdings[code]
+            trade = Trade(
+                plan_date,
+                code,
+                "sell",
+                quantity,
+                round(price, 4),
+                -gross,
+                reason,
+                commission,
+                eid,
+                run_id,
+                strategy_id,
+            )
+            trades.append(trade)
+            new_pf.trade_log.append(trade)
+            return True
+
+        def buy(column: int, quantity: int, reason: str, eid: str) -> bool:
+            code = symbols[column]
+            raw_price = float(highs[row, column])
+            if (
+                quantity <= 0
+                or not tradable[row, column]
+                or not np.isfinite(raw_price)
+                or raw_price <= 0
+            ):
+                return False
+            price = raw_price * scale
+            gross = quantity * price
+            commission = gross * fee_rate
+            total_cost = gross + commission
+            if total_cost > new_pf.cash + 0.000001:
+                return False
+            old = new_pf.holdings.get(code)
+            if old is None:
+                new_pf.holdings[code] = Holding(
+                    code,
+                    quantity,
+                    price,
+                    plan_date,
+                )
+            else:
+                old_value = old.shares * old.avg_cost
+                old.shares += quantity
+                old.avg_cost = (old_value + quantity * price) / old.shares
+                old.last_buy_date = plan_date
+            new_pf.cash -= total_cost
+            trade = Trade(
+                plan_date,
+                code,
+                "buy",
+                quantity,
+                round(price, 4),
+                gross,
+                reason,
+                commission,
+                eid,
+                run_id,
+                strategy_id,
+            )
+            trades.append(trade)
+            new_pf.trade_log.append(trade)
+            return True
+
+        model = str(trade_plan.execution.get("model", "cash_cap"))
+        if model == "target_weight":
+            self._rebalance_target_plan(
+                new_pf,
+                trade_plan,
+                row,
+                plan_date,
+                symbols,
+                prices,
+                highs,
+                lows,
+                tradable,
+                processed,
+                event_id,
+                sell,
+                buy,
+                lot,
+                fee_rate,
+                scale,
+                min_holding_days,
+            )
+        elif model == "cash_cap":
+            sell_signals = np.asarray(trade_plan.sell_signals, dtype=bool)
+            buy_signals = np.asarray(trade_plan.buy_signals, dtype=bool)
+            sell_priority = np.asarray(trade_plan.sell_priority, dtype=float)
+            buy_priority = np.asarray(trade_plan.buy_priority, dtype=float)
+            date_to_row = {value: index for index, value in enumerate(dates)}
+
+            sell_columns = sorted(
+                np.flatnonzero(sell_signals[row]),
+                key=lambda column: (-sell_priority[row, column], symbols[column]),
+            )
+            for column in sell_columns:
+                eid = event_id(int(column), "sell")
+                if eid in processed:
+                    continue
+                processed.add(eid)
+                holding = new_pf.holdings.get(symbols[column])
+                if holding is None:
+                    continue
+                buy_row = date_to_row.get(holding.last_buy_date)
+                if (
+                    buy_row is not None
+                    and row - buy_row < max(0, int(min_holding_days))
+                ):
+                    continue
+                price = float(lows[row, column]) * scale
+                if not np.isfinite(price) or price <= 0:
+                    continue
+                desired = min(
+                    float(trade_plan.sell_cash_limit),
+                    holding.shares * price,
+                )
+                quantity = int(desired / price / lot) * lot
+                if quantity <= 0 and holding.shares < lot:
+                    quantity = holding.shares
+                sell(int(column), quantity, "trade_plan_sell", eid)
+
+            buy_columns = sorted(
+                np.flatnonzero(buy_signals[row]),
+                key=lambda column: (-buy_priority[row, column], symbols[column]),
+            )
+            for column in buy_columns:
+                eid = event_id(int(column), "buy")
+                if eid in processed:
+                    continue
+                processed.add(eid)
+                price = float(highs[row, column]) * scale
+                if not np.isfinite(price) or price <= 0 or new_pf.cash <= 0:
+                    continue
+                budget = min(float(trade_plan.buy_cash_limit), new_pf.cash)
+                quantity = int(
+                    budget / (price * (1.0 + fee_rate)) / lot
+                ) * lot
+                buy(int(column), quantity, "trade_plan_buy", eid)
+        else:
+            raise ValueError(f"Unsupported TradePlan execution model: {model}")
+
+        new_pf.processed_events = sorted(processed)
+        if trades:
+            previous = (pf.last_rebalance_date or "")[:10]
+            new_pf.last_rebalance_date = plan_date
+            new_pf.trading_days = pf.trading_days + int(previous != plan_date)
         return new_pf, trades
 
     # ── 查询 ──
@@ -548,6 +1198,13 @@ class RefPortfolioManager:
             "holdings": holdings_list,
             "last_rebalance_date": pf.last_rebalance_date,
             "total_market_value": round(pf.total_market_value(prices), 2),
+            "market_group": pf.market_group,
+            "strategy_run_id": pf.strategy_run_id,
+            "strategy_id": pf.strategy_id,
+            "strategy_timestamp": pf.strategy_timestamp,
+            "params_hash": pf.params_hash,
+            "execution_hash": pf.execution_hash,
+            "requires_manual_reset": bool(pf.inception_date and not pf.is_bound),
         }
 
     # ── 便捷方法 ──

@@ -34,10 +34,13 @@ from src.core.scheduler_manager import SchedulerManager
 from src.data.announcement_fetcher import AnnouncementFetcher
 from src.session.session_manager import SessionManager
 from src.strategy import get_strategy
-from src.backtest import evaluate_all_groups
+from src.backtest import build_trade_plan, evaluate_all_groups
 from src.search import get_constraints, get_execution_config
-from src.markets import _detect_fine_group, get_skip_search
-from src.core.ref_portfolio import RefPortfolioManager, REF_MONTHLY_LIMIT
+from src.markets import _detect_fine_group, get_skip_search, get_skip_signals
+from src.core.ref_portfolio import (
+    RefPortfolioManager,
+    reference_execution_contract,
+)
 from src.core.process_lock import exclusive_process_lock
 from src.search import run_optimizer
 from src.strategy import Params
@@ -46,10 +49,12 @@ from src.search.artifacts import (
     OptimizerGroupSummary,
     OptimizerRunSummary,
     load_latest_strategy_run,
+    load_strategy_run,
     new_run_id,
     persist_group_summary,
     publish_complete_run,
 )
+from src.search.contracts import stable_hash
 from src.instruments import InstrumentAuditService
 from src.instruments.audit import load_latest_audit
 
@@ -952,14 +957,38 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
 
         # 策略信号扫描
         try:
-            brief_strategy, brief_params, brief_timestamp = _get_active_strategy_and_params(config)
+            (
+                brief_strategy,
+                brief_params,
+                brief_timestamp,
+            ) = _get_active_strategy_and_params(config)
             if brief_timestamp:
-                logger.info("Brief scan uses active optimizer run from %s", brief_timestamp)
+                logger.info(
+                    "Brief scan uses active optimizer run from %s",
+                    brief_timestamp,
+                )
+            brief_skipped_signals = get_skip_signals(config)
             a_alerts = _scan_group(
-                session, brief_strategy, "a_share", brief_params.get("a_share")
+                session,
+                brief_strategy,
+                "a_share",
+                brief_params.get("a_share"),
+                skip_codes=brief_skipped_signals,
             )
-            hk_alerts = _scan_group(session, brief_strategy, "hk", brief_params.get("hk"))
-            us_alerts = _scan_group(session, brief_strategy, "us", brief_params.get("us"))
+            hk_alerts = _scan_group(
+                session,
+                brief_strategy,
+                "hk",
+                brief_params.get("hk"),
+                skip_codes=brief_skipped_signals,
+            )
+            us_alerts = _scan_group(
+                session,
+                brief_strategy,
+                "us",
+                brief_params.get("us"),
+                skip_codes=brief_skipped_signals,
+            )
 
             session.signal_scan = type("ScanResult", (), {
                 "alerts": a_alerts + hk_alerts + us_alerts,
@@ -974,52 +1003,39 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
         # ── 参考持仓三分仓调仓（A股/港股/美股各自独立资金池）──
 
         exec_cfg = get_execution_config()
-        alerts_all = session.signal_scan.alerts if session.signal_scan else []
         stock_data_df = session.get_all_dataframe()
+        historical = getattr(session, "_historical", {}) or {}
+        skipped_signals = get_skip_signals(config)
 
-        # 按分组拆分信号和现价
         POOLS = {
             "a_share": {
                 "file": "data/ref_portfolio_a.yaml",
                 "lot": exec_cfg.lot_sizes.get("a_share", 100),
                 "fx": exec_cfg.fx_rates.get("a_share", 1.0),
                 "label": "A股",
-                "initial_capital": exec_cfg.initial_capital,
-                "monthly_limit": REF_MONTHLY_LIMIT,
             },
             "hk": {
                 "file": "data/ref_portfolio_hk.yaml",
                 "lot": exec_cfg.lot_sizes.get("hk", 100),
                 "fx": exec_cfg.fx_rates.get("hk", 0.9),
                 "label": "港股",
-                "initial_capital": exec_cfg.initial_capital,
-                "monthly_limit": REF_MONTHLY_LIMIT,
             },
             "us": {
                 "file": "data/ref_portfolio_us.yaml",
                 "lot": exec_cfg.lot_sizes.get("us", 1),
                 "fx": exec_cfg.fx_rates.get("us", 7.0),
                 "label": "美股",
-                "initial_capital": exec_cfg.initial_capital,
-                "monthly_limit": REF_MONTHLY_LIMIT,
             },
         }
 
         all_statuses: dict[str, dict] = {}
-        for group_key, cfg in POOLS.items():
-            mgr = RefPortfolioManager(file_path=cfg["file"])
+        for group_key, pool in POOLS.items():
+            mgr = RefPortfolioManager(file_path=pool["file"])
             pf = mgr.load()
             if not mgr.is_initialized(pf):
-                logger.debug(f"参考持仓{cfg['label']} 未初始化，跳过")
+                logger.debug(f"参考持仓{pool['label']} 未初始化，跳过")
                 continue
 
-            # 筛选本组信号
-            group_alerts = [
-                a for a in alerts_all
-                if _detect_fine_group(str(getattr(a, "stock_code", ""))) == group_key
-            ]
-
-            # 构建本组现价表
             prices = {}
             for _, row in stock_data_df.iterrows():
                 code = str(row.get("stock_code", ""))
@@ -1029,23 +1045,111 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                 if code and close is not None and not pd.isna(close):
                     prices[code] = float(close)
 
-            new_pf, trades = mgr.rebalance(
-                pf, group_alerts, prices,
-                today.strftime("%Y-%m-%d"),
-                lot_size=cfg["lot"],
-                commission_rate=exec_cfg.commission_rate,
-                monthly_buy_limit=cfg["monthly_limit"],
-                fx_rate=cfg["fx"],
-                label=cfg["label"],
-                force=force,
-            )
-            mgr.save(new_pf)
+            new_pf = pf
+            trading_blocked_reason = ""
+            if not pf.is_bound:
+                trading_blocked_reason = "未绑定运行，需手动重置"
+                logger.warning(
+                    "参考持仓%s 是旧格式且未绑定运行；跳过交易，等待手动 /ref_date 重置",
+                    pool["label"],
+                )
+            else:
+                pinned = load_strategy_run(pf.strategy_run_id, groups=(group_key,))
+                params = (
+                    pinned.params_by_group.get(group_key)
+                    if pinned is not None
+                    else None
+                )
+                binding_valid = bool(
+                    pinned is not None
+                    and pinned.strategy is not None
+                    and pinned.strategy_name == pf.strategy_id
+                    and params is not None
+                    and stable_hash(
+                        {
+                            "strategy_id": pinned.strategy_name,
+                            "values": params.values,
+                        }
+                    )
+                    == pf.params_hash
+                    and stable_hash(
+                        reference_execution_contract(
+                            params.execution_snapshot,
+                            exec_cfg,
+                            group_key,
+                        )
+                    )
+                    == pf.execution_hash
+                )
+                if not binding_valid:
+                    trading_blocked_reason = "固定运行或执行合同不可恢复"
+                    logger.error(
+                        "参考持仓%s 固定运行或合同不可恢复；跳过交易，"
+                        "需手动 /ref_date 重置",
+                        pool["label"],
+                    )
+                else:
+                    active_codes = sorted(
+                        {
+                            str(row.get("stock_code", ""))
+                            for _, row in stock_data_df.iterrows()
+                            if _detect_fine_group(
+                                str(row.get("stock_code", ""))
+                            )
+                            == group_key
+                            and str(row.get("stock_code", "")) not in skipped_signals
+                            and str(row.get("stock_code", "")) in historical
+                        }
+                    )
+                    if active_codes:
+                        try:
+                            trade_plan, market_data, _, _ = build_trade_plan(
+                                historical,
+                                active_codes,
+                                pinned.strategy,
+                                params,
+                                start_date=pf.inception_date,
+                                end_date=today.strftime("%Y-%m-%d"),
+                            )
+                            if trade_plan is not None and market_data is not None:
+                                new_pf, _ = mgr.rebalance_plan(
+                                    pf,
+                                    trade_plan,
+                                    market_data,
+                                    today.strftime("%Y-%m-%d"),
+                                    run_id=pinned.run_id,
+                                    strategy_id=pinned.strategy_name,
+                                    lot_size=pool["lot"],
+                                    commission_rate=exec_cfg.commission_rate,
+                                    min_holding_days=exec_cfg.min_holding_days,
+                                    fx_rate=pool["fx"],
+                                    label=pool["label"],
+                                    force=force,
+                                )
+                                mgr.save(new_pf)
+                        except Exception:
+                            trading_blocked_reason = "统一计划构建或执行失败"
+                            logger.exception(
+                                "参考持仓%s 统一计划构建或执行失败；保留原状态",
+                                pool["label"],
+                            )
+                    else:
+                        trading_blocked_reason = "没有完整历史数据"
+                        logger.warning(
+                            "参考持仓%s 没有可构建统一计划的完整历史数据",
+                            pool["label"],
+                        )
 
             # 本组 status（现价 × FX → CNY，与成本基准一致）
-            cny_prices = {code: p * cfg["fx"] for code, p in prices.items()}
+            cny_prices = {code: p * pool["fx"] for code, p in prices.items()}
             status = mgr.get_status(new_pf, cny_prices)
             status["_group"] = group_key
-            status["_label"] = cfg["label"]
+            status["_label"] = (
+                f"{pool['label']}（停单）"
+                if trading_blocked_reason
+                else pool["label"]
+            )
+            status["_trading_blocked_reason"] = trading_blocked_reason
             all_statuses[group_key] = status
 
         # 合并附到 session
@@ -1107,8 +1211,15 @@ def _fetch_benchmarks(config, session) -> dict:
     return bench_data
 
 
-def _scan_group(session, strategy, group: str, params=None, top_n: int = 5):
-    """调用策略 scan_today 返回信号告警列表。"""
+def _scan_group(
+    session,
+    strategy,
+    group: str,
+    params=None,
+    top_n: int = 5,
+    skip_codes: set[str] | None = None,
+):
+    """Derive today's alerts from the canonical full-market TradePlan."""
     if strategy is None:
         return []
     if params is None:
@@ -1121,25 +1232,72 @@ def _scan_group(session, strategy, group: str, params=None, top_n: int = 5):
     if params is None:
         return []
     df = session.get_all_dataframe()
-    alerts = []
-    for _, row in df.iterrows():
-        code = str(row.get("stock_code", ""))
-        if _detect_fine_group(code) != group:
-            continue
-        today = {
-            col: row.get(col)
-            for col in row.index
-            if row.get(col) is not None and not pd.isna(row.get(col))
+    historical = getattr(session, "_historical", {}) or {}
+    skipped = skip_codes or set()
+    active_codes = sorted(
+        {
+            str(row.get("stock_code", ""))
+            for _, row in df.iterrows()
+            if _detect_fine_group(str(row.get("stock_code", ""))) == group
+            and str(row.get("stock_code", "")) not in skipped
+            and str(row.get("stock_code", "")) in historical
         }
-        try:
-            history = getattr(session, "_historical", {}).get(code)
-            results = strategy.scan_today(params, today, history=history)
-            if results:
-                for r in results:
-                    r["stock_code"] = code
-                alerts.extend(results)
-        except Exception:
-            pass
+    )
+    if not active_codes:
+        return []
+    try:
+        trade_plan, _, _, _ = build_trade_plan(
+            historical,
+            active_codes,
+            strategy,
+            params,
+        )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Unable to build %s live TradePlan",
+            group,
+        )
+        return []
+    if trade_plan is None or not trade_plan.dates:
+        return []
+    row = len(trade_plan.dates) - 1
+    buys = np.asarray(
+        trade_plan.entry_events
+        if trade_plan.entry_events is not None
+        else trade_plan.buy_signals,
+        dtype=bool,
+    )
+    sells = np.asarray(
+        trade_plan.exit_events
+        if trade_plan.exit_events is not None
+        else trade_plan.sell_signals,
+        dtype=bool,
+    )
+    if trade_plan.force_exit_signals is not None:
+        sells |= np.asarray(trade_plan.force_exit_signals, dtype=bool)
+    buy_priority = np.asarray(trade_plan.buy_priority, dtype=float)
+    sell_priority = np.asarray(trade_plan.sell_priority, dtype=float)
+    alerts = []
+    signal_date = str(trade_plan.dates[row])[:10]
+    for column, code in enumerate(trade_plan.symbols):
+        for side, matrix, priorities in (
+            ("buy", buys, buy_priority),
+            ("sell", sells, sell_priority),
+        ):
+            if not matrix[row, column]:
+                continue
+            alerts.append(
+                {
+                    "stock_code": code,
+                    "side": side,
+                    "priority": float(priorities[row, column]),
+                    "label": f"{strategy.label} {side.upper()}",
+                    "detail": f"TradePlan event on {signal_date}",
+                    "rule_id": f"{strategy.name}_{side}",
+                    "type": f"strategy_{side}",
+                    "signal_date": signal_date,
+                }
+            )
     # Live alerts use the same priority semantics as simulated orders; source
     # configuration order must never decide which candidate is surfaced first.
     alerts.sort(

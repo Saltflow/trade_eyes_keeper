@@ -1966,7 +1966,7 @@ class Backtester:
         )
 
 
-def _build_signal_plan(
+def build_trade_plan(
     stocks_data: dict[str, pd.DataFrame],
     active_codes: list[str],
     strategy,  # TradingStrategy
@@ -2612,7 +2612,7 @@ def evaluate_all_groups(
         if not active_codes:
             continue
 
-        trade_plan, market_data, execution_prices, codes = _build_signal_plan(
+        trade_plan, market_data, execution_prices, codes = build_trade_plan(
             group_data,
             active_codes,
             strategy,

@@ -89,8 +89,8 @@ def handle_help() -> str:
             "🔬 策略与搜参",
             [
                 ("/optimize", "优化配置中的活动策略并推送三市场候选报告"),
-                ("/switch_optimizer [引擎]", "查看/切换搜参引擎"),
-                ("/mode", "查看统一现金档位执行方式"),
+                ("/switch_optimizer [策略]", "查看/切换下次候选策略"),
+                ("/mode", "查看当前 TradePlan 执行合同"),
                 ("/config [show|set K V|reset]", "查看/修改优化器配置"),
                 ("/ref_date [YYYY-MM-DD]", "设置参考持仓基期（默认今天）"),
             ],
@@ -216,7 +216,10 @@ def handle_switch_optimizer(kind: str | None = None) -> str:
     if kind is None:
         config = _load_config()
         cur = (config.get("optimizer", {}) or {}).get("engine", "percentile")
-        lines = ["<b>可用搜参引擎</b>\n"]
+        lines = [
+            "<b>可用候选策略</b>\n",
+            "这里只决定下一次 /optimize 搜索哪个策略；不会切换当前生产运行。\n",
+        ]
         for s in strategies:
             marker = "  ← 当前" if s["key"] == cur else ""
             lines.append(f"<b>{s['key']}</b> — {s['label']}{marker}")
@@ -235,7 +238,11 @@ def handle_switch_optimizer(kind: str | None = None) -> str:
     old = (config.get("optimizer", {}) or {}).get("engine", "percentile")
     config.setdefault("optimizer", {})["engine"] = kind
     _save_config(config)
-    return f"✅ 搜参引擎已切换: <b>{old} → {kind}</b>\n\n{s.label}: {s.description}"
+    return (
+        f"✅ 下次搜参候选策略: <b>{old} → {kind}</b>\n\n"
+        f"{s.label}: {s.description}\n\n"
+        "当前生产策略不会改变；候选通过 Gate 后仍须显式激活。"
+    )
 
 
 def handle_add(codes: list[str]) -> str:
@@ -658,178 +665,367 @@ def _load_opt_config() -> dict:
 
 
 def _save_opt_config(config: dict) -> None:
+    """Validate a temporary optimizer YAML before atomically replacing it."""
     tmp = OPT_CONSTRAINTS_PATH.with_suffix(".yaml.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             yaml.dump(
                 config, f, allow_unicode=True, default_flow_style=False, sort_keys=False
             )
+        from ...search.config import load_constraints, reload_constraints
+
+        load_constraints(tmp)
         tmp.replace(OPT_CONSTRAINTS_PATH)
+        reload_constraints()
         logger.info(f"优化器配置已保存: {OPT_CONSTRAINTS_PATH}")
     except Exception as e:
         logger.exception(f"保存优化器配置失败: {e}")
+        if tmp.exists():
+            tmp.unlink()
+        raise
 
 
 _MODE_LABELS = {
-    "cash_tier": "Cash-Tier (统一单笔现金档位)",
+    "trade_plan": "TradePlan（策略声明、统一执行）",
 }
 
 _CONFIG_HELP = {
-    "min_pos": ("min_avg_position_pct", "最低平均仓位%", "hard_constraints", 5, 50),
-    "max_dd": ("max_drawdown_pct", "最大回撤% (负数)", "hard_constraints", -50, -5),
-    "daily_adjust": (
-        "max_daily_adjust",
-        "日调仓上限 (Position-Target)",
-        "position_model",
-        0.1,
-        1.0,
-    ),
-    "data_years": ("data_years", "回测数据年数", "walk_forward", 1, 10),
-    "confirm_days": (
-        "buy_confirmation_days_ref",
-        "买入确认天数",
-        "position_model",
-        1,
-        5,
-    ),
-    "buy_cash_levels": (
-        "buy_limit_levels",
-        "买入现金档位",
-        "simplified_search",
-        None,
-        None,
-    ),
-    "sell_cash_levels": (
-        "sell_limit_levels",
-        "卖出现金档位",
-        "simplified_search",
-        None,
-        None,
-    ),
-    "num_buy": ("num_buy_rules", "买入规则槽位数", "discrete_search", 1, 10),
-    "num_sell": ("num_sell_rules", "卖出规则槽位数", "discrete_search", 1, 5),
-    # 执行参数（手续费/本金；单笔金额由现金档位决定）
-    "commission": ("commission_rate", "手续费率", "execution_params", 0.001, 0.02),
-    "init_capital": ("initial_capital", "初始本金", "execution_params", 10000, 1000000),
+    "solver": {
+        "label": "搜参算法",
+        "kind": "solver",
+    },
+    "budget": {
+        "label": "当前算法评价预算",
+        "kind": "solver_budget",
+        "min": 100,
+        "max": 1000000,
+    },
+    "gate_profile": {
+        "label": "候选 Gate Profile",
+        "kind": "gate_profile",
+    },
+    "positive_windows": {
+        "label": "正收益窗口数",
+        "kind": "gate_rule",
+        "rule": "positive_return_windows",
+        "min": 0,
+        "max": 11,
+    },
+    "majority_windows": {
+        "label": "战胜任意两个基准窗口数",
+        "kind": "gate_rule",
+        "rule": "majority_benchmark_win_windows",
+        "min": 0,
+        "max": 11,
+    },
+    "min_pos": {
+        "label": "最低平均仓位%",
+        "kind": "gate_rule",
+        "rule": "minimum_average_position",
+        "min": 0.0,
+        "max": 100.0,
+    },
+    "max_dd": {
+        "label": "最差窗口最大回撤%",
+        "kind": "gate_rule",
+        "rule": "maximum_drawdown",
+        "min": -100.0,
+        "max": 0.0,
+    },
+    "window_range_penalty": {
+        "label": "最好/最差窗口波动惩罚",
+        "kind": "path",
+        "path": ("walk_forward", "window_range_penalty"),
+        "min": 0.0,
+        "max": 10.0,
+    },
+    "workers": {
+        "label": "并行评估进程数",
+        "kind": "workers",
+        "min": 1,
+        "max": 128,
+    },
+    "batch_size": {
+        "label": "候选批大小",
+        "kind": "path_int",
+        "path": ("search", "batch_size"),
+        "min": 128,
+        "max": 512,
+    },
+    "buy_cash_levels": {
+        "label": "买入现金档位",
+        "kind": "levels",
+        "path": ("simplified_search", "buy_limit_levels"),
+    },
+    "sell_cash_levels": {
+        "label": "卖出现金档位",
+        "kind": "levels",
+        "path": ("simplified_search", "sell_limit_levels"),
+    },
+    "commission": {
+        "label": "手续费率",
+        "kind": "path",
+        "path": ("execution_params", "commission_rate"),
+        "min": 0.0,
+        "max": 0.02,
+    },
+    "init_capital": {
+        "label": "初始本金",
+        "kind": "path",
+        "path": ("execution_params", "initial_capital"),
+        "min": 10000.0,
+        "max": 10000000.0,
+    },
 }
 
-# The old ratio/position-target controls are intentionally not exposed.  They
-# may remain in a historic YAML file, but no command can mutate or display
-# them after the universal cash-tier migration.
-_CONFIG_HELP.pop("daily_adjust", None)
-_CONFIG_HELP.pop("confirm_days", None)
+
+def _gate_rule(cfg: dict, rule_id: str) -> dict:
+    profile_id = str((cfg.get("search", {}) or {}).get("gate_profile", "standard"))
+    profile = (cfg.get("gate_profiles", {}) or {}).get(profile_id, {})
+    rules = profile.get("rules", []) if isinstance(profile, dict) else []
+    for rule in rules:
+        if isinstance(rule, dict) and rule.get("id") == rule_id:
+            return rule
+    raise ValueError(f"Gate Profile {profile_id} 不包含规则 {rule_id}")
+
+
+def _path_get(cfg: dict, path: tuple[str, str]):
+    return (cfg.get(path[0], {}) or {}).get(path[1])
+
+
+def _path_set(cfg: dict, path: tuple[str, str], value) -> None:
+    cfg.setdefault(path[0], {})[path[1]] = value
 
 
 def handle_mode(mode: str) -> str:
-    """Show the single execution model kept after the cash-tier migration."""
-    cfg = _load_opt_config()
+    """Show execution models from the active immutable strategy artifacts."""
     if not mode:
+        from ...search.artifacts import load_latest_strategy_run
+
+        active = load_latest_strategy_run()
         lines = [
-            f"当前模式: <b>{_MODE_LABELS['cash_tier']}</b>",
+            f"当前模式: <b>{_MODE_LABELS['trade_plan']}</b>",
             "",
-            "所有注册策略均使用独立的买入/卖出单笔现金档位。",
-            "使用 <code>/config set buy_cash_levels 10000,20000,...</code> 修改下次搜参空间。",
+            "执行模式由每个已激活参数产物声明，核心回测和参考持仓统一解释。",
+            "支持 <code>cash_cap</code> 与 <code>target_weight</code>，不可全局强制切换。",
         ]
-        fl = cfg.get("simplified_search", {}).get("buy_limit_levels", [])
-        lines.append(f"  买入现金档位: {fl}")
+        if active is None:
+            lines.append("  当前没有完整已激活运行")
+        else:
+            lines.append(
+                f"  运行: <code>{active.run_id}</code> / "
+                f"<code>{active.strategy_name}</code>"
+            )
+            for group, params in active.params_by_group.items():
+                execution = params.execution_snapshot
+                lines.append(
+                    f"  {group}: {execution.get('model', 'cash_cap')}"
+                )
         return "\n".join(lines)
 
-    return "⚠️ 固定比例/仓位目标模式已移除；所有策略统一使用现金档位执行。"
+    return "⚠️ 执行模式由 TradePlan 声明，不能通过 /mode 修改。"
+
+
+def _config_value(cfg: dict, key: str):
+    spec = _CONFIG_HELP[key]
+    kind = spec["kind"]
+    search = cfg.get("search", {}) or {}
+    if kind == "solver":
+        return search.get("solver_id", "genetic")
+    if kind == "solver_budget":
+        solver_id = str(search.get("solver_id", "genetic"))
+        return ((search.get("solvers", {}) or {}).get(solver_id, {}) or {}).get(
+            "budget"
+        )
+    if kind == "gate_profile":
+        return search.get("gate_profile", "standard")
+    if kind == "gate_rule":
+        return _gate_rule(cfg, str(spec["rule"])).get("value")
+    if kind == "workers":
+        return search.get("workers")
+    return _path_get(cfg, spec["path"])
+
+
+def _set_config_value(cfg: dict, key: str, raw_value: str) -> None:
+    spec = _CONFIG_HELP[key]
+    kind = spec["kind"]
+    if kind == "solver":
+        from ...search.registry import list_solvers
+
+        solver_id = raw_value.strip().lower()
+        if solver_id not in list_solvers():
+            raise ValueError(f"未知 Solver；可用: {', '.join(list_solvers())}")
+        cfg.setdefault("search", {})["solver_id"] = solver_id
+        return
+    if kind == "gate_profile":
+        profile_id = raw_value.strip()
+        profiles = cfg.get("gate_profiles", {}) or {}
+        if profile_id not in profiles:
+            raise ValueError(f"未知 Gate Profile；可用: {', '.join(profiles)}")
+        cfg.setdefault("search", {})["gate_profile"] = profile_id
+        return
+    if kind == "workers":
+        if raw_value.strip().lower() == "auto":
+            cfg.setdefault("search", {})["workers"] = None
+            return
+        parsed = int(raw_value)
+    elif kind == "levels":
+        parsed = sorted(
+            {
+                float(item.strip())
+                for item in raw_value.split(",")
+                if item.strip()
+            }
+        )
+        if not parsed or parsed[0] <= 0:
+            raise ValueError("现金档位必须是逗号分隔的正数")
+        _path_set(cfg, spec["path"], parsed)
+        return
+    elif kind in {"solver_budget", "path_int"} or key in {
+        "positive_windows",
+        "majority_windows",
+    }:
+        parsed = int(raw_value)
+    else:
+        parsed = float(raw_value)
+
+    minimum = spec.get("min")
+    maximum = spec.get("max")
+    if minimum is not None and parsed < minimum:
+        raise ValueError(f"不得小于 {minimum}")
+    if maximum is not None and parsed > maximum:
+        raise ValueError(f"不得大于 {maximum}")
+    if kind == "solver_budget":
+        search = cfg.setdefault("search", {})
+        solver_id = str(search.get("solver_id", "genetic"))
+        search.setdefault("solvers", {}).setdefault(solver_id, {})["budget"] = parsed
+    elif kind == "gate_rule":
+        _gate_rule(cfg, str(spec["rule"]))["value"] = parsed
+    elif kind == "workers":
+        cfg.setdefault("search", {})["workers"] = parsed
+    else:
+        _path_set(cfg, spec["path"], parsed)
 
 
 def handle_config(action: str, key: str, value: str) -> str:
-    """查看或修改优化器配置。"""
+    """View or safely update the effective Solver/Gate/runtime configuration."""
     cfg = _load_opt_config()
-
     if action == "reset":
-        # Restore defaults
-        ds = cfg.setdefault("discrete_search", {})
-        ds["num_buy_rules"] = 5
-        ds["num_sell_rules"] = 3
-        hc = cfg.setdefault("hard_constraints", {})
-        hc["min_avg_position_pct"] = 5
-        hc["max_drawdown_pct"] = -40
-        wf = cfg.setdefault("walk_forward", {})
-        wf["data_years"] = 5
-        _save_opt_config(cfg)
-        return "✅ 已恢复默认优化器配置"
+        defaults = {
+            "solver": "local_genetic",
+            "budget": "155000",
+            "gate_profile": "standard",
+            "positive_windows": "6",
+            "majority_windows": "6",
+            "min_pos": "5",
+            "max_dd": "-40",
+            "window_range_penalty": "0.5",
+            "workers": "auto",
+            "batch_size": "256",
+            "buy_cash_levels": "10000,20000,30000,40000,50000",
+            "sell_cash_levels": "10000,20000,30000,40000,50000",
+            "commission": "0.005",
+            "init_capital": "100000",
+        }
+        try:
+            for default_key, default_value in defaults.items():
+                _set_config_value(cfg, default_key, default_value)
+            _save_opt_config(cfg)
+        except Exception as exc:
+            return f"❌ 默认配置校验失败，未保存: {exc}"
+        return "✅ 已恢复统一优化器默认配置"
 
     if action == "set" and key and value:
         if key not in _CONFIG_HELP:
-            return f"❌ 未知配置项: <code>{key}</code>\n可用: {', '.join(_CONFIG_HELP.keys())}"
-        field, _, section, vmin, vmax = _CONFIG_HELP[key]
+            return (
+                f"❌ 未知配置项: <code>{key}</code>\n"
+                f"可用: {', '.join(_CONFIG_HELP)}"
+            )
         try:
-            if key in ("buy_cash_levels", "sell_cash_levels"):
-                val = [float(x.strip()) for x in value.split(",")]
-            elif key in ("num_buy", "num_sell"):
-                val = int(value)
-            else:
-                val = float(value)
-        except ValueError:
-            return f"❌ 值格式错误: {value}"
-
-        if section == "hard_constraints":
-            cfg.setdefault("hard_constraints", {})[field] = val
-        elif section == "walk_forward":
-            cfg.setdefault("walk_forward", {})[field] = val
-        elif section == "discrete_search":
-            cfg.setdefault("discrete_search", {})[field] = val
-        elif section == "simplified_search":
-            cfg.setdefault("simplified_search", {})[field] = val
-        elif section == "execution_params":
-            cfg.setdefault("execution_params", {})[field] = val
-        _save_opt_config(cfg)
-        # 刷新执行配置缓存（search/daily 两路径生效）
-        try:
-            from ...search.config import reload_execution_config
-
-            reload_execution_config()
+            _set_config_value(cfg, key, value)
+            _save_opt_config(cfg)
+        except (TypeError, ValueError) as exc:
+            return f"❌ 配置值无效，未保存: {exc}"
         except Exception as exc:
-            logger.warning("Execution config reload failed after update: %s", exc)
-        return f"✅ {_CONFIG_HELP[key][1]}: {value}"
-
-    # show
-    ds = cfg.get("discrete_search", {})
-    hc = cfg.get("hard_constraints", {})
-    wf = cfg.get("walk_forward", {})
-    label = _MODE_LABELS["cash_tier"]
+            return f"❌ 配置校验或保存失败，旧配置已保留: {exc}"
+        actual = _config_value(cfg, key)
+        warning = ""
+        if key == "gate_profile":
+            profile = (cfg.get("gate_profiles", {}) or {}).get(str(actual), {})
+            if not bool((profile or {}).get("activation_eligible", False)):
+                warning = "\n⚠️ 此 Profile 只用于探索，候选没有激活资格。"
+        return f"✅ {_CONFIG_HELP[key]['label']}: {actual}{warning}"
 
     if key:
-        # show specific
         if key not in _CONFIG_HELP:
             return f"❌ 未知配置项: {key}"
-        field, label_f, section, _, _ = _CONFIG_HELP[key]
-        val = None
-        if section == "hard_constraints":
-            val = hc.get(field)
-        elif section == "walk_forward":
-            val = wf.get(field)
-        elif section == "discrete_search":
-            val = ds.get(field)
-        elif section == "simplified_search":
-            val = cfg.get("simplified_search", {}).get(field)
-        elif section == "execution_params":
-            val = cfg.get("execution_params", {}).get(field)
-        return f"<b>{label_f}</b>: {val}"
+        try:
+            current = _config_value(cfg, key)
+        except ValueError as exc:
+            return f"❌ 当前配置不完整: {exc}"
+        if key == "workers" and current is None:
+            current = "auto"
+        return f"<b>{_CONFIG_HELP[key]['label']}</b>: {current}"
 
-    ep = cfg.get("execution_params", {})
-    lines = [
-        f"<b>优化器配置</b> (模式: {label})",
-        f"  数据年: {wf.get('data_years', 5)}",
-        f"  最低仓位%: {hc.get('min_avg_position_pct', 5)}  最大回撤%: {hc.get('max_drawdown_pct', -40)}",
-        f"  买入现金档位: {cfg.get('simplified_search', {}).get('buy_limit_levels', [])}",
-        f"  卖出现金档位: {cfg.get('simplified_search', {}).get('sell_limit_levels', [])}",
-        f"  手续费: {ep.get('commission_rate', 0.005):.3f}",
-    ]
-    lines.append("  每笔买卖金额由策略的现金档位参数决定")
-    lines.extend(
-        [
-            f"  买入槽位: {ds.get('num_buy_rules', 5)}  卖出槽位: {ds.get('num_sell_rules', 3)}",
-            "",
-            "修改: <code>/config set KEY VALUE</code>",
-            "可配置项: " + ", ".join(_CONFIG_HELP.keys()),
-        ]
+    search = cfg.get("search", {}) or {}
+    wf = cfg.get("walk_forward", {}) or {}
+    profile_id = str(search.get("gate_profile", "standard"))
+    profile = (cfg.get("gate_profiles", {}) or {}).get(profile_id, {}) or {}
+    configured = _load_config()
+    candidate_strategy = (
+        (configured.get("optimizer", {}) or {}).get("engine", "percentile")
     )
+    try:
+        from ...search.artifacts import load_latest_strategy_run
+
+        active = load_latest_strategy_run()
+    except Exception:
+        active = None
+    active_label = (
+        f"{active.strategy_name} / {active.run_id}"
+        if active is not None
+        else "无完整已激活运行"
+    )
+    workers = search.get("workers")
+    workers_label = "auto（全部物理核）" if workers is None else str(workers)
+    try:
+        positive = _config_value(cfg, "positive_windows")
+        majority = _config_value(cfg, "majority_windows")
+        min_pos = _config_value(cfg, "min_pos")
+        max_dd = _config_value(cfg, "max_dd")
+    except ValueError:
+        positive = majority = min_pos = max_dd = "缺失"
+    lines = [
+        "<b>统一优化配置</b>",
+        f"  下次候选策略: {candidate_strategy}",
+        f"  当前生产策略: {active_label}",
+        f"  Solver: {search.get('solver_id', 'genetic')}",
+        f"  预算: {_config_value(cfg, 'budget')}",
+        (
+            f"  Gate: {profile_id} "
+            f"(可激活={bool(profile.get('activation_eligible', False))})"
+        ),
+        f"  正收益窗口: {positive}/11",
+        f"  战胜任意两个基准: {majority}/11",
+        f"  最低平均仓位: {min_pos}%  最差回撤: {max_dd}%",
+        f"  窗口波动惩罚: {_config_value(cfg, 'window_range_penalty')}",
+        f"  workers: {workers_label}  batch: {search.get('batch_size', 256)}",
+        (
+            "  固定窗口合同: "
+            f"{wf.get('data_years', 5) * 12}月 / "
+            f"{wf.get('num_windows', 14)}窗 / 11排名+2隔离+1留出"
+        ),
+        (
+            "  现金档位: 买 "
+            f"{_config_value(cfg, 'buy_cash_levels')} / 卖 "
+            f"{_config_value(cfg, 'sell_cash_levels')}"
+        ),
+        f"  手续费: {_config_value(cfg, 'commission')}",
+        "",
+        "修改: <code>/config set KEY VALUE</code>",
+        "workers 使用 <code>auto</code> 可占满物理核",
+        "可配置项: " + ", ".join(_CONFIG_HELP),
+    ]
     return "\n".join(lines)
 
 
@@ -842,7 +1038,7 @@ def handle_ref_date(date_str: str | None = None) -> str:
     """
     from ...core.ref_portfolio import (
         RefPortfolioManager,
-        DEFAULT_INITIAL_CAPITAL,
+        reference_execution_contract,
     )
 
     config = _load_config()
@@ -882,6 +1078,13 @@ def handle_ref_date(date_str: str | None = None) -> str:
                 f"\n<b>{label}</b>: 现金 {pf.cash:,.2f} | "
                 f"持仓 {len(pf.holdings)} 只 | 交易日 {pf.trading_days}"
             )
+            if pf.is_bound:
+                lines.append(
+                    f"  策略: <code>{pf.strategy_id}</code> | "
+                    f"固定运行: <code>{pf.strategy_run_id}</code>"
+                )
+            else:
+                lines.append("  ⚠️ 旧持仓未绑定运行；不会继续交易，须手动重置。")
             if pf.holdings:
                 for code, h in sorted(pf.holdings.items()):
                     lines.append(
@@ -906,6 +1109,23 @@ def handle_ref_date(date_str: str | None = None) -> str:
     except ValueError:
         return f"❌ 日期格式错误: {date_str}。请使用 YYYY-MM-DD。"
 
+    from ...search.artifacts import load_latest_strategy_run
+    from ...search.config import get_execution_config
+    from ...search.contracts import stable_hash
+
+    active_run = load_latest_strategy_run()
+    if (
+        active_run is None
+        or active_run.run_id in {"", "legacy"}
+        or active_run.strategy is None
+    ):
+        return (
+            "❌ 没有可绑定的三市场完整已激活运行；参考持仓未重置。"
+            "请先完成并激活一次有效搜参运行。"
+        )
+    execution_config = get_execution_config()
+    initial_capital = float(execution_config.initial_capital)
+
     # 防呆：设置新基期前需要确认
     if not pending_date:
         total_holdings = 0
@@ -929,21 +1149,43 @@ def handle_ref_date(date_str: str | None = None) -> str:
                 f"当前持仓: {total_holdings} 只标的，现金 {total_cash:,.2f}。\n\n"
                 f"重置后将:\n"
                 f"• 清空 A股/港股/美股 全部持仓\n"
-                f"• 每组恢复初始现金 {DEFAULT_INITIAL_CAPITAL:,.0f}\n"
+                f"• 每组恢复初始现金 {initial_capital:,.0f}\n"
                 f"• 期初日期设为 {date_str}\n\n"
                 f"确认请发送: <code>/ref_date confirm</code>\n"
                 f"取消请忽略本条消息。"
             )
 
     # 执行重置（三组各自独立）
-    initial_capital = DEFAULT_INITIAL_CAPITAL
-    for label, fname in [
-        ("A股", "data/ref_portfolio_a.yaml"),
-        ("港股", "data/ref_portfolio_hk.yaml"),
-        ("美股", "data/ref_portfolio_us.yaml"),
+    for group, label, fname in [
+        ("a_share", "A股", "data/ref_portfolio_a.yaml"),
+        ("hk", "港股", "data/ref_portfolio_hk.yaml"),
+        ("us", "美股", "data/ref_portfolio_us.yaml"),
     ]:
+        params = active_run.params_by_group.get(group)
+        if params is None:
+            return f"❌ 已激活运行缺少 {label} 参数；参考持仓未重置。"
         mgr = RefPortfolioManager(file_path=fname)
-        mgr.reset(initial_capital=initial_capital, inception_date=date_str)
+        mgr.reset(
+            initial_capital=initial_capital,
+            inception_date=date_str,
+            market_group=group,
+            strategy_run_id=active_run.run_id,
+            strategy_id=active_run.strategy_name,
+            strategy_timestamp=active_run.timestamp,
+            params_hash=stable_hash(
+                {
+                    "strategy_id": active_run.strategy_name,
+                    "values": params.values,
+                }
+            ),
+            execution_hash=stable_hash(
+                reference_execution_contract(
+                    params.execution_snapshot,
+                    execution_config,
+                    group,
+                )
+            ),
+        )
     opt["reference_base_date"] = date_str
     config["optimizer"] = opt
     _save_config(config)
@@ -952,5 +1194,7 @@ def handle_ref_date(date_str: str | None = None) -> str:
         f"📅 基期: <b>{date_str}</b>\n"
         f"💰 每组初始资金: {initial_capital:,.0f}\n"
         f"📭 持仓: 已清空\n"
-        f"\n每日简报信号将自动驱动买卖。发送 <code>/ref_date</code> 查看状态。"
+        f"🔒 固定运行: <code>{active_run.run_id}</code> "
+        f"(<code>{active_run.strategy_name}</code>)\n"
+        f"\n新搜参不会静默切换参考持仓；再次手动重置才会绑定新运行。"
     )
