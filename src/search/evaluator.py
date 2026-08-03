@@ -116,15 +116,19 @@ class EvaluationService:
         return Params(values=dict(parameters), _engine=self.strategy.name)
 
     def evaluate_one(
-        self, candidate_id: str, parameters: dict[str, object]
+        self,
+        candidate_id: str,
+        parameters: dict[str, object],
+        *,
+        materialize: bool = True,
     ) -> EvaluationRecord:
         key = self._key(parameters)
         cached = self.cache.get(key)
-        if cached is not None:
+        if cached is not None and (cached.materialized or not materialize):
             self.timings["cache_hits"] += 1
             record = EvaluationRecord(
                 candidate_id,
-                dict(parameters),
+                dict(parameters) if cached.materialized else {},
                 cached.all_stats,
                 cached.ranking_stats,
                 cached.objective_score,
@@ -147,15 +151,17 @@ class EvaluationService:
         )
         self.timings["simulation_seconds"] += perf_counter() - started
         self.timings["evaluated"] += 1
+        stored_parameters = dict(parameters) if materialize else {}
         if result is None:
             record = EvaluationRecord(
                 candidate_id,
-                dict(parameters),
+                stored_parameters,
                 [],
                 [],
                 -float("inf"),
                 {},
                 ("evaluation_failed",),
+                materialized=materialize,
             )
         else:
             all_stats, ranking_stats, _validation, score = result
@@ -167,11 +173,12 @@ class EvaluationService:
             )
             record = EvaluationRecord(
                 candidate_id,
-                dict(parameters),
-                all_stats,
-                ranking_stats,
+                stored_parameters,
+                all_stats if materialize else [],
+                ranking_stats if materialize else [],
                 float(score),
                 metrics,
+                materialized=materialize,
             )
         self.cache[key] = record
         self.records[candidate_id] = record
@@ -194,7 +201,7 @@ class EvaluationService:
             self.timings["cache_hits"] += 1
             record = EvaluationRecord(
                 candidate_id,
-                dict(parameters),
+                dict(parameters) if cached.materialized else {},
                 cached.all_stats,
                 cached.ranking_stats,
                 cached.objective_score,
@@ -220,7 +227,9 @@ class EvaluationService:
             else:
                 self._activate_backend("cpu_scalar")
                 produced = [
-                    self.evaluate_one(candidate_id, parameters)
+                    self.evaluate_one(
+                        candidate_id, parameters, materialize=False
+                    )
                     for _index, candidate_id, parameters in missing
                 ]
         else:
@@ -340,7 +349,7 @@ class EvaluationService:
             records.append(
                 EvaluationRecord(
                     candidate_id=row.candidate_id,
-                    parameters=dict(parameters),
+                    parameters=(dict(parameters) if materialize else {}),
                     all_stats=list(row.all_stats or ()),
                     ranking_stats=list(row.ranking_stats or ()),
                     objective_score=float(row.objective_score),
@@ -418,7 +427,7 @@ class EvaluationService:
         self.timings["evaluated"] += len(plans)
 
         records = []
-        for all_stats, (_index, candidate_id, parameters) in zip(
+        for all_stats, (_index, candidate_id, _parameters) in zip(
             stats_by_candidate, missing
         ):
             score = _compute_ranking_wf_score(all_stats, self.constraints)
@@ -426,12 +435,13 @@ class EvaluationService:
                 records.append(
                     EvaluationRecord(
                         candidate_id,
-                        dict(parameters),
+                        {},
                         [],
                         [],
                         -float("inf"),
                         {},
                         ("evaluation_failed",),
+                        materialized=False,
                     )
                 )
                 continue
@@ -444,11 +454,12 @@ class EvaluationService:
             records.append(
                 EvaluationRecord(
                     candidate_id,
-                    dict(parameters),
-                    all_stats,
-                    all_stats,
+                    {},
+                    [],
+                    [],
                     float(score),
                     metrics,
+                    materialized=False,
                 )
             )
         return records

@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 import yaml
 
+import src.search.evaluator as evaluator_module
+
 from src.search.config import StrategyConstraints
+from src.search.contracts import (
+    Candidate,
+    CandidateBatch,
+    ParameterKind,
+    ParameterSchema,
+    ParameterSpec,
+)
+from src.search.evaluator import EvaluationService
 from src.search.workflow import run_optimizer
 from src.strategy import get_strategy
 
@@ -175,3 +187,57 @@ def test_process_candidate_workers_match_scalar_results(tmp_path):
     assert [item.ranking_metrics for item in process] == [
         item.ranking_metrics for item in scalar
     ]
+
+
+def test_scalar_ranking_cache_is_compact_until_materialized(monkeypatch):
+    schema = ParameterSchema(
+        (ParameterSpec("x", ParameterKind.ORDINAL, values=(0, 1)),)
+    )
+    candidate = Candidate.create({"x": 0}, schema, "test")
+    batch = CandidateBatch.from_candidates([candidate], schema)
+    ranking_stat = SimpleNamespace(marker="ranking")
+    calls = []
+
+    def fake_evaluate(*_args, **_kwargs):
+        calls.append("evaluate")
+        return [ranking_stat], [ranking_stat], [], 1.25
+
+    monkeypatch.setattr(evaluator_module, "_evaluate_params_wf", fake_evaluate)
+    monkeypatch.setattr(
+        evaluator_module,
+        "aggregate_ranking_metrics",
+        lambda *_args, **_kwargs: {"objective_score": 1.25},
+    )
+    constraints = SimpleNamespace(
+        walk_forward=SimpleNamespace(
+            ranking_weights=lambda count: [1.0] * count
+        ),
+        benchmark_codes=(),
+    )
+    service = EvaluationService(
+        SimpleNamespace(name="stub", window_state_scope="train"),
+        constraints,
+        SimpleNamespace(),
+        SimpleNamespace(),
+        [SimpleNamespace()],
+        workers=1,
+        evaluation_backend="scalar",
+    )
+
+    evaluated = service.evaluate_batch(batch)
+    compact = service.records[candidate.candidate_id]
+
+    assert evaluated.objective_scores.tolist() == [1.25]
+    assert compact.parameters == {}
+    assert compact.all_stats == []
+    assert compact.ranking_stats == []
+    assert compact.materialized is False
+
+    service.materialize_batch(batch)
+    complete = service.records[candidate.candidate_id]
+
+    assert complete.parameters == {"x": 0}
+    assert complete.all_stats == [ranking_stat]
+    assert complete.ranking_stats == [ranking_stat]
+    assert complete.materialized is True
+    assert calls == ["evaluate", "evaluate"]

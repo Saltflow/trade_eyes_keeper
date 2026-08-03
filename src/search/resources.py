@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 import os
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -70,7 +71,50 @@ class ResourcePlanner:
                     pass
 
 
+def _cgroup_cpu_quota_slots() -> int | None:
+    """Return the schedulable CPU quota exposed by cgroup v2/v1."""
+
+    try:
+        quota_text, period_text = Path("/sys/fs/cgroup/cpu.max").read_text(
+            encoding="ascii"
+        ).strip().split()[:2]
+        if quota_text != "max":
+            quota = int(quota_text)
+            period = int(period_text)
+            if quota > 0 and period > 0:
+                return max(1, (quota + period - 1) // period)
+    except (FileNotFoundError, OSError, ValueError):
+        pass
+
+    try:
+        with open(
+            "/sys/fs/cgroup/cpu/cpu.cfs_quota_us", encoding="ascii"
+        ) as quota_file:
+            quota = int(quota_file.read().strip())
+        with open(
+            "/sys/fs/cgroup/cpu/cpu.cfs_period_us", encoding="ascii"
+        ) as period_file:
+            period = int(period_file.read().strip())
+        if quota > 0 and period > 0:
+            return max(1, (quota + period - 1) // period)
+    except (FileNotFoundError, OSError, ValueError):
+        pass
+    return None
+
+
 def _physical_cores() -> int:
+    """Return usable CPU slots, respecting Linux affinity and cgroup quota."""
+
+    affinity = getattr(os, "sched_getaffinity", None)
+    if callable(affinity):
+        try:
+            slots = max(1, len(affinity(0)))
+            quota_slots = _cgroup_cpu_quota_slots()
+            if quota_slots is not None:
+                slots = min(slots, quota_slots)
+            return slots
+        except (OSError, TypeError, ValueError):
+            pass
     try:
         import psutil
 

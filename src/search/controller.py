@@ -73,6 +73,9 @@ class SearchController:
         )
         self.solver.initialize(self.problem, self.solver_config)
         self._restore_checkpoint()
+        retain_all_metadata = (
+            self.include_infeasible_results or not self.materialize_finalists
+        )
         while not self.solver.should_stop():
             candidates = self.solver.ask(self.batch_size)
             if len(candidates) == 0:
@@ -117,9 +120,10 @@ class SearchController:
                 self.candidate_parameters[candidate_id] = candidates.parameters_at(
                     index
                 )
-                self.adjusted_scores[candidate_id] = float(adjusted[index])
-                self.gate_decisions[candidate_id] = decisions[index]
-                self.candidate_feasible[candidate_id] = bool(feasible[index])
+                if retain_all_metadata:
+                    self.adjusted_scores[candidate_id] = float(adjusted[index])
+                    self.gate_decisions[candidate_id] = decisions[index]
+                    self.candidate_feasible[candidate_id] = bool(feasible[index])
             if self.archive is not None:
                 self.archive.append(
                     [
@@ -153,6 +157,22 @@ class SearchController:
         if self.materialize_finalists:
             self._materialize_checkpoint_finalists(finalist_ids)
 
+        for candidate_id in finalist_ids:
+            if candidate_id in self.gate_decisions:
+                continue
+            record = self.evaluation_service.records.get(candidate_id)
+            if record is None:
+                continue
+            decision = self.gate_pipeline.evaluate(record.raw_metrics)
+            self.gate_decisions[candidate_id] = decision
+            self.candidate_feasible[candidate_id] = (
+                not bool(getattr(record, "failure_reasons", ()))
+                and decision.feasible
+            )
+            self.adjusted_scores[candidate_id] = (
+                float(record.objective_score) - decision.penalty
+            )
+
         results = []
         for candidate_id in finalist_ids:
             record = self.evaluation_service.records.get(candidate_id)
@@ -162,7 +182,10 @@ class SearchController:
             results.append(
                 SearchResult(
                     candidate_id=candidate_id,
-                    parameters=dict(record.parameters),
+                    parameters=dict(
+                        record.parameters
+                        or self.candidate_parameters.get(candidate_id, {})
+                    ),
                     ranking_stats=list(record.ranking_stats),
                     objective_score=float(record.objective_score),
                     selection_score=float(self.adjusted_scores[candidate_id]),

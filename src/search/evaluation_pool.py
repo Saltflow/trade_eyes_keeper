@@ -117,7 +117,11 @@ def _evaluate_process_task(task: _ProcessTask) -> _ProcessTaskResult:
     try:
         for index, candidate_id in enumerate(task.candidates.candidate_ids):
             parameters = task.candidates.parameters_at(index)
-            record = _WORKER_SERVICE.evaluate_one(candidate_id, parameters)
+            record = _WORKER_SERVICE.evaluate_one(
+                candidate_id,
+                parameters,
+                materialize=task.materialize,
+            )
             rows.append(
                 ProcessEvaluationRow(
                     candidate_id=candidate_id,
