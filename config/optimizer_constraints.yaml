@@ -89,7 +89,7 @@ validation:
 search:
   solver_id: local_genetic
   gate_profile: standard
-  batch_size: 256
+  batch_size: 128
   parallel_axis: candidate_window
   # Candidate scoring uses persistent worker processes. Each worker receives
   # the immutable ranking snapshot once; IPC then carries only parameter
