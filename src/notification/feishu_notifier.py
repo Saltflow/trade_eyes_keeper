@@ -216,9 +216,12 @@ class FeishuNotifier(BaseNotifier):
     def send_optimizer_notification(
         self, report, group_name: str = "", full_report: dict | None = None
     ) -> None:
-        from ..notification.email_notifier import build_optimizer_summary
+        from ..notification.email_notifier import (
+            build_optimizer_summary,
+            optimizer_notification_title,
+        )
 
-        title = f"策略优化完成 · {group_name}" if group_name else "策略优化完成"
+        title = optimizer_notification_title(report, group_name)
         body = build_optimizer_summary(
             report, group_name, full_report, include_charts=False
         )

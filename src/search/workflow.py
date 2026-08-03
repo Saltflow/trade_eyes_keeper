@@ -539,6 +539,7 @@ def run_optimizer(
         batch_size=resource_plan.batch_size,
         archive=archive,
         checkpoint_path=checkpoint_path,
+        retention_ratio=constraints.search.candidate_retention_ratio,
     )
     try:
         with planner.apply(resource_plan):
@@ -588,6 +589,10 @@ def run_optimizer(
         "resource_plan": resource_plan.__dict__,
         "performance": performance,
         "budget": budget,
+        "candidate_retention_ratio": (
+            constraints.search.candidate_retention_ratio
+        ),
+        "retained_candidate_count": controller.retained_candidate_count,
     }
     for item in validated:
         item.search_metadata = dict(search_metadata)

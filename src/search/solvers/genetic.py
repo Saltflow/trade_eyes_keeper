@@ -58,6 +58,40 @@ class GeneticSolver(Solver):
             reverse=True,
         )
 
+    def candidate_parameters(
+        self, candidate_id: str
+    ) -> dict[str, object] | None:
+        parameters = self.candidates.get(candidate_id)
+        return dict(parameters) if parameters is not None else None
+
+    def _prune_phase_state(self) -> None:
+        limit = self.top_keep if self.phase == "random" else self.population_size
+        retained = set(self.population)
+        retained.update(self._rank(self.observations)[:limit])
+        self.candidates = {
+            candidate_id: parameters
+            for candidate_id, parameters in self.candidates.items()
+            if candidate_id in retained
+        }
+        self.observations = {
+            candidate_id: observation
+            for candidate_id, observation in self.observations.items()
+            if candidate_id in retained
+        }
+
+    def _prune_to_population(self) -> None:
+        retained = set(self.population)
+        self.candidates = {
+            candidate_id: parameters
+            for candidate_id, parameters in self.candidates.items()
+            if candidate_id in retained
+        }
+        self.observations = {
+            candidate_id: observation
+            for candidate_id, observation in self.observations.items()
+            if candidate_id in retained
+        }
+
     def _random_candidate(self) -> Candidate:
         return Candidate.create(
             self.problem.schema.sample(self.rng),
@@ -122,6 +156,7 @@ class GeneticSolver(Solver):
         ):
             self.observations[candidate_id] = (finite_score(score), bool(feasible))
             self.phase_told += 1
+        self._prune_phase_state()
         if self.phase_told < self.phase_issued:
             return
         target = self._phase_target()
@@ -129,6 +164,7 @@ class GeneticSolver(Solver):
             return
         if self.phase == "random":
             self.population = self._rank(self.observations)[: self.top_keep]
+            self._prune_to_population()
             if self.generations <= 0 or len(self.population) < 2:
                 self.stop = True
                 return
@@ -139,6 +175,7 @@ class GeneticSolver(Solver):
 
         # Dict insertion order preserves the historical stable tie-breaker.
         self.population = self._rank(self.observations)[: self.population_size]
+        self._prune_to_population()
         self.generation += 1
         if (
             self.generation >= self.generations

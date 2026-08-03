@@ -246,6 +246,13 @@ class SearchRuntimeConfig:
         if self.workers is not None and self.workers < 1:
             raise ValueError("search.workers/SEARCH_WORKERS must be at least 1")
         self.checkpoint: bool = bool(data.get("checkpoint", True))
+        self.candidate_retention_ratio: float = float(
+            data.get("candidate_retention_ratio", 0.05)
+        )
+        if not 0.0 < self.candidate_retention_ratio <= 1.0:
+            raise ValueError(
+                "search.candidate_retention_ratio must be greater than 0 and at most 1"
+            )
         configured = data.get("solvers", {}) or {}
         if not isinstance(configured, dict):
             raise ValueError("search.solvers must be a mapping")

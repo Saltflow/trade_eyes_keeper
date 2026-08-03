@@ -1462,6 +1462,17 @@ def main(argv: list[str] | None = None):
     """Application entry point."""
     parser = _build_argument_parser()
     args = parser.parse_args(argv)
+    if (
+        argv is None
+        and args.optimize
+        and os.environ.get("OPTIMIZER_GUARD_CHILD") != "1"
+    ):
+        environment = dict(os.environ)
+        os.execve(
+            sys.executable,
+            [sys.executable, "-m", "src.optimizer_guard"],
+            environment,
+        )
     config = load_config()
     logger = setup_logging(config)
     if args.once:

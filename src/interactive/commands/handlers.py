@@ -752,6 +752,13 @@ _CONFIG_HELP = {
         "min": 128,
         "max": 512,
     },
+    "candidate_retention_ratio": {
+        "label": "\u5019\u9009\u5185\u5b58\u4fdd\u7559\u6bd4\u4f8b",
+        "kind": "path",
+        "path": ("search", "candidate_retention_ratio"),
+        "min": 0.001,
+        "max": 1.0,
+    },
     "buy_cash_levels": {
         "label": "买入现金档位",
         "kind": "levels",
@@ -922,6 +929,7 @@ def handle_config(action: str, key: str, value: str) -> str:
             "window_range_penalty": "0.5",
             "workers": "auto",
             "batch_size": "256",
+            "candidate_retention_ratio": "0.05",
             "buy_cash_levels": "10000,20000,30000,40000,50000",
             "sell_cash_levels": "10000,20000,30000,40000,50000",
             "commission": "0.005",
@@ -988,6 +996,7 @@ def handle_config(action: str, key: str, value: str) -> str:
     )
     workers = search.get("workers")
     workers_label = "auto（全部物理核）" if workers is None else str(workers)
+    retention_ratio = float(search.get("candidate_retention_ratio", 0.05))
     try:
         positive = _config_value(cfg, "positive_windows")
         majority = _config_value(cfg, "majority_windows")
@@ -1009,7 +1018,10 @@ def handle_config(action: str, key: str, value: str) -> str:
         f"  战胜任意两个基准: {majority}/11",
         f"  最低平均仓位: {min_pos}%  最差回撤: {max_dd}%",
         f"  窗口波动惩罚: {_config_value(cfg, 'window_range_penalty')}",
-        f"  workers: {workers_label}  batch: {search.get('batch_size', 256)}",
+        (
+            f"  workers: {workers_label}  batch: {search.get('batch_size', 256)} "
+            f"\u5019\u9009\u4fdd\u7559: {retention_ratio:.1%}"
+        ),
         (
             "  固定窗口合同: "
             f"{wf.get('data_years', 5) * 12}月 / "

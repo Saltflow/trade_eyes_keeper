@@ -652,6 +652,18 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
     return "\n".join(lines).strip()
 
 
+def optimizer_notification_title(report, group_name: str = "") -> str:
+    """Return one consistent success/failure title for every channel."""
+
+    failed = str(getattr(report, "status", "completed")) != "completed"
+    title = (
+        "\u7b56\u7565\u4f18\u5316\u5931\u8d25"
+        if failed
+        else "\u7b56\u7565\u4f18\u5316\u5b8c\u6210"
+    )
+    return f"{title} \u00b7 {group_name}" if group_name else title
+
+
 def build_optimizer_summary(
     report,
     group_name: str = "",
@@ -808,11 +820,15 @@ def _build_optimizer_run_summary(report) -> str:
         "no_symbols": "无可搜参标的",
         "no_data": "无可用数据",
         "no_candidates": "未找到有效候选",
-        "failed": "执行失败",
+        "failed": "\u6267\u884c\u5931\u8d25",
+        "interrupted": "\u5f02\u5e38\u4e2d\u6b62",
         "not_run": "未执行",
     }
-    lines = ["<b>策略优化简报</b>"]
+    lines = [f"<b>{optimizer_notification_title(report)}</b>"]
     lines.append(f"策略: <b>{report.strategy_label}</b> ({report.strategy_name})")
+    failure_reason = str(getattr(report, "failure_reason", "") or "")
+    if failure_reason:
+        lines.append(f"<b>\u5931\u8d25\u539f\u56e0:</b> {failure_reason}")
     if report.elapsed_seconds > 0:
         lines.append(f"开始时间: {report.timestamp} | 耗时: {report.elapsed_seconds:.0f}s")
     else:
@@ -840,6 +856,12 @@ def _build_optimizer_run_summary(report) -> str:
         status = status_labels.get(item.status, item.status)
         lines.append(f"<br><b>{labels[group]}</b>: {status}")
         if item.status != "completed":
+            evaluated = int(getattr(item, "evaluated_count", 0) or 0)
+            if evaluated:
+                lines.append(
+                    f"\u4e2d\u6b62\u524d\u5df2\u5b8c\u6210 {evaluated:,} "
+                    "\u6b21\u5019\u9009\u8bc4\u4f30\u3002"
+                )
             continue
         evaluated = getattr(item, "evaluated_count", 0)
         survivors = getattr(item, "survivor_count", 0) or item.candidate_count
@@ -3368,7 +3390,7 @@ class EmailNotifier(BaseNotifier):
     ) -> None:
         """发送优化结果邮件。含完整回测报告（日回报测+敏感性+波动率）。"""
         body = build_optimizer_summary(report, group_name, full_report)
-        subject = f"策略优化完成 · {group_name}" if group_name else "策略优化完成"
+        subject = optimizer_notification_title(report, group_name)
         candlestick_png = (full_report or {}).get("candlestick_png")
         self._send_email(subject, body, candlestick_png=candlestick_png)
 

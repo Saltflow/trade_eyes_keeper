@@ -149,6 +149,40 @@ class LocalGeneticSolver(Solver):
             reverse=True,
         )
 
+    def candidate_parameters(
+        self, candidate_id: str
+    ) -> dict[str, object] | None:
+        parameters = self.candidates.get(candidate_id)
+        return dict(parameters) if parameters is not None else None
+
+    def _prune_phase_state(self) -> None:
+        limit = self.top_keep if self.phase == "random" else self.population_size
+        retained = set(self.population)
+        retained.update(self._rank(self.observations)[:limit])
+        self.candidates = {
+            candidate_id: parameters
+            for candidate_id, parameters in self.candidates.items()
+            if candidate_id in retained
+        }
+        self.observations = {
+            candidate_id: observation
+            for candidate_id, observation in self.observations.items()
+            if candidate_id in retained
+        }
+
+    def _prune_to_population(self) -> None:
+        retained = set(self.population)
+        self.candidates = {
+            candidate_id: parameters
+            for candidate_id, parameters in self.candidates.items()
+            if candidate_id in retained
+        }
+        self.observations = {
+            candidate_id: observation
+            for candidate_id, observation in self.observations.items()
+            if candidate_id in retained
+        }
+
     def _parameter_key(self, values: dict[str, object]) -> str:
         normalized = self.problem.schema.validate(values)
         return stable_hash(
@@ -321,6 +355,7 @@ class LocalGeneticSolver(Solver):
                 bool(feasible),
             )
             self.phase_told += 1
+        self._prune_phase_state()
         if self.stop or self.phase_told < self.phase_issued:
             return
         if self.phase_issued < self.phase_goal:
@@ -328,6 +363,7 @@ class LocalGeneticSolver(Solver):
 
         if self.phase == "random":
             self.population = self._rank(self.observations)[: self.top_keep]
+            self._prune_to_population()
             if self.total_issued >= self.problem.budget:
                 self._finish("completed_budget")
             elif self.generations <= 0:
@@ -339,6 +375,7 @@ class LocalGeneticSolver(Solver):
             return
 
         self.population = self._rank(self.observations)[: self.population_size]
+        self._prune_to_population()
         if self.total_issued >= self.problem.budget:
             self._finish("completed_budget")
         elif self.generation >= self.generations:

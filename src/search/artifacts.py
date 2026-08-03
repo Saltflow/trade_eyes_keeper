@@ -80,6 +80,8 @@ class OptimizerRunSummary:
     activated: bool = False
     run_id: str = ""
     candidate: bool = False
+    status: str = "completed"
+    failure_reason: str = ""
 
 
 @dataclass

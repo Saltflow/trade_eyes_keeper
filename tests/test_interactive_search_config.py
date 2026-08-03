@@ -33,12 +33,16 @@ def test_config_updates_effective_solver_gate_and_runtime(tmp_path, monkeypatch)
     )
     assert "✅" in handlers.handle_config("set", "workers", "auto")
     assert "✅" in handlers.handle_config("set", "batch_size", "128")
+    assert "\u2705" in handlers.handle_config(
+        "set", "candidate_retention_ratio", "0.10"
+    )
 
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert raw["search"]["solver_id"] == "random"
     assert raw["search"]["solvers"]["random"]["budget"] == 12000
     assert raw["search"]["workers"] is None
     assert raw["search"]["batch_size"] == 128
+    assert raw["search"]["candidate_retention_ratio"] == 0.10
     standard = {
         rule["id"]: rule["value"]
         for rule in raw["gate_profiles"]["standard"]["rules"]

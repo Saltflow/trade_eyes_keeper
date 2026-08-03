@@ -41,6 +41,12 @@ class Solver(ABC):
     @abstractmethod
     def load_state_dict(self, state: dict[str, object]) -> None: ...
 
+    def candidate_parameters(
+        self, candidate_id: str
+    ) -> dict[str, object] | None:
+        """Return live Solver parameters for finalist replay when available."""
+        return None
+
 
 def assert_capabilities(
     solver: Solver, problem: SearchProblem, evaluator_has_gradients: bool = False

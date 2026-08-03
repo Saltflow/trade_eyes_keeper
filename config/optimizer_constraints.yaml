@@ -99,6 +99,10 @@ search:
   # process so the runtime never creates nested parallel regions.
   workers: null
   checkpoint: true
+  # Bound the replay reservoir and compact evaluation cache. The default keeps
+  # the best 5% of candidates evaluated so far plus the Solver live state;
+  # every ranking-only evaluation is still written to the JSONL search archive.
+  candidate_retention_ratio: 0.05
   solvers:
     genetic:
       budget: 155000

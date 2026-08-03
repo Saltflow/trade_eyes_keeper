@@ -107,9 +107,21 @@
 - 新产物记录 Solver 配置及参数、特征、Gate、数据、成交、窗口和搜索合同哈希；
   SearchArchive 只写排名窗。checkpoint 仅在合同哈希相同时恢复，finalist 仍由
   排名窗 EvaluationService 重放，不读取隔离或留出数据。
+- Search memory is bounded by `search.candidate_retention_ratio` (default
+  `0.05`). `EvaluationService` retains only the current best
+  `ceil(evaluated_so_far * ratio)` compact records. Genetic Solvers retain
+  fixed parents plus current-phase leaders and compact them to one population
+  at a generation boundary. The complete ranking history exists only in the
+  JSONL `SearchArchive`; finalists are streamed back from that archive before
+  full `WindowStats` materialization. Checkpoints persist only this compact
+  replay state and are rejected when the configured retention ratio changes.
+- Real CLI `python main.py --optimize` is supervised by the lightweight
+  `src.optimizer_guard` parent. A non-zero child exit or SIGKILL produces one
+  shared failure summary with per-market archive progress, writes
+  `optimizer_failure.yaml`, and leaves the previous active run untouched.
 - 交互配置只允许修改实际生效且通过 Schema 校验的字段：solver、budget、
   gate_profile、positive_windows、majority_windows、min_pos、max_dd、
-  window_range_penalty、workers、batch_size，以及统一现金档位、手续费和
+  window_range_penalty、workers、batch_size, candidate_retention_ratio，以及统一现金档位、手续费和
   初始本金。/switch_optimizer 只选择下一次 --optimize 的候选策略，不改变当前
   生产运行；data_years、旧 hard_constraints 和策略专属规则槽位不再对 Bot 暴露。
   配置先写临时 YAML 并调用正式 load_constraints() 校验，失败时不得替换原文件。

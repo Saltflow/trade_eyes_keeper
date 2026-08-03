@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,6 +44,7 @@ class SearchController:
         batch_size: int = 256,
         archive: SearchArchive | None = None,
         checkpoint_path: Path | str | None = None,
+        retention_ratio: float = 1.0,
         include_infeasible_results: bool = False,
         materialize_finalists: bool = True,
     ):
@@ -60,6 +62,13 @@ class SearchController:
         self.candidate_parameters: dict[str, dict[str, object]] = {}
         self.include_infeasible_results = bool(include_infeasible_results)
         self.materialize_finalists = bool(materialize_finalists)
+        self.retention_ratio = float(retention_ratio)
+        if not 0.0 < self.retention_ratio <= 1.0:
+            raise ValueError("retention_ratio must be greater than 0 and at most 1")
+        self._retained_scores: dict[str, float] = {}
+        self._retained_order: dict[str, int] = {}
+        self._retention_sequence = 0
+        self._evaluated_count = 0
         self._batch_count = 0
 
     def run(self, finalist_limit: int | None = None) -> list[SearchResult]:
@@ -117,13 +126,19 @@ class SearchController:
                 fidelity=raw.fidelity,
             )
             for index, candidate_id in enumerate(evaluated.candidate_ids):
-                self.candidate_parameters[candidate_id] = candidates.parameters_at(
-                    index
-                )
+                parameters = candidates.parameters_at(index)
+                self._evaluated_count += 1
                 if retain_all_metadata:
+                    self.candidate_parameters[candidate_id] = parameters
                     self.adjusted_scores[candidate_id] = float(adjusted[index])
                     self.gate_decisions[candidate_id] = decisions[index]
                     self.candidate_feasible[candidate_id] = bool(feasible[index])
+                elif bool(feasible[index]):
+                    self._retain_candidate(
+                        candidate_id,
+                        parameters,
+                        float(adjusted[index]),
+                    )
             if self.archive is not None:
                 self.archive.append(
                     [
@@ -140,10 +155,44 @@ class SearchController:
                     ]
                 )
             self.solver.tell(evaluated)
+            if not retain_all_metadata:
+                self._prune_evaluator_records()
             self._batch_count += 1
             self._checkpoint()
 
-        finalist_ids = list(self.solver.finalists(finalist_limit))
+        archived_finalists = (
+            self.archive.top_records(finalist_limit)
+            if self.archive is not None
+            else []
+        )
+        if archived_finalists:
+            finalist_ids = []
+            for order, record in enumerate(archived_finalists):
+                candidate_id = str(record["candidate_id"])
+                finalist_ids.append(candidate_id)
+                self.candidate_parameters[candidate_id] = (
+                    self.problem.schema.validate(dict(record["parameters"]))
+                )
+                self._retained_scores[candidate_id] = float(
+                    record["selection_score"]
+                )
+                self._retained_order.setdefault(candidate_id, order)
+        else:
+            retained_ids = sorted(
+                self._retained_scores,
+                key=lambda candidate_id: (
+                    -self._retained_scores[candidate_id],
+                    self._retained_order[candidate_id],
+                ),
+            )
+            finalist_ids = list(self.solver.finalists(finalist_limit))
+            finalist_ids.extend(
+                candidate_id
+                for candidate_id in retained_ids
+                if candidate_id not in finalist_ids
+            )
+            if finalist_limit is not None:
+                finalist_ids = finalist_ids[: max(0, int(finalist_limit))]
         if self.include_infeasible_results:
             seen = set(finalist_ids)
             extras = sorted(
@@ -196,6 +245,54 @@ class SearchController:
             )
         return results
 
+    @property
+    def retained_candidate_count(self) -> int:
+        return len(self.candidate_parameters)
+
+    def _retain_candidate(
+        self,
+        candidate_id: str,
+        parameters: dict[str, object],
+        score: float,
+    ) -> None:
+        order = self._retention_sequence
+        self._retention_sequence += 1
+        self.candidate_parameters[candidate_id] = dict(parameters)
+        self._retained_scores[candidate_id] = float(score)
+        self._retained_order[candidate_id] = order
+        capacity = max(
+            1,
+            int(math.ceil(self._evaluated_count * self.retention_ratio)),
+        )
+        while len(self._retained_scores) > capacity:
+            discarded = min(
+                self._retained_scores,
+                key=lambda key: (
+                    self._retained_scores[key],
+                    -self._retained_order[key],
+                ),
+            )
+            self.candidate_parameters.pop(discarded, None)
+            self._retained_scores.pop(discarded, None)
+            self._retained_order.pop(discarded, None)
+
+    def _prune_evaluator_records(self) -> None:
+        retain = getattr(self.evaluation_service, "retain_records", None)
+        if not callable(retain):
+            return
+        current_limit = max(
+            1,
+            int(math.ceil(self._evaluated_count * self.retention_ratio)),
+        )
+        ranked = sorted(
+            self._retained_scores,
+            key=lambda candidate_id: (
+                -self._retained_scores[candidate_id],
+                self._retained_order[candidate_id],
+            ),
+        )
+        retain(ranked[:current_limit])
+
     def _restore_checkpoint(self) -> None:
         if (
             self.checkpoint_path is None
@@ -208,15 +305,72 @@ class SearchController:
             raise ValueError("invalid search checkpoint payload")
         if payload.get("search_contract_hash") != self.problem.contract_hash:
             return
-        self.solver.load_state_dict(dict(payload.get("solver", {})))
         controller_state = payload.get("controller", {}) or {}
+        stored_ratio = float(
+            controller_state.get("retention_ratio", self.retention_ratio)
+        )
+        if not math.isclose(stored_ratio, self.retention_ratio):
+            return
+        self.solver.load_state_dict(dict(payload.get("solver", {})))
         parameters = controller_state.get("candidate_parameters", {}) or {}
         self.candidate_parameters = {
             str(candidate_id): self.problem.schema.validate(dict(values))
             for candidate_id, values in parameters.items()
         }
+        self._retained_scores = {
+            str(candidate_id): float(score)
+            for candidate_id, score in (
+                controller_state.get("retained_scores", {}) or {}
+            ).items()
+            if str(candidate_id) in self.candidate_parameters
+        }
+        self._retained_order = {
+            str(candidate_id): int(order)
+            for candidate_id, order in (
+                controller_state.get("retained_order", {}) or {}
+            ).items()
+            if str(candidate_id) in self.candidate_parameters
+        }
+        self._retention_sequence = int(
+            controller_state.get("retention_sequence", len(self._retained_order))
+        )
+        self._evaluated_count = int(controller_state.get("evaluated_count", 0))
+        capacity = max(
+            1,
+            int(math.ceil(self._evaluated_count * self.retention_ratio)),
+        )
+        while len(self._retained_scores) > capacity:
+            discarded = min(
+                self._retained_scores,
+                key=lambda key: (
+                    self._retained_scores[key],
+                    -self._retained_order[key],
+                ),
+            )
+            self.candidate_parameters.pop(discarded, None)
+            self._retained_scores.pop(discarded, None)
+            self._retained_order.pop(discarded, None)
 
     def _materialize_checkpoint_finalists(self, finalist_ids: list[str]) -> None:
+        retained = set(finalist_ids)
+        self.candidate_parameters = {
+            candidate_id: parameters
+            for candidate_id, parameters in self.candidate_parameters.items()
+            if candidate_id in retained
+        }
+        self._retained_scores = {
+            candidate_id: score
+            for candidate_id, score in self._retained_scores.items()
+            if candidate_id in retained
+        }
+        self._retained_order = {
+            candidate_id: order
+            for candidate_id, order in self._retained_order.items()
+            if candidate_id in retained
+        }
+        retain_records = getattr(self.evaluation_service, "retain_records", None)
+        if callable(retain_records):
+            retain_records(finalist_ids)
         missing = [
             candidate_id
             for candidate_id in finalist_ids
@@ -233,6 +387,8 @@ class SearchController:
             rows = []
             for candidate_id in missing[start: start + self.batch_size]:
                 parameters = self.candidate_parameters.get(candidate_id)
+                if parameters is None:
+                    parameters = self.solver.candidate_parameters(candidate_id)
                 if parameters is None:
                     raise ValueError(
                         f"checkpoint lacks parameters for finalist {candidate_id}"
@@ -275,6 +431,11 @@ class SearchController:
             "solver": self.solver.state_dict(),
             "controller": {
                 "candidate_parameters": self.candidate_parameters,
+                "retained_scores": self._retained_scores,
+                "retained_order": self._retained_order,
+                "retention_sequence": self._retention_sequence,
+                "evaluated_count": self._evaluated_count,
+                "retention_ratio": self.retention_ratio,
             },
         }
         temporary = self.checkpoint_path.with_suffix(

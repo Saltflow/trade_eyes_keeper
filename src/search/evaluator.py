@@ -97,6 +97,8 @@ class EvaluationService:
         snapshot["process_workers"] = (
             self.workers if self._active_backend == "cpu_process" else 0
         )
+        snapshot["retained_records"] = len(self.records)
+        snapshot["retained_cache_entries"] = len(self.cache)
         return snapshot
 
     def _activate_backend(self, backend: str) -> None:
@@ -243,7 +245,7 @@ class EvaluationService:
         self.progress_events.append(
             {
                 "requested_candidates": len(self.evaluation_order),
-                "unique_evaluations": len(self.cache),
+                "unique_evaluations": int(self.timings["evaluated"]),
                 "wall_seconds": perf_counter() - self._wall_started,
             }
         )
@@ -359,6 +361,21 @@ class EvaluationService:
                 )
             )
         return records
+
+    def retain_records(self, candidate_ids) -> None:
+        """Drop compact ranking records outside the controller retention set."""
+
+        retained = {str(candidate_id) for candidate_id in candidate_ids}
+        self.records = {
+            candidate_id: record
+            for candidate_id, record in self.records.items()
+            if candidate_id in retained
+        }
+        self.cache = {
+            key: record
+            for key, record in self.cache.items()
+            if record.candidate_id in retained
+        }
 
     def close(self, *, cancel_futures: bool = False) -> None:
         """Stop persistent workers and release their market snapshots."""
