@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date, datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 from bs4 import BeautifulSoup
 

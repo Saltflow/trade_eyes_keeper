@@ -96,8 +96,10 @@ def _group_summary(application, run_dir: Path | None, group: str):
                 status="completed",
                 artifact=artifact.name,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            # Best-effort parse of a partial artifact; fall back to the
+            # search archive line count below.
+            print(f"optimizer guard: could not parse {artifact}: {exc}", file=sys.stderr)
     evaluated = _line_count(run_dir / f"{group}_search_archive.jsonl")
     return summary_type(
         group=group,

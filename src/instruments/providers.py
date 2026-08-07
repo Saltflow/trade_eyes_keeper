@@ -21,7 +21,6 @@ from .models import (
     FinancialStatementSnapshot,
     FundHolding,
     FundProfile,
-    InstrumentType,
     MetricStatus,
     MetricValue,
 )

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import html
-import json
 import logging
 from collections import Counter, defaultdict
 from datetime import date, datetime
@@ -17,7 +16,6 @@ from .classifier import (
     detect_market,
 )
 from .models import (
-    CompanyFundamentals,
     FundProfile,
     InstrumentAuditReport,
     InstrumentProfile,
