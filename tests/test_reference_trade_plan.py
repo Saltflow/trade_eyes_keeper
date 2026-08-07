@@ -305,6 +305,10 @@ def test_live_scan_reads_last_row_from_full_market_trade_plan(monkeypatch):
         ("601088", "sell"),
     ]
     assert {alert["signal_date"] for alert in alerts} == {DATES[-1]}
+    # 通知契约字段：日报/简报/PDF/飞书统一读取 rule_label + current_value
+    for alert in alerts:
+        assert alert["rule_label"] == f"测试策略 {alert['side'].upper()}"
+        assert alert["current_value"].startswith("评分 ")
 
 
 def test_binding_and_event_ids_round_trip():

@@ -136,6 +136,7 @@ class FeishuNotifier(BaseNotifier):
             extra.append(table)
         if signal_scan and signal_scan.alerts:
             from ..notification.email_notifier import (
+                _alert_value,
                 _build_signal_label_map,
                 _readable_signal,
             )
@@ -149,8 +150,8 @@ class FeishuNotifier(BaseNotifier):
             )
             alert_lines = []
             for a in signal_scan.alerts[:8]:
-                code = getattr(a, "stock_code", "?")
-                raw = getattr(a, "rule_label", "?")
+                code = _alert_value(a, "stock_code", "?")
+                raw = _alert_value(a, "rule_label", "?")
                 readable = _readable_signal(code, raw, map_a, map_hk, map_us)
                 alert_lines.append(f"  {code} {readable}")
             extra.append(

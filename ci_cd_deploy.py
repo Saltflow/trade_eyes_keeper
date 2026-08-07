@@ -678,24 +678,37 @@ def deploy():
         else:
             _step("system_test", True, f"exit=0 errors=0")
 
-        # ── 8. 清理系统 crontab（调度改为 health server 内嵌 APScheduler）──
-        _info("Removing legacy crontab entries (scheduler now inside health server)...")
+        # ── 8. 例行搜参 cron（每日 19:00 任务与简报由 systemd scheduler 覆盖，
+        #   优化器因内存隔离需独立进程，仍由 cron 驱动 main.py --optimize）──
+        _info("Ensuring optimizer cron (02:00 daily)...")
         del_cron = (
             "crontab -l 2>/dev/null | "
             "grep -v 'main.py --once' | "
             "grep -v 'main.py --brief' | "
-            "grep -v 'main.py --optimize' | "
             "crontab -"
         )
-        _ssh_cmd(del_cron, "Clean up legacy cron entries")
+        _ssh_cmd(del_cron, "Clean up legacy daily/brief cron entries")
 
-        # 确认清理干净
-        ok, out, _ = _ssh_cmd("crontab -l", "Verify cron cleaned")
-        has_legacy = ("main.py --once" in (out or "")
-                      or "main.py --brief" in (out or "")
-                      or "main.py --optimize" in (out or ""))
-        _step("cron", not has_legacy,
-              "legacy entries removed" if not has_legacy else "STILL HAS LEGACY ENTRIES!")
+        opt_cron_line = (
+            f"0 2 * * * cd {REMOTE_DIR} && python3 main.py --optimize "
+            f">> {REMOTE_DIR}/logs/cron_optimize.log 2>&1"
+        )
+        _ssh_cmd(
+            f"crontab -l 2>/dev/null | grep -q 'main.py --optimize' || "
+            f"(crontab -l 2>/dev/null; echo '{opt_cron_line}') | crontab -",
+            "Add optimizer cron if missing",
+        )
+
+        # 确认例行搜参 cron 已注册
+        ok, out, _ = _ssh_cmd("crontab -l", "Verify cron")
+        has_optimize = "main.py --optimize" in (out or "")
+        has_legacy = (
+            "main.py --once" in (out or "")
+            or "main.py --brief" in (out or "")
+        )
+        _step("cron", has_optimize and not has_legacy,
+              "optimizer 02:00 registered" if has_optimize and not has_legacy
+              else "MISSING optimizer cron or legacy entries remain!")
 
         # ── 9c. 检查统一优化器数据；候选搜索和激活必须显式执行 ──
         _info("Checking optimizer data...")

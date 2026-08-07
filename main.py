@@ -1286,12 +1286,16 @@ def _scan_group(
         ):
             if not matrix[row, column]:
                 continue
+            score = float(priorities[row, column])
             alerts.append(
                 {
                     "stock_code": code,
                     "side": side,
-                    "priority": float(priorities[row, column]),
+                    "priority": score,
                     "label": f"{strategy.label} {side.upper()}",
+                    # 通知契约字段（日报/简报/PDF/飞书统一读取）
+                    "rule_label": f"{strategy.label} {side.upper()}",
+                    "current_value": f"评分 {score:.2f}",
                     "detail": f"TradePlan event on {signal_date}",
                     "rule_id": f"{strategy.name}_{side}",
                     "type": f"strategy_{side}",

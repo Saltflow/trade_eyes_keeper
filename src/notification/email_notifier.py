@@ -411,6 +411,19 @@ def _build_signal_label_map(group: str = "a_share") -> dict[str, str]:
         return {}
 
 
+def _alert_value(alert, name: str, default: str = "?"):
+    """Read an alert field whether the alert is a dict or an object.
+
+    `_scan_group` 产出 dict alert，旧扫描器产出对象 alert；通知渲染必须
+    同时兼容两者，避免裸 getattr 在 dict 上恒返回默认值。
+    """
+    if isinstance(alert, dict):
+        value = alert.get(name)
+    else:
+        value = getattr(alert, name, None)
+    return value if value not in (None, "") else default
+
+
 def _readable_signal(
     code: str, rule_label: str, map_a: dict, map_hk: dict, map_us: dict = None
 ) -> str:
@@ -629,9 +642,9 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
     if signal_scan and signal_scan.alerts:
         lines.append(f"{b}今日策略信号{b}:")
         for a in signal_scan.alerts[:10]:
-            code = getattr(a, "stock_code", "?")
-            raw = getattr(a, "rule_label", "?")
-            cv = getattr(a, "current_value", "")
+            code = _alert_value(a, "stock_code", "?")
+            raw = _alert_value(a, "rule_label", "?")
+            cv = _alert_value(a, "current_value", "")
             lines.append(f"  {code} {raw} {cv}")
     elif signal_scan is not None:
         lines.append(f"{b}今日信号{b}: 无触发")
@@ -3104,10 +3117,10 @@ class EmailNotifier(BaseNotifier):
                 "<table><tr><th>代码</th><th>信号</th><th>当前值</th></tr>"
             )
             for a in alerts[:12]:
-                code = getattr(a, "stock_code", "?")
-                raw = getattr(a, "rule_label", "?")
+                code = _alert_value(a, "stock_code", "?")
+                raw = _alert_value(a, "rule_label", "?")
                 readable = _readable_signal(code, raw, map_a, map_hk, map_us)
-                cv = getattr(a, "current_value", "-")
+                cv = _alert_value(a, "current_value", "-")
                 strat_html += (
                     f"<tr><td>{code}</td><td>{readable}</td><td>{cv}</td></tr>"
                 )
@@ -3634,9 +3647,9 @@ class EmailNotifier(BaseNotifier):
             # 3. 触发信号
             trigger_lines = []
             for a in sa:
-                code = getattr(a, "stock_code", "?")
-                label = _esc(getattr(a, "rule_label", "?"))
-                cv = _esc(str(getattr(a, "current_value", "—")))
+                code = _alert_value(a, "stock_code", "?")
+                label = _esc(_alert_value(a, "rule_label", "?"))
+                cv = _esc(str(_alert_value(a, "current_value", "—")))
                 trigger_lines.append(f"\\textbf{{{_esc(code)}}} & {label} & {cv} \\\\")
             trigger_section = (
                 "\\begin{tabular}{lll}\n"
