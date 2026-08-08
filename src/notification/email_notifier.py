@@ -3967,12 +3967,12 @@ class EmailNotifier(BaseNotifier):
                         if in_table:
                             latex_lines.append("\\end{tabular}")
                             in_table = False
-                        latex_lines.append(f"\\section*{{{stripped[2:]}}}")
+                        latex_lines.append(f"\\section*{{{_esc(stripped[2:])}}}")
                     elif stripped.startswith("## "):
                         if in_list:
                             latex_lines.append("\\end{itemize}")
                             in_list = False
-                        latex_lines.append(f"\\subsection*{{{stripped[3:]}}}")
+                        latex_lines.append(f"\\subsection*{{{_esc(stripped[3:])}}}")
                     elif stripped.startswith("- "):
                         if not in_list:
                             latex_lines.append("\\begin{itemize}")
