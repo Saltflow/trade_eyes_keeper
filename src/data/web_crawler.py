@@ -1104,6 +1104,66 @@ class StockWebCrawler:
             logger.warning(f"从腾讯财经获取股票 {stock_code} 数据失败: {e}")
             return pd.DataFrame()
 
+    def _qq_kline_windows(
+        self, url: str, headers: dict, symbol: str, days: int
+    ) -> list[list]:
+        """按日历窗口分页拉取腾讯历史 K 线，返回合并后的原始行列表。
+
+        腾讯单次请求最多返回约 600-1000 根 K 线；超过上限时接口返回
+        ``{"code":0,"msg":"param error","data":[]}``（data 为 list），
+        因此大 lookback（如优化器 2006 天）从今天起按 2 个日历年的窗口
+        逐段回退请求，窗口内交易日约 480-500 根，稳低于接口上限。
+        qfq 复权锚定最新数据（实测不同窗口结束日价格完全一致），
+        窗口拼接不会产生价格断层。
+        """
+        window_days = 730  # 2 个日历年的交易日约 500 根，低于单次上限
+        end = datetime.now()
+        earliest = end - timedelta(days=days * 2)  # 日历日上限（交易日约 0.7 倍）
+        chunks: list[list] = []
+        while len(chunks) == 0 or (
+            sum(len(chunk) for chunk in chunks) < days and end > earliest
+        ):
+            start = end - timedelta(days=window_days)
+            param = f"{symbol},day,{start:%Y-%m-%d},{end:%Y-%m-%d},800,qfq"
+            try:
+                response = requests.get(
+                    url, params={"param": param, "_var": "kline_day"},
+                    headers=headers, timeout=self.timeout,
+                )
+                response.raise_for_status()
+                content = response.text
+                if not content.startswith("kline_day="):
+                    break
+                data = json.loads(content[len("kline_day=") :])
+                # param error / 服务异常时 data 可能为 list 而非 dict
+                if not isinstance(data, dict) or data.get("code") != 0:
+                    break
+                payload = data.get("data")
+                if not isinstance(payload, dict):
+                    break
+                stock_data = payload.get(symbol)
+                if not stock_data:
+                    break
+                kline_data = stock_data.get("qfqday") or stock_data.get("day")
+                if not kline_data:
+                    break
+                chunks.append(list(kline_data))
+            except Exception as exc:
+                logger.warning(
+                    f"腾讯分页拉取 {symbol} 失败 ({start:%Y-%m-%d}~{end:%Y-%m-%d}): {exc}"
+                )
+                break
+            end = start - timedelta(days=1)
+
+        merged: list[list] = []
+        seen: set[str] = set()
+        for chunk in reversed(chunks):
+            for row in chunk:
+                if len(row) >= 1 and row[0] not in seen:
+                    seen.add(row[0])
+                    merged.append(row)
+        return merged
+
     def _fetch_historical_from_qq(self, stock_code, days):
         """
         从腾讯财经历史数据API获取真实历史数据
@@ -1131,92 +1191,76 @@ class StockWebCrawler:
                 )
                 return pd.DataFrame()
 
-            # 腾讯财经历史数据API
             url = "http://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-            params = {
-                "param": f"{symbol},day,,,{days},qfq",  # qfq: 前复权
-                "_var": "kline_day",
-            }
-
             headers = {"User-Agent": self.user_agent, "Referer": "http://gu.qq.com/"}
 
-            response = requests.get(
-                url, params=params, headers=headers, timeout=self.timeout
+            # 腾讯单次最多返回约 600-1000 根 K 线；超出上限会返回
+            # {"code":0,"msg":"param error","data":[]}（data 为 list），
+            # 大 lookback（如优化器 2006 天）必须按日历窗口分页拉取后合并。
+            # qfq 复权锚定最新数据（实测跨窗口价格一致），拼接不会产生断层。
+            rows = self._qq_kline_windows(url, headers, symbol, days)
+            if not rows:
+                logger.warning("腾讯财经历史数据API返回数据格式异常")
+                return pd.DataFrame()
+
+            records = []
+            for item in rows:
+                # 每个item格式: ["2025-08-29","7.379","7.429","7.439","7.359","1237045.000"]
+                # 可能还有额外字段，我们只取前6个
+                if len(item) >= 5:
+                    record = {
+                        "date": item[0],
+                        "open": float(item[1]),
+                        "close": float(item[2]),
+                        "high": float(item[3]),
+                        "low": float(item[4]),
+                        "volume": float(item[5]) if len(item) > 5 else 0.0,
+                        "amount": 0.0,  # 腾讯不直接提供成交额
+                        "amplitude": (float(item[3]) - float(item[4]))
+                        / float(item[1])
+                        * 100
+                        if float(item[1]) > 0
+                        else 0.0,
+                        "change_pct": 0.0,  # 稍后计算
+                        "change": float(item[2]) - float(item[1]),
+                        "turnover": 0.0,  # 腾讯不直接提供换手率
+                    }
+                    records.append(record)
+
+            df = pd.DataFrame(records)
+            df["date"] = pd.to_datetime(df["date"])
+
+            # 计算涨跌幅（基于前一日收盘价）
+            if len(df) > 1:
+                df["change_pct"] = df["close"].pct_change() * 100
+                if len(df) > 0:
+                    df.loc[0, "change_pct"] = (
+                        (df.loc[0, "close"] - df.loc[0, "open"])
+                        / df.loc[0, "open"]
+                        * 100
+                    )
+
+            df = df.sort_values("date")
+            df = df.drop_duplicates(subset="date", keep="last")
+            if len(df) > days:
+                df = df.tail(days)
+
+            # 获取股票名称（通过QQ实时行情API提取简称）
+            try:
+                name_url = f"http://qt.gtimg.cn/q={symbol}"
+                name_resp = requests.get(
+                    name_url, headers=headers, timeout=5
+                )
+                name_items = name_resp.text.split("~")
+                if len(name_items) > 1 and name_items[1].strip():
+                    df["stock_name"] = name_items[1].strip()
+            except Exception as e:
+                logger.debug(f"名称获取失败 (不影响数据): {e}")
+
+            logger.info(
+                f"从腾讯财经历史API获取股票 {stock_code} 的 {len(df)} 条真实历史数据"
             )
-            response.raise_for_status()
-
-            # 解析响应（格式：kline_day={...})
-            content = response.text
-            if content.startswith("kline_day="):
-                json_str = content[len("kline_day=") :]
-                data = json.loads(json_str)
-
-                if data.get("code") == 0 and "data" in data:
-                    stock_data = data["data"].get(symbol)
-                    if stock_data:
-                        # A 股走 qfqday（前复权），港股走 day（未复权）
-                        kline_data = stock_data.get("qfqday") or stock_data.get("day")
-                        if kline_data:
-                            records = []
-                            for item in kline_data:
-                                # 每个item格式: ["2025-08-29","7.379","7.429","7.439","7.359","1237045.000"]
-                                # 可能还有额外字段，我们只取前6个
-                                if len(item) >= 5:
-                                    record = {
-                                        "date": item[0],
-                                        "open": float(item[1]),
-                                        "close": float(item[2]),
-                                        "high": float(item[3]),
-                                        "low": float(item[4]),
-                                        "volume": float(item[5])
-                                        if len(item) > 5
-                                        else 0.0,
-                                        "amount": 0.0,  # 腾讯不直接提供成交额
-                                        "amplitude": (float(item[3]) - float(item[4]))
-                                        / float(item[1])
-                                        * 100
-                                        if float(item[1]) > 0
-                                        else 0.0,
-                                        "change_pct": 0.0,  # 稍后计算
-                                        "change": float(item[2]) - float(item[1]),
-                                        "turnover": 0.0,  # 腾讯不直接提供换手率
-                                    }
-                                    records.append(record)
-
-                            df = pd.DataFrame(records)
-                            df["date"] = pd.to_datetime(df["date"])
-
-                            # 计算涨跌幅（基于前一日收盘价）
-                            if len(df) > 1:
-                                df["change_pct"] = df["close"].pct_change() * 100
-                                if len(df) > 0:
-                                    df.loc[0, "change_pct"] = (
-                                        (df.loc[0, "close"] - df.loc[0, "open"])
-                                        / df.loc[0, "open"]
-                                        * 100
-                                    )
-
-                            df = df.sort_values("date")
-
-                            # 获取股票名称（通过QQ实时行情API提取简称）
-                            try:
-                                name_url = f"http://qt.gtimg.cn/q={symbol}"
-                                name_resp = requests.get(
-                                    name_url, headers=headers, timeout=5
-                                )
-                                name_items = name_resp.text.split("~")
-                                if len(name_items) > 1 and name_items[1].strip():
-                                    df["stock_name"] = name_items[1].strip()
-                            except Exception as e:
-                                logger.debug(f"名称获取失败 (不影响数据): {e}")
-
-                            logger.info(
-                                f"从腾讯财经历史API获取股票 {stock_code} 的 {len(df)} 条真实历史数据"
-                            )
-                            return df
-
-            logger.warning("腾讯财经历史数据API返回数据格式异常")
-            return pd.DataFrame()
+            return df
 
         except json.JSONDecodeError as e:
             logger.warning(f"解析腾讯财经历史数据JSON失败: {e}")

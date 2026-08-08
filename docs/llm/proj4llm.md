@@ -1301,3 +1301,14 @@ pytest tests/test_import_smoke.py         # 导入完整性
 
 - 修复日报/简报/PDF/飞书信号表格显示 `?`：`main.py:_scan_group()` 产出的 alert 字典补齐通知契约字段 `rule_label`（策略名+方向，如 "分位评分 BUY"）与 `current_value`（"评分 x.xx" 信号强度）；`label`/`detail`/`rule_id` 保留给 ref_portfolio 与交互端。消费方（email_notifier 日报表格/文本、简报表格、PDF LaTeX、feishu markdown）统一读取这两个字段，一处修复全部生效；新增 `_alert_value()` 辅助函数统一兼容 dict/对象两种 alert 形态，裸 `getattr` 在 dict 上恒返回默认值的问题一并消除。
 - 修复例行搜参中断：`ci_cd_deploy.py` 部署时不再删除 `main.py --optimize` cron，改为幂等确保 `0 2 * * *` 例行任务存在（systemd scheduler 只覆盖每日 19:00 与简报，优化器因内存隔离需独立进程 + optimizer_guard，不能由 scheduler 线程承载）。遗留 `--once`/`--brief` cron 仍会清理（已由 systemd 覆盖）。
+
+### 港股搜参数据源与 PDF 附录修复（2026-08-08）
+
+- 港股例行搜参恢复：腾讯 fqkline 接口单次最多返回约 600-1000 根 K 线，超出后返回
+  `{"code":0,"msg":"param error","data":[]}`（data 为 list），旧代码对 list 调 `.get()`
+  崩溃，导致优化器 2006 天 lookback 下港股全被跳过（"港股: 无可用数据"）。`_fetch_historical_from_qq`
+  改为按 2 个日历年的窗口分页拉取后合并去重（qfq 复权锚定最新数据，实测跨窗口价格一致，
+  拼接无断层），并对 param error 结构做容错；A 股冷启动同样受益。
+- 日报 PDF 附录修复：MD→LaTeX 转换器此前只支持单行 `$$...$$`，多行公式块被拆成空
+  `\[\]` + 普通段落，导致 xelatex 报 `\mathrm allowed only in math mode`、附录公式乱码；
+  转换器改为块状态机（`$$` 开关显示数学环境，块内行原样保留）。

@@ -274,3 +274,59 @@ class TestHkFallbackChain:
         # 再验证一个 5 位代码
         _, _, sina_symbol, _, _ = crawler._normalize_stock_code("01816")
         assert sina_symbol == "hk01816"
+
+    def test_qq_large_lookback_pages_in_windows(self, monkeypatch):
+        """大 lookback 超腾讯单次上限时按日历窗口分页并合并去重。
+
+        模拟接口对单次请求只返回最近 600 根 K 线，超过即返回
+        {"code":0,"msg":"param error","data":[]}（data 为 list），
+        验证 _fetch_historical_from_qq 最终仍拼出完整的 days 行。
+        """
+        import json as _json
+        from datetime import datetime, timedelta
+
+        import requests as _requests
+
+        from src.data.web_crawler import StockWebCrawler
+
+        crawler = StockWebCrawler({})
+        day_rows = []
+        anchor = datetime.now()
+        for offset in range(1500, 0, -1):
+            day_rows.append(
+                [
+                    (anchor - timedelta(days=offset * 1.4)).strftime("%Y-%m-%d"),
+                    "10.0",
+                    "10.1",
+                    "10.2",
+                    "9.9",
+                    "100000.0",
+                ]
+            )
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            # 返回给 800 行以内的窗口（分页窗口 730 日历日 ≈ 500 行）
+            import re as _re
+
+            param = (params or {}).get("param", "")
+            m = _re.search(r"(\d{4}-\d{2}-\d{2}),(\d{4}-\d{2}-\d{2}),800", param)
+            assert m, f"unexpected param: {param}"
+            start, end = m.group(1), m.group(2)
+            rows = [
+                r for r in day_rows if start <= r[0] <= end
+            ]
+            payload = {"code": 0, "data": {"hk00700": {"day": rows}}}
+            return type(
+                "Resp",
+                (),
+                {
+                    "raise_for_status": lambda self=None: None,
+                    "text": "kline_day=" + _json.dumps(payload),
+                },
+            )()
+
+        monkeypatch.setattr(_requests, "get", fake_get)
+        df = crawler._fetch_historical_from_qq("00700", 1500)
+        assert df is not None and len(df) >= 1500
+        assert df["date"].is_monotonic_increasing
+        assert df["date"].nunique() == len(df)

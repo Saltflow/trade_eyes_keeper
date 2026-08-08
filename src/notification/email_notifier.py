@@ -3943,9 +3943,24 @@ class EmailNotifier(BaseNotifier):
                 latex_lines = []
                 in_list = False
                 in_table = False
+                in_display_math = False
                 for line in md_text.split("\n"):
                     stripped = line.strip()
-                    if stripped.startswith("# "):
+                    if stripped.startswith("$$"):
+                        # $$ 单独成行 = 显示公式块开关；同行 $$...$$ = 单行公式
+                        if stripped.endswith("$$") and len(stripped) > 4:
+                            formula = stripped.strip("$").strip()
+                            latex_lines.append(f"\\[{formula}\\]")
+                        elif in_display_math:
+                            latex_lines.append("\\]")
+                            in_display_math = False
+                        else:
+                            latex_lines.append("\\[")
+                            in_display_math = True
+                    elif in_display_math:
+                        # 公式块内的行原样保留在数学环境内，禁止按普通段落转义
+                        latex_lines.append(stripped)
+                    elif stripped.startswith("# "):
                         if in_list:
                             latex_lines.append("\\end{itemize}")
                             in_list = False
@@ -3967,9 +3982,6 @@ class EmailNotifier(BaseNotifier):
                         latex_lines.append(f"  \\item {item}")
                     elif stripped.startswith("---"):
                         latex_lines.append("\\vspace{4pt}\\hrule\\vspace{4pt}")
-                    elif stripped.startswith("$$"):
-                        formula = stripped.strip("$").strip()
-                        latex_lines.append(f"\\[{formula}\\]")
                     elif stripped.startswith("|"):
                         if not in_table:
                             cols = stripped.count("|") - 1
@@ -3991,6 +4003,8 @@ class EmailNotifier(BaseNotifier):
                     latex_lines.append("\\end{itemize}")
                 if in_table:
                     latex_lines.append("\\end{tabular}")
+                if in_display_math:
+                    latex_lines.append("\\]")
                 appendix_section = "\n".join(latex_lines)
 
             # 7. 渲染模板
