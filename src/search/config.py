@@ -182,6 +182,38 @@ class GeneticSearchConfig:
         )
 
 
+class LocalSensitivityConfig:
+    """Configurable one-level parameter-neighbour validation.
+
+    Objective scores may legitimately be negative because the primary score
+    subtracts a cross-window range penalty. Local robustness therefore
+    measures neighbour feasibility and relative score deterioration; it must
+    never require an absolute score greater than zero.
+    """
+
+    def __init__(self, data: dict | None = None):
+        raw = data or {}
+        self.enabled: bool = bool(raw.get("enabled", True))
+        self.minimum_feasible_ratio: float = float(
+            raw.get("minimum_feasible_ratio", 0.80)
+        )
+        if not 0.0 <= self.minimum_feasible_ratio <= 1.0:
+            raise ValueError(
+                "validation.local_sensitivity.minimum_feasible_ratio "
+                "must be between 0 and 1"
+            )
+        self.activation_required: bool = bool(
+            raw.get("activation_required", True)
+        )
+
+    def to_contract(self) -> dict[str, object]:
+        return {
+            "enabled": self.enabled,
+            "minimum_feasible_ratio": self.minimum_feasible_ratio,
+            "activation_required": self.activation_required,
+        }
+
+
 class UniverseRobustnessConfig:
     """Configurable leave-one-instrument-out finalist validation."""
 
@@ -356,6 +388,9 @@ class StrategyConstraints:
         )
         self.genetic_search = GeneticSearchConfig(raw_config.get("genetic_search", {}))
         validation = raw_config.get("validation", {}) or {}
+        self.local_sensitivity = LocalSensitivityConfig(
+            validation.get("local_sensitivity", {})
+        )
         self.universe_robustness = UniverseRobustnessConfig(
             validation.get("universe_robustness", {})
         )

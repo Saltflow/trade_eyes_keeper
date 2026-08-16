@@ -73,6 +73,13 @@ genetic_search:
   min_positive_return_windows: 6
   min_winning_benchmark_windows: 6
 validation:
+  local_sensitivity:
+    enabled: true
+    # The objective can be negative after the cross-window range penalty.
+    # Robustness is the share of valid one-level neighbours plus their
+    # relative score drop; no neighbour is required to have score > 0.
+    minimum_feasible_ratio: 0.80
+    activation_required: true
   universe_robustness:
     enabled: true
     # Re-evaluate enough finalists for a fragile first-place candidate to

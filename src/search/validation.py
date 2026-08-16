@@ -69,7 +69,13 @@ class ValidationController:
         )
         validated = [self._base_result(result) for result in search_results]
         for result in validated[:limit]:
-            result.sensitivity = self._sensitivity(result)
+            if self.constraints.local_sensitivity.enabled:
+                result.sensitivity = self._sensitivity(result)
+            else:
+                result.sensitivity = {
+                    "enabled": False,
+                    "local_robustness_passed": True,
+                }
             drop = float(result.sensitivity.get("drop", 0.0))
             result.selection_score -= (
                 self.constraints.genetic_search.sensitivity_penalty_weight
@@ -78,7 +84,10 @@ class ValidationController:
             result.sensitivity["selection_score"] = result.selection_score
         validated[:limit] = sorted(
             validated[:limit],
-            key=lambda item: (item.selection_score, item.candidate_id),
+            key=lambda item: (
+                bool(item.sensitivity.get("local_robustness_passed")),
+                item.selection_score,
+            ),
             reverse=True,
         )
         universe_config = self.constraints.universe_robustness
@@ -102,8 +111,8 @@ class ValidationController:
                 validated[:universe_limit],
                 key=lambda item: (
                     bool(item.universe_robustness.get("passed")),
+                    math.isfinite(item.selection_score),
                     item.selection_score,
-                    item.candidate_id,
                 ),
                 reverse=True,
             )
@@ -148,7 +157,8 @@ class ValidationController:
         evaluated = self.ranking_service.evaluate_batch(
             CandidateBatch.from_candidates(candidates, self.schema)
         )
-        scores = []
+        scores: list[float] = []
+        feasible_scores: list[float] = []
         for score, metrics, raw_feasible in zip(
             evaluated.objective_scores,
             evaluated.raw_metrics,
@@ -156,20 +166,42 @@ class ValidationController:
         ):
             decision = self.gate_pipeline.evaluate(metrics)
             if bool(raw_feasible) and decision.feasible:
-                scores.append(float(score) - decision.penalty)
+                adjusted = float(score) - decision.penalty
+                scores.append(adjusted)
+                if math.isfinite(adjusted):
+                    feasible_scores.append(adjusted)
             else:
                 scores.append(-float("inf"))
-        finite = [score for score in scores if math.isfinite(score)]
-        worst = min(scores) if scores else -float("inf")
+        sample_count = len(scores)
+        feasible_count = len(feasible_scores)
+        feasible_ratio = feasible_count / sample_count if sample_count else 0.0
+        worst = min(feasible_scores) if feasible_scores else -float("inf")
+        best = max(feasible_scores) if feasible_scores else -float("inf")
+        base_score = float(selected.selection_score)
+        drop = (
+            max(base_score - worst, 0.0)
+            if math.isfinite(worst)
+            else float("inf")
+        )
+        passed = bool(
+            feasible_scores
+            and feasible_ratio
+            >= self.constraints.local_sensitivity.minimum_feasible_ratio
+        )
         return {
-            "sample_count": len(scores),
-            "feasible_sample_count": len(finite),
-            "base_score": round(float(selected.selection_score), 6),
+            "enabled": True,
+            "config": self.constraints.local_sensitivity.to_contract(),
+            "sample_count": sample_count,
+            "feasible_sample_count": feasible_count,
+            "infeasible_sample_count": sample_count - feasible_count,
+            "feasible_ratio": round(float(feasible_ratio), 6),
+            "base_score": round(base_score, 6),
             "worst_score": round(float(worst), 6),
-            "drop": round(float(selected.selection_score - worst), 6),
+            "worst_feasible_score": round(float(worst), 6),
+            "drop": round(float(drop), 6),
             "min_score": round(float(worst), 6),
-            "max_score": round(float(max(scores)), 6),
-            "local_robustness_passed": bool(finite and worst > 0.0),
+            "max_score": round(float(best), 6),
+            "local_robustness_passed": passed,
         }
 
     def _params(self, selected: ValidatedSearchResult) -> Params:

@@ -15,6 +15,18 @@
   accepted only as a configuration-read compatibility alias.
 - The 252-session instrument eligibility count is computed over the complete
   instrument lifetime and must not reset at a state-slice boundary.
+- One-level parameter sensitivity is a relative robustness check. Hard-gate
+  failures are counted separately from numeric scores; the finite-neighbour
+  drop and configurable feasible-neighbour ratio determine robustness. A
+  neighbour or final selection is never required to have objective score
+  greater than zero, because the cross-window range penalty can make an
+  otherwise admissible objective negative.
+- Instrument-pool robustness is an inner ranking-window cross-validation, not
+  a search over symbol identities: finalists are replayed after each single
+  instrument removal and reranked without opening the two isolation windows
+  or final holdout. Future dynamic pool selection must search transferable
+  feature/ranking rules (for example top-K conviction), never per-code include
+  switches that turn timing optimization into historical stock selection.
 - For ranking window i, define `M_i` as strategy return minus the median return
   of the three configured controls. The primary objective is
   `weighted_mean(M_i) - window_range_penalty * (max(M_i) - min(M_i))`; the

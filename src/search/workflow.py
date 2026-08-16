@@ -738,12 +738,14 @@ def _save_optimizer_result(
         required_benchmarks.issubset(set(stat.benchmark_returns))
         for stat in top.all_stats
     )
-    local_robustness_passed = bool(top.sensitivity) and (
-        float(top.sensitivity.get("worst_score", float("-inf"))) > 0
-        and float(
-            top.selection_score if top.selection_score is not None else float("-inf")
+    local_config = constraints.local_sensitivity
+    local_robustness_passed = (
+        not local_config.enabled
+        or not local_config.activation_required
+        or (
+            bool(top.sensitivity)
+            and bool(top.sensitivity.get("local_robustness_passed"))
         )
-        > 0
     )
     universe_robustness = dict(getattr(top, "universe_robustness", {}) or {})
     universe_config = constraints.universe_robustness
@@ -833,6 +835,7 @@ def _save_optimizer_result(
                 "* parameter_sensitivity_drop - "
                 f"{universe_config.penalty_weight:g} * universe_sensitivity_drop"
             ),
+            "local_sensitivity_config": local_config.to_contract(),
             "universe_robustness_config": universe_config.to_contract(),
             "selection_score": top.selection_score,
             "ranking_diagnostics": dict(top.ranking_metrics),
