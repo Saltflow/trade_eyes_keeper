@@ -253,6 +253,11 @@ class SearchRuntimeConfig:
             raise ValueError(
                 "search.candidate_retention_ratio must be greater than 0 and at most 1"
             )
+        self.run_retention_count: int = int(data.get("run_retention_count", 3))
+        if not 1 <= self.run_retention_count <= 100:
+            raise ValueError(
+                "search.run_retention_count must be between 1 and 100"
+            )
         configured = data.get("solvers", {}) or {}
         if not isinstance(configured, dict):
             raise ValueError("search.solvers must be a mapping")

@@ -174,6 +174,11 @@ def _notify_failure(
     )
     _write_failure_state(application, run_dir, report, returncode)
     application._notify_optimizer_run(config, report)
+    constraints = application.get_constraints()
+    application.prune_optimizer_runs(
+        root=repository / "data" / "optimizer",
+        keep_completed=constraints.search.run_retention_count,
+    )
 
 
 def main() -> int:

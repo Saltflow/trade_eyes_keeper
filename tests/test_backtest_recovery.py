@@ -38,6 +38,7 @@ def _price_history(periods: int = 1_500) -> pd.DataFrame:
 def test_optimizer_runs_each_market_group(monkeypatch):
     history = _price_history()
     calls = []
+    prune_calls = []
 
     class FakeDataSource:
         def __init__(self, config):
@@ -66,6 +67,11 @@ def test_optimizer_runs_each_market_group(monkeypatch):
     monkeypatch.setattr("src.data.data_source.DataSource", FakeDataSource)
     monkeypatch.setattr(main, "run_optimizer", fake_run_optimizer)
     monkeypatch.setattr(main, "publish_complete_run", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        main,
+        "prune_optimizer_runs",
+        lambda **kwargs: prune_calls.append(kwargs),
+    )
     monkeypatch.setattr(main, "_notify_optimizer_run", lambda *_args, **_kwargs: None)
 
     completed = main.run_optimization(
@@ -83,6 +89,10 @@ def test_optimizer_runs_each_market_group(monkeypatch):
         ("percentile", "hk", ["00700"]),
         ("percentile", "us", ["AAPL"]),
     ]
+    assert len(prune_calls) == 2
+    assert prune_calls[0]["keep_completed"] == 3
+    assert len(prune_calls[0]["protected_run_ids"]) == 1
+    assert prune_calls[1] == {"keep_completed": 3}
 
 
 def test_optimizer_excludes_short_history_before_date_alignment(monkeypatch):
@@ -116,6 +126,7 @@ def test_optimizer_excludes_short_history_before_date_alignment(monkeypatch):
     monkeypatch.setattr("src.data.data_source.DataSource", FakeDataSource)
     monkeypatch.setattr(main, "run_optimizer", fake_run_optimizer)
     monkeypatch.setattr(main, "publish_complete_run", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(main, "prune_optimizer_runs", lambda **_kwargs: None)
     monkeypatch.setattr(main, "_notify_optimizer_run", lambda *_args, **_kwargs: None)
 
     completed = main.run_optimization(

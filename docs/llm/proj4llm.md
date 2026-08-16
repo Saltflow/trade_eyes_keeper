@@ -115,10 +115,18 @@
   JSONL `SearchArchive`; finalists are streamed back from that archive before
   full `WindowStats` materialization. Checkpoints persist only this compact
   replay state and are rejected when the configured retention ratio changes.
+- Disk retention is independent of the in-memory candidate ratio.
+  `search.run_retention_count` defaults to `3`: the newest three complete
+  run manifests are retained, while the currently active run and every older
+  run directory referenced by its immutable artifacts are protected in
+  addition to that limit. Stale no-manifest or interrupted run directories do
+  not count as results and are removed before the next search or after their
+  failure notification.
 - Real CLI `python main.py --optimize` is supervised by the lightweight
   `src.optimizer_guard` parent. A non-zero child exit or SIGKILL produces one
-  shared failure summary with per-market archive progress, writes
-  `optimizer_failure.yaml`, and leaves the previous active run untouched.
+  shared failure summary with per-market archive progress, writes a transient
+  `optimizer_failure.yaml` for notification assembly, removes the partial
+  multi-gigabyte run directory, and leaves the previous active run untouched.
 - 交互配置只允许修改实际生效且通过 Schema 校验的字段：solver、budget、
   gate_profile、positive_windows、majority_windows、min_pos、max_dd、
   window_range_penalty、workers、batch_size, candidate_retention_ratio，以及统一现金档位、手续费和

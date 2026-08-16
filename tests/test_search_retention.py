@@ -103,7 +103,9 @@ class RetainingEvaluationService:
 
 
 def test_runtime_retention_ratio_defaults_and_validation():
-    assert SearchRuntimeConfig({}, genetic={}).candidate_retention_ratio == 0.05
+    defaults = SearchRuntimeConfig({}, genetic={})
+    assert defaults.candidate_retention_ratio == 0.05
+    assert defaults.run_retention_count == 3
     assert (
         SearchRuntimeConfig(
             {"candidate_retention_ratio": 0.2}, genetic={}
@@ -115,6 +117,13 @@ def test_runtime_retention_ratio_defaults_and_validation():
             SearchRuntimeConfig(
                 {"candidate_retention_ratio": invalid}, genetic={}
             )
+
+    assert SearchRuntimeConfig(
+        {"run_retention_count": 7}, genetic={}
+    ).run_retention_count == 7
+    for invalid in (0, -1, 101):
+        with pytest.raises(ValueError, match="run_retention_count"):
+            SearchRuntimeConfig({"run_retention_count": invalid}, genetic={})
 
 
 def test_controller_bounds_replay_reservoir_and_checkpoint(tmp_path: Path):

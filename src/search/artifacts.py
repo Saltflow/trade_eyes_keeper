@@ -13,6 +13,7 @@ import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Iterable
 
 import yaml
 
@@ -100,8 +101,174 @@ class ActiveStrategyRun:
         return get_strategy(self.strategy_name)
 
 
+@dataclass(frozen=True)
+class RunRetentionResult:
+    """Summary of one safe optimizer-run lifecycle cleanup."""
+
+    kept_complete: tuple[str, ...] = ()
+    protected: tuple[str, ...] = ()
+    removed: tuple[str, ...] = ()
+    failed: tuple[str, ...] = ()
+    reclaimed_bytes: int = 0
+
+
 def _root(root: Path | str | None = None) -> Path:
     return Path(root) if root is not None else OPTIMIZER_ROOT
+
+
+def _manifest_artifact_run_ids(base: Path, manifest: dict | None) -> set[str]:
+    """Return run directories referenced by a manifest's immutable artifacts."""
+    if not isinstance(manifest, dict):
+        return set()
+    referenced: set[str] = set()
+    run_id = manifest.get("run_id")
+    if isinstance(run_id, str) and run_id and Path(run_id).name == run_id:
+        referenced.add(run_id)
+    groups = manifest.get("groups", {})
+    if not isinstance(groups, dict):
+        return referenced
+    runs_root = (base / RUNS_DIRNAME).resolve()
+    for entry in groups.values():
+        artifact = entry.get("artifact") if isinstance(entry, dict) else None
+        if not isinstance(artifact, str) or not artifact:
+            continue
+        try:
+            relative = (base / artifact).resolve().relative_to(runs_root)
+        except (OSError, ValueError):
+            continue
+        if len(relative.parts) >= 2:
+            referenced.add(relative.parts[0])
+    return referenced
+
+
+def _complete_run_manifest(base: Path, run_dir: Path) -> dict | None:
+    """Return a run manifest only when every declared artifact still exists."""
+    manifest_path = run_dir / "manifest.yaml"
+    if not manifest_path.is_file():
+        return None
+    manifest = _load_yaml(manifest_path)
+    if not manifest or str(manifest.get("run_id", "")) != run_dir.name:
+        return None
+    groups = manifest.get("groups")
+    if not isinstance(groups, dict) or not groups:
+        return None
+    for entry in groups.values():
+        artifact = entry.get("artifact") if isinstance(entry, dict) else None
+        if not isinstance(artifact, str) or not artifact:
+            return None
+        path = _artifact_path(base, artifact)
+        if path is None or not path.is_file():
+            return None
+    return manifest
+
+
+def _directory_bytes(path: Path) -> int:
+    total = 0
+    for item in path.rglob("*"):
+        try:
+            if item.is_file() and not item.is_symlink():
+                total += item.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def prune_optimizer_runs(
+    *,
+    keep_completed: int = 3,
+    protected_run_ids: Iterable[str] = (),
+    root: Path | str | None = None,
+) -> RunRetentionResult:
+    """Keep recent complete searches and remove stale or partial run directories.
+
+    The newest configured number of valid manifests are retained. The active
+    pointer and every run directory referenced by it are protected in addition
+    to that limit, so a historical active strategy remains usable until a new
+    candidate is explicitly activated. Callers may also protect the ID of an
+    in-flight run. Only direct, non-symlink children of the runs directory are
+    removed.
+    """
+    if keep_completed < 1:
+        raise ValueError("keep_completed must be at least 1")
+
+    base = _root(root).resolve()
+    runs_root = (base / RUNS_DIRNAME).resolve()
+    try:
+        runs_root.relative_to(base)
+    except ValueError as exc:
+        raise ValueError("optimizer runs directory must stay under its root") from exc
+    if not runs_root.exists():
+        return RunRetentionResult()
+
+    protected = {
+        run_id
+        for raw in protected_run_ids
+        if (run_id := str(raw).strip()) and Path(run_id).name == run_id
+    }
+    latest_path = base / LATEST_MANIFEST
+    active_manifest = _load_yaml(latest_path) if latest_path.is_file() else None
+    if latest_path.exists() and active_manifest is None:
+        logger.error(
+            "Optimizer active pointer is unreadable; skipping run retention cleanup"
+        )
+        return RunRetentionResult()
+    protected.update(_manifest_artifact_run_ids(base, active_manifest))
+
+    completed: list[tuple[str, float, str, Path]] = []
+    directories: list[Path] = []
+    for item in runs_root.iterdir():
+        if not item.is_dir() or item.is_symlink():
+            continue
+        try:
+            item.resolve().relative_to(runs_root)
+            modified = item.stat().st_mtime
+        except (OSError, ValueError):
+            continue
+        directories.append(item)
+        manifest = _complete_run_manifest(base, item)
+        if manifest is not None:
+            completed.append(
+                (str(manifest.get("timestamp", "")), modified, item.name, item)
+            )
+
+    completed.sort(key=lambda value: (value[0], value[1], value[2]), reverse=True)
+    recent = {item.name for *_metadata, item in completed[:keep_completed]}
+    keep = recent | protected
+    removed: list[str] = []
+    failed: list[str] = []
+    reclaimed = 0
+    for item in sorted(directories, key=lambda path: path.name):
+        if item.name in keep:
+            continue
+        item_bytes = _directory_bytes(item)
+        try:
+            shutil.rmtree(item)
+        except OSError as exc:
+            logger.warning("Cannot prune optimizer run %s: %s", item, exc)
+            failed.append(item.name)
+            continue
+        reclaimed += item_bytes
+        removed.append(item.name)
+
+    result = RunRetentionResult(
+        kept_complete=tuple(
+            item.name for *_metadata, item in completed[:keep_completed]
+        ),
+        protected=tuple(sorted(protected)),
+        removed=tuple(removed),
+        failed=tuple(failed),
+        reclaimed_bytes=reclaimed,
+    )
+    if removed:
+        logger.info(
+            "Pruned %d optimizer run directories and reclaimed %.2f GiB; "
+            "kept recent=%s protected=%s",
+            len(removed),
+            reclaimed / (1024 ** 3),
+            result.kept_complete,
+            result.protected,
+        )
+    return result
 
 
 def _parse_params(data: dict, strategy_name: str) -> Params | None:

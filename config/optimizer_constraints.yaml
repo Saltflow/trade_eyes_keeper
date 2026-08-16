@@ -103,6 +103,11 @@ search:
   # the best 5% of candidates evaluated so far plus the Solver live state;
   # every ranking-only evaluation is still written to the JSONL search archive.
   candidate_retention_ratio: 0.05
+  # Keep only the newest complete search runs on disk. The currently active
+  # run (and any older artifacts referenced by it) is protected in addition.
+  # Interrupted/no-manifest run directories are removed after their failure
+  # notification so multi-gigabyte JSONL archives cannot accumulate.
+  run_retention_count: 3
   solvers:
     genetic:
       budget: 155000

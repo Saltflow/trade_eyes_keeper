@@ -52,6 +52,7 @@ from src.search.artifacts import (
     load_strategy_run,
     new_run_id,
     persist_group_summary,
+    prune_optimizer_runs,
     publish_complete_run,
 )
 from src.search.contracts import stable_hash
@@ -370,6 +371,10 @@ def run_optimization(
         return {}
 
     constraints = get_constraints()
+    prune_optimizer_runs(
+        keep_completed=constraints.search.run_retention_count,
+        protected_run_ids=(run_id,),
+    )
     lookback_days = _optimizer_lookback_days(constraints)
     evaluation_budget = _optimizer_evaluation_budget(constraints)
     logger.info(
@@ -553,6 +558,9 @@ def run_optimization(
             run_id=run_id,
             candidate=bool(published and manual_activation),
         ),
+    )
+    prune_optimizer_runs(
+        keep_completed=constraints.search.run_retention_count,
     )
 
     return completed
