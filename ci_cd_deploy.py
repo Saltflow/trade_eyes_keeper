@@ -140,7 +140,7 @@ def _get_ssh_key():
 
 
 def _build_health_systemd_command():
-    """Build the remote command that installs the sole health-server service."""
+    """Install the sole health/scheduler host and remove legacy schedulers."""
     unit = f"""[Unit]
 Description=Trade Eyes Keeper health server
 After=network-online.target
@@ -161,6 +161,8 @@ WantedBy=multi-user.target"""
 pkill -f '^bash -c while true; do .*main.py --health-server' 2>/dev/null || true
 pkill -f '^bash -c if ! kill -0 .*main.py --health-server' 2>/dev/null || true
 pkill -f '^python3 main.py --health-server$' 2>/dev/null || true
+pkill -f '^/usr/bin/python3 {REMOTE_DIR}/main.py$' 2>/dev/null || true
+pkill -f '^python3 {REMOTE_DIR}/main.py$' 2>/dev/null || true
 rm -f /tmp/hs.pid
 systemctl stop trade-eyes-health.service 2>/dev/null || true
 systemctl reset-failed trade-eyes-health.service 2>/dev/null || true

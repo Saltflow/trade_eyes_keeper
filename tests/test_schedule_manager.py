@@ -77,6 +77,42 @@ class TestScheduleManager:
             # next_run_time 应该在 19:00
             assert job.next_run_time.hour == 19
             assert job.next_run_time.minute == 0
+            assert job.misfire_grace_time == 3600
+            assert job.coalesce is True
+            assert job.max_instances == 1
+        finally:
+            mgr.stop()
+
+    def test_brief_misfire_grace_is_configurable(self, tmp_path):
+        config, cfg_path = _make_config(tmp_path)
+        config["scheduler"]["brief_misfire_grace_seconds"] = 600
+        config["scheduler"]["brief_reports"][0][
+            "misfire_grace_seconds"
+        ] = 1200
+        mgr = ScheduleManager(config, config_path=cfg_path)
+        mgr.start()
+        try:
+            morning = mgr.scheduler.get_job("brief_morning_snapshot")
+            afternoon = mgr.scheduler.get_job("brief_afternoon_snapshot")
+            assert morning.misfire_grace_time == 1200
+            assert afternoon.misfire_grace_time == 600
+            assert morning.coalesce is True
+            assert morning.max_instances == 1
+        finally:
+            mgr.stop()
+
+    def test_invalid_misfire_grace_uses_safe_defaults(self, tmp_path):
+        config, cfg_path = _make_config(tmp_path)
+        config["scheduler"]["daily_misfire_grace_seconds"] = 0
+        config["scheduler"]["brief_misfire_grace_seconds"] = "invalid"
+        mgr = ScheduleManager(config, config_path=cfg_path)
+        mgr.start()
+        try:
+            assert mgr.scheduler.get_job("daily").misfire_grace_time == 3600
+            assert (
+                mgr.scheduler.get_job("brief_morning_snapshot").misfire_grace_time
+                == 900
+            )
         finally:
             mgr.stop()
 

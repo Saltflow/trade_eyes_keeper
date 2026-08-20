@@ -54,9 +54,13 @@ logging:
 
 # ── 调度 ──
 scheduler:
-  run_time: '16:00'
+  run_time: '19:00'
   cache_bypass_cutoff: '15:55'
   timezone: Asia/Shanghai
+  # 服务器繁忙时允许错过整点后补跑；APScheduler 默认约1秒会误跳任务。
+  daily_misfire_grace_seconds: 3600
+  brief_misfire_grace_seconds: 900
+  optimize_misfire_grace_seconds: 7200
   brief_reports:
     - id: morning_snapshot
       run_time: '09:50'

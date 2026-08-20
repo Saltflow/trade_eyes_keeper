@@ -13,6 +13,10 @@ import pytz
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_DAILY_MISFIRE_GRACE_SECONDS = 3600
+DEFAULT_BRIEF_MISFIRE_GRACE_SECONDS = 900
+DEFAULT_OPTIMIZE_MISFIRE_GRACE_SECONDS = 7200
+
 # task_id → job_id 映射
 _JOB_IDS = {
     "daily": "daily",
@@ -35,7 +39,19 @@ class ScheduleManager:
             timezone = pytz.timezone(tz_str)
         except pytz.exceptions.UnknownTimeZoneError:
             timezone = pytz.timezone("Asia/Shanghai")
-        self.scheduler = BackgroundScheduler(timezone=timezone)
+        self.scheduler = BackgroundScheduler(
+            timezone=timezone,
+            job_defaults={"coalesce": True, "max_instances": 1},
+        )
+
+    @staticmethod
+    def _grace_seconds(value, default: int) -> int:
+        """Return a positive APScheduler misfire window."""
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed > 0 else default
 
     def start(self):
         """注册所有 job 并启动调度器。"""
@@ -44,7 +60,16 @@ class ScheduleManager:
         # 日报
         daily_time = sched_cfg.get("run_time", "19:00")
         if sched_cfg.get("daily_enabled", True):
-            self._add_job("daily", daily_time, ["--once"], "每日日报")
+            self._add_job(
+                "daily",
+                daily_time,
+                ["--once"],
+                "每日日报",
+                misfire_grace_seconds=self._grace_seconds(
+                    sched_cfg.get("daily_misfire_grace_seconds"),
+                    DEFAULT_DAILY_MISFIRE_GRACE_SECONDS,
+                ),
+            )
 
         # 简报
         for br in sched_cfg.get("brief_reports", []):
@@ -59,6 +84,13 @@ class ScheduleManager:
                 ["--brief", br_id],
                 br.get("label", br_id),
                 job_id_override=job_id,
+                misfire_grace_seconds=self._grace_seconds(
+                    br.get(
+                        "misfire_grace_seconds",
+                        sched_cfg.get("brief_misfire_grace_seconds"),
+                    ),
+                    DEFAULT_BRIEF_MISFIRE_GRACE_SECONDS,
+                ),
             )
 
         # 策略优化（每天凌晨 2:00）
@@ -70,6 +102,10 @@ class ScheduleManager:
                 opt_time,
                 ["--optimize"],
                 "策略优化",
+                misfire_grace_seconds=self._grace_seconds(
+                    sched_cfg.get("optimize_misfire_grace_seconds"),
+                    DEFAULT_OPTIMIZE_MISFIRE_GRACE_SECONDS,
+                ),
             )
 
         self.scheduler.start()
@@ -82,6 +118,7 @@ class ScheduleManager:
         cli_args: list[str],
         name: str,
         job_id_override: str | None = None,
+        misfire_grace_seconds: int = DEFAULT_BRIEF_MISFIRE_GRACE_SECONDS,
     ):
         """注册一个 job，通过子进程执行 main.py。"""
         hour, minute = self._parse_time(time_str)
@@ -102,15 +139,21 @@ class ScheduleManager:
             cmd = [sys.executable, str(main_py)] + cli_args
             try:
                 log_file = project_root / "logs" / "quant_system.log"
-                stderr_target = open(str(log_file), "a")
-                subprocess.Popen(
-                    cmd,
-                    cwd=str(project_root),
-                    env=os.environ.copy(),
-                    stdout=stderr_target,
-                    stderr=stderr_target,
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                with log_file.open("a", encoding="utf-8") as output:
+                    process = subprocess.Popen(
+                        cmd,
+                        cwd=str(project_root),
+                        env=os.environ.copy(),
+                        stdout=output,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
+                logger.info(
+                    "调度任务已启动子进程 pid=%s: %s",
+                    process.pid,
+                    " ".join(cmd),
                 )
-                logger.info(f"调度任务已启动子进程: {' '.join(cmd)}")
             except Exception as e:
                 logger.exception(f"调度任务启动失败: {task_id}: {e}")
 
@@ -121,8 +164,17 @@ class ScheduleManager:
             id=job_id,
             name=name,
             replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            misfire_grace_time=misfire_grace_seconds,
         )
-        logger.info(f"已注册: {name} ({hour:02d}:{minute:02d})")
+        logger.info(
+            "已注册: %s (%02d:%02d, misfire_grace=%ss)",
+            name,
+            hour,
+            minute,
+            misfire_grace_seconds,
+        )
 
     def stop(self):
         """停止调度器。"""

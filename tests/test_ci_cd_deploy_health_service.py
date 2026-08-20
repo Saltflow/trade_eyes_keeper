@@ -13,6 +13,7 @@ def test_health_server_is_managed_only_by_persistent_systemd_unit():
     assert "ExecStart=/usr/bin/python3" in command
     assert "nohup python3 main.py --health-server" not in command
     assert "while true" in command  # legacy loop cleanup only
+    assert "pkill -f '^/usr/bin/python3 /root/trade_eyes_keeper/main.py$'" in command
 
 
 def test_deploy_flow_does_not_start_a_health_server_nohup_loop():
