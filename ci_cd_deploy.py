@@ -158,6 +158,7 @@ Environment=PYTHONUTF8=1
 [Install]
 WantedBy=multi-user.target"""
     return f"""set -e
+systemctl disable --now trade-eyes.service 2>/dev/null || true
 pkill -f '^bash -c while true; do .*main.py --health-server' 2>/dev/null || true
 pkill -f '^bash -c if ! kill -0 .*main.py --health-server' 2>/dev/null || true
 pkill -f '^python3 main.py --health-server$' 2>/dev/null || true
