@@ -1,0 +1,19 @@
+# Production replacement is relative to the incumbent, evaluated on the same
+# frozen 9-month slice with identical data, benchmarks and execution rules.
+enabled: true
+auto_activate_if_better: true
+
+# Three market groups use equal independent capital pools. A candidate must
+# improve the combined return and at least two groups, while remaining within
+# explicit per-market return and drawdown safety tolerances.
+minimum_portfolio_return_improvement_pct: 0.0
+minimum_improved_groups: 2
+maximum_group_return_regression_pct: 5.0
+maximum_drawdown_regression_pct: 5.0
+
+# Relative improvement can override performance gates (holdout/universe), but
+# never missing benchmarks, a catastrophic drawdown or a no-trade candidate.
+safety_max_drawdown_pct: -40.0
+minimum_trade_count: 1
+require_three_benchmarks: true
+required_group_count: 3

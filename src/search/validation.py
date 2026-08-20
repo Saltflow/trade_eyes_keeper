@@ -340,10 +340,7 @@ class ValidationController:
                         "gate_feasible": bool(gate and gate.feasible),
                     }
                 )
-        required = max(
-            1,
-            int(np.ceil(len(codes) * config.minimum_passing_ratio)),
-        )
+        required = config.required_positive_variants(len(codes))
         leave_one_out_passed = positive >= required
         passed = bool(
             leave_one_out_passed

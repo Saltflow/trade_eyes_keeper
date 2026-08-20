@@ -56,6 +56,12 @@ from src.search.artifacts import (
     publish_complete_run,
 )
 from src.search.contracts import stable_hash
+from src.search.promotion import (
+    PromotionDecision,
+    PromotionPolicy,
+    compare_with_incumbent,
+    record_promotion_decision,
+)
 from src.instruments import InstrumentAuditService
 from src.instruments.audit import load_latest_audit
 
@@ -371,6 +377,8 @@ def run_optimization(
         return {}
 
     constraints = get_constraints()
+    promotion_policy = PromotionPolicy.load()
+    incumbent_run = load_latest_strategy_run(groups=OPTIMIZER_GROUPS)
     prune_optimizer_runs(
         keep_completed=constraints.search.run_retention_count,
         protected_run_ids=(run_id,),
@@ -501,6 +509,35 @@ def run_optimization(
                     summaries[group].validation = _optimizer_validation_snapshot(
                         validation
                     )
+                    if (
+                        incumbent_run is not None
+                        and incumbent_run.strategy is not None
+                        and group in incumbent_run.params_by_group
+                    ):
+                        incumbent_reports = evaluate_all_groups(
+                            stocks_data,
+                            list(stocks_data),
+                            incumbent_run.strategy,
+                            incumbent_run.params_by_group[group],
+                            constraints.execution,
+                            benchmark_data=optimizer_benchmarks,
+                            target_groups=[group],
+                            start_date=validation_start,
+                            end_date=validation_end,
+                        )
+                        incumbent_validation = incumbent_reports.get(group)
+                        if incumbent_validation is not None:
+                            summaries[group].validation["_incumbent"] = (
+                                _optimizer_validation_snapshot(
+                                    incumbent_validation
+                                )
+                            )
+                            summaries[group].validation["_comparison_contract"] = {
+                                "start": validation_start,
+                                "end": validation_end,
+                                "incumbent_run_id": incumbent_run.run_id,
+                                "incumbent_strategy": incumbent_run.strategy_name,
+                            }
             except Exception:
                 logger.exception("%s optimizer validation report failed", group)
             persist_group_summary(run_id, summaries[group])
@@ -520,6 +557,47 @@ def run_optimization(
     publication_groups = (
         OPTIMIZER_GROUPS if manual_activation else required_groups
     )
+    promotion_decision = PromotionDecision(False, ("incumbent_unavailable",))
+    if incumbent_run is not None and incumbent_run.strategy is not None:
+        candidate_reports = {
+            group: summaries[group].validation
+            for group in publication_groups
+            if summaries[group].status == "completed"
+            and summaries[group].validation
+        }
+        incumbent_reports = {
+            group: report
+            for group, candidate in candidate_reports.items()
+            if isinstance((report := candidate.get("_incumbent")), dict)
+        }
+        promotion_decision = compare_with_incumbent(
+            candidate_reports,
+            incumbent_reports,
+            promotion_policy,
+        )
+        record_promotion_decision(
+            run_id,
+            summaries,
+            promotion_decision,
+            promotion_policy,
+            incumbent_run_id=incumbent_run.run_id,
+            incumbent_strategy=incumbent_run.strategy_name,
+        )
+        logger.info(
+            "Relative promotion decision for %s versus %s: passed=%s, "
+            "portfolio improvement=%s, improved groups=%d/%d, reasons=%s",
+            run_id,
+            incumbent_run.run_id,
+            promotion_decision.passed,
+            promotion_decision.portfolio_return_improvement_pct,
+            promotion_decision.improved_group_count,
+            promotion_decision.compared_group_count,
+            list(promotion_decision.reasons),
+        )
+    auto_promote = bool(
+        promotion_policy.auto_activate_if_better and promotion_decision.passed
+    )
+    should_activate = bool(not manual_activation or auto_promote)
     published = publish_complete_run(
         run_id,
         strategy.name,
@@ -527,9 +605,9 @@ def run_optimization(
         summaries,
         required_groups=publication_groups,
         all_groups=publication_groups,
-        activate=not manual_activation,
+        activate=should_activate,
     )
-    activated = bool(published and not manual_activation)
+    activated = bool(published and should_activate)
     if activated:
         logger.info("Published active optimizer run %s (%s)", run_id, strategy.name)
     elif published and manual_activation:
@@ -556,7 +634,7 @@ def run_optimization(
             summaries,
             activated=activated,
             run_id=run_id,
-            candidate=bool(published and manual_activation),
+            candidate=bool(published and not activated),
         ),
     )
     prune_optimizer_runs(

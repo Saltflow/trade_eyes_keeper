@@ -86,6 +86,8 @@ validation:
     # fall back to a more universe-stable alternative.
     finalist_count: 20
     minimum_passing_ratio: 0.80
+    small_universe_threshold: 5
+    small_universe_allowed_failures: 1
     minimum_mean_majority_excess: 0.0
     # Universe composition matters more than a one-level parameter move.
     penalty_weight: 2.0

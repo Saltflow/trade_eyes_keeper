@@ -229,6 +229,12 @@ class UniverseRobustnessConfig:
                 "validation.universe_robustness.minimum_passing_ratio "
                 "must be between 0 and 1"
             )
+        self.small_universe_threshold: int = max(
+            1, int(raw.get("small_universe_threshold", 5))
+        )
+        self.small_universe_allowed_failures: int = max(
+            0, int(raw.get("small_universe_allowed_failures", 0))
+        )
         self.minimum_mean_majority_excess: float = float(
             raw.get("minimum_mean_majority_excess", 0.0)
         )
@@ -242,11 +248,29 @@ class UniverseRobustnessConfig:
             raw.get("require_order_invariance", True)
         )
 
+    def required_positive_variants(self, symbol_count: int) -> int:
+        """Resolve ratio rounding while allowing explicit small-pool tolerance."""
+        count = max(0, int(symbol_count))
+        if count == 0:
+            return 0
+        ratio_required = max(
+            1,
+            int(np.ceil(count * self.minimum_passing_ratio)),
+        )
+        if count <= self.small_universe_threshold:
+            allowed = min(self.small_universe_allowed_failures, count - 1)
+            return min(ratio_required, max(1, count - allowed))
+        return ratio_required
+
     def to_contract(self) -> dict[str, object]:
         return {
             "enabled": self.enabled,
             "finalist_count": self.finalist_count,
             "minimum_passing_ratio": self.minimum_passing_ratio,
+            "small_universe_threshold": self.small_universe_threshold,
+            "small_universe_allowed_failures": (
+                self.small_universe_allowed_failures
+            ),
             "minimum_mean_majority_excess": self.minimum_mean_majority_excess,
             "penalty_weight": self.penalty_weight,
             "activation_required": self.activation_required,
