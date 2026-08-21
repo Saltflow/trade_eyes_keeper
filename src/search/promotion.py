@@ -30,7 +30,7 @@ class PromotionPolicy:
     maximum_drawdown_regression_pct: float = 5.0
     safety_max_drawdown_pct: float = -40.0
     minimum_trade_count: int = 1
-    require_three_benchmarks: bool = True
+    minimum_benchmark_count: int = 3
     required_group_count: int = 3
 
     @classmethod
@@ -63,8 +63,14 @@ class PromotionPolicy:
                 raw.get("safety_max_drawdown_pct", -40.0)
             ),
             minimum_trade_count=max(0, int(raw.get("minimum_trade_count", 1))),
-            require_three_benchmarks=bool(
-                raw.get("require_three_benchmarks", True)
+            minimum_benchmark_count=max(
+                0,
+                int(
+                    raw.get(
+                        "minimum_benchmark_count",
+                        3 if raw.get("require_three_benchmarks", True) else 0,
+                    )
+                ),
             ),
             required_group_count=max(
                 1, int(raw.get("required_group_count", 3))
@@ -138,7 +144,7 @@ def compare_with_incumbent(
 
         candidate_benchmarks = dict(candidate.get("benchmark_returns", {}) or {})
         incumbent_benchmarks = dict(incumbent.get("benchmark_returns", {}) or {})
-        if policy.require_three_benchmarks and len(candidate_benchmarks) != 3:
+        if len(candidate_benchmarks) < policy.minimum_benchmark_count:
             failures.append(f"{group}:incomplete_benchmarks")
         if set(candidate_benchmarks) != set(incumbent_benchmarks):
             failures.append(f"{group}:benchmark_contract_mismatch")
