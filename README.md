@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://python.org)
-[![Version](https://img.shields.io/badge/production-technical__ensemble-green)]()
+[![Status](https://img.shields.io/badge/status-active-blue)]()
 
 > **English**: A cross-market quantitative monitoring system for A-shares, US stocks, and HK stocks. Features solver-neutral strategy optimization, a single unified backtester, intrinsic-value and instrument audits, daily xelatex PDF reports, and multi-channel notifications.
 
@@ -24,10 +24,10 @@ A股 / 美股 / 港股量化监控系统。策略搜索优化器自动发现最�
 | **规则引擎** | YAML 驱动，Python 表达式沙箱，23 个单元测试 |
 | **公式附录** | LaTeX 排版 13 节指标方法论（RSI/布林/MACD/ADX/回测约束），xelatex 编译 |
 
-## 当前生产状态
+## 运行与发布边界
 
-生产环境当前使用 `technical_ensemble`，活动运行号为
-`20260820T020004268759_technical_ensemble`，覆盖 A 股、港股和美股三个资金池。
+部署环境从外部活动指针加载一个已验证策略和三市场参数；public README 只记录
+公开的运行合同，不记录生产运行号、当前活动策略、服务器地址或收件人。
 所有通知、今日扫描和参考持仓都从同一个活动指针读取，不在通知层重新计算收益或胜率。
 
 晋升比较使用统一的无风险、配置基准和同池等权基准；框架允许额外的
