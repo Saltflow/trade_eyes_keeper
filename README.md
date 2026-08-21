@@ -2,9 +2,9 @@
 
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://python.org)
-[![Version](https://img.shields.io/badge/version-1.17.1-green)]()
+[![Version](https://img.shields.io/badge/production-technical__ensemble-green)]()
 
-> **English**: A cross-market quantitative monitoring system for A-shares, US stocks, and HK stocks. Features solver-neutral strategy optimization (genetic, random, and simulated annealing), daily xelatex PDF reports, unified backtesting, and multi-channel notifications.
+> **English**: A cross-market quantitative monitoring system for A-shares, US stocks, and HK stocks. Features solver-neutral strategy optimization, a single unified backtester, intrinsic-value and instrument audits, daily xelatex PDF reports, and multi-channel notifications.
 
 A股 / 美股 / 港股量化监控系统。策略搜索优化器自动发现最优交易信号，每日 xelatex LaTeX PDF 日报含信号扫描 + 回测分析 + 公式方法论附录，支持 HTML 交互报告链接与 Telegram/飞书多渠道通知。
 
@@ -24,11 +24,25 @@ A股 / 美股 / 港股量化监控系统。策略搜索优化器自动发现最�
 | **规则引擎** | YAML 驱动，Python 表达式沙箱，23 个单元测试 |
 | **公式附录** | LaTeX 排版 13 节指标方法论（RSI/布林/MACD/ADX/回测约束），xelatex 编译 |
 
+## 当前生产状态
+
+生产环境当前使用 `technical_ensemble`，活动运行号为
+`20260820T020004268759_technical_ensemble`，覆盖 A 股、港股和美股三个资金池。
+所有通知、今日扫描和参考持仓都从同一个活动指针读取，不在通知层重新计算收益或胜率。
+
+晋升比较使用统一的无风险、配置基准和同池等权基准；框架允许额外的
+`universe_equal_weight` 基准，因此门槛配置的是“至少 3 个基准”，而不是“只能有 3 个”。
+候选仍需通过完整性、留出和安全门槛后才可自动激活；人工切换使用
+`python main.py --activate-run RUN_ID`。
+
 ## 日报预览
 
-![日报预览](docs/images/daily_report_preview.png)
+![日报布局预览（2026-08-20 版式，脱敏示意）](docs/images/daily_report_preview_2026-08-20.png)
 
-> 每日自动生成 LaTeX PDF 日报附件 (145KB)，含偏离度图、信号表、基本面列、公式方法论附录。港式财报风格。
+> 每日自动生成 HTML 报告和 LaTeX PDF 附件，邮件、飞书和 Telegram 共享同一
+> `EvaluationReport`。报告包含监控标的、回测结果、参考基准、期末持仓、胜率、
+> 周 NAV 图和季末模拟持仓；周 NAV 以图形展示，不再堆成长表格。仓库中的预览图
+> 仅展示版式，不包含真实标的、价格、收益、收件人或网络地址。
 
 ## 快速开始
 
@@ -39,7 +53,7 @@ pip install -r requirements.txt
 cp config/.env.example config/.env   # 填入邮箱和 API Key (DeepSeek)
 python main.py --once                # 单次收盘日报
 python main.py --brief               # 单次早盘简报
-python main.py --optimize            # 策略搜索优化 (15-30 min)
+python main.py --optimize            # 对配置活动策略执行统一搜参
 python main.py --activate-run RUN_ID # 人工激活完整且留出通过的候选
 python main.py --audit-instruments   # 全量标的画像 JSON + HTML 审计
 python scripts/benchmark_technical_strategies.py --solver random --depth 1000 --market-workers 12 --evaluation-workers 1  # 五策略统一基准
@@ -90,6 +104,9 @@ src/
 | `python scripts/benchmark_search_throughput.py --candidates 1000` | 用完整 A 股冻结输入比较同一候选的标量与 CPU 批量评价吞吐、RSS 和一致性 |
 | `python scripts/analyze_search_depth.py` | 用同一 RandomSolver 候选流测量 1,000→10,000 搜索边际效果并绘图 |
 | `python main.py --health-server` | 仅启动健康服务器 |
+
+`--optimize-v2` 不再是有效入口；增加 Solver 时只需实现并注册统一的
+`Solver`（`ask/tell/checkpoint`），`SearchController`、策略和通知层无需增加算法分支。
 
 ## 配置
 
