@@ -81,6 +81,13 @@ class FinancialStatementSnapshot(BaseModel):
     parent_equity: Optional[float] = None
     average_parent_equity: Optional[float] = None
     book_value_per_share: Optional[float] = None
+    cash_and_cash_equivalents: Optional[float] = None
+    restricted_cash: Optional[float] = None
+    short_term_borrowings: Optional[float] = None
+    current_portion_noncurrent_debt: Optional[float] = None
+    long_term_borrowings: Optional[float] = None
+    bonds_payable: Optional[float] = None
+    lease_liabilities: Optional[float] = None
 
     revenue: Optional[float] = None
     net_income_parent: Optional[float] = None
@@ -88,8 +95,12 @@ class FinancialStatementSnapshot(BaseModel):
     basic_eps: Optional[float] = None
     diluted_eps: Optional[float] = None
     operating_cash_flow: Optional[float] = None
+    capital_expenditures: Optional[float] = None
     free_cash_flow: Optional[float] = None
     reported_roe: Optional[float] = None
+    interest_expense: Optional[float] = None
+    income_tax_expense: Optional[float] = None
+    profit_before_tax: Optional[float] = None
 
     diagnostics: list[str] = Field(default_factory=list)
 
@@ -113,6 +124,8 @@ class CompanyFundamentals(BaseModel):
     ttm_revenue: MetricValue = Field(default_factory=MetricValue)
     ttm_net_income_parent: MetricValue = Field(default_factory=MetricValue)
     ttm_adjusted_net_income_parent: MetricValue = Field(default_factory=MetricValue)
+    latest_quarter_free_cash_flow: MetricValue = Field(default_factory=MetricValue)
+    ttm_free_cash_flow: MetricValue = Field(default_factory=MetricValue)
     book_value_per_share: MetricValue = Field(default_factory=MetricValue)
     pe_ttm: MetricValue = Field(default_factory=MetricValue)
     pb: MetricValue = Field(default_factory=MetricValue)

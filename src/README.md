@@ -20,12 +20,15 @@ experiments/    offline comparisons; never activates production artifacts
 data/           market/fundamental acquisition and LLM extraction
 ```
 
-Dependency direction:
+Intended dependency direction:
 
 ```text
-Solver -> SearchController -> TradingStrategy -> TradePlan -> Backtester
-                    ^                                  |
-                    +---------- raw metrics -----------+
+SearchController <-> Solver.ask/tell
+       |
+       v
+EvaluationService -> TradingStrategy -> TradePlan -> Backtester -> raw metrics
+       |
+       +-> CandidateGatePipeline / ValidationController / Search Artifacts
 ```
 
 - A Solver never imports a strategy, Backtester, Gate Profile, or holdout data.
@@ -35,4 +38,7 @@ Solver -> SearchController -> TradingStrategy -> TradePlan -> Backtester
   points and cannot publish or activate optimizer artifacts.
 
 See [strategy/README.md](strategy/README.md) and
-[search/README.md](search/README.md) for extension instructions.
+[search/README.md](search/README.md) for extension instructions. The detailed
+[architecture audit](../docs/architecture.md) also records the remaining
+transitional dependency cycles and the two active scheduler implementations;
+those files are not interchangeable duplicates.

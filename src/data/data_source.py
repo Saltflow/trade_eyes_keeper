@@ -10,7 +10,7 @@
 import json
 import logging
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -171,6 +171,32 @@ class DataSource:
         """
         stock_code = str(stock_code)
         return self.web_crawler.fetch_stock_data(stock_code, days)
+
+    def fetch_price_history_bundle(
+        self,
+        stock_code: str,
+        days: int = 365 * 6,
+        *,
+        persist: bool = True,
+    ):
+        """Fetch explicit raw/qfq history and dated corporate actions.
+
+        This opt-in interface is the only price input allowed for historical
+        fundamental valuation. ``fetch_stock_data`` remains the compatibility
+        API for technical indicators and continues returning adjusted prices.
+        """
+        from .market_history import MarketHistoryProvider, PointInTimeMarketStore
+
+        end = date.today()
+        start = end - timedelta(days=max(1, int(days)))
+        bundle = MarketHistoryProvider(self.config).fetch(
+            str(stock_code), start, end
+        )
+        if persist:
+            settings = self.config.get("point_in_time_data", {}) or {}
+            output_dir = settings.get("output_dir", "data/point_in_time")
+            PointInTimeMarketStore(output_dir).write(bundle)
+        return bundle
 
     # ------------------------------------------------------------------
     # 缓存管理

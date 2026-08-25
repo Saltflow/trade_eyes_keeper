@@ -58,6 +58,7 @@ def to_standalone_quarters(
         "net_income_parent",
         "adjusted_net_income_parent",
         "operating_cash_flow",
+        "capital_expenditures",
         "free_cash_flow",
     )
     for year_statements in by_year.values():
@@ -65,14 +66,28 @@ def to_standalone_quarters(
         for statement in sorted(year_statements, key=lambda item: item.period_end):
             copy = statement.copy(deep=True)
             if statement.is_cumulative and previous_cumulative is not None:
-                for field in flow_fields:
-                    current = getattr(statement, field)
-                    previous = getattr(previous_cumulative, field)
-                    if current is not None and previous is not None:
-                        setattr(copy, field, current - previous)
+                current_quarter = (statement.period_end.month - 1) // 3
+                previous_quarter = (
+                    previous_cumulative.period_end.month - 1
+                ) // 3
+                if current_quarter - previous_quarter == 1:
+                    for field in flow_fields:
+                        current = getattr(statement, field)
+                        previous = getattr(previous_cumulative, field)
+                        if current is not None and previous is not None:
+                            setattr(copy, field, current - previous)
+                        elif current is not None:
+                            setattr(copy, field, None)
+                    copy.diagnostics.append("derived_from_cumulative_statement")
+                else:
+                    for field in flow_fields:
+                        if getattr(copy, field) is not None:
+                            setattr(copy, field, None)
+                    copy.diagnostics.append(
+                        "cumulative_predecessor_missing_flows_unavailable"
+                    )
                 copy.is_cumulative = False
                 copy.period_type = "quarter"
-                copy.diagnostics.append("derived_from_cumulative_statement")
             elif statement.is_cumulative:
                 copy.is_cumulative = False
                 copy.period_type = "quarter"
@@ -142,6 +157,7 @@ def _sum_last(
         return None
     return float(sum(value for value in values if value is not None))
 
+
 def _regular_quarters(
     statements: list[FinancialStatementSnapshot],
     count: int,
@@ -157,6 +173,8 @@ def _regular_quarters(
     if any(gap < 55 or gap > 125 for gap in gaps):
         return []
     return selected
+
+
 def _latest_balance_statement(
     statements: list[FinancialStatementSnapshot],
 ) -> Optional[FinancialStatementSnapshot]:
@@ -170,11 +188,29 @@ def _latest_balance_statement(
                 statement.book_value_per_share,
                 statement.common_shares_outstanding,
                 statement.total_shares,
+                statement.diluted_average_shares,
             )
         )
     ]
     if not candidates:
         return None
+    complete = [
+        statement
+        for statement in candidates
+        if statement.book_value_per_share is not None
+        or (
+            statement.parent_equity is not None
+            and any(
+                shares is not None
+                for shares in (
+                    statement.common_shares_outstanding,
+                    statement.total_shares,
+                    statement.diluted_average_shares,
+                )
+            )
+        )
+    ]
+    candidates = complete or candidates
     return max(
         candidates,
         key=lambda statement: (
@@ -226,9 +262,6 @@ def _valuation_shares(
     if _positive(diluted):
         return diluted, "缺期末股本，使用稀释加权平均股数"
     return None, "无可用股本"
-
-
-
 
 
 def derive_company_fundamentals(
@@ -318,6 +351,18 @@ def derive_company_fundamentals(
         ttm_income = None
         ttm_adjusted = None
         ttm_statement = None
+    if ttm_quarters:
+        if quarter_revenue is not None:
+            ttm_revenue = quarter_revenue
+        if quarter_income is not None:
+            ttm_income = quarter_income
+        quarter_adjusted = _sum_last(
+            ttm_quarters, "adjusted_net_income_parent"
+        )
+        if quarter_adjusted is not None:
+            ttm_adjusted = quarter_adjusted
+        if any(value is not None for value in (quarter_revenue, quarter_income)):
+            ttm_statement = ttm_quarters[-1]
     for attr, value in (
         ("ttm_revenue", ttm_revenue),
         ("ttm_net_income_parent", ttm_income),
@@ -343,6 +388,46 @@ def derive_company_fundamentals(
                 ),
             )
 
+    latest_quarter = quarters[-1] if quarters else None
+    if (
+        latest_quarter is not None
+        and latest_quarter.free_cash_flow is not None
+    ):
+        result.latest_quarter_free_cash_flow = MetricValue(
+            value=latest_quarter.free_cash_flow,
+            status=MetricStatus.DERIVED,
+            as_of=latest_quarter.period_end,
+            published_at=latest_quarter.published_at,
+            period="quarter",
+            source=latest_quarter.source,
+            currency=latest_quarter.currency,
+            note="Single-quarter OCF minus single-quarter capital expenditures",
+        )
+
+    quarter_fcf = _sum_last(ttm_quarters, "free_cash_flow")
+    if quarter_fcf is not None and ttm_quarters:
+        result.ttm_free_cash_flow = MetricValue(
+            value=quarter_fcf,
+            status=MetricStatus.DERIVED,
+            as_of=ttm_quarters[-1].period_end,
+            published_at=ttm_quarters[-1].published_at,
+            period="TTM",
+            source=ttm_quarters[-1].source,
+            currency=ttm_quarters[-1].currency,
+            note="Sum of four consecutive standalone quarters",
+        )
+    elif latest_annual is not None and latest_annual.free_cash_flow is not None:
+        result.ttm_free_cash_flow = MetricValue(
+            value=latest_annual.free_cash_flow,
+            status=MetricStatus.DERIVED,
+            as_of=latest_annual.period_end,
+            published_at=latest_annual.published_at,
+            period="latest_fiscal_year",
+            source=latest_annual.source,
+            currency=latest_annual.currency,
+            note="Quarterly history incomplete; latest fiscal-year FCF",
+        )
+
     price = current_price.value
     if _positive(price) and _positive(book_value_per_share):
         result.pb = MetricValue(
@@ -360,19 +445,37 @@ def derive_company_fundamentals(
             note="归母净资产非正",
         )
 
-    ttm_diluted_eps = _sum_last(ttm_quarters, "diluted_eps")
-    if ttm_diluted_eps is None and latest_annual is not None:
-        ttm_diluted_eps = latest_annual.diluted_eps
+    reported_ttm_eps_statement = next(
+        (
+            item
+            for item in reversed(available)
+            if "diluted_eps_contains_baostock_ttm_eps" in item.diagnostics
+            and _positive(item.diluted_eps)
+        ),
+        None,
+    )
+    if reported_ttm_eps_statement is not None:
+        ttm_diluted_eps = reported_ttm_eps_statement.diluted_eps
+        pe_statement = reported_ttm_eps_statement
+    else:
+        ttm_diluted_eps = _sum_last(ttm_quarters, "diluted_eps")
+        if ttm_diluted_eps is None and latest_annual is not None:
+            ttm_diluted_eps = latest_annual.diluted_eps
+        pe_statement = ttm_statement
     if _positive(price) and _positive(ttm_diluted_eps):
         result.pe_ttm = MetricValue(
             value=price / ttm_diluted_eps,
             status=MetricStatus.DERIVED,
             as_of=current_price.as_of,
             published_at=(
-                ttm_statement.published_at if ttm_statement else None
+                pe_statement.published_at if pe_statement else None
             ),
             period="TTM",
-            source=f"{current_price.source}+{ttm_statement.source}",
+            source=(
+                f"{current_price.source}+{pe_statement.source}"
+                if pe_statement
+                else current_price.source
+            ),
             note="现价/TTM稀释EPS",
         )
     elif _positive(price) and _positive(shares) and _positive(ttm_income):
@@ -417,6 +520,23 @@ def derive_company_fundamentals(
             period="TTM",
             source=latest.source,
             note="TTM归母净利润/平均归母净资产",
+        )
+
+    if (
+        result.pb.value is None
+        and _positive(result.pe_ttm.value)
+        and _positive(result.roe_ttm.value)
+    ):
+        result.pb = MetricValue(
+            value=result.pe_ttm.value * result.roe_ttm.value / 100.0,
+            status=MetricStatus.DERIVED,
+            as_of=current_price.as_of,
+            published_at=(
+                result.roe_ttm.published_at or result.pe_ttm.published_at
+            ),
+            period="TTM/average_equity",
+            source=f"{result.pe_ttm.source}+{result.roe_ttm.source}",
+            note="Implied average-book PB = PE_TTM x ROE_TTM; not period-end PB",
         )
 
     if (
@@ -520,7 +640,7 @@ def _populate_growth(
                 prior_four[-1].period_end,
                 current_four[-1].source,
             )
-    elif len(annuals) >= 2:
+    if len(annuals) >= 2:
         current_annual = annuals[-1]
         prior_annual = next(
             (
@@ -536,7 +656,10 @@ def _populate_growth(
             return
         for key, field in fields:
             growth_key = f"{key}_yoy"
-            if growth_key not in result.growth:
+            if (
+                growth_key not in result.growth
+                or result.growth[growth_key].status == MetricStatus.MISSING
+            ):
                 result.growth[growth_key] = _growth(
                     getattr(current_annual, field),
                     getattr(prior_annual, field),
@@ -548,13 +671,17 @@ def _populate_growth(
             ("revenue_ttm_yoy", "revenue"),
             ("net_income_ttm_yoy", "net_income_parent"),
         ):
-            result.growth[key] = _growth(
-                getattr(current_annual, field),
-                getattr(prior_annual, field),
-                current_annual.period_end,
-                prior_annual.period_end,
-                current_annual.source,
-            )
+            if (
+                key not in result.growth
+                or result.growth[key].status == MetricStatus.MISSING
+            ):
+                result.growth[key] = _growth(
+                    getattr(current_annual, field),
+                    getattr(prior_annual, field),
+                    current_annual.period_end,
+                    prior_annual.period_end,
+                    current_annual.source,
+                )
 
 
 def weighted_median(values: list[tuple[float, float]]) -> Optional[float]:
@@ -639,7 +766,11 @@ def calculate_look_through(
         result[name] = LookThroughMetric(
             value=MetricValue(
                 value=value,
-                status=MetricStatus.DERIVED if value is not None else MetricStatus.MISSING,
+                status=(
+                    MetricStatus.DERIVED
+                    if value is not None
+                    else MetricStatus.MISSING
+                ),
                 note="按盈利/账面收益率聚合",
             ),
             covered_weight=covered,
@@ -707,7 +838,11 @@ def calculate_look_through(
         result[growth_name] = LookThroughMetric(
             value=MetricValue(
                 value=value,
-                status=MetricStatus.DERIVED if value is not None else MetricStatus.MISSING,
+                status=(
+                    MetricStatus.DERIVED
+                    if value is not None
+                    else MetricStatus.MISSING
+                ),
                 note="成分股增长率加权中位数，非基金会计增长率",
             ),
             covered_weight=sum(weight for _, weight in values),

@@ -149,6 +149,13 @@ def _company_detail(
         raw_rows.append(
             f"<tr><th>{_escape(label)}</th><td>{_metric_html(value)}</td></tr>"
         )
+    for label, value in (
+        ("Latest quarter free cash flow", company.latest_quarter_free_cash_flow),
+        ("TTM free cash flow", company.ttm_free_cash_flow),
+    ):
+        raw_rows.append(
+            f"<tr><th>{_escape(label)}</th><td>{_metric_html(value)}</td></tr>"
+        )
     if latest is not None:
         for label, value in (
             ("最新期归母净资产", latest.parent_equity),

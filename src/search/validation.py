@@ -99,14 +99,12 @@ class ValidationController:
                     result.universe_robustness.get("worst_drop", float("inf"))
                 )
                 if math.isfinite(worst_drop):
-                    result.selection_score -= (
-                        universe_config.penalty_weight * max(worst_drop, 0.0)
+                    result.selection_score -= universe_config.penalty_weight * max(
+                        worst_drop, 0.0
                     )
                 else:
                     result.selection_score = -float("inf")
-                result.universe_robustness["selection_score"] = (
-                    result.selection_score
-                )
+                result.universe_robustness["selection_score"] = result.selection_score
             validated[:universe_limit] = sorted(
                 validated[:universe_limit],
                 key=lambda item: (
@@ -178,11 +176,7 @@ class ValidationController:
         worst = min(feasible_scores) if feasible_scores else -float("inf")
         best = max(feasible_scores) if feasible_scores else -float("inf")
         base_score = float(selected.selection_score)
-        drop = (
-            max(base_score - worst, 0.0)
-            if math.isfinite(worst)
-            else float("inf")
-        )
+        drop = max(base_score - worst, 0.0) if math.isfinite(worst) else float("inf")
         passed = bool(
             feasible_scores
             and feasible_ratio
@@ -218,8 +212,9 @@ class ValidationController:
         manager.dates = self.wf_manager.dates
         manager.benchmark_series = self.wf_manager.benchmark_series
         manager.benchmark_high_series = self.wf_manager.benchmark_high_series
-        manager.market_group = getattr(
-            self.wf_manager, "market_group", "a_share"
+        manager.market_group = getattr(self.wf_manager, "market_group", "a_share")
+        manager.market_data_enricher = getattr(
+            self.wf_manager, "market_data_enricher", None
         )
         return manager
 
@@ -268,9 +263,7 @@ class ValidationController:
         base_metrics = aggregate_ranking_metrics(
             selected.ranking_stats,
             selected.objective_score,
-            self.constraints.walk_forward.ranking_weights(
-                len(selected.ranking_stats)
-            ),
+            self.constraints.walk_forward.ranking_weights(len(selected.ranking_stats)),
             self.constraints.benchmark_codes,
         )
         base_mean = float(base_metrics["mean_majority_benchmark_excess"])
@@ -305,18 +298,14 @@ class ValidationController:
                     aggregate_ranking_metrics(
                         result[1],
                         result[3],
-                        self.constraints.walk_forward.ranking_weights(
-                            len(result[1])
-                        ),
+                        self.constraints.walk_forward.ranking_weights(len(result[1])),
                         self.constraints.benchmark_codes,
                     )
                     if result is not None and result[1]
                     else {}
                 )
                 mean_excess = float(
-                    metrics.get(
-                        "mean_majority_benchmark_excess", -float("inf")
-                    )
+                    metrics.get("mean_majority_benchmark_excess", -float("inf"))
                 )
                 passed = bool(
                     math.isfinite(mean_excess)

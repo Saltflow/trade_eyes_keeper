@@ -19,7 +19,7 @@ requests>=2.31.0
 beautifulsoup4>=4.14.0
 lxml>=4.9.0
 # PDF解析
-pdfplumber>=0.10.0
+pdfplumber==0.11.4
 # 进度指示
 tqdm>=4.65.0
 # LLM API调用

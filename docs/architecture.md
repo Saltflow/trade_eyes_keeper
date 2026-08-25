@@ -1,159 +1,228 @@
-# 架构说明
+# 项目架构
 
-本文档描述股票量化系统的整体架构、数据流与各模块职责。
+> 更新时间：2026-08-18。本文只描述当前源码；历史 `src/analysis`、V1/V2
+> 优化器和旧回测入口不再是有效架构。
 
----
+## 当前系统图
 
-## 系统分层
+```mermaid
+flowchart TB
+    subgraph Entry["入口与运行时"]
+        CLI["main.py CLI<br/>--once / --optimize / --audit-instruments / --backfill-point-in-time"]
+        LegacyScheduler["SchedulerManager<br/>默认阻塞式定时运行"]
+        Health["HealthServer<br/>HTTP 管理与健康检查"]
+        RuntimeScheduler["ScheduleManager<br/>HealthServer 内嵌后台调度"]
+        Bots["Telegram / Feishu<br/>交互命令"]
+        Scripts["scripts/<br/>回填、benchmark、MOE 研究"]
+    end
 
+    subgraph Application["应用编排"]
+        Daily["日报与扫描用例<br/>Session 生命周期"]
+        Optimize["search.workflow<br/>统一优化用例"]
+        Audit["InstrumentAuditService<br/>标的画像审计"]
+        Backfill["逐时点回填服务<br/>单标的与 807 参考池"]
+        Research["基本面定价研究<br/>Walk-forward MOE"]
+    end
+
+    subgraph Decision["策略、搜索与仿真"]
+        StrategyRegistry["Strategy Registry<br/>strategy/plugins"]
+        StrategyContract["StrategyMarketData → TradePlan<br/>strategy/api"]
+        SearchController["SearchController<br/>预算、ask/tell、缓存、checkpoint"]
+        SolverRegistry["Solver Registry<br/>search/solvers"]
+        Evaluator["EvaluationService / ProcessEvaluationPool"]
+        Gate["CandidateGatePipeline<br/>ValidationController"]
+        Backtester["唯一 Backtester<br/>cash_cap / target_weight"]
+        Report["EvaluationReport<br/>NAV、基准、持仓、诊断"]
+        Artifacts["Search Artifacts<br/>候选、完整运行、人工激活"]
+    end
+
+    subgraph Data["数据与基本面"]
+        Fetch["StockDataFetcher / DataSource"]
+        Providers["行情、公告与财务 Provider<br/>Sina / QQ / Yahoo / Baostock / SEC / 交易所"]
+        Indicators["TechnicalIndicators<br/>22 个技术特征"]
+        PIT["Point-in-time Stores<br/>原价、前复权、公司行动、披露日财报"]
+        Instruments["Instrument Models & Calculations<br/>公司、ETF、REIT、穿透指标"]
+        MoE["CausalPricingMoE<br/>价值 / 现金 / 质量 / 成长"]
+    end
+
+    subgraph Presentation["输出与外部接口"]
+        Alerts["ConditionChecker / Alerting"]
+        Notify["NotifierManager<br/>HTML / PDF / Email / Feishu / Telegram"]
+        Web["Health handlers"]
+    end
+
+    subgraph State["状态与基础设施"]
+        Config["config/*.yaml + config/.env"]
+        Cache["cache/<br/>行情与解析缓存"]
+        DataFiles["data/<br/>产物、邮件、PIT 数据"]
+        Logs["logs/"]
+    end
+
+    LegacyScheduler --> CLI
+    RuntimeScheduler -->|"子进程调用同一 CLI"| CLI
+    Health --> RuntimeScheduler
+    Health --> Web
+    Bots --> Daily
+    Bots --> Optimize
+    CLI --> Daily
+    CLI --> Optimize
+    CLI --> Audit
+    CLI --> Backfill
+    Scripts --> Backfill
+    Scripts --> Research
+
+    Daily --> Fetch
+    Fetch --> Providers
+    Fetch --> Indicators
+    Daily --> Alerts
+    Daily --> Artifacts
+    Artifacts --> StrategyRegistry
+    StrategyRegistry --> StrategyContract
+    StrategyContract --> Backtester
+    Backtester --> Report
+    Report --> Notify
+
+    Optimize --> SearchController
+    SearchController --> SolverRegistry
+    SearchController --> Evaluator
+    Evaluator --> StrategyRegistry
+    Evaluator --> Backtester
+    Evaluator --> Gate
+    Gate --> Artifacts
+
+    Audit --> Providers
+    Audit --> Instruments
+    Backfill --> Providers
+    Backfill --> PIT
+    PIT --> Research
+    Instruments --> Research
+    Research --> MoE
+    MoE --> DataFiles
+
+    Web --> Notify
+    Bots --> Web
+    Config --> CLI
+    Providers --> Cache
+    PIT --> DataFiles
+    Notify --> DataFiles
+    CLI --> Logs
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  配置层 (config/)                                               │
-│  - config.yaml          股票列表、数据源、邮件、调度器配置      │
-│  - alerts.yaml          技术指标锚点配置（ma60, wma20...）      │
-│  - .env                 敏感信息（API Key、邮箱密码）           │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  数据源层 (src/)                                                │
-  │  - web_crawler.py      网页爬虫（新浪、腾讯、Yahoo）            │
-│  - data_fetcher.py     数据获取协调、缓存管理、调用指标计算     │
-│  - announcement_fetcher.py  巨潮资讯网官方公告抓取              │
-│  - financial_report_fetcher.py / manager.py  财报分析          │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  指标计算层 (src/)                                              │
-│  - technical_indicators.py   统一指标计算器，从 alerts.yaml 读取 │
-│  - utils/etf_detector.py     ETF 检测工具（消除硬编码）         │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  分析策略层 (src/analysis/)                                      │
-│  - strategies/              四个独立注册策略插件                  │
-│  - optimizer.py             14窗口(11排名+2隔离+1留出)统一搜参   │
-│  - backtester.py            TradePlan 仿真 + EvaluationReport    │
-│  - strategy_artifacts.py    参数产物原子发布与旧 YAML 单点迁移   │
-│  - search_interface.py      StrategyMarketData/TradePlan 契约     │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  业务层 (src/)                                                  │
-│  - session_manager.py    Session 统一管理（Pydantic 数据模型）  │
-│  - condition_checker.py  条件检查（价格 < MA60 等）             │
-│  - alert_engine.py / processor / state_manager  多层警报系统    │
-│  - email_notifier.py     邮件通知与 HTML 报表生成               │
-│  - llm_analyzer/         LLM 基本面分析与公告提取               │
-│  - health_server/        HTTP 健康检查与管理后台                │
-│  - backtest_framework.py 回测框架                               │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  基础设施层                                                     │
-│  - cache/                数据缓存（cache/data/, cache/analysis/）│
-│  - cache/historical/     回测历史数据缓存（JSON Lines）         │
-│  - data/                 股票历史数据 CSV、邮件存档             │
-│  - logs/                 运行日志与审计日志                     │
-└─────────────────────────────────────────────────────────────────┘
-```
 
----
+## 三条权威业务链路
 
-## 核心数据流
+### 日报、今日扫描与参考持仓
 
-### 每日任务主链路（Session-based）
-
-```
+```text
 main.py --once
-  └── session_manager.create_session()
-        ├── data_fetcher.fetch_to_session()       → session.stocks_data
-        │      ├── web_crawler 获取原始价格数据
-        │      ├── technical_indicators 计算 MA60 / WMA20
-        │      └── 公告/财报/股息数据填充
-        ├── condition_checker.check_from_session() → session.alerts
-        │      └── alert_engine / alert_processor
-        ├── signal_scanner.scan()                  → 共识信号（今日触发）
-        │      ├── 加载最近一次完整激活运行的单一策略参数
-        │      ├── 读取同一 TradePlan 最后有效交易日事件
-        │      └── 日报调用同一 Backtester，不重新搜参
-        └── email_notifier.send_from_session()
-               ├── _generate_daily_pdf()
-               │      ├── report_daily.tex 模板注入数据
-               │      ├── xelatex 编译两次 (LaTeX 交叉引用)
-               │      └── appendix_methodology.md → LaTeX 公式
-               ├── yagmail.send(html + pdf 附件)
-               └── 保存副本至 data/email_archive/
+  -> SessionManager
+  -> StockDataFetcher / DataSource / TechnicalIndicators
+  -> ConditionChecker + AlertEngine
+  -> 读取最近一次完整激活的 Search Artifact
+  -> 活动 Strategy.make_signals(...) 生成 TradePlan
+  -> Backtester 生成 EvaluationReport
+  -> NotifierManager 渲染 HTML/PDF/Email/Feishu/Telegram
 ```
 
-> **关键原则**：v3.0 起不再直接传递 DataFrame 和 dict，全部通过 `SessionContext` 流转，防止字段名称不一致导致的数据错误（如邮件显示所有股票价格为 0.00）。
+今日信号是完整 `TradePlan` 最后有效交易日的事件；通知层只消费
+`EvaluationReport`，不重新计算收益、胜率或持仓。
 
----
+### 搜参与人工激活
 
-## 模块职责
+```text
+main.py --optimize
+  -> search.workflow.run_optimizer
+  -> SearchController
+  -> Solver.ask()
+  -> EvaluationService
+  -> Strategy.make_signals()
+  -> Backtester
+  -> CandidateGatePipeline
+  -> Solver.tell()
+  -> ValidationController
+  -> 完整候选运行产物
+  -> main.py --activate-run <run_id>
+```
 
-| 模块 | 职责边界 | 不负责的领域 |
-|------|---------|------------|
-| `web_crawler.py` | 从公开网站获取原始日线数据、股息历史、定增数据(东方财富SEO) | **不计算** MA60 等任何技术指标 |
-| `data_fetcher.py` | 协调多数据源、缓存命中判断、调用指标计算层 | **不直接解析** HTML/JSON |
-| `technical_indicators.py` | 根据 `alerts.yaml` 配置计算所有技术指标 | **不读取**网络数据 |
-| `session_manager.py` | 维护 Session 生命周期、类型安全数据模型 | **不包含**业务规则 |
-| `condition_checker.py` | 基于 Session 数据判断警报条件 | **不修改** Session 中的原始数据 |
-| `email_notifier.py` | 构建并发送邮件、xelatex PDF 生成、图表生成 | **不抓取**外部数据 |
-| `strategies/` | 从市场数据生成统一 `TradePlan`，最后一日即今日信号 | **不计算**收益和持仓 |
-| `optimizer.py` | 12/9/3月的11排名+2隔离+1留出搜参及统一三基准评价 | **不实现**策略判断或通知算法 |
-| `backtester.py` | 按计划声明执行 `cash_cap` / `target_weight` 并生成 `EvaluationReport` | **不重新搜参**、**不按策略 ID 分支** |
-| `strategy_artifacts.py` | 保存候选、校验门槛、原子激活并兼容读取旧 YAML | **不执行**策略或回测 |
-| `cache_manager.py` | 读写本地缓存、过期清理、完整性校验 | **不发起**网络请求 |
+Solver 只能看到排名窗口。隔离窗口、最终留出窗口、策略判断和成交细节不得进入
+`ask/tell`。当前 Solver 插件为 `genetic`、`local_genetic`、`random` 和
+`simulated_annealing`。
 
----
+### 逐时点基本面与 MOE 研究
 
-## 数据源优先级
+```text
+公开行情/官方披露
+  -> PointInTimeMarketStore + PointInTimeFundamentalStore
+  -> QuarterlyPricingDatasetBuilder
+  -> 严格标签实现日切分
+  -> CausalPricingMoE
+  -> OOS 评价 + 当前无标签 embedding
+```
 
-### 价格数据
+这条链路目前只生成审计和研究产物，不进入活动技术策略。当前指数成员身份只用于
+分层诊断，不作为历史特征。
 
-1. **网页爬虫**（新浪财经历史数据 API，主要）
-2. **腾讯财经 API**（备用）
-3. **Yahoo Finance API**（备用）
-4. **baostock**（回测历史数据专用，前复权）
+## 包职责与扩展点
 
-### 公司公告
+| 包 | 负责 | 主要扩展位置 |
+|---|---|---|
+| `src/strategy` | 参数到买卖决策和 `TradePlan` | `strategy/plugins/*.py` |
+| `src/search` | Solver、候选评价、Gate、验证与产物 | `search/solvers/*.py` |
+| `src/backtest` | 成交、资金仿真、基准和统一报告 | 通用执行策略，不允许策略 ID 分支 |
+| `src/experiments` | 离线 benchmark 与搜索深度分析 | 只读生产接口，不激活产物 |
+| `src/data` | 行情、公告、缓存和批量回填 | 新数据源或 store |
+| `src/instruments` | 类型化标的、财务推导、ETF/REIT 穿透 | 新官方 provider |
+| `src/fundamental_embedding` | 基本面定价数据集、MOE 与验收 | 新专家或独立研究模型 |
+| `src/session` / `src/models` | 日报运行态与跨步骤类型模型 | 不放策略判断 |
+| `src/notification` | 同一报告对象的多渠道渲染 | 新通知适配器 |
+| `src/health_server` / `src/interactive` | 管理接口和 Bot 命令 | 调用应用用例，不复制业务算法 |
 
-1. **巨潮资讯网 (cninfo)** 官方公告 API（主要）
-2. 上海 / 深圳证券交易所 API（备用）
-3. 新浪财经公告页面（降级）
+新增策略只添加注册插件；新增优化算法只添加 Solver。具体步骤见
+[`src/strategy/README.md`](../src/strategy/README.md) 和
+[`src/search/README.md`](../src/search/README.md)。
 
-### 股息数据
+## 架构审计结论
 
-1. **LLM 提取缓存**（从公告解析，优先）
-2. **网页爬虫**（新浪财经股息历史页面，备用）
+已经形成的稳定边界：
 
----
+- 策略插件、Solver 插件、候选 Gate 和 Backtester 已分离，新增算法无需修改
+  `SearchController`。
+- 搜参、日报和扫描共用 `TradePlan + Backtester + EvaluationReport`。
+- benchmark 位于 `src/experiments`，不会发布或激活生产参数。
+- 逐时点基本面研究与活动技术策略隔离，具有明确的防前视合同。
 
-## 缓存策略
+仍存在的结构债务：
 
-| 缓存类型 | 路径 | 保留天数 | 说明 |
-|---------|------|---------|------|
-| 日线数据缓存 | `cache/data/` | 7 天 | 按股票代码分文件 |
-| 分析结果缓存 | `cache/analysis/` | 7 天 | LLM 分析、公告提取结果 |
-| 历史数据缓存 | `cache/historical/` | 30 天 | 回测用 JSON Lines |
-| 邮件存档 | `data/email_archive/` | 手动清理 | HTML 邮件副本 |
+1. **共享合同所有权不够中立。** `TradePlan`、`PortfolioTrace` 和
+   `EvaluationReport` 仍位于 `strategy/api.py`；Backtester 必须反向依赖
+   strategy，strategy 的兼容扫描又会导入 backtest/search。后续应迁到中立的
+   `src/contracts`，使依赖固定为“策略和回测都依赖合同”。
+2. **两套调度器仍都在使用。** `SchedulerManager` 服务默认阻塞模式；
+   `ScheduleManager` 服务 HealthServer 后台模式和在线改时。它们不是临时重复
+   文件，不能直接删除，但应最终合并为一个 runtime scheduler。
+3. **`main.py` 仍是大型编排文件。** CLI、日报、扫描、审计和激活用例都集中在
+   一个约 62 KB 文件中。应逐步迁到 `src/application`，让 `main.py` 只解析
+   参数并分派用例。
+4. **Web、交互和通知存在双向导入。** Health handlers、Bot handlers 和
+   Notification 通过延迟导入及 global instances 互相访问。建议引入应用服务接口
+   和事件发布器，移除 presentation 层之间的直接调用。
+5. **数据采集和标的模型存在循环。** `data` 使用 `instruments` 的财务模型，
+   `instruments` 审计又调用部分 data provider。后续应把数据合同放入中立模型包，
+   provider 作为端口实现单向注入。
+6. **搜索窗口/执行配置仍被 Backtester 读取。** `backtest/engine.py` 导入
+   `search.config` 的 `WindowStats` 和约束读取函数。应把执行配置与窗口统计迁到
+   中立合同，避免搜索层成为基础设施依赖。
 
-**特殊规则**：交易日 15:55 后若缓存数据非当日，自动绕过缓存强制刷新。
+这些问题当前有测试覆盖且不会阻止运行；它们是下一轮结构重构的优先顺序，不应在
+清理临时文件时顺手删除或改写。
 
----
+## 运行时状态目录
 
-## 扩展点
+- `config/config.yaml`、`config/.env`：本地/服务器配置，不进入 Git。
+- `cache/`：可再生缓存，但日常运行依赖其提升速度。
+- `data/optimizer/`：搜索运行与活动指针。
+- `data/point_in_time/`、`data/reference_universe/`：真实逐时点研究数据。
+- `data/analysis/`、`data/instrument_audit/`：可再生研究和审计报告。
+- `data/email_archive/`、`logs/`：运行审计记录。
 
-- **新增技术指标**：在 `alerts.yaml` 的 `anchors` 中添加配置，`technical_indicators.py` 自动识别
-- **新增数据源**：实现与 `web_crawler.py` 同接口的模块，在 `data_fetcher.py` 中注册降级链
-- **自定义警报规则**：修改 `alerts.yaml` 的 `thresholds` 与 `boundary_rules`
-- **新增策略构建器**：在 `indicator_library.py` 添加信号函数，`optimizer.yaml` 注册 builder
-- **自定义日报模板**：修改 `report_daily.tex` (LaTeX) 和 `email_template.html` (邮件正文)
-- **新增公式**：编辑 `appendix_methodology.md`，Markdown → LaTeX 编译链自动处理
-
----
-
-**相关文档**：
-- [部署指南](deployment.md)
-- [配置说明](configuration.md)
-- [LLM 设计决策](llm/design_decisions.md)
+Python 字节码、pytest/ruff 缓存、`test_cache/`、`.zcode/`、参考池 smoke
+输出和服务器代码中转压缩包都属于临时文件，不应提交。

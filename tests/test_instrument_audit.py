@@ -27,6 +27,24 @@ from src.instruments.models import (
     MetricValue,
 )
 from src.instruments.providers import ProviderPayload, QQQuoteProvider
+from src.instruments.providers import SecCompanyFactsProvider
+
+
+def test_sec_user_agent_environment_overrides_config(monkeypatch):
+    monkeypatch.setenv("SEC_USER_AGENT", "trade-eyes-test test@example.com")
+    provider = SecCompanyFactsProvider(
+        {"instrument_audit": {"sec_user_agent": "config@example.com"}}
+    )
+    assert provider.sec_user_agent == "trade-eyes-test test@example.com"
+
+
+def test_sec_user_agent_falls_back_to_email_sender(monkeypatch):
+    monkeypatch.delenv("SEC_USER_AGENT", raising=False)
+    monkeypatch.setenv("EMAIL_SENDER", "owner@example.com")
+    provider = SecCompanyFactsProvider({})
+    assert provider.sec_user_agent == (
+        "trade-eyes-keeper/1.0 owner@example.com"
+    )
 
 
 def _statement(
@@ -162,7 +180,8 @@ def test_company_valuation_uses_financial_statement_values():
     assert result.ttm_net_income_parent.value == pytest.approx(40.0)
     assert result.roe_ttm.value == pytest.approx(40 / 450 * 100)
     assert result.dividend_yield.value == pytest.approx(5.0)
-    assert result.growth["revenue_qoq"].value_pct == pytest.approx(140 / 130 * 100 - 100)
+    assert result.growth["revenue_qoq"].value_pct == pytest.approx(
+        140 / 130 * 100 - 100)
     assert result.growth["revenue_yoy"].value_pct == pytest.approx(40.0)
     assert result.growth["net_income_ttm_yoy"].value_pct == pytest.approx(
         40 / 22 * 100 - 100
@@ -568,7 +587,7 @@ def test_latest_empty_quarter_does_not_hide_latest_balance_sheet():
             period_end=date(2026, 3, 31),
             period_type="quarter",
             source="test_statement",
-            diluted_average_shares=100.0,
+            total_shares=100.0,
             published_at=date(2026, 4, 1),
         )
     )
@@ -633,3 +652,292 @@ def test_dual_class_valuation_uses_share_basis_compatible_with_eps():
     assert result.book_value_per_share.value == pytest.approx(2)
     assert result.pb.value == pytest.approx(1)
     assert result.pe_ttm.value == pytest.approx(2)
+
+
+def test_pb_falls_back_to_pe_times_roe_when_book_equity_is_missing():
+    statement = FinancialStatementSnapshot(
+        period_end=date(2025, 12, 31),
+        published_at=date(2026, 3, 1),
+        period_type="year",
+        source="test_statement",
+        currency="CNY",
+        total_shares=100.0,
+        average_parent_equity=500.0,
+        net_income_parent=50.0,
+        diluted_eps=0.5,
+    )
+    result = derive_company_fundamentals(
+        [statement],
+        current_price=MetricValue(
+            value=10.0,
+            status=MetricStatus.OBSERVED,
+            as_of=date(2026, 3, 2),
+            source="test_price",
+        ),
+        evaluation_date=date(2026, 3, 2),
+    )
+    assert result.pe_ttm.value == pytest.approx(20.0)
+    assert result.roe_ttm.value == pytest.approx(10.0)
+    assert result.pb.value == pytest.approx(2.0)
+    assert result.pb.period == "TTM/average_equity"
+    assert "not period-end PB" in result.pb.note
+
+
+def test_sec_annual_free_cash_flow_uses_operating_cash_less_capex(monkeypatch):
+    observation = {
+        "end": "2025-12-31",
+        "filed": "2026-02-15",
+        "form": "10-K",
+        "frame": "CY2025",
+    }
+    facts = {
+        "facts": {
+            "us-gaap": {
+                "NetCashProvidedByUsedInOperatingActivities": {
+                    "units": {
+                        "USD": [{**observation, "val": 100.0}],
+                    }
+                },
+                "PaymentsToAcquirePropertyPlantAndEquipment": {
+                    "units": {
+                        "USD": [{**observation, "val": 30.0}],
+                    }
+                },
+            }
+        },
+        "entityName": "Test Company",
+    }
+
+    class Response:
+        url = "https://data.sec.gov/api/xbrl/companyfacts/test.json"
+
+        def json(self):
+            return facts
+
+    provider = SecCompanyFactsProvider(
+        {"instrument_audit": {"sec_user_agent": "test test@example.com"}}
+    )
+    monkeypatch.setattr(
+        provider,
+        "_load_tickers",
+        lambda: {"TEST": "0000000001"},
+    )
+    monkeypatch.setattr(provider, "_sec_get", lambda _url: Response())
+
+    payload = provider.fetch("TEST", date(2026, 3, 1))
+
+    assert len(payload.statements) == 1
+    statement = payload.statements[0]
+    assert statement.operating_cash_flow == pytest.approx(100.0)
+    assert statement.capital_expenditures == pytest.approx(30.0)
+    assert statement.free_cash_flow == pytest.approx(70.0)
+    assert (
+        "free_cash_flow=operating_cash_flow-capital_expenditures"
+        in statement.diagnostics
+    )
+
+
+def test_sec_quarterly_ytd_cash_flow_is_normalized_to_negative_q2_fcf(
+    monkeypatch,
+):
+    def observation(
+        start,
+        end,
+        filed,
+        value,
+        *,
+        frame="",
+    ):
+        row = {
+            "end": end,
+            "filed": filed,
+            "form": "10-Q",
+            "val": value,
+        }
+        if start:
+            row["start"] = start
+        if frame:
+            row["frame"] = frame
+        return row
+
+    q1_filed = "2026-04-30"
+    q2_filed = "2026-07-23"
+    facts = {
+        "facts": {
+            "us-gaap": {
+                "RevenueFromContractWithCustomerExcludingAssessedTax": {
+                    "units": {
+                        "USD": [
+                            observation(
+                                "2025-01-01",
+                                "2025-03-31",
+                                "2025-04-25",
+                                90_234_000_000.0,
+                                frame="CY2025Q1",
+                            ),
+                            observation(
+                                "2025-01-01",
+                                "2025-03-31",
+                                q1_filed,
+                                90_234_000_000.0,
+                                frame="CY2025Q1",
+                            ),
+                            observation(
+                                "2026-01-01",
+                                "2026-03-31",
+                                q1_filed,
+                                109_896_000_000.0,
+                                frame="CY2026Q1",
+                            ),
+                            observation(
+                                "2026-04-01",
+                                "2026-06-30",
+                                q2_filed,
+                                119_796_000_000.0,
+                                frame="CY2026Q2",
+                            ),
+                            observation(
+                                "2026-01-01",
+                                "2026-06-30",
+                                q2_filed,
+                                229_692_000_000.0,
+                            ),
+                        ]
+                    }
+                },
+                "NetIncomeLoss": {
+                    "units": {
+                        "USD": [
+                            observation(
+                                "2026-01-01",
+                                "2026-03-31",
+                                q1_filed,
+                                62_578_000_000.0,
+                            ),
+                            observation(
+                                "2026-01-01",
+                                "2026-06-30",
+                                q2_filed,
+                                174_685_000_000.0,
+                            ),
+                        ]
+                    }
+                },
+                "NetCashProvidedByUsedInOperatingActivities": {
+                    "units": {
+                        "USD": [
+                            observation(
+                                "2026-01-01",
+                                "2026-03-31",
+                                q1_filed,
+                                45_790_000_000.0,
+                            ),
+                            observation(
+                                "2026-01-01",
+                                "2026-06-30",
+                                q2_filed,
+                                84_859_000_000.0,
+                            ),
+                        ]
+                    }
+                },
+                "PaymentsToAcquirePropertyPlantAndEquipment": {
+                    "units": {
+                        "USD": [
+                            observation(
+                                "2026-01-01",
+                                "2026-03-31",
+                                q1_filed,
+                                35_674_000_000.0,
+                            ),
+                            observation(
+                                "2026-01-01",
+                                "2026-06-30",
+                                q2_filed,
+                                80_598_000_000.0,
+                            ),
+                        ]
+                    }
+                },
+                "StockholdersEquity": {
+                    "units": {
+                        "USD": [
+                            observation(
+                                None,
+                                "2026-06-30",
+                                q2_filed,
+                                500_000_000_000.0,
+                                frame="CY2026Q2I",
+                            )
+                        ]
+                    }
+                },
+                "CommonStockSharesOutstanding": {
+                    "units": {
+                        "shares": [
+                            observation(
+                                None,
+                                "2026-06-30",
+                                q2_filed,
+                                12_000_000_000.0,
+                                frame="CY2026Q2I",
+                            )
+                        ]
+                    }
+                },
+            }
+        },
+        "entityName": "Test Company",
+    }
+
+    class Response:
+        url = "https://data.sec.gov/api/xbrl/companyfacts/test.json"
+
+        def json(self):
+            return facts
+
+    provider = SecCompanyFactsProvider(
+        {"instrument_audit": {"sec_user_agent": "test test@example.com"}}
+    )
+    monkeypatch.setattr(
+        provider,
+        "_load_tickers",
+        lambda: {"TEST": "0000000001"},
+    )
+    monkeypatch.setattr(provider, "_sec_get", lambda _url: Response())
+
+    payload = provider.fetch("TEST", date(2026, 8, 18))
+    periods = {
+        (item.period_end, item.published_at): item
+        for item in payload.statements
+    }
+
+    assert (date(2025, 3, 31), date(2025, 4, 25)) in periods
+    assert (date(2025, 3, 31), date(2026, 4, 30)) not in periods
+    q1 = periods[(date(2026, 3, 31), date(2026, 4, 30))]
+    q2 = periods[(date(2026, 6, 30), date(2026, 7, 23))]
+    assert q1.is_cumulative is True
+    assert q2.is_cumulative is True
+    assert q2.revenue == pytest.approx(229_692_000_000.0)
+    assert q2.free_cash_flow == pytest.approx(4_261_000_000.0)
+
+    standalone = to_standalone_quarters([q1, q2])
+    latest = standalone[-1]
+    assert latest.revenue == pytest.approx(119_796_000_000.0)
+    assert latest.net_income_parent == pytest.approx(112_107_000_000.0)
+    assert latest.operating_cash_flow == pytest.approx(39_069_000_000.0)
+    assert latest.capital_expenditures == pytest.approx(44_924_000_000.0)
+    assert latest.free_cash_flow == pytest.approx(-5_855_000_000.0)
+
+    result = derive_company_fundamentals(
+        [q1, q2],
+        current_price=MetricValue(
+            value=200.0,
+            status=MetricStatus.OBSERVED,
+            source="test_price",
+        ),
+        evaluation_date=date(2026, 8, 18),
+    )
+    assert result.latest_quarter_free_cash_flow.value == pytest.approx(
+        -5_855_000_000.0
+    )

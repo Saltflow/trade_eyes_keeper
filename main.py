@@ -94,6 +94,29 @@ def _get_configured_strategy(config: dict):
     return get_strategy(str(name))
 
 
+def _strategy_context_enricher(
+    strategy,
+    config: dict,
+    group: str,
+    codes: list[str] | tuple[str, ...],
+):
+    """Build an optional causal context through the strategy capability.
+
+    Technical strategies return ``None``.  A fundamental strategy owns its
+    source contract and fails closed here rather than letting the optimizer,
+    daily report, scanner, or reference portfolio invent separate data paths.
+    """
+    if not strategy.supports_market(group):
+        raise ValueError(
+            f"strategy {strategy.name} does not support market group {group}"
+        )
+    return strategy.make_context_enricher(
+        config,
+        market=group,
+        symbols=tuple(sorted({str(code) for code in codes})),
+    )
+
+
 def _optimizer_lookback_days(constraints) -> int:
     """Return enough calendar history for every configured walk-forward window."""
     wf = constraints.walk_forward
@@ -288,6 +311,9 @@ def rebuild_active_optimizer_summary(config: dict) -> OptimizerRunSummary | None
                 stocks_data[code] = data
 
         if stocks_data:
+            context_enricher = _strategy_context_enricher(
+                active.strategy, config, group, list(stocks_data)
+            )
             reports = evaluate_all_groups(
                 stocks_data,
                 list(stocks_data),
@@ -300,6 +326,7 @@ def rebuild_active_optimizer_summary(config: dict) -> OptimizerRunSummary | None
                 target_groups=[group],
                 start_date=validation_start,
                 end_date=validation_end,
+                context_enricher=context_enricher,
             )
             validation = reports.get(group)
             if validation is not None:
@@ -334,6 +361,17 @@ def run_optimization(
     if not target_groups:
         logger.error("No valid optimizer market group was requested")
         return {}
+    unsupported_groups = [
+        group for group in target_groups if not strategy.supports_market(group)
+    ]
+    if unsupported_groups:
+        logger.error(
+            "Strategy %s cannot produce a complete active run; unsupported "
+            "markets: %s",
+            strategy.name,
+            ", ".join(unsupported_groups),
+        )
+        return {group: 0 for group in target_groups}
 
     started_at = datetime.now()
     started = monotonic()
@@ -434,6 +472,9 @@ def run_optimization(
             optimizer_benchmarks = _load_optimizer_benchmarks(
                 data_source, constraints, group, lookback_days
             )
+            context_enricher = _strategy_context_enricher(
+                strategy, config, group, list(stocks_data)
+            )
             results, _ = run_optimizer(
                 strategy,
                 stocks_data,
@@ -442,6 +483,7 @@ def run_optimization(
                 _constraints=constraints,
                 output_dir=run_dir,
                 benchmark_data=optimizer_benchmarks,
+                context_enricher=context_enricher,
             )
         except Exception:
             logger.exception("%s optimization failed", group)
@@ -503,6 +545,7 @@ def run_optimization(
                     target_groups=[group],
                     start_date=validation_start,
                     end_date=validation_end,
+                    context_enricher=context_enricher,
                 )
                 validation = validation_reports.get(group)
                 if validation is not None:
@@ -524,6 +567,12 @@ def run_optimization(
                             target_groups=[group],
                             start_date=validation_start,
                             end_date=validation_end,
+                            context_enricher=_strategy_context_enricher(
+                                incumbent_run.strategy,
+                                config,
+                                group,
+                                list(stocks_data),
+                            ),
                         )
                         incumbent_validation = incumbent_reports.get(group)
                         if incumbent_validation is not None:
@@ -830,9 +879,27 @@ def run_daily_task(force: bool = False):
             scan_strategy, scan_params, scan_timestamp = _get_active_strategy_and_params(config)
             if scan_timestamp:
                 logger.info("Signal scan uses active optimizer run from %s", scan_timestamp)
-            a_alerts = _scan_group(session, scan_strategy, "a_share", scan_params.get("a_share"))
-            hk_alerts = _scan_group(session, scan_strategy, "hk", scan_params.get("hk"))
-            us_alerts = _scan_group(session, scan_strategy, "us", scan_params.get("us"))
+            a_alerts = _scan_group(
+                session,
+                scan_strategy,
+                "a_share",
+                scan_params.get("a_share"),
+                config=config,
+            )
+            hk_alerts = _scan_group(
+                session,
+                scan_strategy,
+                "hk",
+                scan_params.get("hk"),
+                config=config,
+            )
+            us_alerts = _scan_group(
+                session,
+                scan_strategy,
+                "us",
+                scan_params.get("us"),
+                config=config,
+            )
 
             for sa in a_alerts + hk_alerts + us_alerts:
                 session.alerts.append(sa)
@@ -881,6 +948,13 @@ def run_daily_task(force: bool = False):
                     groups=_configured_optimizer_groups(config)
                 )
                 for group in OPTIMIZER_GROUPS:
+                    if not strategy.supports_market(group):
+                        logger.info(
+                            "Strategy %s does not support %s; skip evaluation",
+                            strategy.name,
+                            group,
+                        )
+                        continue
                     params = active_params.get(group)
                     if params is None:
                         logger.warning(
@@ -921,6 +995,9 @@ def run_daily_task(force: bool = False):
                             validation_end.strftime("%Y-%m-%d")
                             if validation_end is not None
                             else None
+                        ),
+                        context_enricher=_strategy_context_enricher(
+                            strategy, config, group, list(stocks_data)
                         ),
                     )
                     for report in group_reports.values():
@@ -1060,6 +1137,7 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                 "a_share",
                 brief_params.get("a_share"),
                 skip_codes=brief_skipped_signals,
+                config=config,
             )
             hk_alerts = _scan_group(
                 session,
@@ -1067,6 +1145,7 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                 "hk",
                 brief_params.get("hk"),
                 skip_codes=brief_skipped_signals,
+                config=config,
             )
             us_alerts = _scan_group(
                 session,
@@ -1074,6 +1153,7 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                 "us",
                 brief_params.get("us"),
                 skip_codes=brief_skipped_signals,
+                config=config,
             )
 
             session.signal_scan = type("ScanResult", (), {
@@ -1196,6 +1276,12 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                                 params,
                                 start_date=pf.inception_date,
                                 end_date=today.strftime("%Y-%m-%d"),
+                                context_enricher=_strategy_context_enricher(
+                                    pinned.strategy,
+                                    config,
+                                    group_key,
+                                    active_codes,
+                                ),
                             )
                             if trade_plan is not None and market_data is not None:
                                 new_pf, _ = mgr.rebalance_plan(
@@ -1304,9 +1390,10 @@ def _scan_group(
     params=None,
     top_n: int = 5,
     skip_codes: set[str] | None = None,
+    config: dict | None = None,
 ):
     """Derive today's alerts from the canonical full-market TradePlan."""
-    if strategy is None:
+    if strategy is None or not strategy.supports_market(group):
         return []
     if params is None:
         active = load_latest_strategy_run(groups=(group,))
@@ -1337,6 +1424,12 @@ def _scan_group(
             active_codes,
             strategy,
             params,
+            context_enricher=_strategy_context_enricher(
+                strategy,
+                config or {},
+                group,
+                active_codes,
+            ),
         )
     except Exception:
         logging.getLogger(__name__).exception(
@@ -1543,6 +1636,14 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="audit typed company/fund/REIT profiles without running strategies",
     )
+    mode.add_argument(
+        "--backfill-point-in-time-data",
+        action="store_true",
+        help=(
+            "backfill raw/qfq prices, corporate actions and dated financial "
+            "statements without changing the active strategy"
+        ),
+    )
     mode.add_argument("--health-server", action="store_true", help="start health server")
     mode.add_argument("--interactive", action="store_true", help="start Telegram bot")
     return parser
@@ -1597,6 +1698,19 @@ def main(argv: list[str] | None = None):
             len(report.profiles),
             float(report.summary.get("fill_rate", 0.0)) * 100.0,
             outputs.get("html", ""),
+        )
+    elif args.backfill_point_in_time_data:
+        from src.data.point_in_time_backfill import PointInTimeBackfillService
+
+        report = PointInTimeBackfillService(config).run()
+        logger.info(
+            "Point-in-time backfill complete: market %s/%s, statements %s/%s, "
+            "report=%s",
+            report["market_history_success"],
+            report["instrument_count"],
+            report["statement_success"],
+            report["statement_applicable"],
+            report.get("output_file", ""),
         )
     elif args.health_server:
         from src.health_server import start_health_server

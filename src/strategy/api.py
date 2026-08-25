@@ -326,6 +326,7 @@ class TradingStrategy(ABC):
     feature_dependencies: tuple[str, ...] = ()
     fundamental_feature_dependencies: tuple[str, ...] = ()
     parameter_schema_id: str = "parameter-space/1"
+    supported_markets: tuple[str, ...] = ("a_share", "hk", "us")
 
     def with_execution_dims(self, dims: list[ParamDim]) -> ParamSpace:
         """Attach the shared cash-tier dimensions to a strategy's signal space.
@@ -461,6 +462,29 @@ class TradingStrategy(ABC):
         strategy id; EvaluationService discovers this capability at runtime.
         """
         return None
+
+    def make_context_enricher(
+        self,
+        config: dict,
+        *,
+        market: str,
+        symbols: tuple[str, ...],
+    ):
+        """Optionally build a causal market-data enrichment from app config.
+
+        Core search, daily evaluation and signal scanning call this capability
+        generically.  Ordinary technical strategies return ``None``; a
+        fundamental strategy can fail closed when its dated source contract is
+        unavailable.  No caller needs a strategy-id branch.
+        """
+
+        del config, market, symbols
+        return None
+
+    def supports_market(self, market: str) -> bool:
+        """Declare market coverage without a caller strategy-id branch."""
+
+        return str(market) in self.supported_markets
 
     # ══════════ 搜索空间 ══════════
 

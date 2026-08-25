@@ -1973,6 +1973,7 @@ def build_trade_plan(
     params: Params,
     start_date: str | None = None,
     end_date: str | None = None,
+    context_enricher=None,
 ) -> tuple[
     TradePlan | None,
     StrategyMarketData | None,
@@ -2023,6 +2024,11 @@ def build_trade_plan(
         market=market_group,
         observation_counts=observation_counts,
     )
+    if context_enricher is not None:
+        # Context adapters are strategy-owned and causal.  The shared plan
+        # builder deliberately has no strategy-id knowledge: it only attaches
+        # a validated market-data enrichment before asking for decisions.
+        market_data = context_enricher(market_data)
     trade_plan = strategy.make_signals(params, market_data)
 
     # 5. 仿真 (threshold=0.5 对 bool→float 天然等价)
@@ -2561,6 +2567,7 @@ def evaluate_all_groups(
     target_groups: list[str] | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
+    context_enricher=None,
 ) -> dict[str, EvaluationReport]:
     """日报/IM 的唯一评估入口。
 
@@ -2619,6 +2626,7 @@ def evaluate_all_groups(
             params,
             start_date,
             end_date,
+            context_enricher=context_enricher,
         )
         if trade_plan is None or market_data is None:
             continue

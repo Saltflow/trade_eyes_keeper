@@ -107,9 +107,25 @@ def _prepare_wf_evaluation_contexts(
     constraints: StrategyConstraints,
     evaluator,
     wf_manager,
+    *,
+    strategy: TradingStrategy | None = None,
+    context_enricher=None,
 ) -> dict[str, object]:
     """Cache parameter-independent window inputs and executable baselines."""
     from ..backtest.engine import buy_and_hold_nav
+
+    context_enricher = context_enricher or getattr(
+        wf_manager, "market_data_enricher", None
+    )
+    required_context = tuple(
+        getattr(strategy, "fundamental_feature_dependencies", ()) or ()
+    )
+    if required_context and context_enricher is None:
+        raise ValueError(
+            f"strategy {getattr(strategy, 'name', '<unknown>')} requires a "
+            "historical fundamental context enricher"
+        )
+    context_hash = str(getattr(context_enricher, "contract_hash", ""))
 
     geometry = tuple((w.train_start, w.test_start, w.test_end) for w in windows)
     cache_key = (
@@ -123,6 +139,7 @@ def _prepare_wf_evaluation_contexts(
         tuple(constraints.benchmark_codes),
         tuple(sorted(constraints.execution.lot_sizes.items())),
         tuple(sorted(constraints.execution.fx_rates.items())),
+        context_hash,
     )
     cache = getattr(wf_manager, "_evaluation_context_cache", None)
     if cache is None:
@@ -154,6 +171,8 @@ def _prepare_wf_evaluation_contexts(
         market=market_group,
         observation_counts=lifetime_observation_counts,
     )
+    if context_enricher is not None:
+        full_market_data = context_enricher(full_market_data)
 
     available_benchmarks = getattr(wf_manager, "benchmark_series", {})
     benchmark_high_series = getattr(wf_manager, "benchmark_high_series", {})
@@ -178,6 +197,8 @@ def _prepare_wf_evaluation_contexts(
             market=market_group,
             observation_counts=lifetime_observation_counts[state_slice],
         )
+        if context_enricher is not None:
+            signal_market_data = context_enricher(signal_market_data)
         execution_prices = DEFAULT_FILL_PRICE_POLICY.build(
             price_matrix,
             high_matrix,
@@ -187,9 +208,9 @@ def _prepare_wf_evaluation_contexts(
         )
 
         risk_free_daily = (1.0 + constraints.risk_free_rate) ** (1.0 / 252) - 1.0
-        cash_baseline = evaluator.initial_cash * (
-            1.0 + risk_free_daily
-        ) ** np.arange(test_indicators.shape[0], dtype=np.float64)
+        cash_baseline = evaluator.initial_cash * (1.0 + risk_free_daily) ** np.arange(
+            test_indicators.shape[0], dtype=np.float64
+        )
         benchmark_series = {"risk_free": cash_baseline}
         benchmark_initial_values = {"risk_free": evaluator.initial_cash}
         benchmark_raw_returns = {
@@ -291,7 +312,12 @@ def _evaluate_params_wf(
     # legitimate train-period warmup instead of being muted for 252 days.
     state_scope = str(getattr(strategy, "window_state_scope", "continuous"))
     prepared = _prepare_wf_evaluation_contexts(
-        windows, state_scope, constraints, evaluator, wf_manager
+        windows,
+        state_scope,
+        constraints,
+        evaluator,
+        wf_manager,
+        strategy=strategy,
     )
     full_plan = None
     if state_scope != "train":
@@ -369,6 +395,7 @@ def run_optimizer(
     _constraints=None,
     output_dir=None,
     benchmark_data: dict | None = None,
+    context_enricher=None,
 ) -> tuple[list, StrategyConstraints]:
     """Run the configured Solver through the stable SearchController."""
     from ..backtest.engine import WalkForwardManager, FastEvaluator
@@ -394,6 +421,8 @@ def run_optimizer(
         stocks_data, constraints, stock_codes, benchmark_data=benchmark_data
     )
     wf_manager.market_group = group
+    if context_enricher is not None:
+        wf_manager.market_data_enricher = context_enricher
     evaluator = FastEvaluator(exec_cfg, group)
     windows = wf_manager.iter_windows()
     ranking_indexes, purged_indexes, validation_indexes = _partition_window_indexes(
@@ -447,6 +476,9 @@ def run_optimizer(
             data_hasher.update(str(contiguous.dtype).encode("ascii"))
             data_hasher.update(contiguous.view(np.uint8))
     data_hash = data_hasher.hexdigest()
+    context_hash = str(getattr(context_enricher, "contract_hash", ""))
+    if context_hash:
+        data_hash = stable_hash({"market_data": data_hash, "context": context_hash})
     window_hash = stable_hash(
         [
             {
@@ -475,6 +507,16 @@ def run_optimizer(
         if dependencies == TECHNICAL_FEATURES.names
         else stable_hash({"strategy": strategy.name, "features": dependencies})
     )
+    if context_hash:
+        feature_hash = stable_hash(
+            {
+                "technical_feature_hash": feature_hash,
+                "fundamental_feature_dependencies": tuple(
+                    getattr(strategy, "fundamental_feature_dependencies", ()) or ()
+                ),
+                "context_hash": context_hash,
+            }
+        )
     problem = SearchProblem(
         schema=schema,
         objective_id="weighted-majority-excess-window-range/1",
@@ -492,9 +534,8 @@ def run_optimizer(
             "strategy_id": strategy.name,
             "market": group,
             "control_benchmarks": tuple(constraints.benchmark_codes),
-            "window_range_penalty": (
-                constraints.walk_forward.window_range_penalty
-            ),
+            "context_contract_hash": context_hash or None,
+            "window_range_penalty": (constraints.walk_forward.window_range_penalty),
             "time_contract": {
                 "total_months": constraints.walk_forward.total_months_needed,
                 "search_history_months": (
@@ -562,16 +603,12 @@ def run_optimizer(
     performance = service.performance_snapshot()
     search_metadata = {
         "solver_id": solver.solver_id,
-        "solver_config": dict(
-            getattr(solver, "effective_config", solver_config)
-        ),
+        "solver_config": dict(getattr(solver, "effective_config", solver_config)),
         "solver_stop_reason": getattr(solver, "stop_reason", None),
         "solver_total_issued": int(
             getattr(solver, "total_issued", getattr(solver, "issued", budget))
         ),
-        "solver_unique_parameters": len(
-            getattr(solver, "seen_parameter_keys", ())
-        )
+        "solver_unique_parameters": len(getattr(solver, "seen_parameter_keys", ()))
         or int(performance.get("evaluated", 0)),
         "gate_profile": gate_pipeline.profile_id,
         "gate_profile_hash": gate_pipeline.hash,
@@ -589,9 +626,7 @@ def run_optimizer(
         "resource_plan": resource_plan.__dict__,
         "performance": performance,
         "budget": budget,
-        "candidate_retention_ratio": (
-            constraints.search.candidate_retention_ratio
-        ),
+        "candidate_retention_ratio": (constraints.search.candidate_retention_ratio),
         "retained_candidate_count": controller.retained_candidate_count,
     }
     for item in validated:
@@ -734,8 +769,7 @@ def _save_optimizer_result(
     required_benchmarks = set(constraints.benchmark_codes)
     benchmarks_complete = all(
         len(required_benchmarks) == 3
-        and
-        required_benchmarks.issubset(set(stat.benchmark_returns))
+        and required_benchmarks.issubset(set(stat.benchmark_returns))
         for stat in top.all_stats
     )
     local_config = constraints.local_sensitivity
@@ -749,12 +783,8 @@ def _save_optimizer_result(
     )
     universe_robustness = dict(getattr(top, "universe_robustness", {}) or {})
     universe_config = constraints.universe_robustness
-    universe_robustness_passed = (
-        not universe_config.activation_required
-        or (
-            bool(universe_robustness)
-            and bool(universe_robustness.get("passed"))
-        )
+    universe_robustness_passed = not universe_config.activation_required or (
+        bool(universe_robustness) and bool(universe_robustness.get("passed"))
     )
     search_metadata = dict(getattr(top, "search_metadata", {}) or {})
     activation_eligible = bool(
@@ -816,9 +846,7 @@ def _save_optimizer_result(
                 "(max_majority_excess - min_majority_excess)"
             ),
             "score_parameters": {
-                "window_range_penalty": (
-                    constraints.walk_forward.window_range_penalty
-                )
+                "window_range_penalty": (constraints.walk_forward.window_range_penalty)
             },
             "time_contract": {
                 "total_months": constraints.walk_forward.total_months_needed,
@@ -839,9 +867,7 @@ def _save_optimizer_result(
             "universe_robustness_config": universe_config.to_contract(),
             "selection_score": top.selection_score,
             "ranking_diagnostics": dict(top.ranking_metrics),
-            "gate_results": [
-                dict(item) for item in getattr(top, "gate_results", ())
-            ],
+            "gate_results": [dict(item) for item in getattr(top, "gate_results", ())],
         },
         "sensitivity": dict(top.sensitivity),
         "universe_robustness": universe_robustness,

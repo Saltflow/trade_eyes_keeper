@@ -77,8 +77,22 @@ instrument_audit:
   show_in_daily_report: true
   enrich_top_holdings: true
   max_holding_profiles_per_fund: 10
-  # SEC 要求包含可联系邮箱的 User-Agent；未配置时会明确记录跳过原因
+  # SEC 要求包含可联系邮箱的 User-Agent；留空时使用 .env 的 EMAIL_SENDER，
+  # 也可通过 SEC_USER_AGENT 环境变量显式覆盖。
   sec_user_agent: ""
+
+# Point-in-time statements, raw/qfq prices and corporate actions (strategy opt-in)
+point_in_time_data:
+  output_dir: data/point_in_time
+  history_years: 6
+  official_statement_crawlers: true
+  official_pdf_recent_years: 3
+  cninfo_pdf_cache_dir: data/point_in_time/provider_cache/cninfo
+  market_history:
+    compare_fallback_on_partial: true
+    coverage_tolerance_days: 31
+    baostock_socket_timeout_seconds: 20
+
 
 # 发行人接口彼此不统一；可按代码声明官方资料和持仓CSV。
 # instrument_catalog:
@@ -96,6 +110,22 @@ optimizer:
   enable: true
   drawdown_limit: -30
   output_dir: ./data/optimizer
+
+# Optional manual candidate only. Selecting capm_dcf_value requires all five
+# causal sources below; missing or stale data closes the strategy rather than
+# falling back to current fundamentals or a constant risk-free rate.
+# It is A-share-only until equivalent point-in-time sources exist elsewhere.
+capm_dcf_value:
+  data_root: data/reference_universe/point_in_time_20260818/partial_first_pass_20260822/dataset
+  benchmark_prices: cache/data/510300.csv
+  industry_history: data/reference_universe/industry_classification_history_official_2020q4_2025h2.json
+  risk_free_rates_json: data/analysis/capm_dcf_value_policy_20260825/risk_free_rates_current.json
+  frozen_policy_report: data/analysis/capm_dcf_value_policy_20260825/report.json
+  equity_risk_premium: 0.06
+  beta_margin_gamma: 0.32
+  minimum_entry_fraction: 0.75
+  maximum_entry_fraction: 0.95
+  maximum_snapshot_age_days: 550
 
 # ── 历史数据缓存 ──
 historical_cache:

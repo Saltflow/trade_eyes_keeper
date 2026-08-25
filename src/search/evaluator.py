@@ -55,9 +55,7 @@ class EvaluationService:
         self.workers = max(1, int(workers))
         self.evaluation_backend = str(evaluation_backend)
         if self.evaluation_backend not in {"process", "scalar"}:
-            raise ValueError(
-                "search evaluation_backend must be 'process' or 'scalar'"
-            )
+            raise ValueError("search evaluation_backend must be 'process' or 'scalar'")
         self._active_backend = "cpu_scalar"
         self.capabilities = EvaluatorCapabilities(
             backends=("cpu_scalar", "cpu_batch", "cpu_process"),
@@ -229,9 +227,7 @@ class EvaluationService:
             else:
                 self._activate_backend("cpu_scalar")
                 produced = [
-                    self.evaluate_one(
-                        candidate_id, parameters, materialize=False
-                    )
+                    self.evaluate_one(candidate_id, parameters, materialize=False)
                     for _index, candidate_id, parameters in missing
                 ]
         else:
@@ -333,9 +329,7 @@ class EvaluationService:
                 constraints=self.constraints,
                 wf_manager=self.wf_manager,
                 ranking_windows=self.ranking_windows,
-                market_group=str(
-                    getattr(self.wf_manager, "market_group", "a_share")
-                ),
+                market_group=str(getattr(self.wf_manager, "market_group", "a_share")),
                 workers=self.workers,
             )
         self._activate_backend("cpu_process")
@@ -406,6 +400,7 @@ class EvaluationService:
             self.constraints,
             self.evaluator,
             self.wf_manager,
+            strategy=self.strategy,
         )
         started = perf_counter()
         if not self._prepared_checked:

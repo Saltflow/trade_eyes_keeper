@@ -7,13 +7,15 @@ and records an auditable override without rewriting any raw holdout result.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+import logging
 import math
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Mapping
 
 import yaml
 
+logger = logging.getLogger(__name__)
 
 DEFAULT_POLICY_PATH = Path("config/promotion_policy.yaml")
 
@@ -34,7 +36,7 @@ class PromotionPolicy:
     required_group_count: int = 3
 
     @classmethod
-    def load(cls, path: Path | str = DEFAULT_POLICY_PATH) -> "PromotionPolicy":
+    def load(cls, path: Path | str = DEFAULT_POLICY_PATH) -> PromotionPolicy:
         policy_path = Path(path)
         try:
             raw = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
@@ -44,24 +46,18 @@ class PromotionPolicy:
             raise ValueError("promotion policy must be a mapping")
         return cls(
             enabled=bool(raw.get("enabled", True)),
-            auto_activate_if_better=bool(
-                raw.get("auto_activate_if_better", True)
-            ),
+            auto_activate_if_better=bool(raw.get("auto_activate_if_better", True)),
             minimum_portfolio_return_improvement_pct=float(
                 raw.get("minimum_portfolio_return_improvement_pct", 0.0)
             ),
-            minimum_improved_groups=max(
-                1, int(raw.get("minimum_improved_groups", 2))
-            ),
+            minimum_improved_groups=max(1, int(raw.get("minimum_improved_groups", 2))),
             maximum_group_return_regression_pct=max(
                 0.0, float(raw.get("maximum_group_return_regression_pct", 5.0))
             ),
             maximum_drawdown_regression_pct=max(
                 0.0, float(raw.get("maximum_drawdown_regression_pct", 5.0))
             ),
-            safety_max_drawdown_pct=float(
-                raw.get("safety_max_drawdown_pct", -40.0)
-            ),
+            safety_max_drawdown_pct=float(raw.get("safety_max_drawdown_pct", -40.0)),
             minimum_trade_count=max(0, int(raw.get("minimum_trade_count", 1))),
             minimum_benchmark_count=max(
                 0,
@@ -72,9 +68,7 @@ class PromotionPolicy:
                     )
                 ),
             ),
-            required_group_count=max(
-                1, int(raw.get("required_group_count", 3))
-            ),
+            required_group_count=max(1, int(raw.get("required_group_count", 3))),
         )
 
 
@@ -87,9 +81,7 @@ class PromotionDecision:
     portfolio_return_improvement_pct: float | None = None
     improved_group_count: int = 0
     compared_group_count: int = 0
-    group_comparisons: dict[str, dict[str, float | bool]] = field(
-        default_factory=dict
-    )
+    group_comparisons: dict[str, dict[str, float | bool]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -113,9 +105,8 @@ def compare_with_incumbent(
     if not policy.enabled:
         return PromotionDecision(False, ("promotion_disabled",))
     groups = tuple(str(group) for group in candidate_by_group)
-    if (
-        len(groups) != policy.required_group_count
-        or set(groups) != set(incumbent_by_group)
+    if len(groups) != policy.required_group_count or set(groups) != set(
+        incumbent_by_group
     ):
         return PromotionDecision(False, ("incomplete_group_comparison",))
 
@@ -230,6 +221,12 @@ def record_promotion_decision(
         if not artifact or getattr(summary, "status", "") != "completed":
             continue
         path = base / "runs" / run_id / str(artifact)
+        if not path.is_file():
+            logger.warning(
+                "Skipping promotion annotation for missing optimizer artifact: %s",
+                path,
+            )
+            continue
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         if not isinstance(data, dict):
             raise ValueError(f"invalid optimizer artifact: {path}")

@@ -36,6 +36,64 @@
   positive return in at least 6/11 windows, beating any two controls in at least
   6/11 windows, and positive mean `M_i`.
 
+## 基本面定价画像契约（2026-08-18）
+
+- `src/fundamental_embedding` 是独立的逐时点研究链路，不进入当前技术面
+  `SearchController`、活动策略或参考持仓。完整合同见
+  `docs/llm/fundamental_embedding.md`。
+- 训练只读取披露日不晚于特征日的财务快照，且每个训练标签必须在预测季度前完整
+  实现。OOS 评价数据与当前无标签 `FundamentalPricingSnapshot` 分离。
+- 四专家分别表示 value、cash return、quality 和 growth；12 维 embedding 由
+  四专家信号、四 Gate 权重和四定价后信号组成。当前指数成员身份只用于评估分层，
+  不能进入模型。
+- “框架可用”不等于“有 alpha”。生产候选必须同时通过横截面宽度、字段覆盖、
+  Rank IC、正 IC 季度、top-bottom spread、季度稳定、Gate 相对 uniform 增益和
+  510300/510500/510880 三风格池鲁棒性验收。
+- 画像驱动内在价值实验的详细合同见
+  `docs/llm/intrinsic_value_strategy.md`。当前价格只允许进入反向DCF诊断，
+  不得进入 DCF、DDM、盈利能力 DCF 或残余收益的现金流、增长和公允价值公式。
+  股权现金流默认按7%/7.5%/8%个人必要回报率与2%永续增长估值，逐时点市场
+  CAPM只作定价诊断和更高风险下限；显式主观风险只能在估值后形成买入折价。首轮86家公司
+  的252/504交易日评价均未超过账面收益率强制基线，因此该模块保持离线候选，
+  不得接入活动策略、搜参、日报或参考持仓。
+- CAPM 股权 DCF 的买入价校准同样保持离线，合同见
+  `docs/llm/capm_dcf_entry_calibration.md`。它按点时行业和财务数据将金融业路由为
+  残余收益、周期业路由为穿越周期 FCFE、其他公司路由为普通 FCFE；三条链分别在
+  训练期选择安全边际，再由合并 Gate 统一验收。任何一路或总体门槛不通过，均不得
+  写入活动策略、搜参、日报或参考持仓。
+
+### 冻结 CAPM-DCF 价值策略候选（2026-08-25）
+
+> 本小节覆盖上文“CAPM-DCF 一律离线”的旧表述：通过广域训练/留出 Gate 的**冻结政策**
+> 可以接入统一 `TradePlan -> Backtester` 链路作手动候选实验；它仍绝不自动激活，也不
+> 替换现有技术面活动策略。
+
+- `capm_dcf_value` 是独立注册策略，不向 Solver 暴露公司估值参数。广域训练集只选择
+  估值路由、增长组合与基础安全边际；接收标的池只应用它，绝不按小池样本重新训练或
+  因小池事件数拒绝该政策。
+- 单家公司始终使用点时股权成本 `r_e = r_f + beta_i * ERP`。池平均 Beta **不**重估
+  WACC/股权成本，只调节买入安全边际：
+  `entry_fraction = clip(base_fraction * (pool_beta / train_beta_reference)^(-gamma), min, max)`。
+  `train_beta_reference` 必须只来自冻结政策的训练集；默认 `gamma=0.32`、范围
+  `[0.75, 0.95]`，因而低 Beta 池可将 `0.85` 放宽至最多 `0.95`。
+- 历史校准中的 `buy_price/current_price <= 95%` 只用于构造“未来一年是否触价”的
+  标签，不能当作运行时拒单条件。运行时若 `P <= entry_price`，在新估值快照当日产生
+  一次可执行买入事件；若 `P > entry_price`，只在之后首次向下穿越时买入；若
+  `P >= fair_value`，产生卖出决策，具体成交、手续费、最短持有期均仍由共享
+  Backtester/执行器处理。
+- DCF 每股价格以未复权口径计算。策略面板把公允价和买入价按同日
+  `qfq_factor` 映射到统一回测的前复权价格尺度；两侧同时缩放，因而
+  `raw_price <= raw_entry` 与 `qfq_price <= qfq_entry` 恒等，不把复权尺度错当成
+  价值信号。没有可审计的价格因子、冻结政策、官方无风险利率、或估值快照超过
+  550 天时，面板必须缺失并拒绝产生信号。
+- `scripts/fetch_capm_dcf_risk_free.py` 以基准 CSV 的自然季度末为锚点抓取官方中债
+  十年国债曲线；它只写带 `requested_date/source_date/source` 审计信息的真实值，缺失
+  日期直接失败，不用当期利率或常数回填历史。当前候选只完成 A 股因果数据覆盖，尚未
+  形成三市场完整候选产物，故无激活资格。
+- `scripts/backtest_capm_dcf_value.py` 是该候选唯一的离线复现入口：它从点时市场
+  存储读取 qfq 执行价、构造上述价值面板，并调用共享 `build_trade_plan` 和
+  `Backtester` 生成 JSON。它不创建优化产物、不写活动指针、也不修改参考持仓。
+
 ## 当前唯一权威契约（2026-07-30）
 
 > 本节是搜参、回测、日报与今日扫描的唯一当前契约。本文后续按日期记录的
@@ -923,8 +981,22 @@ config/optimizer.yaml → StrategyOptimizer → PortfolioEvaluator
               │
         ┌─────┴──────┐
     Phase A (训练)   Phase B (测试)
+
+
+### Cumulative filing and FCF contract (2026-08-18)
+
+- SEC Company Facts keeps each period's original filing and rejects later filings' comparative columns as substitute publication dates.
+- SEC 10-Q and A-share interim flow values are fiscal-YTD inputs. The common normalizer derives standalone quarters before QoQ, TTM, or latest-quarter metrics are calculated.
+- FCF is always OCF minus capital expenditures on the same cumulative basis, then normalized to standalone quarters. Reports expose latest-quarter FCF and TTM FCF separately; annual fallback is explicitly labeled.
+- A source replacement migration removes legacy SEC rows produced by the old comparative-column mapper. A-share sources already declare cumulative periods and missing quarterly capital expenditures remain explicit missing data.
     0-12月搜索        0-24月最终评估
                      按12-24月外样本排名
+
+### 日报邮件移动端版式重设计（2026-08-22）
+- 每日 19:00 日报统一使用移动端优先的单列卡片布局；告警与无告警路径共用同一份完整 HTML 模板。
+- 主机名、公网 IP 及系统信息保留在独立的“部署状态”信息条中，用于确认部署节点正确性。
+- 监控标的、策略信号、A/HK/US 组合表现、图表、参考持仓、公告、标的画像和定增按纵向区块展示；深度持仓数据仍保留，PDF 继续作为附件。
+- 日报数据进入模板前统一转义文本和链接，参考持仓不再追加到 `</html>` 之后；移动端归档验证覆盖 375px/430px 的响应式宽度约束。
 ```
 
 ### V1 回测时间线 (`BacktestConfig`)
@@ -1332,3 +1404,100 @@ pytest tests/test_import_smoke.py         # 导入完整性
 - 日报 PDF 附录修复：MD→LaTeX 转换器此前只支持单行 `$$...$$`，多行公式块被拆成空
   `\[\]` + 普通段落，导致 xelatex 报 `\mathrm allowed only in math mode`、附录公式乱码；
   转换器改为块状态机（`$$` 开关显示数学环境，块内行原样保留）。
+
+### 逐时点基本面、原始行情与除权数据（2026-08-17）
+
+- `python main.py --backfill-point-in-time-data` 与
+  `python scripts/backfill_point_in_time.py` 回填配置内全部标的，产物写入
+  `data/point_in_time/`；唯一详细合同见 `docs/llm/point_in_time_data.md`。
+- 市场数据同时保存不复权 `raw_*`、前复权 `qfq_*` 与 `qfq_factor`，强制满足
+  `qfq_price = raw_price × qfq_factor`。基本面历史估值只使用当日 raw 价格，
+  禁止用今天锚定的前复权价格回推历史 PE/PB。
+- 公司行动保存真实除权日、已知公告日和来源；不能可靠拆分现金、送转、配股时只记
+  `adjustment_factor_change`，不得猜测股数或净资产。
+- A 股季度基础历史来自 Baostock `pubDate/statDate`；沪市由免费上交所 XBRL
+  补充并纠正归母/扣非利润、经营现金流和归母权益，深市从巨潮免费完整年报 PDF
+  严格解析同类字段。官方值在真实披露日形成新修订，禁止提前覆盖。
+- A 股与美股自由现金流统一为真实经营现金流减真实资本开支；任一字段或单位缺失就
+  保持缺失。美股来源为 SEC Company Facts `filed/end`；港股适配器未完成前明确
+  缺失。生产链路禁止付费源、模拟值、默认值和 mock 数据。
+- `FundamentalFeaturePanelBuilder` 只消费上述逐时点存储与 availability mask；
+  当前画像仍不进入技术策略或历史搜参，直至覆盖率和防前视验收通过。
+
+
+### Point-in-time source coverage routing (2026-08-17)
+
+- Market-history success and requested-window completeness are separate contracts. Reports expose requested/actual boundaries, calendar coverage ratio, and full/partial counts.
+- A-share market history compares Yahoo only when Baostock starts later than the configured tolerance, then deterministically selects the earlier and denser real-data bundle.
+- SSE fundamentals retain the official SSE performance feed and supplement the most recent three annual periods from official CNINFO-indexed PDFs because the legacy SSE full-statement endpoint is stale.
+- Parsed annual-report values are cached by source URL with content and parser-contract hashes; the cache changes network cost only and never fabricates missing fields.
+- No paid or simulated source is introduced. Partial coverage and parser failures remain visible diagnostics.
+
+### 逐时点资本成本、个人必要回报率与 WACC（2026-08-21）
+
+- 废弃内在价值实验中的9%/11%统一贴现率，也禁止将低Beta CAPM直接当作个人
+  必要回报率。市场CAPM与投资者要求必须分别披露；模型不确定性和主观风险不得
+  叠加进 WACC 或股权成本，主观风险只保留为买入价折价。
+- `CapitalMarketAssumptionStore` 按日期保存中债十年国债收益率和沪深300前瞻隐含
+  ERP；估计必须使用官方指数快照的PE、PB和股息率，从 `PB/PE` 得到指数ROE
+  代理、从股息率/盈利收益率得到派息率，在五年内将增长和派息率淡化到2%/3%/4%
+  终值增长并反解要求回报。3%为基准，2%–4%全部报告为敏感区间。
+  估值只能读取 `as_of <= evaluation_date` 的输入。Beta 必须同时估计2/3/5年日频
+  和周频OLS，保存样本数、标准误、95%置信区间和R²，以有效估计的中位数为中心、
+  四分位区间为敏感性。禁止固定Blume向1收缩。历史已实现ERP必须使用含分红的
+  全收益指数，价格指数不得冒充；未取得该数据前保持明确缺失，不得补默认值。
+- 有完整市场输入时，市场股权成本与WACC的低/高边界必须由Beta四分位和ERP情景
+  的组合直接推导；缺失逐时点市场输入时必须明确标记配置回退。股权现金流估值
+  默认使用8%/7.5%/7%个人必要回报率的下行/基准/上行情景，逐场景实际贴现率为
+  市场CAPM与个人要求的较高者，永续增长默认2%。
+- 反向DCF只求解当前价格隐含的五年显式增长，并与基本面增长并排展示；其结果
+  不得反馈到公允价值。改变现价必须只改变隐含增长、安全边际和价格区间，不得
+  改变低/中/高内在价值或保守买入价。
+- FCFF 代理使用 WACC；本版 OCF-CAPEX 是未取得净借款时的 FCFE 代理，DDM、
+  盈利能力和残余收益模型同样使用个人必要股权回报率。WACC 使用
+  官方年报现金及现金等价物、带息债务、利息费用、利润总额和所得税费用，并显示
+  资本权重、税盾与净债务桥接。缺字段时明确回退，禁止伪造 WACC。
+- CNINFO 主报表解析合同为 `cninfo-pdf-parse-5`：附注编号不得作为金额；现金必须
+  取“年末现金及现金等价物余额”，不得把货币资金或受限现金混作可用现金。新版
+  官方解析行替换同来源旧解析版本，不能由“错误字段更多”阻止修订。
+
+### 生产调度可靠性（2026-08-20）
+
+- `trade-eyes-health.service` 是生产环境唯一的日报/简报调度宿主；部署必须清理旧的
+  无参数 `main.py` 独立调度进程，禁止两个 APScheduler 同时生成重复通知。
+- 日报默认允许整点后3600秒内补跑，简报允许900秒，优化任务允许7200秒；均可在
+  `scheduler.*_misfire_grace_seconds` 或单份简报的 `misfire_grace_seconds` 配置。
+  所有任务必须 `coalesce=true`、`max_instances=1`，服务器短时高负载不得因
+  APScheduler 默认约1秒的misfire窗口而直接丢弃整次推送。
+
+### CAPM 股权 DCF 买入价历史校准（2026-08-24）
+
+- 新增独立的 `scripts/calibrate_capm_dcf_entry.py` 与
+  `src/fundamental_embedding/dcf_entry_calibration.py`。该工具只生成点时审计报告，
+  不得变更活动策略、参考持仓或线上参数；详细唯一合同见
+  `docs/llm/capm_dcf_entry_calibration.md`。
+- 贴现率严格为 `risk_free + beta × ERP` 的股权成本，忽略债权成本；终值增长固定
+  2%。五年增长只由估值日已发布的营收、利润、FCF、CAPEX/OCF 与 ROE 数据构成。
+  ERP 分段主观风险以 `g / 1.25`（ERP>5%）或 `g / 1.50`（ERP<=5%）保守折减，
+  绝不可将风险乘数直接抬高公允价值。
+- 年报 FCF 进入估值前必须通过收入、利润和现金转换率交叉核对；PDF 解析异常须被
+  拒绝而不是截断。历史拆股/送配也必须按估值日已披露行动调整股本，确保每股 FCF
+  与原始成交价格可比。
+- 校准接受条件为：限价在未来252个有效交易日可触发，随后252日收盘至少半数高于
+  成本，且每个ERP情景的触发覆盖、样本量和成功率均通过。完整网格、时间留出和
+  失败原因必须写入报告；没有通过者不可用“最不差”参数替代。
+- 交易日标签必须累计252个真实可交易日，不能从固定252条原始行情行中扣除停牌行；
+  金融残余收益链的财务账龄只取账面、ROE与派息输入，禁止由无关的FCFE缺失将其
+  判为陈旧。每个ERP压力情景无成交或无后验观察时，排序分数必须明确失败，不能
+  因Wilson下限列表忽略空情景而选出极低、几乎不成交的限价。
+- 默认的4%/12笔/50% Wilson证据门槛属于“估值链是否有足够研究样本”的安全合同，
+  不是对广义股票池宣称20%买入频率。三条估值链各自必须有至少100个训练期事件；
+  样本不足的链显式标记为不支持并只产生空信号，绝不借用其他链参数。2026-08-24
+  的广义研究池留出中普通FCFE与金融残余收益链通过，周期FCFE因样本不足停用；
+  当前配置的A股标的池本身没有足够逐时点历史证据，因而仍不得接入活动策略或执行
+  全量搜参。以后只能在该池获得足够因果样本并通过同一统一回测Gate后，以手动候选
+  方式接入。
+- 大盘训练事件数只用于**选择与认证**政策，不能阻止小配置池对已冻结、已通过留出的
+  政策做时间外应用。`--frozen-policy-report` 必须校验源经济合同，且仅从源报告的
+  `validation_start` 起评价接收池；它不会按接收池标签重训或更改参数。接收池应用的
+  小样本只提供迁移证据，仍须通过统一策略收益/回撤/三基准 Gate 才能成为候选。

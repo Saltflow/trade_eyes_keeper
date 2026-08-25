@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
@@ -260,7 +261,11 @@ class YahooFinanceProvider(HttpProvider):
                         int(event["date"]), tz=timezone.utc
                     ).date()
                 amount = _float(event.get("amount"))
-                if event_date and amount is not None and cutoff <= event_date <= evaluation_date:
+                if (
+                    event_date
+                    and amount is not None
+                    and cutoff <= event_date <= evaluation_date
+                ):
                     dividends.append((event_date, amount))
             total = sum(amount for _, amount in dividends)
             payload.ttm_dividend = MetricValue(
@@ -506,12 +511,23 @@ class SecCompanyFactsProvider(HttpProvider):
         "EarningsPerShareBasic": "basic_eps",
         "EarningsPerShareDiluted": "diluted_eps",
         "NetCashProvidedByUsedInOperatingActivities": "operating_cash_flow",
+        "PaymentsToAcquirePropertyPlantAndEquipment": (
+            "capital_expenditures"
+        ),
     }
 
     def __init__(self, config: dict, http: requests.Session | None = None):
         super().__init__(config, http=http)
+        email_sender = os.getenv("EMAIL_SENDER", "").strip()
+        email_user_agent = (
+            f"trade-eyes-keeper/1.0 {email_sender}"
+            if email_sender
+            else ""
+        )
         self.sec_user_agent = (
-            (config.get("instrument_audit", {}) or {}).get("sec_user_agent")
+            os.getenv("SEC_USER_AGENT")
+            or (config.get("instrument_audit", {}) or {}).get("sec_user_agent")
+            or email_user_agent
             or ""
         ).strip()
         self._tickers: Optional[dict[str, str]] = None
@@ -519,7 +535,8 @@ class SecCompanyFactsProvider(HttpProvider):
     def _sec_get(self, url: str) -> requests.Response:
         if not self.sec_user_agent:
             raise RuntimeError(
-                "instrument_audit.sec_user_agent is required by SEC "
+                "SEC User-Agent unavailable; configure SEC_USER_AGENT, "
+                "instrument_audit.sec_user_agent, or EMAIL_SENDER "
                 "(for example: app-name admin@example.com)"
             )
         return self._get(
@@ -588,7 +605,16 @@ class SecCompanyFactsProvider(HttpProvider):
                         continue
                     frame = str(observation.get("frame", ""))
                     if form == "10-Q" and frame and not frame.endswith(
-                        ("Q1", "Q2", "Q3", "Q4")
+                        (
+                            "Q1",
+                            "Q2",
+                            "Q3",
+                            "Q4",
+                            "Q1I",
+                            "Q2I",
+                            "Q3I",
+                            "Q4I",
+                        ),
                     ):
                         continue
                     key = (period_end, filed, form)
@@ -598,24 +624,83 @@ class SecCompanyFactsProvider(HttpProvider):
                             "period_end": period_end,
                             "published_at": filed,
                             "period_type": "year" if form == "10-K" else "quarter",
-                            "is_cumulative": False,
+                            "is_cumulative": True,
                             "currency": "USD",
                             "accounting_standard": "US-GAAP",
                             "source": "sec_companyfacts",
                             "source_url": response.url,
                         },
                     )
-                    if record.get(target_field) is None:
+                    start = _date(observation.get("start"))
+                    duration_days = (
+                        (period_end - start).days
+                        if start is not None and start <= period_end
+                        else None
+                    )
+                    field_durations = record.setdefault(
+                        "_field_durations", {}
+                    )
+                    previous_duration = field_durations.get(target_field)
+                    prefer_shortest = (
+                        form == "10-Q"
+                        and target_field
+                        in {
+                            "basic_eps",
+                            "diluted_eps",
+                            "diluted_average_shares",
+                        }
+                    )
+                    replace_value = record.get(target_field) is None
+                    if not replace_value and duration_days is not None:
+                        replace_value = previous_duration is None or (
+                            duration_days < previous_duration
+                            if prefer_shortest
+                            else duration_days > previous_duration
+                        )
+                    if replace_value:
                         record[target_field] = value
-            # Keep the most recently filed version for a period/form.
-            latest: dict[tuple[date, str], dict[str, Any]] = {}
+                        field_durations[target_field] = duration_days
+            # Company Facts repeats prior-period comparatives in later filings.
+            # Keep only the current period of each filing, while preserving the
+            # original filing for every historical period.
+            filing_ends: dict[tuple[date, str], date] = {}
             for (_, filed, form), record in records.items():
-                key = (record["period_end"], form)
-                if key not in latest or filed > latest[key]["published_at"]:
-                    latest[key] = record
+                filing_key = (filed, form)
+                previous_end = filing_ends.get(filing_key)
+                if previous_end is None or record["period_end"] > previous_end:
+                    filing_ends[filing_key] = record["period_end"]
+
+            current_records = []
+            for (_, filed, form), record in records.items():
+                if record["period_end"] != filing_ends[(filed, form)]:
+                    continue
+                record.pop("_field_durations", None)
+                diagnostics = record.setdefault("diagnostics", [])
+                if record["period_type"] == "quarter":
+                    diagnostics.append("sec_flow_values_are_fiscal_ytd")
+                if (
+                    record.get("operating_cash_flow") is not None
+                    and record.get("capital_expenditures") is not None
+                ):
+                    record["free_cash_flow"] = (
+                        record["operating_cash_flow"]
+                        - record["capital_expenditures"]
+                    )
+                    diagnostics.append(
+                        "free_cash_flow=operating_cash_flow-capital_expenditures"
+                    )
+                current_records.append(record)
+
             payload.statements.extend(
                 FinancialStatementSnapshot(**record)
-                for record in latest.values()
+                for record in sorted(
+                    current_records,
+                    key=lambda record: (
+                        record["period_end"],
+                        record["published_at"],
+                        record["period_type"],
+                    ),
+                )
             )
             payload.attempts.append(
                 {

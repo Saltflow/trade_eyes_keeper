@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>股票量化日报</title>
+<style>
+  body {{ margin:0; padding:0; background:#f3f6fa; color:#26364a;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",
+      "PingFang SC",sans-serif; line-height:1.55; }}
+  .shell {{ width:100%; max-width:680px; background:#ffffff; }}
+  .content {{ padding:12px 18px 18px; }}
+  .daily-section {{ margin:0 0 14px; }}
+  .section-heading {{ padding:10px 0 8px; border-bottom:2px solid #dce6f0;
+    color:#173b62; font-size:16px; font-weight:700; }}
+  .section-count {{ float:right; color:#718096; font-size:12px; font-weight:400; }}
+  .group-heading {{ margin:12px 0 6px; color:#56708d; font-size:12px; font-weight:700; }}
+  .summary-grid,.metric-grid {{ width:100%; border-collapse:separate; }}
+  .summary-cell,.metric-cell {{ width:50%; padding:10px 8px; border:1px solid #e3ebf3;
+    background:#f8fbfe; vertical-align:top; }}
+  .summary-label,.metric-label {{ color:#718096; font-size:11px; }}
+  .summary-value,.metric-value {{ margin-top:2px; color:#173b62; font-size:20px; font-weight:700; }}
+  .stock-card,.focus-card,.strategy-card,.portfolio-card,.announcement-card,
+  .placement-card,.chart-card,.quarter-card {{ margin:8px 0; padding:11px 12px;
+    border:1px solid #e0e8f0; border-radius:8px; background:#ffffff; }}
+  .stock-card {{ border-left:4px solid #8aa6c1; }}
+  .stock-title,.focus-title {{ display:flex; justify-content:space-between; gap:8px;
+    align-items:flex-start; color:#173b62; font-size:14px; overflow-wrap:anywhere; }}
+  .stock-title > strong,.focus-title > strong {{ min-width:0; overflow-wrap:anywhere; }}
+  .stock-primary {{ display:flex; flex-wrap:wrap; gap:8px; align-items:baseline;
+    margin-top:7px; font-size:14px; }}
+  .stock-line,.holding-line,.quarter-position,.detail-line,.announcement-line {{
+    margin-top:5px; color:#4a5c70; font-size:12px; overflow-wrap:anywhere; }}
+  .focus-value {{ margin-top:7px; color:#173b62; font-size:14px; font-weight:700; }}
+  .focus-detail {{ margin-top:3px; color:#65778a; font-size:12px; overflow-wrap:anywhere; }}
+  .status-badge {{ display:inline-block; padding:2px 7px; border-radius:10px;
+    white-space:nowrap; font-size:11px; font-weight:600; }}
+  .status-alert {{ color:#9f2d2d; background:#fdecec; }}
+  .status-normal {{ color:#356b4a; background:#eaf7ef; }}
+  .card-title {{ color:#173b62; font-size:14px; font-weight:700; overflow-wrap:anywhere; }}
+  .metric-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:6px; margin-top:8px; }}
+  .metric-cell {{ width:auto; padding:7px 8px; }}
+  .metric-value {{ font-size:16px; }}
+  .detail-label {{ margin-top:10px; color:#526b86; font-size:12px; font-weight:700; }}
+  .muted-note,.sub-note {{ margin-top:6px; color:#7a8998; font-size:11px; overflow-wrap:anywhere; }}
+  .empty-card {{ margin-top:8px; padding:12px; border:1px solid #dce8e0;
+    border-radius:8px; background:#f5fbf7; color:#356b4a; font-size:13px; }}
+  .deployment-card {{ margin-bottom:14px; padding:10px 12px; border:1px solid #c9d8e7;
+    border-radius:8px; background:#f5f9fd; color:#53687d; font-size:11px;
+    overflow-wrap:anywhere; }}
+  .deployment-title {{ margin-bottom:3px; color:#173b62; font-size:12px; font-weight:700; }}
+  .link-card {{ margin:8px 0 0; padding:10px 12px; border-radius:8px; background:#eef6ff;
+    color:#315a82; font-size:12px; overflow-wrap:anywhere; }}
+  a {{ color:#1769aa; text-decoration:none; }}
+  img {{ max-width:100%; height:auto; }}
+  @media screen and (max-width:480px) {{
+    .content {{ padding:10px 12px 14px !important; }}
+    .summary-cell {{ padding:8px 7px !important; }}
+    .summary-value {{ font-size:18px !important; }}
+    .stock-title,.focus-title {{ font-size:13px !important; }}
+    .metric-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)) !important; }}
+  }}
+</style>
+</head>
+<body>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;background:#f3f6fa;">
+  <tr><td align="center" style="padding:12px 0;">
+    <table role="presentation" class="shell" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:680px;background:#fff;">
+      <tr>
+        <td style="padding:18px 18px 14px;background:#173b62;color:#fff;">
+          <div style="font-size:21px;font-weight:700;letter-spacing:.3px;">股票量化日报</div>
+          <div style="margin-top:4px;color:#dbe8f4;font-size:12px;">{current_time}</div>
+        </td>
+      </tr>
+      <tr><td class="content" style="padding:12px 18px 18px;">
+        {deployment_status}
+        {summary_section}
+        <!-- Alerts -->
+        {focus_section}
+        <!-- Strategy Search Results -->
+        {strategy_section}
+        {chart_section}
+        {portfolio_chart_section}
+        <!-- Monitoring -->
+        {monitor_section}
+        <!-- 搜参策略结果 -->
+        {ref_portfolio_section}
+        {instrument_profile_section}
+        {announcements_section}
+        {placement_section}
+        {report_links}
+      </td></tr>
+      <tr>
+        <td style="padding:12px 18px 18px;border-top:1px solid #e3ebf3;color:#8a98a7;font-size:11px;text-align:center;">
+          股票量化系统自动发送 · 主机名和公网 IP 用于部署确认 · 请勿回复
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+</table>
+</body>
+</html>

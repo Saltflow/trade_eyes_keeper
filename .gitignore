@@ -55,6 +55,7 @@ venv.bak/
 .vscode/
 .idea/
 .opencode/
+.zcode/
 *.swp
 *.swo
 *~
@@ -109,3 +110,10 @@ config/.env
 # Local test scratch state
 temp_test_cache/
 test_cache/
+.pytest_*/
+
+# Downloaded point-in-time source data and research datasets are regenerated
+# from the tracked backfill/import scripts.  They are too large and too
+# provider-specific for the public source repository.
+data/point_in_time/
+data/reference_universe/

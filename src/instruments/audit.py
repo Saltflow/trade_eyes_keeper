@@ -612,10 +612,12 @@ def render_profile_section(
     report: InstrumentAuditReport | None,
     *,
     compact: bool = True,
+    mobile: bool = False,
 ) -> str:
     if report is None:
         return ""
     rows = []
+    mobile_cards = []
     for profile in report.profiles:
         if profile.company is not None:
             company = profile.company
@@ -664,7 +666,24 @@ def render_profile_section(
             f"<td>{fill:.0f}%</td>"
             "</tr>"
         )
+        if mobile:
+            mobile_cards.append(
+                '<div class="instrument-card">'
+                f'<div class="instrument-title"><strong>{html.escape(profile.code)}</strong>'
+                f'<span>{html.escape(profile.instrument_type.value)}</span></div>'
+                f'<div class="instrument-line">估值/净值：{html.escape(valuation)}</div>'
+                f'<div class="instrument-line">增长/穿透：{html.escape(detail)}</div>'
+                f'<div class="instrument-line">数据填充率：{fill:.0f}%</div>'
+                "</div>"
+            )
     title = "标的画像与数据质量" if compact else "标的画像、财务与基金穿透审计"
+    if mobile:
+        return (
+            '<section class="daily-section">'
+            f'<div class="section-heading">{title}</div>'
+            + "".join(mobile_cards)
+            + "</section>"
+        )
     return f"""
 <tr><td style="padding:16px 24px 4px;border-bottom:2px solid #ecf0f1">
   <div style="font-size:15px;font-weight:600;color:#2c3e50">{title}</div>

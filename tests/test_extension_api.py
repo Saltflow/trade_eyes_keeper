@@ -15,9 +15,7 @@ def test_public_solver_api_and_automatic_discovery():
         "load_state_dict",
     }
     production_solvers = tuple(
-        solver_id
-        for solver_id in list_solvers()
-        if not solver_id.startswith("test_")
+        solver_id for solver_id in list_solvers() if not solver_id.startswith("test_")
     )
     assert production_solvers == (
         "genetic",
@@ -35,9 +33,11 @@ def test_public_strategy_api_and_automatic_discovery():
     }
     assert list_strategy_ids() == (
         "builder",
+        "capm_dcf_value",
         "ma60_band",
         "percentile",
         "regime_pullback",
         "simplified",
         "technical_ensemble",
+        "valuation_aware_ensemble",
     )
