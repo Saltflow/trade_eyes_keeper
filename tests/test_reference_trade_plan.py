@@ -291,7 +291,12 @@ def test_live_scan_reads_last_row_from_full_market_trade_plan(monkeypatch):
             {"stock_code": ["510300", "601088"]}
         ),
     )
-    strategy = SimpleNamespace(name="test_strategy", label="测试策略")
+    strategy = SimpleNamespace(
+        name="test_strategy",
+        label="测试策略",
+        supports_market=lambda market: market == "a_share",
+        make_context_enricher=lambda *_args, **_kwargs: None,
+    )
 
     alerts = main._scan_group(
         session,
