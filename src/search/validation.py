@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 
-import numpy as np
-
 from .gates import aggregate_ranking_metrics
 from .workflow import _evaluate_params_wf, _partition_window_indexes
 from .contracts import Candidate, CandidateBatch, ParameterSchema

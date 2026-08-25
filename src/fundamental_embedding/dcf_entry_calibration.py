@@ -29,7 +29,6 @@ from src.fundamental_embedding.capital_cost import estimate_robust_beta
 from src.fundamental_embedding.industry_history import IndustryClassificationHistoryStore
 from src.fundamental_embedding.valuation_router import (
     DEFAULT_CYCLICAL_INDUSTRY_PREFIXES,
-    CashFlowHistorySummary,
     ValuationModel,
     residual_income_per_share,
     route_valuation_model,
