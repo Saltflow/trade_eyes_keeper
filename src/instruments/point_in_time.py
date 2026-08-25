@@ -16,10 +16,12 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urljoin
 
 import numpy as np
 import pandas as pd
 import requests
+from bs4 import BeautifulSoup
 
 from src.data.market_history import (
     CorporateAction,
@@ -1003,6 +1005,455 @@ class CninfoAnnualReportProvider:
                 "no audited financial labels parsed from CNINFO PDF"
             )
         return values, parser_name
+
+
+class HkexStatementProvider:
+    """Read dated HKEX annual/interim disclosures into PIT statements.
+
+    HKEX's title search is the disclosure-date authority.  The report PDF is
+    only used to obtain accounting values and period end; it never supplies a
+    synthetic filing date.  The conservative English parser intentionally
+    skips an ambiguous line rather than guessing a financial value.
+    """
+
+    ACTIVE_STOCKS_URL = (
+        "https://www1.hkexnews.hk/ncms/script/eds/activestock_sehk_e.json"
+    )
+    TITLE_SEARCH_URL = "https://www1.hkexnews.hk/search/titlesearch.xhtml"
+    ROOT_URL = "https://www1.hkexnews.hk/"
+    REFERER = "https://www1.hkexnews.hk/search/titlesearch.xhtml?lang=EN"
+    MAX_REPORTS_DEFAULT = 36
+    _DATE_FORMATS = ("%d/%m/%Y", "%d %B %Y", "%Y-%m-%d")
+    _MONTH_NAMES = (
+        "january|february|march|april|may|june|july|august|september|"
+        "october|november|december"
+    )
+    _NUMBER = r"(?:\(?[-−]?\d{1,3}(?:,\d{3})+(?:\.\d+)?\)?|\(?[-−]?\d+(?:\.\d+)?\)?)"
+
+    def __init__(
+        self,
+        config: dict | None = None,
+        http: requests.Session | None = None,
+    ):
+        audit = ((config or {}).get("instrument_audit", {}) or {})
+        settings = ((config or {}).get("point_in_time_data", {}) or {})
+        self.timeout = int(audit.get("timeout_seconds", 20))
+        self.user_agent = audit.get(
+            "user_agent",
+            "Mozilla/5.0 (compatible; trade-eyes-keeper point-in-time-data)",
+        )
+        self.max_reports = max(
+            1,
+            int(settings.get("hkex_max_reports_per_code", self.MAX_REPORTS_DEFAULT)),
+        )
+        self.http = http or requests.Session()
+        self._stock_ids: dict[str, str] | None = None
+
+    @property
+    def _headers(self) -> dict[str, str]:
+        return {
+            "User-Agent": self.user_agent,
+            "Referer": self.REFERER,
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+
+    @staticmethod
+    def _code(code: str) -> str:
+        normalized = str(code).strip().upper().replace(".HK", "")
+        if not normalized.isdigit():
+            raise ValueError(f"HKEX code must be numeric: {code}")
+        return normalized.zfill(5)
+
+    def _load_stock_ids(self) -> dict[str, str]:
+        if self._stock_ids is not None:
+            return self._stock_ids
+        response = self.http.get(
+            self.ACTIVE_STOCKS_URL,
+            headers=self._headers,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        rows = payload.get("list", []) if isinstance(payload, dict) else payload
+        result: dict[str, str] = {}
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            code = str(row.get("c", "")).strip()
+            # ``i`` is the title-search internal identifier.  ``s`` is a
+            # separate security identifier and returns an empty result set.
+            stock_id = str(row.get("i", "")).strip()
+            if code and stock_id:
+                result[code.zfill(5)] = stock_id
+        if not result:
+            raise ValueError("HKEX active-stock list returned no identifiers")
+        self._stock_ids = result
+        return result
+
+    @classmethod
+    def _date(cls, value: str) -> date | None:
+        cleaned = re.sub(r"\s+", " ", str(value)).strip()
+        embedded = re.search(
+            rf"\d{{1,2}}/\d{{1,2}}/20\d{{2}}|"
+            rf"\d{{1,2}}\s+(?:{cls._MONTH_NAMES})\s+20\d{{2}}|"
+            r"20\d{2}-\d{2}-\d{2}",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        if embedded:
+            cleaned = embedded.group(0)
+        for fmt in cls._DATE_FORMATS:
+            try:
+                return datetime.strptime(cleaned[: len("31 December 2000")], fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    @classmethod
+    def _period_end(cls, text: str) -> date | None:
+        compact = re.sub(r"\s+", " ", text).replace("−", "-")
+        named = re.search(
+            rf"(?:year|period|six months|half[- ]year)\s+ended\s+"
+            rf"(\d{{1,2}}\s+(?:{cls._MONTH_NAMES})\s+20\d{{2}})",
+            compact,
+            flags=re.IGNORECASE,
+        )
+        if named:
+            return cls._date(named.group(1))
+        numeric = re.search(
+            r"(?:year|period|six months|half[- ]year)\s+ended\s+"
+            r"(\d{1,2}[/-]\d{1,2}[/-]20\d{2})",
+            compact,
+            flags=re.IGNORECASE,
+        )
+        if numeric:
+            raw = numeric.group(1).replace("-", "/")
+            for fmt in ("%d/%m/%Y", "%Y/%m/%d"):
+                try:
+                    return datetime.strptime(raw, fmt).date()
+                except ValueError:
+                    continue
+        return None
+
+    @staticmethod
+    def _document_kind(headline: str) -> str | None:
+        lower = re.sub(r"\s+", " ", headline).lower()
+        if any(
+            item in lower
+            for item in ("annual report", "annual results", "final results")
+        ):
+            return "year"
+        if any(item in lower for item in ("interim", "half-year", "half year")):
+            return "half_year"
+        return None
+
+    def _announcements(
+        self, code: str, start: date, end: date
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        stock_id = self._load_stock_ids().get(self._code(code))
+        if not stock_id:
+            raise ValueError(f"HKEX stock identifier not found for {code}")
+        response = self.http.post(
+            self.TITLE_SEARCH_URL,
+            data={
+                "lang": "EN",
+                "market": "SEHK",
+                "searchType": "1",
+                "stockId": stock_id,
+                "category": "0",
+                "documentType": "-1",
+                "t1code": "40000",
+                "t2Gcode": "-2",
+                "t2code": "-2",
+                # Reports for a period are normally released in the following
+                # year, so the disclosure range intentionally extends one year.
+                "from": f"{start.year:04d}0101",
+                "to": f"{end.year + 1:04d}1231",
+                "MB-Daterange": "0",
+            },
+            headers=self._headers,
+            timeout=max(self.timeout, 45),
+        )
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        result: list[dict[str, object]] = []
+        for row in soup.select("tr"):
+            headline_node = row.select_one(".headline")
+            link = row.select_one(".doc-link a[href]") or row.select_one(
+                "a[href$='.pdf'], a[href*='.pdf?']"
+            )
+            release_node = row.select_one(".release-time")
+            if headline_node is None or link is None or release_node is None:
+                continue
+            headline = headline_node.get_text(" ", strip=True)
+            kind = self._document_kind(headline)
+            published_at = self._date(release_node.get_text(" ", strip=True))
+            href = str(link.get("href") or "").strip()
+            if kind is None or published_at is None or not href:
+                continue
+            if published_at > end:
+                continue
+            result.append(
+                {
+                    "kind": kind,
+                    "headline": headline,
+                    "published_at": published_at,
+                    "url": urljoin(self.ROOT_URL, href),
+                }
+            )
+        # Preserve newest disclosures while preventing a malformed search page
+        # from causing an unbounded PDF crawl.
+        result.sort(
+            key=lambda item: (
+                item["published_at"],
+                item["kind"] == "year",
+                str(item["url"]),
+            ),
+            reverse=True,
+        )
+        attempts = [{
+            "source": "hkex_title_search",
+            "status": "success" if result else "empty",
+            "stock_id": stock_id,
+            "rows": len(result),
+            "url": response.url,
+        }]
+        return result[: self.max_reports], attempts
+
+    @classmethod
+    def _extract_pdf_text(cls, content: bytes) -> tuple[str, str]:
+        logging.getLogger("pdfminer").setLevel(logging.WARNING)
+        try:
+            import pdfplumber
+
+            with pdfplumber.open(io.BytesIO(content)) as pdf:
+                pages = [page.extract_text() or "" for page in pdf.pages]
+            return "\n".join(pages), "pdfplumber"
+        except ImportError:
+            try:
+                from PyPDF2 import PdfReader
+            except ImportError:
+                from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(content))
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            return text, "pypdf"
+
+    @classmethod
+    def _currency_and_multiplier(cls, text: str) -> tuple[str, float, str]:
+        sample = text[:30_000]
+        upper = sample.upper()
+        currency = (
+            "HKD"
+            if "HK$" in upper or "HKD" in upper
+            else "CNY"
+            if "RMB" in upper or "CNY" in upper or "人民币" in sample
+            else "USD"
+            if "US$" in upper or "USD" in upper
+            else "HKD"
+        )
+        unit_match = re.search(
+            r"(?:HK\$|RMB|US\$|USD|HKD|CNY)?\s*['’]?\s*"
+            r"(\d{3}|\d{6})\b",
+            sample,
+            flags=re.IGNORECASE,
+        )
+        if unit_match:
+            unit = unit_match.group(1)
+            return currency, 1_000.0 if unit == "000" else 1_000_000.0, f"'{unit}"
+        word_match = re.search(
+            r"(?:amounts?|figures?|except per share data|unless otherwise stated)"
+            r".{0,60}?\b(thousand|thousands|million|millions)\b",
+            sample,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if word_match:
+            word = word_match.group(1).lower()
+            return (
+                currency,
+                1_000_000.0 if word.startswith("million") else 1_000.0,
+                word,
+            )
+        # Most HKEX result announcements declare units in their statement
+        # headers.  Do not silently scale a number when the declaration is
+        # absent; line values then remain unavailable.
+        raise ValueError("HKEX report has no unambiguous statement unit")
+
+    @classmethod
+    def _line_value(cls, text: str, patterns: tuple[str, ...]) -> float | None:
+        for line in text.splitlines():
+            normalized = re.sub(r"\s+", " ", line).replace("−", "-")
+            for pattern in patterns:
+                match = re.search(pattern, normalized, flags=re.IGNORECASE)
+                if not match:
+                    continue
+                tail = normalized[match.end() :]
+                # A note reference is commonly placed between the label and
+                # statement amount.  Prefer a grouped amount (or a value with
+                # at least four digits) over a one/two digit note number.
+                tokens = re.findall(cls._NUMBER, tail)
+                parsed: list[tuple[float, str]] = []
+                for token in tokens:
+                    negative = token.startswith(("(", "-")) or "(" in token
+                    value = _float(token.strip("()"))
+                    if value is not None:
+                        parsed.append((-abs(value) if negative else value, token))
+                for value, token in parsed:
+                    if "," in token or abs(value) >= 1_000:
+                        return value
+                if parsed:
+                    return parsed[0][0]
+        return None
+
+    @classmethod
+    def _parse_pdf(cls, content: bytes) -> tuple[dict[str, float], str, date, str]:
+        text, parser_name = cls._extract_pdf_text(content)
+        period_end = cls._period_end(text)
+        if period_end is None:
+            raise ValueError("HKEX report period end was not found")
+        currency, multiplier, unit = cls._currency_and_multiplier(text)
+        labels: dict[str, tuple[str, ...]] = {
+            "revenue": (r"\b(?:revenue|turnover|operating revenue)\b",),
+            "net_income_parent": (
+                r"\bprofit attributable to (?:owners|equity holders|shareholders)\b",
+                r"\bprofit attributable to owners of the company\b",
+            ),
+            "parent_equity": (
+                r"\b(?:total )?equity attributable to "
+                r"(?:owners|equity holders|shareholders)\b",
+            ),
+            "operating_cash_flow": (
+                r"\bnet cash (?:generated from|from) operating activities\b",
+            ),
+            "capital_expenditures": (
+                r"\b(?:purchase of|additions to) property,? plant and equipment\b",
+                r"\bcapital expenditure(?:s)?\b",
+            ),
+            "basic_eps": (r"\bbasic earnings per share\b",),
+            "diluted_eps": (r"\bdiluted earnings per share\b",),
+            "diluted_average_shares": (
+                r"\bweighted average number of (?:ordinary )?shares\b",
+            ),
+        }
+        values: dict[str, float] = {}
+        for field, patterns in labels.items():
+            value = cls._line_value(text, patterns)
+            if value is None:
+                continue
+            if field in {"basic_eps", "diluted_eps"}:
+                values[field] = value
+            elif field == "capital_expenditures":
+                values[field] = abs(value) * multiplier
+            else:
+                values[field] = value * multiplier
+        if (
+            values.get("operating_cash_flow") is not None
+            and values.get("capital_expenditures") is not None
+        ):
+            values["free_cash_flow"] = (
+                values["operating_cash_flow"] - values["capital_expenditures"]
+            )
+        if not values:
+            raise ValueError("no audited HKEX financial labels parsed from PDF")
+        values["_currency"] = currency
+        values["_unit"] = unit
+        return values, parser_name, period_end, currency
+
+    def fetch(self, code: str, start: date, end: date) -> StatementFetchResult:
+        attempts: list[dict[str, Any]] = []
+        statements: dict[tuple[date, str], FinancialStatementSnapshot] = {}
+        try:
+            documents, search_attempts = self._announcements(code, start, end)
+            attempts.extend(search_attempts)
+        except Exception as exc:
+            return StatementFetchResult(
+                statements=[],
+                attempts=[{
+                    "source": "hkex_title_search",
+                    "status": "failed",
+                    "reason": str(exc),
+                }],
+            )
+        for document in documents:
+            url = str(document["url"])
+            try:
+                response = self.http.get(
+                    url,
+                    headers=self._headers,
+                    timeout=max(self.timeout, 60),
+                )
+                response.raise_for_status()
+                values, parser_name, period_end, currency = self._parse_pdf(
+                    response.content
+                )
+                if not start <= period_end <= end:
+                    attempts.append({
+                        "source": "hkex_results_pdf",
+                        "status": "out_of_range",
+                        "url": url,
+                        "period_end": period_end.isoformat(),
+                    })
+                    continue
+                kind = str(document["kind"])
+                snapshot = FinancialStatementSnapshot(
+                    period_end=period_end,
+                    published_at=document["published_at"],
+                    period_type=kind,
+                    is_cumulative=True,
+                    currency=currency,
+                    accounting_standard="HKFRS",
+                    source="hkex_results_pdf",
+                    source_url=url,
+                    total_shares=values.get("diluted_average_shares"),
+                    common_shares_outstanding=values.get("diluted_average_shares"),
+                    diluted_average_shares=values.get("diluted_average_shares"),
+                    parent_equity=values.get("parent_equity"),
+                    revenue=values.get("revenue"),
+                    net_income_parent=values.get("net_income_parent"),
+                    basic_eps=values.get("basic_eps"),
+                    diluted_eps=values.get("diluted_eps"),
+                    operating_cash_flow=values.get("operating_cash_flow"),
+                    capital_expenditures=values.get("capital_expenditures"),
+                    free_cash_flow=values.get("free_cash_flow"),
+                    diagnostics=[
+                        "hkex_release_date_from_title_search",
+                        f"hkex_pdf_parser:{parser_name}",
+                        f"hkex_statement_unit:{values['_unit']}",
+                        "free_cash_flow=operating_cash_flow-capital_expenditures"
+                        if values.get("free_cash_flow") is not None
+                        else "hkex_free_cash_flow_unavailable",
+                    ],
+                )
+                key = (snapshot.period_end, snapshot.period_type)
+                current = statements.get(key)
+                if current is None or (
+                    _statement_completeness(snapshot),
+                    snapshot.published_at or date.min,
+                ) > (
+                    _statement_completeness(current),
+                    current.published_at or date.min,
+                ):
+                    statements[key] = snapshot
+                attempts.append({
+                    "source": "hkex_results_pdf",
+                    "status": "success",
+                    "url": url,
+                    "period_end": period_end.isoformat(),
+                    "parser": parser_name,
+                })
+            except Exception as exc:
+                attempts.append({
+                    "source": "hkex_results_pdf",
+                    "status": "failed",
+                    "url": url,
+                    "reason": str(exc),
+                })
+        return StatementFetchResult(
+            statements=sorted(
+                statements.values(),
+                key=lambda item: (item.period_end, item.published_at or date.max),
+            ),
+            attempts=attempts,
+        )
 
 
 STATEMENT_VALUE_FIELDS = (

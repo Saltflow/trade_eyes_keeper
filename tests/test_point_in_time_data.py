@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data.point_in_time_backfill import PointInTimeBackfillService
 from src.data.market_history import (
     CorporateAction,
     MarketHistoryProvider,
@@ -16,11 +15,13 @@ from src.data.market_history import (
     PriceHistoryBundle,
     YahooMarketHistoryProvider,
 )
+from src.data.point_in_time_backfill import PointInTimeBackfillService
 from src.instruments.models import FinancialStatementSnapshot
 from src.instruments.point_in_time import (
-    CninfoAnnualReportProvider,
     FUNDAMENTAL_FEATURE_NAMES,
+    CninfoAnnualReportProvider,
     FundamentalFeaturePanelBuilder,
+    HkexStatementProvider,
     PointInTimeFundamentalStore,
     StatementFetchResult,
     adjust_statement_shares,
@@ -649,6 +650,143 @@ class _StatementProvider:
     def fetch(self, code, start, end):
         self.calls.append((code, start, end))
         return StatementFetchResult(statements=self.statements, attempts=[])
+
+
+def test_hkex_provider_uses_title_search_release_date_and_parses_report_values(
+    monkeypatch,
+):
+    class Response:
+        def __init__(self, *, payload=None, text="", content=b"", url="https://test"):
+            self._payload = payload
+            self.text = text
+            self.content = content
+            self.url = url
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    class Http:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, **_kwargs):
+            self.calls.append(url)
+            if "activestock" in url:
+                return Response(payload=[{"c": "00700", "i": 7609}])
+            return Response(content=b"official-pdf", url=url)
+
+        def post(self, url, **_kwargs):
+            self.calls.append(url)
+            if "titlesearch" in url:
+                return Response(
+                    text=(
+                        '<tr><td class="release-time">15/04/2025</td>'
+                        '<td><div class="headline">Annual Results</div>'
+                        '<div class="doc-link"><a href="/report.pdf">PDF</a></div>'
+                        "</td></tr>"
+                    ),
+                    url="https://www1.hkexnews.hk/search/titlesearch.xhtml",
+                )
+            raise AssertionError(f"unexpected POST: {url}")
+
+    report_text = """
+        Consolidated statement of profit or loss
+        RMB'000
+        Year ended 31 December 2024
+        Revenue 373,710,000
+        Profit attributable to owners of the Company 19,272,000
+        Consolidated statement of financial position
+        Equity attributable to owners 120,000,000
+        Consolidated statement of cash flows
+        Net cash generated from operating activities 50,000,000
+        Purchase of property, plant and equipment (8,000,000)
+        Basic earnings per share 1.20
+        Diluted earnings per share 1.18
+    """
+    monkeypatch.setattr(
+        HkexStatementProvider,
+        "_extract_pdf_text",
+        classmethod(lambda _cls, _content: (report_text, "test_pdf")),
+    )
+    provider = HkexStatementProvider(http=Http())
+    result = provider.fetch("700", date(2024, 1, 1), date(2025, 12, 31))
+
+    assert len(result.statements) == 1
+    statement = result.statements[0]
+    assert statement.period_end == date(2024, 12, 31)
+    assert statement.published_at == date(2025, 4, 15)
+    assert statement.currency == "CNY"
+    assert statement.revenue == 373_710_000_000.0
+    assert statement.free_cash_flow == 42_000_000_000.0
+    assert statement.source == "hkex_results_pdf"
+    assert statement.source_url == "https://www1.hkexnews.hk/report.pdf"
+
+
+def test_hk_backfill_stores_only_hkex_dated_statements(tmp_path):
+    hk_statement = FinancialStatementSnapshot(
+        period_end=date(2025, 12, 31),
+        published_at=date(2026, 3, 20),
+        period_type="year",
+        is_cumulative=True,
+        currency="HKD",
+        accounting_standard="HKFRS",
+        source="hkex_results_pdf",
+        revenue=1_000.0,
+        net_income_parent=100.0,
+    )
+    hkex = _StatementProvider([hk_statement])
+    service = PointInTimeBackfillService(
+        {"point_in_time_data": {"output_dir": str(tmp_path)}},
+        market_provider=_StaticMarketProvider(_bundle("00700")),
+        hkex_statements=hkex,
+        market_store=PointInTimeMarketStore(tmp_path),
+        fundamental_store=PointInTimeFundamentalStore(tmp_path),
+    )
+
+    report = service.run(["00700"], evaluation_date=date(2026, 8, 17))
+
+    assert report["statement_success"] == 1
+    assert hkex.calls and hkex.calls[0][0] == "00700"
+    stored = PointInTimeFundamentalStore(tmp_path).as_of("00700", date(2026, 8, 17))
+    assert len(stored) == 1
+    assert stored[0].source == "hkex_results_pdf"
+
+
+def test_market_only_fx_series_is_stored_without_company_statement_fetch(tmp_path):
+    market = _StaticMarketProvider(_bundle("CNYHKD=X"))
+    service = PointInTimeBackfillService(
+        {
+            "point_in_time_data": {
+                "output_dir": str(tmp_path),
+                "fx_symbols": ["CNYHKD=X"],
+            }
+        },
+        market_provider=market,
+        market_store=PointInTimeMarketStore(tmp_path),
+        fundamental_store=PointInTimeFundamentalStore(tmp_path),
+    )
+
+    report = service.run([], evaluation_date=date(2026, 8, 17))
+
+    assert report["instrument_count"] == 1
+    assert report["instruments"][0]["instrument_type"] == "fx"
+    assert report["instruments"][0]["statements"]["status"] == "not_applicable"
+    assert PointInTimeMarketStore(tmp_path).read("CNYHKD=X") is not None
+
+
+def test_market_store_preserves_yahoo_quote_currency(tmp_path):
+    bundle = _bundle("00700")
+    bundle.currency = "HKD"
+    store = PointInTimeMarketStore(tmp_path)
+    store.write(bundle)
+
+    restored = store.read("00700")
+
+    assert restored is not None
+    assert restored.currency == "HKD"
 
 
 def test_sse_backfill_adds_recent_cninfo_complete_reports(tmp_path):

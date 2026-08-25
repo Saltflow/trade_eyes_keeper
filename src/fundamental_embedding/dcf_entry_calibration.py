@@ -26,7 +26,9 @@ import pandas as pd
 
 from src.data.market_history import PriceHistoryBundle
 from src.fundamental_embedding.capital_cost import estimate_robust_beta
-from src.fundamental_embedding.industry_history import IndustryClassificationHistoryStore
+from src.fundamental_embedding.industry_history import (
+    IndustryClassificationHistoryStore,
+)
 from src.fundamental_embedding.valuation_router import (
     DEFAULT_CYCLICAL_INDUSTRY_PREFIXES,
     ValuationModel,
@@ -40,7 +42,7 @@ from src.instruments.point_in_time import (
     adjust_statement_shares,
 )
 
-DCF_ENTRY_CALIBRATION_CONTRACT = "capm-equity-dcf-entry-calibration-1"
+DCF_ENTRY_CALIBRATION_CONTRACT = "capm-equity-dcf-entry-calibration-2"
 
 
 @dataclass(frozen=True)
@@ -133,7 +135,6 @@ class CapmDcfEntryConfig:
         DEFAULT_CYCLICAL_INDUSTRY_PREFIXES
     )
     residual_income_roe_fade: float = 0.65
-    maximum_entry_to_current_price: float = 0.95
     max_financial_age_days: int = 550
     max_market_staleness_days: int = 10
     hit_horizon_trading_days: int = 252
@@ -203,8 +204,6 @@ class CapmDcfEntryConfig:
             raise ValueError("cyclical_cash_flow_cv_threshold must be positive")
         if not 0.0 <= self.residual_income_roe_fade <= 1.0:
             raise ValueError("residual_income_roe_fade must be in [0, 1]")
-        if not 0.0 < self.maximum_entry_to_current_price <= 1.0:
-            raise ValueError("maximum_entry_to_current_price must be in (0, 1]")
         if self.minimum_hit_count < 1:
             raise ValueError("minimum_hit_count must be positive")
         if not 0.0 <= self.minimum_hit_rate <= 1.0:
@@ -754,6 +753,8 @@ class CapmDcfEntryCalibrator:
         config: CapmDcfEntryConfig | None = None,
         market: str = "a_share",
         industry_history: IndustryClassificationHistoryStore | None = None,
+        market_currency: str | None = None,
+        currency_conversion_bundles: Mapping[str, PriceHistoryBundle] | None = None,
     ):
         self.root = Path(data_root)
         self.market_store_root = self.root / "market"
@@ -765,6 +766,102 @@ class CapmDcfEntryCalibrator:
         self.config = config or CapmDcfEntryConfig()
         self.market = market
         self.industry_history = industry_history
+        self.market_currency = (
+            str(market_currency).upper().strip() if market_currency else None
+        )
+        self.currency_conversion_bundles = {
+            str(currency).upper().strip(): bundle
+            for currency, bundle in (currency_conversion_bundles or {}).items()
+        }
+
+    def _convert_statements_to_market_currency(
+        self,
+        statements: Iterable[FinancialStatementSnapshot],
+        evaluation_date: date,
+    ) -> tuple[list[FinancialStatementSnapshot] | None, str | None]:
+        """Convert disclosed monetary values at an auditable contemporaneous FX.
+
+        Price and accounting currencies must match before deriving a per-share
+        DCF target.  The conversion bundle is quoted as market currency per
+        one unit of statement currency (for example ``CNYHKD=X``).  A missing
+        curve/rate rejects the episode instead of comparing RMB cash flows
+        with an HKD share price.
+        """
+
+        if self.market_currency is None:
+            return list(statements), None
+        monetary_fields = (
+            "parent_equity",
+            "average_parent_equity",
+            "book_value_per_share",
+            "cash_and_cash_equivalents",
+            "restricted_cash",
+            "short_term_borrowings",
+            "current_portion_noncurrent_debt",
+            "long_term_borrowings",
+            "bonds_payable",
+            "lease_liabilities",
+            "revenue",
+            "net_income_parent",
+            "adjusted_net_income_parent",
+            "basic_eps",
+            "diluted_eps",
+            "operating_cash_flow",
+            "capital_expenditures",
+            "free_cash_flow",
+            "interest_expense",
+            "income_tax_expense",
+            "profit_before_tax",
+        )
+        converted: list[FinancialStatementSnapshot] = []
+        for statement in statements:
+            source_currency = str(statement.currency or "").upper().strip()
+            if not source_currency:
+                return None, "financial_statement_currency_missing"
+            if source_currency == self.market_currency:
+                converted.append(statement)
+                continue
+            bundle = self.currency_conversion_bundles.get(source_currency)
+            if bundle is None:
+                return (
+                    None,
+                    "financial_currency_conversion_curve_missing:"
+                    f"{source_currency}_to_{self.market_currency}",
+                )
+            quote_currency = str(bundle.currency or "").upper().strip()
+            if quote_currency and quote_currency != self.market_currency:
+                return (
+                    None,
+                    "financial_currency_conversion_quote_currency_mismatch:"
+                    f"expected={self.market_currency};actual={quote_currency}",
+                )
+            index = _market_index(bundle, evaluation_date)
+            if index is None:
+                return (
+                    None,
+                    "financial_currency_conversion_rate_missing:"
+                    f"{source_currency}_to_{self.market_currency}",
+                )
+            rate = _finite(bundle.prices.iloc[index]["raw_close"])
+            if rate is None or rate <= 0:
+                return (
+                    None,
+                    "financial_currency_conversion_rate_invalid:"
+                    f"{source_currency}_to_{self.market_currency}",
+                )
+            item = statement.copy(deep=True)
+            for field_name in monetary_fields:
+                value = _finite(getattr(item, field_name))
+                if value is not None:
+                    setattr(item, field_name, value * rate)
+            item.currency = self.market_currency
+            item.diagnostics.append(
+                "statement_currency_converted:"
+                f"{source_currency}_to_{self.market_currency};"
+                f"rate_date={pd.Timestamp(bundle.prices.iloc[index]['date']).date().isoformat()}"
+            )
+            converted.append(item)
+        return converted, None
 
     def available_symbols(self, symbols: Iterable[str] | None = None) -> list[str]:
         requested = {str(item) for item in symbols or ()}
@@ -839,6 +936,13 @@ class CapmDcfEntryCalibrator:
         # compared with a post-split market price and can make a DCF entry
         # level spuriously expensive by the split multiplier.
         as_of_statements = self.fundamental_store.as_of(symbol, evaluation_date)
+        as_of_statements, currency_error = (
+            self._convert_statements_to_market_currency(
+                as_of_statements, evaluation_date
+            )
+        )
+        if as_of_statements is None:
+            return None, currency_error
         adjusted_statements = adjust_statement_shares(
             as_of_statements, bundle.actions, evaluation_date
         )
@@ -894,12 +998,18 @@ class CapmDcfEntryCalibrator:
                 or financial_inputs.payout_ratio is None
             ):
                 return None, "residual_income_inputs_missing"
-            if effective_age is None or effective_age > self.config.max_financial_age_days:
+            if (
+                effective_age is None
+                or effective_age > self.config.max_financial_age_days
+            ):
                 return None, "residual_income_financial_data_stale"
         else:
             if cash_per_share is None or cash_per_share <= 0:
                 return None, "plausible_positive_annual_fcf_per_share_missing"
-            if effective_age is None or effective_age > self.config.max_financial_age_days:
+            if (
+                effective_age is None
+                or effective_age > self.config.max_financial_age_days
+            ):
                 return None, "fcf_financial_data_stale"
             if (
                 route.model == ValuationModel.NORMALIZED_FCFE_DCF
@@ -1063,7 +1173,11 @@ class CapmDcfEntryCalibrator:
         """
 
         values = np.asarray(
-            [item.beta for item in episodes if np.isfinite(item.beta) and item.beta > 0],
+            [
+                item.beta
+                for item in episodes
+                if np.isfinite(item.beta) and item.beta > 0
+            ],
             dtype=np.float64,
         )
         if not len(values):
@@ -1224,17 +1338,25 @@ class CapmDcfEntryCalibrator:
                 "reason": "valuation_inputs_or_discount_rate_invalid",
             }
         buy_price = fair_value * selected_parameters.entry_fair_value_fraction
-        entry_price_gate_pass = bool(
-            buy_price / episode.current_price
-            <= self.config.maximum_entry_to_current_price
+        # A DCF limit above the already observable price is marketable.  The
+        # former gate rejected it, which perversely removed the cheapest
+        # contemporaneous opportunities and calibrated only against deep,
+        # delayed pullbacks.  Historical labels must instead use the known
+        # valuation-date close as the execution price and begin outcomes on
+        # the next trading day.  A non-marketable limit retains the existing
+        # conservative convention: it fills at the limit once a future low
+        # reaches the limit, never at a more favourable intraday low.
+        marketable_entry = buy_price >= episode.current_price
+        execution_price = (
+            episode.current_price if marketable_entry else buy_price
         )
         hits = (
-            np.flatnonzero(
+            np.asarray([-1], dtype=int)
+            if marketable_entry
+            else np.flatnonzero(
                 episode.future_lows[: self.config.hit_horizon_trading_days]
                 <= buy_price
             )
-            if entry_price_gate_pass
-            else np.asarray([], dtype=int)
         )
         hit_index = int(hits[0]) if len(hits) else None
         after_hit = (
@@ -1245,7 +1367,7 @@ class CapmDcfEntryCalibrator:
             else np.asarray([], dtype=np.float64)
         )
         post_entry_above_rate = (
-            float(np.mean(after_hit > buy_price)) if len(after_hit) else None
+            float(np.mean(after_hit > execution_price)) if len(after_hit) else None
         )
         success = (
             post_entry_above_rate is not None
@@ -1262,8 +1384,12 @@ class CapmDcfEntryCalibrator:
             "fair_value": fair_value,
             "buy_price": buy_price,
             "buy_price_to_current_price": buy_price / episode.current_price,
-            "entry_price_gate_limit": self.config.maximum_entry_to_current_price,
-            "entry_price_gate_pass": entry_price_gate_pass,
+            "execution_price": execution_price,
+            "entry_execution_mode": (
+                "marketable_at_valuation_close"
+                if marketable_entry
+                else "limit_after_valuation_date"
+            ),
             "entry_fair_value_fraction": (
                 selected_parameters.entry_fair_value_fraction
             ),
@@ -1304,12 +1430,19 @@ class CapmDcfEntryCalibrator:
             by_valuation_model[model] = {
                 "episode_count": len(model_rows),
                 "eligible_count": len(model_eligible),
-                "entry_price_gate_rejected_count": sum(
-                    item.get("entry_price_gate_pass") is False
+                "marketable_entry_count": sum(
+                    item.get("entry_execution_mode")
+                    == "marketable_at_valuation_close"
+                    for item in model_eligible
+                ),
+                "limit_entry_count": sum(
+                    item.get("entry_execution_mode")
+                    == "limit_after_valuation_date"
                     for item in model_eligible
                 ),
                 "route_not_supported_count": sum(
-                    item.get("reason") == "valuation_route_not_supported_by_training_gate"
+                    item.get("reason")
+                    == "valuation_route_not_supported_by_training_gate"
                     for item in model_rows
                 ),
                 "hit_count": len(model_hits),
@@ -1559,14 +1692,27 @@ class CapmDcfEntryCalibrator:
                 "discount_rate": "cost_of_equity = risk_free_rate + beta * ERP",
                 "debt_cost_ignored": True,
                 "valuation_routing": {
-                    "financial_industry": "residual income from book value, normalized ROE, payout and CAPM cost of equity; OCF-CAPEX is prohibited",
-                    "cyclical_company": "through-cycle median plausible FCFE with volatile FCF CAGR excluded",
+                    "financial_industry": (
+                        "residual income from book value, normalized ROE, payout "
+                        "and CAPM cost of equity; OCF-CAPEX is prohibited"
+                    ),
+                    "cyclical_company": (
+                        "through-cycle median plausible FCFE with volatile FCF "
+                        "CAGR excluded"
+                    ),
                     "ordinary_company": "recent plausible FCFE proxy",
                 },
-                "cash_flow_basis": "all FCFE proxies are OCF minus capex and must reconcile to positive net income and revenue; financial companies do not use this proxy",
+                "cash_flow_basis": (
+                    "all FCFE proxies are OCF minus capex and must reconcile to "
+                    "positive net income and revenue; financial companies do not "
+                    "use this proxy"
+                ),
                 "terminal_growth": self.config.terminal_growth,
                 "risk_growth_overlay": "financial_growth / ERP-dependent multiplier",
-                "entry_price_gate": "buy_price/current_price must not exceed maximum_entry_to_current_price",
+                "entry_execution": (
+                    "marketable target fills at valuation-date close; lower target "
+                    "fills at its limit after a future low reaches it"
+                ),
                 "future_price_used_only_as_label": True,
             },
             "config": asdict(self.config),
@@ -1574,6 +1720,13 @@ class CapmDcfEntryCalibrator:
             "dataset": {
                 "root": str(self.root.resolve()),
                 "market": self.market,
+                "market_currency": self.market_currency,
+                "financial_currency_conversion_series": {
+                    source_currency: bundle.code
+                    for source_currency, bundle in sorted(
+                        self.currency_conversion_bundles.items()
+                    )
+                },
                 "episode_count": len(episodes),
                 "train_episode_count": len(train),
                 "validation_episode_count": len(validation),

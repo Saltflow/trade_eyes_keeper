@@ -14,6 +14,8 @@ from src.strategy.capm_dcf_value_context import (
     CapmDcfValueContextEnricher,
     CapmDcfValuePolicy,
     CapmDcfValueSnapshot,
+    _market_settings,
+    _value_settings,
     beta_adjusted_entry_fraction,
 )
 
@@ -209,11 +211,41 @@ def test_value_strategy_fails_closed_without_causal_value_context():
         strategy.make_signals(_params(), _market())
 
 
-def test_value_strategy_explicitly_limits_its_current_causal_market_coverage():
+def test_value_strategy_declares_all_markets_but_requires_each_market_policy():
     strategy = get_strategy("capm_dcf_value")
     assert strategy.supports_market("a_share")
-    assert not strategy.supports_market("hk")
-    assert not strategy.supports_market("us")
+    assert strategy.supports_market("hk")
+    assert strategy.supports_market("us")
+
+    with pytest.raises(ValueError, match="dedicated market policy"):
+        _market_settings({"data_root": "a-only"}, "hk")
+
+
+def test_value_context_market_settings_do_not_reuse_another_market_policy():
+    raw = {
+        "equity_risk_premium": 0.06,
+        "markets": {
+            "hk": {
+                "data_root": "hk-root",
+                "benchmark_symbol": "02800",
+                "risk_free_rates_json": "hk-rates.json",
+                "frozen_policy_report": "hk-policy.json",
+            }
+        },
+    }
+    selected = _market_settings(raw, "hk")
+    assert selected["data_root"] == "hk-root"
+    assert selected["equity_risk_premium"] == 0.06
+    with pytest.raises(ValueError, match="no configured causal policy"):
+        _market_settings(raw, "us")
+
+
+def test_value_context_reads_the_canonical_nested_optimizer_configuration():
+    settings = _value_settings(
+        {"optimizer": {"capm_dcf_value": {"markets": {"hk": {}}}}}
+    )
+
+    assert settings == {"markets": {"hk": {}}}
 
 
 def test_shared_plan_builder_applies_value_context_without_strategy_branch():

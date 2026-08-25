@@ -19,7 +19,7 @@ from typing import Iterable, Mapping
 import numpy as np
 import pandas as pd
 
-from src.data.market_history import PriceHistoryBundle
+from src.data.market_history import PointInTimeMarketStore, PriceHistoryBundle
 from src.fundamental_embedding.dcf_entry_calibration import (
     DCF_ENTRY_CALIBRATION_CONTRACT,
     CapmDcfEntryCalibrator,
@@ -66,12 +66,23 @@ class CapmDcfValuePolicy:
     source_hash: str
 
     @classmethod
-    def from_report(cls, path: str | Path) -> CapmDcfValuePolicy:
+    def from_report(
+        cls,
+        path: str | Path,
+        *,
+        expected_market: str | None = None,
+    ) -> CapmDcfValuePolicy:
         source = Path(path)
         raw = source.read_bytes()
         report = json.loads(raw.decode("utf-8"))
         if report.get("contract") != DCF_ENTRY_CALIBRATION_CONTRACT:
             raise ValueError("frozen value policy has an unknown DCF contract")
+        report_market = str((report.get("dataset") or {}).get("market") or "")
+        if expected_market and report_market != str(expected_market):
+            raise ValueError(
+                "frozen value policy market does not match receiver policy: "
+                f"expected={expected_market}; actual={report_market or 'missing'}"
+            )
         if not report.get("acceptance", {}).get(
             "candidate_eligible_for_manual_strategy_experiment"
         ):
@@ -264,7 +275,9 @@ class CapmDcfValueContextEnricher:
         }
         return sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
 
-    def __call__(self, market_data: StrategyMarketData) -> FundamentalStrategyMarketData:
+    def __call__(
+        self, market_data: StrategyMarketData
+    ) -> FundamentalStrategyMarketData:
         dates = tuple(_as_date(item) for item in market_data.dates)
         symbols = tuple(str(item) for item in market_data.symbols)
         if any(left > right for left, right in zip(dates, dates[1:])):
@@ -304,7 +317,10 @@ class CapmDcfValueContextEnricher:
             scale_cursor = 0
             latest_scale: float | None = None
             for row, market_date in enumerate(dates):
-                while cursor < len(history) and history[cursor].feature_date <= market_date:
+                while (
+                    cursor < len(history)
+                    and history[cursor].feature_date <= market_date
+                ):
                     latest = history[cursor]
                     cursor += 1
                 while (
@@ -354,8 +370,11 @@ def build_capm_dcf_value_context_enricher(
     data_root: str | Path,
     benchmark_bundle: PriceHistoryBundle,
     risk_free_rates: Mapping[date, float],
-    industry_history: IndustryClassificationHistoryStore,
+    industry_history: IndustryClassificationHistoryStore | None,
     frozen_policy_report: str | Path,
+    market: str,
+    market_currency: str,
+    currency_conversion_bundles: Mapping[str, PriceHistoryBundle] | None,
     symbols: Iterable[str],
     config: CapmDcfValueContextConfig | None = None,
 ) -> CapmDcfValueContextEnricher:
@@ -367,13 +386,18 @@ def build_capm_dcf_value_context_enricher(
     """
 
     settings = (config or CapmDcfValueContextConfig()).validate()
-    policy = CapmDcfValuePolicy.from_report(frozen_policy_report)
+    policy = CapmDcfValuePolicy.from_report(
+        frozen_policy_report, expected_market=market
+    )
     calibrator = CapmDcfEntryCalibrator(
         data_root,
         benchmark_bundle,
         risk_free_rates,
         config=CapmDcfEntryConfig(),
+        market=market,
         industry_history=industry_history,
+        market_currency=market_currency,
+        currency_conversion_bundles=currency_conversion_bundles,
     )
     episodes, skipped = calibrator.build_valuation_snapshots(symbols)
     eligible = [
@@ -420,7 +444,9 @@ def build_capm_dcf_value_context_enricher(
     for episode in eligible:
         pool_beta = beta_by_date.get(episode.evaluation_date)
         if pool_beta is None:
-            skipped["pool_beta_unavailable"] = skipped.get("pool_beta_unavailable", 0) + 1
+            skipped["pool_beta_unavailable"] = (
+                skipped.get("pool_beta_unavailable", 0) + 1
+            )
             continue
         row = calibrator._evaluate_episode(
             episode, policy.parameters, settings.equity_risk_premium
@@ -461,7 +487,9 @@ def build_capm_dcf_value_context_enricher(
             )
         )
     return CapmDcfValueContextEnricher(
-        snapshots=tuple(sorted(snapshots, key=lambda item: (item.feature_date, item.symbol))),
+        snapshots=tuple(
+            sorted(snapshots, key=lambda item: (item.feature_date, item.symbol))
+        ),
         policy=policy,
         config=settings,
         skipped=skipped,
@@ -507,6 +535,120 @@ def _load_benchmark_csv(path: Path) -> PriceHistoryBundle:
     ).validate()
 
 
+def _load_benchmark_bundle(
+    raw: Mapping[str, object],
+    *,
+    data_root: Path,
+) -> PriceHistoryBundle:
+    """Load an explicit causal beta benchmark without market defaults.
+
+    A point-in-time market-store symbol is preferred for HK/US because it
+    carries the same raw-price/action contract as the receiver universe.  The
+    legacy A-share CSV remains supported so existing frozen experiments stay
+    reproducible.
+    """
+
+    symbol = str(raw.get("benchmark_symbol") or "").strip()
+    if symbol:
+        bundle = PointInTimeMarketStore(data_root).read(symbol)
+        if bundle is None:
+            raise ValueError(
+                "capm_dcf_value benchmark_symbol is absent from point-in-time "
+                f"market store: {symbol}"
+            )
+        return bundle
+    path = raw.get("benchmark_prices")
+    if not path:
+        raise ValueError(
+            "capm_dcf_value requires benchmark_symbol or benchmark_prices"
+        )
+    return _load_benchmark_csv(Path(str(path)))
+
+
+def _load_currency_conversion_bundles(
+    raw: Mapping[str, object],
+    *,
+    data_root: Path,
+) -> Mapping[str, PriceHistoryBundle]:
+    """Read explicit source-currency to market-currency FX price histories."""
+
+    declared = raw.get("currency_conversion_symbols", {})
+    if declared is None:
+        return {}
+    if not isinstance(declared, Mapping):
+        raise TypeError(
+            "capm_dcf_value.currency_conversion_symbols must be a mapping"
+        )
+    store = PointInTimeMarketStore(data_root)
+    result: dict[str, PriceHistoryBundle] = {}
+    for currency, symbol in declared.items():
+        source_currency = str(currency).upper().strip()
+        fx_symbol = str(symbol).strip()
+        if not source_currency or not fx_symbol:
+            raise ValueError(
+                "currency_conversion_symbols requires non-empty currency and symbol"
+            )
+        bundle = store.read(fx_symbol)
+        if bundle is None:
+            raise ValueError(
+                "capm_dcf_value FX history is absent from point-in-time market "
+                f"store: {fx_symbol}"
+            )
+        result[source_currency] = bundle
+    return result
+
+
+def _market_settings(
+    raw: Mapping[str, object], market: str
+) -> Mapping[str, object]:
+    """Resolve an explicit market policy, retaining A-share legacy config.
+
+    Policies cannot be shared implicitly across currencies or market regimes.
+    A legacy flat payload is therefore valid only for the original A-share
+    policy; HK and US must be named under ``markets``.
+    """
+
+    by_market = raw.get("markets")
+    if by_market is None:
+        if market == "a_share":
+            return raw
+        raise ValueError(
+            "capm_dcf_value requires a dedicated market policy for "
+            f"{market}; an A-share policy cannot be reused"
+        )
+    if not isinstance(by_market, Mapping):
+        raise TypeError("capm_dcf_value.markets must be a mapping")
+    selected = by_market.get(market)
+    if not isinstance(selected, Mapping):
+        raise ValueError(
+            "capm_dcf_value has no configured causal policy for market: "
+            f"{market}"
+        )
+    # Global settings only provide common *application* controls.  The data,
+    # benchmark, curve and frozen-policy provenance are market-local.
+    return {**raw, **selected}
+
+
+def _value_settings(app_config: Mapping[str, object]) -> Mapping[str, object]:
+    """Read the value-strategy block from the canonical optimizer config.
+
+    Strategy context factories receive the full application configuration,
+    while user-facing strategy settings live under ``optimizer``.  Accept a
+    direct top-level block only for standalone/research callers; the nested
+    block is the production path and must never be silently missed.
+    """
+
+    nested = app_config.get("optimizer", {})
+    if nested is not None and not isinstance(nested, Mapping):
+        raise TypeError("optimizer configuration must be a mapping")
+    configured = (nested or {}).get("capm_dcf_value")
+    if configured is None:
+        configured = app_config.get("capm_dcf_value", {})
+    if not isinstance(configured, Mapping):
+        raise TypeError("capm_dcf_value configuration must be a mapping")
+    return configured
+
+
 def make_capm_dcf_value_context_from_config(
     app_config: Mapping[str, object],
     *,
@@ -520,45 +662,62 @@ def make_capm_dcf_value_context_from_config(
     frozen-policy evidence have not been installed on a machine.
     """
 
-    if market != "a_share":
-        raise ValueError("capm_dcf_value currently has an A-share-only policy")
-    raw = app_config.get("capm_dcf_value", {})
-    if not isinstance(raw, Mapping):
-        raise TypeError("capm_dcf_value configuration must be a mapping")
+    raw = _value_settings(app_config)
+    market_raw = _market_settings(raw, market)
     required = (
         "data_root",
-        "benchmark_prices",
-        "industry_history",
         "risk_free_rates_json",
         "frozen_policy_report",
     )
-    missing = [name for name in required if not raw.get(name)]
+    missing = [name for name in required if not market_raw.get(name)]
+    if not market_raw.get("market_currency") and market != "a_share":
+        missing.append("market_currency")
+    if not (
+        market_raw.get("benchmark_symbol")
+        or market_raw.get("benchmark_prices")
+    ):
+        missing.append("benchmark_symbol|benchmark_prices")
     if missing:
         raise ValueError(
             "capm_dcf_value requires configured paths: " + ", ".join(missing)
         )
     rates_raw = json.loads(
-        Path(str(raw["risk_free_rates_json"])).read_text(encoding="utf-8")
+        Path(str(market_raw["risk_free_rates_json"])).read_text(encoding="utf-8")
     )
     rate_values = rates_raw.get("risk_free_rates", rates_raw)
     if not isinstance(rate_values, Mapping):
         raise TypeError("capm_dcf_value risk-free source must be a mapping")
     rates = {_as_date(key): float(value) for key, value in rate_values.items()}
     settings = CapmDcfValueContextConfig(
-        equity_risk_premium=float(raw.get("equity_risk_premium", 0.06)),
-        beta_margin_gamma=float(raw.get("beta_margin_gamma", 0.32)),
-        minimum_entry_fraction=float(raw.get("minimum_entry_fraction", 0.75)),
-        maximum_entry_fraction=float(raw.get("maximum_entry_fraction", 0.95)),
-        maximum_snapshot_age_days=int(raw.get("maximum_snapshot_age_days", 550)),
-    )
-    return build_capm_dcf_value_context_enricher(
-        data_root=Path(str(raw["data_root"])),
-        benchmark_bundle=_load_benchmark_csv(Path(str(raw["benchmark_prices"]))),
-        risk_free_rates=rates,
-        industry_history=IndustryClassificationHistoryStore(
-            str(raw["industry_history"])
+        equity_risk_premium=float(market_raw.get("equity_risk_premium", 0.06)),
+        beta_margin_gamma=float(market_raw.get("beta_margin_gamma", 0.32)),
+        minimum_entry_fraction=float(
+            market_raw.get("minimum_entry_fraction", 0.75)
         ),
-        frozen_policy_report=Path(str(raw["frozen_policy_report"])),
+        maximum_entry_fraction=float(
+            market_raw.get("maximum_entry_fraction", 0.95)
+        ),
+        maximum_snapshot_age_days=int(
+            market_raw.get("maximum_snapshot_age_days", 550)
+        ),
+    )
+    data_root = Path(str(market_raw["data_root"]))
+    industry_path = market_raw.get("industry_history")
+    return build_capm_dcf_value_context_enricher(
+        data_root=data_root,
+        benchmark_bundle=_load_benchmark_bundle(market_raw, data_root=data_root),
+        risk_free_rates=rates,
+        industry_history=(
+            IndustryClassificationHistoryStore(str(industry_path))
+            if industry_path
+            else None
+        ),
+        frozen_policy_report=Path(str(market_raw["frozen_policy_report"])),
+        market=market,
+        market_currency=str(market_raw.get("market_currency", "CNY")),
+        currency_conversion_bundles=_load_currency_conversion_bundles(
+            market_raw, data_root=data_root
+        ),
         symbols=tuple(str(item) for item in symbols),
         config=settings,
     )

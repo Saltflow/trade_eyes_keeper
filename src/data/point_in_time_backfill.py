@@ -16,11 +16,12 @@ from src.instruments.classifier import (
 )
 from src.instruments.models import InstrumentType
 from src.instruments.point_in_time import (
+    STATEMENT_VALUE_FIELDS,
     BaostockStatementProvider,
     CninfoAnnualReportProvider,
+    HkexStatementProvider,
     PointInTimeFundamentalStore,
     SseXbrlStatementProvider,
-    STATEMENT_VALUE_FIELDS,
     merge_statement_sources,
 )
 from src.instruments.providers import SecCompanyFactsProvider
@@ -47,6 +48,7 @@ class PointInTimeBackfillService:
         a_share_statements: BaostockStatementProvider | None = None,
         sse_statements: SseXbrlStatementProvider | None = None,
         cninfo_statements: CninfoAnnualReportProvider | None = None,
+        hkex_statements: HkexStatementProvider | None = None,
         sec_provider: SecCompanyFactsProvider | None = None,
         market_store: PointInTimeMarketStore | None = None,
         fundamental_store: PointInTimeFundamentalStore | None = None,
@@ -63,6 +65,16 @@ class PointInTimeBackfillService:
         self.official_pdf_recent_years = max(
             1, int(settings.get("official_pdf_recent_years", 3))
         )
+        self.fx_symbols = {
+            str(item).strip()
+            for item in (settings.get("fx_symbols", []) or [])
+            if str(item).strip()
+        }
+        self.market_only_symbols = {
+            str(item).strip()
+            for item in (settings.get("market_only_symbols", []) or [])
+            if str(item).strip()
+        }
         market_settings = settings.get("market_history", {}) or {}
         self.market_coverage_tolerance_days = max(
             0, int(market_settings.get("coverage_tolerance_days", 31))
@@ -73,6 +85,7 @@ class PointInTimeBackfillService:
         )
         self.sse_statements = sse_statements or SseXbrlStatementProvider(config)
         self.cninfo_statements = cninfo_statements or CninfoAnnualReportProvider(config)
+        self.hkex_statements = hkex_statements or HkexStatementProvider(config)
         self.sec_provider = sec_provider or SecCompanyFactsProvider(config)
         self.market_store = market_store or PointInTimeMarketStore(self.output_dir)
         self.fundamental_store = fundamental_store or PointInTimeFundamentalStore(
@@ -89,6 +102,11 @@ class PointInTimeBackfillService:
         start = end - timedelta(days=int(self.history_years * 365.25))
         configured = codes if codes is not None else self.config.get("stocks", [])
         normalized = [code for item in configured if (code := _code(item))]
+        normalized.extend(
+            code
+            for code in sorted(self.fx_symbols | self.market_only_symbols)
+            if code not in normalized
+        )
         rows = [self._backfill_one(code, start, end) for code in normalized]
         summary = self._summary(start, end, rows)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -105,15 +123,25 @@ class PointInTimeBackfillService:
         configured = (
             self.config.get("instrument_catalog", {}) or {}
         ).get(str(code), {}) or {}
-        instrument_type = classify_instrument(
-            code,
-            configured_type=configured.get("instrument_type"),
-            name=configured.get("name"),
-        )
+        is_fx = code in self.fx_symbols
+        is_market_only = code in self.market_only_symbols
+        instrument_type = None
+        if not is_fx and not is_market_only:
+            instrument_type = classify_instrument(
+                code,
+                configured_type=configured.get("instrument_type"),
+                name=configured.get("name"),
+            )
         row: dict[str, Any] = {
             "code": code,
             "market": detect_market(code),
-            "instrument_type": instrument_type.value,
+            "instrument_type": (
+                "fx"
+                if is_fx
+                else "market_benchmark"
+                if is_market_only
+                else instrument_type.value
+            ),
             "market_history": {"status": "pending"},
             "statements": {"status": "not_applicable"},
         }
@@ -156,7 +184,7 @@ class PointInTimeBackfillService:
                 "reason": str(exc),
             }
 
-        if instrument_type != InstrumentType.EQUITY:
+        if is_fx or is_market_only or instrument_type != InstrumentType.EQUITY:
             return row
         try:
             market = detect_market(code)
@@ -222,20 +250,18 @@ class PointInTimeBackfillService:
                     if item.period_end >= start and item.published_at is not None
                 ]
                 attempts = payload.attempts
+            elif market == "hk":
+                result = self.hkex_statements.fetch(code, start, end)
+                statements = list(result.statements)
+                attempts = list(result.attempts)
             else:
-                row["statements"] = {
-                    "status": "missing",
-                    "reason": (
-                        "HKEX structured filing-date adapter is unavailable; "
-                        "undated Yahoo statements are deliberately rejected"
-                    ),
-                    "stored": 0,
-                }
-                return row
+                raise ValueError(f"unsupported equity market: {market}")
             if statements:
                 replace_sources = None
                 if market == "us":
                     replace_sources = {"sec_companyfacts"}
+                elif market == "hk":
+                    replace_sources = {"hkex_results_pdf"}
                 elif market == "a_share" and self.use_official_crawlers:
                     replace_sources = {"cninfo_annual_report"}
                 output = self.fundamental_store.upsert(

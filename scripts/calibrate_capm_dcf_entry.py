@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Calibrate a CAPM equity-DCF limit price against completed history.
+"""Calibrate a market-local CAPM equity-DCF entry policy against history.
 
-The script fetches only dated ChinaBond 10-year yields when explicitly asked.
-It never uses a current rate as a substitute for a missing historical date.
-ERP is evaluated as declared scenarios because an ex-post market return is not
-an expected equity-risk premium.  The selected parameters must pass the entry
-quality gate in every scenario on the held-out chronological suffix.
+The optional live fetch is deliberately limited to dated ChinaBond 10-year
+yields for A shares.  H/US policy runs must use their separately auditable
+official market-local curves.  No market may use a current rate, an A-share
+curve, or another market's frozen policy as a substitute for missing history.
 """
 
 from __future__ import annotations
@@ -25,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.data.market_history import PriceHistoryBundle
+from src.data.market_history import PointInTimeMarketStore, PriceHistoryBundle
 from src.fundamental_embedding.capital_market_data import (
     OfficialCapitalMarketDataProvider,
 )
@@ -86,19 +85,29 @@ def _canonical_json(value: object) -> str:
 
 def _load_frozen_policy(
     path: Path,
+    *,
+    expected_market: str,
 ) -> tuple[dict[str, CapmDcfEntryParameters], date, dict[str, object]]:
     """Load a broad-universe policy with its causal availability boundary."""
 
     report = json.loads(path.read_text(encoding="utf-8"))
     if report.get("contract") != DCF_ENTRY_CALIBRATION_CONTRACT:
         raise ValueError("frozen policy report has an unknown DCF contract")
+    report_market = str((report.get("dataset") or {}).get("market") or "")
+    if report_market != expected_market:
+        raise ValueError(
+            "frozen policy report market does not match calibration market: "
+            f"expected={expected_market}; actual={report_market or 'missing'}"
+        )
     acceptance = report.get("acceptance", {})
     if not acceptance.get("candidate_eligible_for_manual_strategy_experiment"):
         raise ValueError("frozen policy report did not pass its own holdout gate")
     expected_config = CapmDcfEntryConfig()
     from dataclasses import asdict
 
-    if _canonical_json(report.get("config")) != _canonical_json(asdict(expected_config)):
+    if _canonical_json(report.get("config")) != _canonical_json(
+        asdict(expected_config)
+    ):
         raise ValueError(
             "frozen policy uses a different DCF economic/config contract; "
             "do not apply it silently"
@@ -120,6 +129,7 @@ def _load_frozen_policy(
         {
             "source_report": str(path.resolve()),
             "source_contract": report["contract"],
+            "source_market": report_market,
             "source_validation_start": str(available_from),
             "source_candidate_gate_passed": True,
         },
@@ -136,6 +146,39 @@ def _load_rates(path: Path) -> dict[date, float]:
     }
     if any(not 0.0 < value < 0.20 for value in result.values()):
         raise ValueError("risk-free rates must be decimal rates between zero and 20%")
+    return result
+
+
+def _rate_contract(path: Path) -> str:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return str(payload.get("contract") or "external-point-in-time-rate-history")
+
+
+def _load_market_store_bundle(
+    data_root: Path, benchmark_symbol: str
+) -> PriceHistoryBundle:
+    bundle = PointInTimeMarketStore(data_root).read(benchmark_symbol)
+    if bundle is None:
+        raise ValueError(
+            "point-in-time beta benchmark is missing from market store: "
+            f"{benchmark_symbol}"
+        )
+    return bundle
+
+
+def _conversion_bundles(
+    data_root: Path, declarations: list[str]
+) -> dict[str, PriceHistoryBundle]:
+    store = PointInTimeMarketStore(data_root)
+    result: dict[str, PriceHistoryBundle] = {}
+    for item in declarations:
+        source_currency, separator, symbol = str(item).partition("=")
+        if not separator or not source_currency.strip() or not symbol.strip():
+            raise ValueError("--fx-symbol must be SOURCE_CURRENCY=SYMBOL")
+        bundle = store.read(symbol.strip())
+        if bundle is None:
+            raise ValueError(f"point-in-time FX history missing: {symbol.strip()}")
+        result[source_currency.upper().strip()] = bundle
     return result
 
 
@@ -268,8 +311,9 @@ body{{font-family:Arial,'Microsoft YaHei',sans-serif;max-width:1500px;margin:24p
 table{{border-collapse:collapse;width:100%;font-size:13px}}th,td{{border:1px solid #d0d5dd;padding:6px;text-align:right}}th{{background:#f2f4f7}}th:first-child,td:first-child{{text-align:left}}pre{{background:#f5f7fa;padding:14px;white-space:pre-wrap}}
 </style>
 <h1>CAPM 股权 DCF 买入价：历史校准</h1>
-<p>买入限价须在估值日后的 252 个有效交易日内以当日最低价触发；
-触发后以买入限价为成本，接下来 252 个有效交易日的收盘价至少有 50% 高于该成本才记为成功。
+<p>高于估值日收盘的限价以当日收盘成交；低于当前价的限价须在之后252个有效交易日内以
+当日最低价首次触发。成交后以实际成交价为成本，接下来252个有效交易日的收盘价至少有
+50%高于该成本才记为成功。
 未来价格仅作标签，不能进入增长、Beta、CAPM 或参数选择的训练输入。</p>
 <p><strong>不以从不成交换取高胜率：</strong>每个 ERP 情景都要满足最小成交覆盖和最小成交笔数；
 参数只在时间上更早的训练报告日选择，最后的报告日后缀保持留出。</p>
@@ -287,10 +331,20 @@ table{{border-collapse:collapse;width:100%;font-size:13px}}th,td{{border:1px sol
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", required=True)
-    parser.add_argument("--benchmark-prices", required=True)
+    parser.add_argument("--market", choices=("a_share", "hk", "us"), default="a_share")
+    benchmark_group = parser.add_mutually_exclusive_group(required=True)
+    benchmark_group.add_argument("--benchmark-prices")
+    benchmark_group.add_argument("--benchmark-symbol")
+    parser.add_argument("--market-currency")
+    parser.add_argument(
+        "--fx-symbol",
+        action="append",
+        default=[],
+        metavar="SOURCE_CURRENCY=SYMBOL",
+        help="point-in-time quote in market-currency per source-currency",
+    )
     parser.add_argument(
         "--industry-history",
-        required=True,
         help="official point-in-time industry classification history JSON",
     )
     parser.add_argument("--output-dir", required=True)
@@ -317,14 +371,37 @@ def main() -> int:
             "provide exactly one of --risk-free-rates-json or --fetch-risk-free"
         )
 
-    benchmark = _load_benchmark(Path(args.benchmark_prices))
-    industry_history = IndustryClassificationHistoryStore(args.industry_history)
+    if args.fetch_risk_free and args.market != "a_share":
+        raise ValueError(
+            "--fetch-risk-free only supports a_share ChinaBond; provide a "
+            "market-local --risk-free-rates-json for HK/US"
+        )
+    market_currency = str(
+        args.market_currency or ("CNY" if args.market == "a_share" else "")
+    ).upper()
+    if not market_currency:
+        parser.error("--market-currency is required for HK/US")
+    root = Path(args.data_root)
+    benchmark = (
+        _load_market_store_bundle(root, args.benchmark_symbol)
+        if args.benchmark_symbol
+        else _load_benchmark(Path(args.benchmark_prices))
+    )
+    industry_history = (
+        IndustryClassificationHistoryStore(args.industry_history)
+        if args.industry_history
+        else None
+    )
+    conversion_bundles = _conversion_bundles(root, args.fx_symbol)
     provisional = CapmDcfEntryCalibrator(
         args.data_root,
         benchmark,
         {},
         config=CapmDcfEntryConfig(),
+        market=args.market,
         industry_history=industry_history,
+        market_currency=market_currency,
+        currency_conversion_bundles=conversion_bundles,
     )
     risk_free_start = date.fromisoformat(args.risk_free_start)
     required_dates = [
@@ -335,8 +412,10 @@ def main() -> int:
     rate_audit: dict[str, Any]
     if args.fetch_risk_free:
         rates, rate_audit = _fetch_rates(required_dates, args.risk_free_timeout)
+        rate_contract = "official-chinabond-10y-history-1"
     else:
         rates = _load_rates(Path(args.risk_free_rates_json))
+        rate_contract = _rate_contract(Path(args.risk_free_rates_json))
         rate_audit = {
             key.isoformat(): {
                 "requested_date": key.isoformat(),
@@ -358,12 +437,15 @@ def main() -> int:
         benchmark,
         rates,
         config=CapmDcfEntryConfig(),
+        market=args.market,
         industry_history=industry_history,
+        market_currency=market_currency,
+        currency_conversion_bundles=conversion_bundles,
     )
     scenarios = _parse_erp(args.erp_scenarios)
     if args.frozen_policy_report:
         policy, available_from, provenance = _load_frozen_policy(
-            Path(args.frozen_policy_report)
+            Path(args.frozen_policy_report), expected_market=args.market
         )
         report = calibrator.run_frozen_policy(
             policy=policy,
@@ -376,12 +458,22 @@ def main() -> int:
         report = calibrator.run(erp_scenarios=scenarios, symbols=args.symbols)
     report["risk_free_rate_audit"] = rate_audit
     report["benchmark"] = {
-        "path": str(Path(args.benchmark_prices).resolve()),
+        "path": (
+            str(Path(args.benchmark_prices).resolve())
+            if args.benchmark_prices
+            else None
+        ),
+        "symbol": args.benchmark_symbol,
         "source": benchmark.source,
+        "currency": benchmark.currency,
         "diagnostics": benchmark.diagnostics,
     }
     report["industry_history"] = {
-        "path": str(Path(args.industry_history).resolve()),
+        "path": (
+            str(Path(args.industry_history).resolve())
+            if args.industry_history
+            else None
+        ),
         "contract": "industry-classification-history-1",
     }
     output = Path(args.output_dir)
@@ -392,7 +484,9 @@ def main() -> int:
     (output / "risk_free_rates.json").write_text(
         json.dumps(
             {
-                "contract": "official-chinabond-10y-history-1",
+                "contract": rate_contract,
+                "market": args.market,
+                "market_currency": market_currency,
                 "risk_free_rates": {
                     item.isoformat(): value for item, value in sorted(rates.items())
                 },

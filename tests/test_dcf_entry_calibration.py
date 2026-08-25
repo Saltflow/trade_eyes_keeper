@@ -16,8 +16,8 @@ from src.fundamental_embedding.dcf_entry_calibration import (
     GrowthInputs,
     GrowthWeights,
     ValuationModel,
-    _valuation_financial_age,
     _normalized_future_path,
+    _valuation_financial_age,
     equity_dcf_per_share,
     financial_growth,
     growth_inputs_from_statements,
@@ -125,6 +125,128 @@ def test_erp_overlay_is_conservative_and_uses_the_requested_branches():
     assert low_erp_growth < high_erp_growth < 0.06
 
 
+def test_hkd_valuation_converts_cny_statement_at_point_in_time_fx():
+    fx = PriceHistoryBundle(
+        code="CNYHKD=X",
+        prices=pd.DataFrame(
+            {
+                "date": [pd.Timestamp("2021-04-30")],
+                "raw_open": [1.20],
+                "raw_high": [1.20],
+                "raw_low": [1.20],
+                "raw_close": [1.20],
+                "qfq_open": [1.20],
+                "qfq_high": [1.20],
+                "qfq_low": [1.20],
+                "qfq_close": [1.20],
+                "qfq_factor": [1.0],
+                "volume": [1.0],
+                "tradable": [True],
+            }
+        ),
+        currency="HKD",
+    ).validate()
+    calibrator = CapmDcfEntryCalibrator(
+        ".",
+        _calibrator().benchmark_bundle,
+        {date(2021, 4, 30): 0.02},
+        market="hk",
+        market_currency="HKD",
+        currency_conversion_bundles={"CNY": fx},
+    )
+    statement = FinancialStatementSnapshot(
+        period_end=date(2020, 12, 31),
+        published_at=date(2021, 3, 30),
+        source="test",
+        currency="CNY",
+        revenue=100.0,
+        net_income_parent=10.0,
+        diluted_eps=1.0,
+        free_cash_flow=8.0,
+    )
+
+    converted, error = calibrator._convert_statements_to_market_currency(
+        [statement], date(2021, 4, 30)
+    )
+
+    assert error is None
+    assert converted is not None
+    assert converted[0].currency == "HKD"
+    assert converted[0].revenue == pytest.approx(120.0)
+    assert converted[0].diluted_eps == pytest.approx(1.20)
+    assert converted[0].free_cash_flow == pytest.approx(9.60)
+
+
+def test_currency_mismatch_without_auditable_fx_curve_rejects_episode():
+    calibrator = CapmDcfEntryCalibrator(
+        ".",
+        _calibrator().benchmark_bundle,
+        {date(2021, 4, 30): 0.02},
+        market="hk",
+        market_currency="HKD",
+    )
+    statement = FinancialStatementSnapshot(
+        period_end=date(2020, 12, 31),
+        published_at=date(2021, 3, 30),
+        source="test",
+        currency="CNY",
+    )
+
+    converted, error = calibrator._convert_statements_to_market_currency(
+        [statement], date(2021, 4, 30)
+    )
+
+    assert converted is None
+    assert error == "financial_currency_conversion_curve_missing:CNY_to_HKD"
+
+
+def test_currency_conversion_rejects_a_quote_in_the_wrong_target_currency():
+    fx = PriceHistoryBundle(
+        code="CNYUSD=X",
+        prices=pd.DataFrame(
+            {
+                "date": [pd.Timestamp("2021-04-30")],
+                "raw_open": [0.15],
+                "raw_high": [0.15],
+                "raw_low": [0.15],
+                "raw_close": [0.15],
+                "qfq_open": [0.15],
+                "qfq_high": [0.15],
+                "qfq_low": [0.15],
+                "qfq_close": [0.15],
+                "qfq_factor": [1.0],
+                "volume": [1.0],
+                "tradable": [True],
+            }
+        ),
+        currency="USD",
+    ).validate()
+    calibrator = CapmDcfEntryCalibrator(
+        ".",
+        _calibrator().benchmark_bundle,
+        {date(2021, 4, 30): 0.02},
+        market="hk",
+        market_currency="HKD",
+        currency_conversion_bundles={"CNY": fx},
+    )
+    statement = FinancialStatementSnapshot(
+        period_end=date(2020, 12, 31),
+        published_at=date(2021, 3, 30),
+        source="test",
+        currency="CNY",
+    )
+
+    converted, error = calibrator._convert_statements_to_market_currency(
+        [statement], date(2021, 4, 30)
+    )
+
+    assert converted is None
+    assert error == (
+        "financial_currency_conversion_quote_currency_mismatch:"
+        "expected=HKD;actual=USD"
+    )
+
+
 def test_equity_dcf_rejects_capm_rate_at_or_below_terminal_spread():
     assert equity_dcf_per_share(1.0, 0.04, 0.021, 0.02, 5, 0.0025) is None
     assert equity_dcf_per_share(1.0, 0.04, 0.08, 0.02, 5, 0.0025) > 0
@@ -147,9 +269,8 @@ def test_limit_entry_uses_future_low_and_success_uses_later_closes_only():
     assert result["post_entry_success_rate"] == pytest.approx(1.0)
 
 
-def test_entry_price_gate_rejects_a_target_at_or_above_market_price():
-    config = CapmDcfEntryConfig(maximum_entry_to_current_price=0.95)
-    calibrator = _calibrator(config)
+def test_marketable_target_fills_at_current_price_without_waiting_for_a_low():
+    calibrator = _calibrator()
     expensive = replace(_episode(), cash_per_share=0.50)
 
     result = calibrator.evaluate(
@@ -158,10 +279,13 @@ def test_entry_price_gate_rejects_a_target_at_or_above_market_price():
 
     row = result["rows"][0]
     assert row["eligible"] is True
-    assert row["entry_price_gate_pass"] is False
-    assert row["hit_within_one_year"] is False
+    assert row["buy_price"] > row["current_price"]
+    assert row["execution_price"] == row["current_price"]
+    assert row["entry_execution_mode"] == "marketable_at_valuation_close"
+    assert row["hit_within_one_year"] is True
+    assert row["entry_trading_day"] == 0
     assert result["by_valuation_model"]["fcfe_dcf"][
-        "entry_price_gate_rejected_count"
+        "marketable_entry_count"
     ] == 1
 
 
@@ -393,7 +517,10 @@ def test_unsupported_route_is_fail_closed_without_borrowing_other_parameters():
     )
 
     assert result["eligible_count"] == 0
-    assert result["rows"][0]["reason"] == "valuation_route_not_supported_by_training_gate"
+    assert (
+        result["rows"][0]["reason"]
+        == "valuation_route_not_supported_by_training_gate"
+    )
 
 
 def test_route_selection_returns_a_rejected_policy_when_evidence_is_insufficient():

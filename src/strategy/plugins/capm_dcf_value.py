@@ -38,7 +38,11 @@ class CapmDcfValueStrategy(TradingStrategy):
     parameter_schema_id = "capm-dcf-value/1"
     window_state_scope = "full"
     fundamental_feature_dependencies = CAPM_DCF_VALUE_FEATURE_NAMES
-    supported_markets = ("a_share",)
+    # Coverage is an interface declaration, not an activation promise.  Each
+    # market independently supplies its dated statements, price benchmark,
+    # risk-free curve and frozen broad-universe policy via the context factory.
+    # Missing evidence fails closed before a TradePlan is generated.
+    supported_markets = ("a_share", "hk", "us")
 
     def __init__(self) -> None:
         # The valuation policy itself is frozen outside the generic solver.
@@ -140,7 +144,9 @@ class CapmDcfValueStrategy(TradingStrategy):
                 "parameters": dict(params.values),
                 "decision_contract": "marketable_value_entry_or_downward_cross",
                 "exit_contract": "price_at_or_above_fair_value",
-                "fundamental_context_contract": market_data.fundamental_feature_contract,
+                "fundamental_context_contract": (
+                    market_data.fundamental_feature_contract
+                ),
                 "valuation_snapshot_count": int(np.count_nonzero(source_changed)),
                 "marketable_entry_event_count": int(
                     np.count_nonzero(entry_events & source_changed)

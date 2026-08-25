@@ -143,7 +143,7 @@ pytest tests/test_security.py           # 安全测试
 | **Solver 解耦** | ✅ 已完成 | `SearchController` 与 Genetic / Random / Simulated Annealing / Local Genetic 插件分离；新增算法不改策略和评价层 |
 | **报告与通知** | ✅ 已完成 | HTML、PDF、邮件、飞书和 Telegram 共享同一报告对象；周 NAV 以图形展示，季末持仓和期末持仓统一来源 |
 | **标的画像与审计** | 🔄 进行中 | 公司财务推导、ETF/REIT/商品/债券类型化画像，以及带发布日期和防前视约束的 point-in-time 数据回填 |
-| **基本面 embedding / DCF** | 🧪 研究中 | 分离公司画像与市场定价逻辑；当前只产出研究报告，不进入技术面搜参或活动策略 |
+| **基本面 embedding / DCF** | 🧪 研究中 | 分离公司画像与市场定价逻辑；CAPM-DCF 已具备 A/HK/US 独立点时数据合同，但须各市场完成广域训练、留出验证与统一 benchmark 后才可人工激活 |
 | **股票池稳健性** | 📋 下一步 | 将标的池扰动、删减变体和横截面排序纳入统一 benchmark，结果需人工确认后才可激活 |
 | **可配置回测区间** | 📋 下一步 | 支持自定义起止日期、基准对比和训练/测试分离，同时复用统一成交与评价合同 |
 

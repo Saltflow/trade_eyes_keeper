@@ -1,6 +1,6 @@
-"""Replay the frozen CAPM-DCF value candidate through the shared backtester.
+"""Replay one market's frozen CAPM-DCF candidate through shared execution.
 
-This is an A-share research command, not an activation path.  It builds the
+This is a manual research command, not an activation path.  It builds the
 same causal context and ``TradePlan`` used by daily scans, executes it through
 the regular :class:`Backtester`, and writes one auditable JSON report.
 """
@@ -28,7 +28,7 @@ from src.fundamental_embedding.industry_history import (
 from src.search.config import get_constraints, get_execution_config
 from src.strategy import Params, get_strategy
 from src.strategy.capm_dcf_value_context import (
-    _load_benchmark_csv,
+    _load_benchmark_bundle,
     build_capm_dcf_value_context_enricher,
 )
 
@@ -63,7 +63,14 @@ def _qfq_frame(store: PointInTimeMarketStore, symbol: str) -> pd.DataFrame:
     return frame
 
 
-def _benchmark_frame(path: Path) -> pd.DataFrame:
+def _benchmark_frame(
+    path: Path,
+    *,
+    store: PointInTimeMarketStore,
+    symbol: str,
+) -> pd.DataFrame:
+    if not path.exists():
+        return _qfq_frame(store, symbol)
     raw = pd.read_csv(path)
     required = ["date", "open", "high", "low", "close"]
     missing = [field for field in required if field not in raw]
@@ -82,9 +89,20 @@ def _json_default(value: object) -> object:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--market", choices=("a_share", "hk", "us"), required=True)
     parser.add_argument("--data-root", required=True)
-    parser.add_argument("--benchmark-prices", required=True)
-    parser.add_argument("--industry-history", required=True)
+    benchmark_group = parser.add_mutually_exclusive_group(required=True)
+    benchmark_group.add_argument("--benchmark-prices")
+    benchmark_group.add_argument("--benchmark-symbol")
+    parser.add_argument("--market-currency", required=True)
+    parser.add_argument("--industry-history")
+    parser.add_argument(
+        "--fx-symbol",
+        action="append",
+        default=[],
+        metavar="SOURCE_CURRENCY=SYMBOL",
+        help="Point-in-time FX quote in market-currency per source-currency",
+    )
     parser.add_argument("--risk-free-rates-json", required=True)
     parser.add_argument("--frozen-policy-report", required=True)
     parser.add_argument("--symbols", nargs="+", required=True)
@@ -99,12 +117,32 @@ def main() -> int:
     store = PointInTimeMarketStore(root)
     stocks = {symbol: _qfq_frame(store, symbol) for symbol in symbols}
     rates_path = Path(args.risk_free_rates_json)
+    conversion_bundles = {}
+    for item in args.fx_symbol:
+        source, separator, symbol = str(item).partition("=")
+        if not separator or not source.strip() or not symbol.strip():
+            raise ValueError("--fx-symbol must be SOURCE_CURRENCY=SYMBOL")
+        bundle = store.read(symbol.strip())
+        if bundle is None:
+            raise ValueError(f"point-in-time FX history missing: {symbol.strip()}")
+        conversion_bundles[source.upper().strip()] = bundle
+    beta_settings = {
+        "benchmark_prices": args.benchmark_prices,
+        "benchmark_symbol": args.benchmark_symbol,
+    }
     context = build_capm_dcf_value_context_enricher(
         data_root=root,
-        benchmark_bundle=_load_benchmark_csv(Path(args.benchmark_prices)),
+        benchmark_bundle=_load_benchmark_bundle(beta_settings, data_root=root),
         risk_free_rates=_read_rates(rates_path),
-        industry_history=IndustryClassificationHistoryStore(args.industry_history),
+        industry_history=(
+            IndustryClassificationHistoryStore(args.industry_history)
+            if args.industry_history
+            else None
+        ),
         frozen_policy_report=args.frozen_policy_report,
+        market=args.market,
+        market_currency=args.market_currency,
+        currency_conversion_bundles=conversion_bundles,
         symbols=symbols,
     )
     strategy = get_strategy("capm_dcf_value")
@@ -124,19 +162,21 @@ def main() -> int:
         raise RuntimeError("shared plan builder produced no executable value plan")
 
     constraints = get_constraints()
-    constraints.set_group("a_share")
+    constraints.set_group(args.market)
     benchmark_dir = Path(args.benchmark_dir)
     benchmark_data = {
-        symbol: _benchmark_frame(benchmark_dir / f"{symbol}.csv")
-        for symbol in constraints.benchmark_codes_for("a_share")
+        symbol: _benchmark_frame(
+            benchmark_dir / f"{symbol}.csv", store=store, symbol=symbol
+        )
+        for symbol in constraints.benchmark_codes_for(args.market)
         if symbol not in {"risk_free", "universe_equal_weight"}
     }
-    report = Backtester(get_execution_config(), "a_share").run(
+    report = Backtester(get_execution_config(), args.market).run(
         trade_plan,
         market_data,
         benchmark_data=benchmark_data,
-        benchmark_codes=constraints.benchmark_codes_for("a_share"),
-        primary_benchmark=constraints.primary_benchmark_for("a_share"),
+        benchmark_codes=constraints.benchmark_codes_for(args.market),
+        primary_benchmark=constraints.primary_benchmark_for(args.market),
         risk_free_rate=constraints.risk_free_rate,
         strategy_id=strategy.name,
         strategy_label=strategy.label,
@@ -149,6 +189,7 @@ def main() -> int:
     output = {
         "contract": CONTRACT,
         "strategy_id": strategy.name,
+        "market": args.market,
         "symbols": active_codes,
         "date_range": {
             "start": trade_plan.dates[0],

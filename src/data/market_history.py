@@ -89,6 +89,7 @@ class PriceHistoryBundle:
     prices: pd.DataFrame
     actions: list[CorporateAction] = field(default_factory=list)
     source: str = ""
+    currency: str | None = None
     diagnostics: list[str] = field(default_factory=list)
 
     REQUIRED_COLUMNS = (
@@ -234,6 +235,7 @@ class BaostockMarketHistoryProvider:
                 prices=frame,
                 actions=actions,
                 source="baostock",
+                currency="CNY",
             ).validate()
 
     def _prices(
@@ -505,6 +507,7 @@ class YahooMarketHistoryProvider:
             prices=pd.DataFrame(records),
             actions=actions,
             source="yahoo_chart",
+            currency=str(currency).upper() if currency else None,
         ).validate()
 
     @staticmethod
@@ -722,6 +725,7 @@ class PointInTimeMarketStore:
                 {
                     "code": bundle.code,
                     "source": bundle.source,
+                    "currency": bundle.currency,
                     "rows": len(bundle.prices),
                     "start": bundle.prices["date"].min().date().isoformat(),
                     "end": bundle.prices["date"].max().date().isoformat(),
@@ -759,15 +763,19 @@ class PointInTimeMarketStore:
                 for item in json.loads(action_path.read_text(encoding="utf-8"))
             ]
         source = ""
+        currency: str | None = None
         diagnostics: list[str] = []
         if metadata_path.exists():
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             source = str(metadata.get("source", ""))
+            currency_value = metadata.get("currency")
+            currency = str(currency_value).upper() if currency_value else None
             diagnostics = list(metadata.get("diagnostics", []) or [])
         return PriceHistoryBundle(
             code=str(code),
             prices=prices,
             actions=actions,
             source=source,
+            currency=currency,
             diagnostics=diagnostics,
         ).validate()

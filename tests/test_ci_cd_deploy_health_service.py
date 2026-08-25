@@ -23,3 +23,23 @@ def test_deploy_flow_does_not_start_a_health_server_nohup_loop():
     assert "nohup python3 main.py --health-server" not in deploy_source
     assert "_build_health_systemd_command()" in deploy_source
     assert "SKIP_NOTIFICATIONS=true timeout 180 python3 main.py --once" in deploy_source
+
+
+def test_deploy_prefers_user_scoped_key_when_legacy_relative_key_is_absent(
+    monkeypatch,
+):
+    monkeypatch.setenv("DEPLOY_SSH_KEY", "deploy_key")
+    monkeypatch.setattr(
+        ci_cd_deploy,
+        "STANDARD_DEPLOY_KEY",
+        r"C:\Users\one\.ssh\trade_eyes_keeper_deploy_key",
+    )
+    monkeypatch.setattr(
+        ci_cd_deploy.os.path,
+        "exists",
+        lambda value: value == ci_cd_deploy.STANDARD_DEPLOY_KEY,
+    )
+
+    assert ci_cd_deploy._get_ssh_key().endswith(
+        "/.ssh/trade_eyes_keeper_deploy_key"
+    )

@@ -30,6 +30,9 @@ REMOTE_HOST = os.environ.get("DEPLOY_HOST")
 REMOTE_SSH_USER = os.environ.get("DEPLOY_SSH_USER", "root")
 REMOTE_SSH = os.environ.get("DEPLOY_SSH_REMOTE")
 REMOTE_DIR = os.environ.get("DEPLOY_REMOTE_DIR", "/root/trade_eyes_keeper")
+STANDARD_DEPLOY_KEY = os.path.join(
+    os.path.expanduser("~"), ".ssh", "trade_eyes_keeper_deploy_key"
+)
 
 
 def _check_prerequisites():
@@ -133,6 +136,12 @@ def _get_ssh_key():
     env_key = os.environ.get("DEPLOY_SSH_KEY")
     if env_key and os.path.exists(env_key):
         return env_key.replace("\\", "/")
+    # The checked-in sample config may still say ``deploy_key``.  Prefer the
+    # user-scoped deployment key once that relative placeholder is absent so
+    # a normal code-only deploy does not require copying a private key into
+    # the repository.
+    if os.path.exists(STANDARD_DEPLOY_KEY):
+        return STANDARD_DEPLOY_KEY.replace("\\", "/")
     default = os.path.join(PROJECT_DIR, "deploy_key")
     if os.path.exists(default):
         return default.replace("\\", "/")

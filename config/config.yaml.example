@@ -87,6 +87,13 @@ point_in_time_data:
   history_years: 6
   official_statement_crawlers: true
   official_pdf_recent_years: 3
+  # Required by the HKD value-policy example when an H share reports in CNY.
+  # This is market data only; it never enters the configured equity universe.
+  fx_symbols: [CNYHKD=X]
+  # Beta benchmarks for the opt-in HK/US value policies.  They are stored as
+  # market-only series, never mistakenly audited as company fundamentals.
+  market_only_symbols: ["02800", VOO]
+  hkex_max_reports_per_code: 36
   cninfo_pdf_cache_dir: data/point_in_time/provider_cache/cninfo
   market_history:
     compare_fallback_on_partial: true
@@ -111,21 +118,51 @@ optimizer:
   drawdown_limit: -30
   output_dir: ./data/optimizer
 
-# Optional manual candidate only. Selecting capm_dcf_value requires all five
-# causal sources below; missing or stale data closes the strategy rather than
-# falling back to current fundamentals or a constant risk-free rate.
-# It is A-share-only until equivalent point-in-time sources exist elsewhere.
-capm_dcf_value:
-  data_root: data/reference_universe/point_in_time_20260818/partial_first_pass_20260822/dataset
-  benchmark_prices: cache/data/510300.csv
-  industry_history: data/reference_universe/industry_classification_history_official_2020q4_2025h2.json
-  risk_free_rates_json: data/analysis/capm_dcf_value_policy_20260825/risk_free_rates_current.json
-  frozen_policy_report: data/analysis/capm_dcf_value_policy_20260825/report.json
-  equity_risk_premium: 0.06
-  beta_margin_gamma: 0.32
-  minimum_entry_fraction: 0.75
-  maximum_entry_fraction: 0.95
-  maximum_snapshot_age_days: 550
+  # Optional manual candidate only.  Every selected market requires its own
+  # dated statements, raw-price benchmark, risk-free curve and passed frozen
+  # broad-universe policy.  Missing evidence closes that market rather than
+  # falling back to current fundamentals, a constant rate, or an A-share policy.
+  capm_dcf_value:
+    equity_risk_premium: 0.06
+    beta_margin_gamma: 0.32
+    minimum_entry_fraction: 0.75
+    maximum_entry_fraction: 0.95
+    maximum_snapshot_age_days: 550
+    markets:
+      a_share:
+        data_root: data/reference_universe/point_in_time_20260818/partial_first_pass_20260822/dataset
+        market_currency: CNY
+        benchmark_prices: cache/data/510300.csv
+        industry_history: data/reference_universe/industry_classification_history_official_2020q4_2025h2.json
+        risk_free_rates_json: data/analysis/capm_dcf_value_policy_20260825/risk_free_rates_current.json
+        frozen_policy_report: data/analysis/capm_dcf_value_policy_20260825/report.json
+      # Run --backfill-point-in-time-data first.  The benchmarks below must
+      # exist in the same point-in-time market store, and each policy report
+      # must be trained on that market's independent broad universe.
+      hk:
+        data_root: data/point_in_time
+        market_currency: HKD
+        benchmark_symbol: "02800"
+        # A CNY-reporting H share is valued only after this point-in-time FX
+        # series is present.  The quote is HKD per CNY; do not use a current FX
+        # spot rate to rewrite history.
+        currency_conversion_symbols:
+          CNY: CNYHKD=X
+        # Generate quarterly anchors from the same 02800 price history:
+        # python scripts/fetch_capm_dcf_risk_free.py --source hkma_efn_2y \
+        #   --data-root data/point_in_time --benchmark-symbol 02800 \
+        #   --output data/analysis/capm_dcf_value_policy_hk/risk_free_rates.json
+        risk_free_rates_json: data/analysis/capm_dcf_value_policy_hk/risk_free_rates.json
+        frozen_policy_report: data/analysis/capm_dcf_value_policy_hk/report.json
+      us:
+        data_root: data/point_in_time
+        market_currency: USD
+        benchmark_symbol: VOO
+        # python scripts/fetch_capm_dcf_risk_free.py --source us_treasury_10y \
+        #   --data-root data/point_in_time --benchmark-symbol VOO \
+        #   --output data/analysis/capm_dcf_value_policy_us/risk_free_rates.json
+        risk_free_rates_json: data/analysis/capm_dcf_value_policy_us/risk_free_rates.json
+        frozen_policy_report: data/analysis/capm_dcf_value_policy_us/report.json
 
 # ── 历史数据缓存 ──
 historical_cache:

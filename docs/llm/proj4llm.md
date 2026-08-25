@@ -76,20 +76,31 @@
   `entry_fraction = clip(base_fraction * (pool_beta / train_beta_reference)^(-gamma), min, max)`。
   `train_beta_reference` 必须只来自冻结政策的训练集；默认 `gamma=0.32`、范围
   `[0.75, 0.95]`，因而低 Beta 池可将 `0.85` 放宽至最多 `0.95`。
-- 历史校准中的 `buy_price/current_price <= 95%` 只用于构造“未来一年是否触价”的
-  标签，不能当作运行时拒单条件。运行时若 `P <= entry_price`，在新估值快照当日产生
-  一次可执行买入事件；若 `P > entry_price`，只在之后首次向下穿越时买入；若
-  `P >= fair_value`，产生卖出决策，具体成交、手续费、最短持有期均仍由共享
+- 历史校准与运行时采用同一成交语义：若 `entry_price >= P`，限价单已经可成交，历史标签
+  在估值日以已知收盘价 `P` 成交，并从下一交易日开始评估持有结果；若 `entry_price < P`，
+  则只在未来252个有效交易日内最低价首次触及限价时，以限价成交。不得把“目标价高于现价”
+  误当作拒单。运行时在新估值快照当日只产生一次可执行买入事件；之后仅在首次向下穿越时
+  买入；若 `P >= fair_value`，产生卖出决策，具体成交、手续费、最短持有期均仍由共享
   Backtester/执行器处理。
 - DCF 每股价格以未复权口径计算。策略面板把公允价和买入价按同日
   `qfq_factor` 映射到统一回测的前复权价格尺度；两侧同时缩放，因而
   `raw_price <= raw_entry` 与 `qfq_price <= qfq_entry` 恒等，不把复权尺度错当成
   价值信号。没有可审计的价格因子、冻结政策、官方无风险利率、或估值快照超过
   550 天时，面板必须缺失并拒绝产生信号。
-- `scripts/fetch_capm_dcf_risk_free.py` 以基准 CSV 的自然季度末为锚点抓取官方中债
-  十年国债曲线；它只写带 `requested_date/source_date/source` 审计信息的真实值，缺失
-  日期直接失败，不用当期利率或常数回填历史。当前候选只完成 A 股因果数据覆盖，尚未
-  形成三市场完整候选产物，故无激活资格。
+- `scripts/fetch_capm_dcf_risk_free.py` 以点时基准的自然季度最后有效交易日为锚点，读取
+  A股的官方中债十年国债、港股的香港金融管理局两年期外汇基金票据、美股的美国财政部
+  十年国债日曲线。每项只写带 `requested_date/source_date/source/maturity` 审计信息的
+  真实值；缺失或超过8日陈旧的日期直接失败，不用未来、当期常数或跨市场利率回填。
+- `capm_dcf_value` 的市场声明覆盖 A/HK/US，但候选必须逐市场独立提供：带发布日期的
+  财务数据、同市场原始价格基准、官方无风险曲线、以及 `dataset.market` 完全匹配的广域
+  冻结政策。港股财务只接受 HKEX 活跃证券表 + 披露易标题查询给出的发布日期及报告 PDF；
+  美股只接受 SEC Company Facts 的已发布日期快照。报表币种与成交币种不同时，必须使用
+  同一估值日或之前的显式点时汇率曲线；任何一项缺失即关闭该市场。当前只完成 A 股因果
+  数据覆盖，尚未形成三市场完整候选产物，故无激活资格。
+- `scripts/calibrate_capm_dcf_entry.py --market {a_share,hk,us}` 是冻结政策的市场本地
+  生成入口：H/US 必须显式给出 `--benchmark-symbol`、`--market-currency`、官方曲线 JSON
+  与必要的 `--fx-symbol`，并拒绝将 A 股冻结报告作为 `--frozen-policy-report` 应用到其他
+  市场。`--fetch-risk-free` 只允许 A 股中债曲线。
 - `scripts/backtest_capm_dcf_value.py` 是该候选唯一的离线复现入口：它从点时市场
   存储读取 qfq 执行价、构造上述价值面板，并调用共享 `build_trade_plan` 和
   `Backtester` 生成 JSON。它不创建优化产物、不写活动指针、也不修改参考持仓。
