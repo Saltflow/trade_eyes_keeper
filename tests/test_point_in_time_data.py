@@ -143,9 +143,7 @@ class _Response:
                             "adjclose": [{"adjclose": [50.0]}],
                         },
                         "events": {
-                            "dividends": {
-                                "d": {"date": 1774828800, "amount": 1.5}
-                            },
+                            "dividends": {"d": {"date": 1774828800, "amount": 1.5}},
                             "splits": {
                                 "s": {
                                     "date": 1774828800,
@@ -317,9 +315,7 @@ def test_cninfo_accepts_both_annual_report_title_conventions():
                 "adjunctUrl": "finalpage/2026/a.pdf",
             },
             {
-                "announcementTitle": (
-                    "2025\u5e74\u5ea6\u62a5\u544a\u6458\u8981"
-                ),
+                "announcementTitle": ("2025\u5e74\u5ea6\u62a5\u544a\u6458\u8981"),
                 "announcementTime": 1774627200000,
                 "adjunctUrl": "finalpage/2026/summary.pdf",
             },
@@ -530,10 +526,7 @@ def test_cninfo_inherits_units_only_within_financial_statements(monkeypatch):
 
     pages = [
         "合并资产负债表单位：元",
-        (
-            "归属于母公司所有者权益（或142,468,648,190"
-            "137,414,784,587股东权益）合计"
-        ),
+        ("归属于母公司所有者权益（或142,468,648,190137,414,784,587股东权益）合计"),
         (
             "合并现金流量表单位：元"
             "购建固定资产、无形资产和其58,326,323,386"
@@ -574,10 +567,7 @@ def test_cninfo_inherits_bank_million_unit_on_continuation_page(monkeypatch):
     from types import SimpleNamespace
 
     pages = [
-        (
-            "合并资产负债表"
-            "（除特别注明外，货币单位均以人民币百万元列示）"
-        ),
+        ("合并资产负债表（除特别注明外，货币单位均以人民币百万元列示）"),
         "归属于本行股东权益合计1,272,8751,226,014",
     ]
 
@@ -725,6 +715,141 @@ def test_hkex_provider_uses_title_search_release_date_and_parses_report_values(
     assert statement.source_url == "https://www1.hkexnews.hk/report.pdf"
 
 
+def test_hkex_pdf_extraction_releases_page_caches(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    class Page:
+        def __init__(self, text):
+            self.text = text
+            self.flushes = 0
+
+        def extract_text(self):
+            return self.text
+
+        def flush_cache(self):
+            self.flushes += 1
+
+    pages = [Page("first"), Page("second")]
+
+    class Pdf:
+        def __init__(self):
+            self.pages = pages
+            self.flushes = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def flush_cache(self):
+            self.flushes += 1
+
+    pdf = Pdf()
+    monkeypatch.setitem(
+        sys.modules,
+        "pdfplumber",
+        SimpleNamespace(open=lambda _stream: pdf),
+    )
+
+    text, parser = HkexStatementProvider._extract_pdf_text(b"pdf")
+
+    assert parser == "pdfplumber"
+    assert text == "first\nsecond"
+    assert [page.flushes for page in pages] == [1, 1]
+    assert pdf.flushes == 1
+
+
+def test_hkex_provider_accepts_only_known_report_kind_configuration():
+    provider = HkexStatementProvider(
+        {"point_in_time_data": {"hkex_report_kinds": ["year"]}}
+    )
+
+    assert provider.report_kinds == frozenset({"year"})
+    with pytest.raises(ValueError, match="hkex_report_kinds"):
+        HkexStatementProvider(
+            {"point_in_time_data": {"hkex_report_kinds": ["quarter"]}}
+        )
+
+
+def test_hkex_parser_uses_audited_statement_pages_not_financial_summary(monkeypatch):
+    # The first page mirrors the common HKEX five-year financial-summary
+    # layout: its values are deliberately plausible-looking but wrong for the
+    # 2025 audited period.  Page boundaries must keep it out of the parser.
+    report_text = "\f".join(
+        [
+            """
+            Financial Summary HK$'000
+            Year ended 31 December 2021 2022 2023 2024 2025
+            Revenues 560,118 554,552 609,015 660,257 751,766
+            """,
+            """
+            Consolidated Statement of Comprehensive Income
+            RMB'Million
+            Year ended 31 December 2025
+            Revenue 751,766 660,257
+            Profit attributable to owners of the Company 224,842 194,073
+            Basic earnings per share 24.749 21.343
+            """,
+            """
+            Consolidated Statement of Financial Position
+            RMB'Million
+            As at 31 December 2025
+            Equity attributable to equity holders of the Company 1,154,152 1,015,386
+            """,
+            """
+            Consolidated Statement of Cash Flows
+            RMB'Million
+            Year ended 31 December 2025
+            Net cash flows generated from operating activities 303,052 258,521
+            Purchase of/prepayments for property, plant and equipment (87,482) (62,927)
+            """,
+            """
+            13 Earnings per Share
+            Weighted average number of ordinary shares for the calculation of
+            diluted EPS (million shares) 9,244 9,408
+            """,
+        ]
+    )
+    monkeypatch.setattr(
+        HkexStatementProvider,
+        "_extract_pdf_text",
+        classmethod(lambda _cls, _content: (report_text, "test_pdf")),
+    )
+
+    values, _parser, period_end, currency = HkexStatementProvider._parse_pdf(b"pdf")
+
+    assert period_end == date(2025, 12, 31)
+    assert currency == "CNY"
+    assert values["revenue"] == 751_766_000_000.0
+    assert values["net_income_parent"] == 224_842_000_000.0
+    assert values["parent_equity"] == 1_154_152_000_000.0
+    assert values["basic_eps"] == 24.749
+    assert values["diluted_average_shares"] == 9_244_000_000.0
+    assert values["operating_cash_flow"] == 303_052_000_000.0
+    assert values["capital_expenditures"] == 87_482_000_000.0
+    assert values["free_cash_flow"] == 215_570_000_000.0
+
+
+def test_hkex_parser_rejects_impossible_summary_value_pairing(monkeypatch):
+    report_text = """
+        Consolidated statement of profit or loss
+        RMB'Million
+        Year ended 31 December 2025
+        Revenue 3
+        Profit attributable to owners of the Company 224,842
+    """
+    monkeypatch.setattr(
+        HkexStatementProvider,
+        "_extract_pdf_text",
+        classmethod(lambda _cls, _content: (report_text, "test_pdf")),
+    )
+
+    with pytest.raises(ValueError, match="internally inconsistent"):
+        HkexStatementProvider._parse_pdf(b"pdf")
+
+
 def test_hk_backfill_stores_only_hkex_dated_statements(tmp_path):
     hk_statement = FinancialStatementSnapshot(
         period_end=date(2025, 12, 31),
@@ -855,10 +980,7 @@ def test_source_merge_unions_complementary_fields_and_prefers_official(tmp_path)
         is_cumulative=True,
         currency="CNY",
         source="cninfo_annual_report",
-        source_url=(
-            "https://static.cninfo.com.cn/finalpage/"
-            "2025-04-26/1223307084.PDF"
-        ),
+        source_url=("https://static.cninfo.com.cn/finalpage/2025-04-26/1223307084.PDF"),
         revenue=5_744_509_404.79,
         net_income_parent=1_043_960_186.44,
         adjusted_net_income_parent=832_156_137.45,
@@ -869,9 +991,7 @@ def test_source_merge_unions_complementary_fields_and_prefers_official(tmp_path)
 
     merged = merge_statement_sources([baostock], [cninfo])
     composite = next(
-        item
-        for item in merged
-        if item.source == "baostock_profit+cninfo_annual_report"
+        item for item in merged if item.source == "baostock_profit+cninfo_annual_report"
     )
     assert composite.total_shares == 5_383_418_520.0
     assert composite.net_income_parent == 1_043_960_186.44
@@ -901,9 +1021,7 @@ def test_feature_panel_uses_raw_close_and_never_reads_future_filing(tmp_path):
     assert panel.availability_mask[0, 0, pe_index]
     # Before the 2025 annual report is filed, the last four known quarters
     # earn 34.  The Q4 result becomes visible exactly on its filing date.
-    assert panel.values[0, 0, pe_index] == pytest.approx(
-        10.0 * 100.0 / 34.0
-    )
+    assert panel.values[0, 0, pe_index] == pytest.approx(10.0 * 100.0 / 34.0)
     assert panel.availability_mask[1, 0, pe_index]
     # TTM income is 40; raw price 10 and shares 100 => PE 25.  Using the
     # qfq price of 5 would incorrectly produce 12.5.
@@ -919,9 +1037,7 @@ def test_share_changing_action_updates_denominator_without_rewriting_profit():
         share_multiplier=2.0,
         source="test_action",
     )
-    adjusted = adjust_statement_shares(
-        [statement], [action], date(2026, 3, 1)
-    )[0]
+    adjusted = adjust_statement_shares([statement], [action], date(2026, 3, 1))[0]
     assert adjusted.common_shares_outstanding == 200.0
     assert adjusted.net_income_parent == statement.net_income_parent
     assert "shares_adjusted_for_disclosed_actions:2" in adjusted.diagnostics
@@ -936,9 +1052,7 @@ def test_unknown_adjustment_factor_does_not_guess_share_change():
         raw_adjustment_factor=0.8,
         source="test_factor",
     )
-    adjusted = adjust_statement_shares(
-        [statement], [action], date(2026, 3, 1)
-    )[0]
+    adjusted = adjust_statement_shares([statement], [action], date(2026, 3, 1))[0]
     assert adjusted.common_shares_outstanding == 100.0
 
 
@@ -1006,12 +1120,7 @@ def test_cninfo_report_unit_requires_explicit_financial_statement_declaration():
         )
         == "万元"
     )
-    assert (
-        CninfoAnnualReportProvider._declared_statement_unit(
-            "本页单位：万元"
-        )
-        is None
-    )
+    assert CninfoAnnualReportProvider._declared_statement_unit("本页单位：万元") is None
     grouped_integer = re.search(
         CninfoAnnualReportProvider.MONEY,
         "97,359,768122,093,509",

@@ -101,6 +101,15 @@
   生成入口：H/US 必须显式给出 `--benchmark-symbol`、`--market-currency`、官方曲线 JSON
   与必要的 `--fx-symbol`，并拒绝将 A 股冻结报告作为 `--frozen-policy-report` 应用到其他
   市场。`--fetch-risk-free` 只允许 A 股中债曲线。
+- `scripts/backfill_point_in_time.py` 支持用 `--codes`、`--output-dir`、
+  `--evaluation-date` 做隔离的 H/US 数据回填；H 股必须额外声明 `--market-only-symbol
+  02800`，有 CNY 报表时声明 `--fx-symbol CNYHKD=X`，美股声明 `--market-only-symbol VOO`。
+  `--hkex-report-kind year` 可在首次校准时只抓年度披露。HKEX 年报解析优先使用逐页的
+  `pdfminer_stream`，按视觉行重建表格，并只从合并报表页读取当前审计数值；遇到跨业务段
+  分行的收入小计时，才回退同一官方年报的五年财务摘要最新列。币种、单位和利润/收入的
+  基本一致性校验失败即拒绝快照，不能以页面截断、当前基本面或跨市场利率回填。HKMA 的
+  2Y EFN 官方端点可能按月末节奏发布，允许向后使用不超过45日的已发布值并审计其
+  `source_date`；禁止未来填充，超过一个发布周期仍必须失败。
 - `scripts/backtest_capm_dcf_value.py` 是该候选唯一的离线复现入口：它从点时市场
   存储读取 qfq 执行价、构造上述价值面板，并调用共享 `build_trade_plan` 和
   `Backtester` 生成 JSON。它不创建优化产物、不写活动指针、也不修改参考持仓。

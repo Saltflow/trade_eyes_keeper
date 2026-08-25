@@ -11,9 +11,7 @@ import pytest
 
 def _module():
     path = (
-        Path(__file__).resolve().parents[1]
-        / "scripts"
-        / "fetch_capm_dcf_risk_free.py"
+        Path(__file__).resolve().parents[1] / "scripts" / "fetch_capm_dcf_risk_free.py"
     )
     spec = importlib.util.spec_from_file_location("capm_dcf_risk_free", path)
     assert spec is not None and spec.loader is not None
@@ -35,6 +33,18 @@ def test_hkma_uses_last_available_two_year_efn_yield_without_future_fill():
     assert rate == 0.0321
     assert audit["source_date"] == "2025-03-28"
     assert audit["maturity"] == "2Y"
+
+
+def test_hkma_accepts_the_latest_official_month_end_observation():
+    module = _module()
+
+    rate, audit = module._fetch_hkma_efbn_two_year(
+        [{"end_of_day": "2025-03-31", "efn_2y": "3.21"}],
+        date(2025, 4, 29),
+    )
+
+    assert rate == 0.0321
+    assert audit["source_date"] == "2025-03-31"
 
 
 def test_hkma_paginates_past_the_documented_page_size_to_reach_old_anchors():
@@ -64,9 +74,7 @@ def test_hkma_paginates_past_the_documented_page_size_to_reach_old_anchors():
             return Response(rows)
 
     http = Http()
-    records = module._hkma_records(
-        http, timeout=5, not_before=date(2025, 3, 31)
-    )
+    records = module._hkma_records(http, timeout=5, not_before=date(2025, 3, 31))
 
     assert len(records) == 2
     assert http.offsets == [0, 1]
@@ -78,7 +86,7 @@ def test_hkma_rejects_a_stale_curve_instead_of_using_a_future_quote():
     try:
         module._fetch_hkma_efbn_two_year(
             [{"end_of_day": "2025-03-01", "efn_2y": "3.21"}],
-            date(2025, 3, 31),
+            date(2025, 5, 1),
         )
     except RuntimeError as exc:
         assert "stale" in str(exc)

@@ -33,6 +33,7 @@ HKMA_EFBN_DAILY_URL = (
     "https://api.hkma.gov.hk/public/market-data-and-statistics/"
     "monthly-statistical-bulletin/efbn/efbn-yield-daily"
 )
+HKMA_EFBN_MAX_STALENESS_DAYS = 45
 US_TREASURY_DAILY_URL = (
     "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/"
     "daily-treasury-rates.csv/{year}/all"
@@ -188,11 +189,15 @@ def _fetch_hkma_efbn_two_year(
             candidates.append((record_date, rate))
     if not candidates:
         raise RuntimeError(
-            "HKMA two-year EFN yield unavailable on or before "
-            f"{requested.isoformat()}"
+            f"HKMA two-year EFN yield unavailable on or before {requested.isoformat()}"
         )
     source_date, rate = max(candidates)
-    if (requested - source_date).days > 8:
+    # The official endpoint is named ``yield-daily`` but can publish the
+    # two-year EFN observation on a month-end cadence.  A one-week threshold
+    # incorrectly rejects a still-current official curve (for example, a
+    # 31-Jul observation for a late-August valuation date).  The wider bound
+    # still forbids future filling and rejects a missed publication cycle.
+    if (requested - source_date).days > HKMA_EFBN_MAX_STALENESS_DAYS:
         raise RuntimeError(
             "HKMA two-year EFN yield is stale for "
             f"{requested.isoformat()}: {source_date.isoformat()}"
@@ -228,8 +233,7 @@ def _us_treasury_year(
     response.raise_for_status()
     raw = pd.read_csv(io.StringIO(response.text))
     column_by_normalized = {
-        str(column).strip().lower().replace(" ", ""): column
-        for column in raw.columns
+        str(column).strip().lower().replace(" ", ""): column for column in raw.columns
     }
     date_column = column_by_normalized.get("date")
     ten_year_column = (
@@ -309,9 +313,7 @@ def main() -> int:
     args = parser.parse_args()
 
     output = Path(args.output)
-    rates, audit = _load_existing(
-        Path(args.resume_from) if args.resume_from else None
-    )
+    rates, audit = _load_existing(Path(args.resume_from) if args.resume_from else None)
     start = _parse_date(args.start) if args.start else date.min
     end = _parse_date(args.end) if args.end else date.max
     if args.benchmark_symbol:
@@ -330,7 +332,7 @@ def main() -> int:
         _hkma_records(
             http,
             timeout=timeout,
-            not_before=min(requested) - timedelta(days=8),
+            not_before=min(requested) - timedelta(days=HKMA_EFBN_MAX_STALENESS_DAYS),
         )
         if args.source == "hkma_efn_2y"
         else []

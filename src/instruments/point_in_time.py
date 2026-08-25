@@ -203,7 +203,7 @@ class SseXbrlStatementProvider:
         config: dict | None = None,
         http: requests.Session | None = None,
     ):
-        audit = ((config or {}).get("instrument_audit", {}) or {})
+        audit = (config or {}).get("instrument_audit", {}) or {}
         self.timeout = int(audit.get("timeout_seconds", 20))
         self.user_agent = audit.get(
             "user_agent",
@@ -228,11 +228,13 @@ class SseXbrlStatementProvider:
         if not normalized.startswith(("5", "6", "9")):
             return StatementFetchResult(
                 statements=[],
-                attempts=[{
-                    "source": "sse_xbrl",
-                    "status": "not_applicable",
-                    "reason": "not an SSE security",
-                }],
+                attempts=[
+                    {
+                        "source": "sse_xbrl",
+                        "status": "not_applicable",
+                        "reason": "not an SSE security",
+                    }
+                ],
             )
         disclosures = self._query(
             self.QUERY_URL,
@@ -265,11 +267,13 @@ class SseXbrlStatementProvider:
                 and period_id in {"5000", "1000"}
             ):
                 availability[(year, period_id)] = published_at
-        attempts.append({
-            "source": "sse_xbrl_disclosures",
-            "status": "success" if availability else "empty",
-            "rows": len(availability),
-        })
+        attempts.append(
+            {
+                "source": "sse_xbrl_disclosures",
+                "status": "success" if availability else "empty",
+                "rows": len(availability),
+            }
+        )
 
         statements: dict[tuple[int, str], FinancialStatementSnapshot] = {}
         for year in sorted({key[0] for key in availability}):
@@ -282,21 +286,21 @@ class SseXbrlStatementProvider:
                     "stockId": normalized,
                 },
             )
-            attempts.append({
-                "source": "sse_xbrl_performance",
-                "year": year,
-                "status": "success" if rows else "empty",
-                "rows": len(rows),
-            })
+            attempts.append(
+                {
+                    "source": "sse_xbrl_performance",
+                    "year": year,
+                    "status": "success" if rows else "empty",
+                    "rows": len(rows),
+                }
+            )
             for row in rows:
                 period_id = str(row.get("REPORT_PERIOD_ID", ""))
                 published_at = availability.get((year, period_id))
                 if published_at is None:
                     continue
                 period_end = (
-                    date(year, 12, 31)
-                    if period_id == "5000"
-                    else date(year, 6, 30)
+                    date(year, 12, 31) if period_id == "5000" else date(year, 6, 30)
                 )
                 if not start <= period_end <= end:
                     continue
@@ -310,9 +314,7 @@ class SseXbrlStatementProvider:
                     and reported_roe is not None
                     and abs(reported_roe) > 1e-9
                 ):
-                    average_equity = net_income * 10_000.0 / (
-                        reported_roe / 100.0
-                    )
+                    average_equity = net_income * 10_000.0 / (reported_roe / 100.0)
                 statements[(year, period_id)] = FinancialStatementSnapshot(
                     period_end=period_end,
                     published_at=published_at,
@@ -378,10 +380,12 @@ class SseXbrlStatementProvider:
                         year = int(row["REPORT_YEAR"])
                     except (KeyError, TypeError, ValueError):
                         continue
-                    by_year.setdefault(year, {}).update({
-                        "operating_cash_flow": _float(row.get("S2030_0250")),
-                        "capital_expenditures": _float(row.get("S2030_0320")),
-                    })
+                    by_year.setdefault(year, {}).update(
+                        {
+                            "operating_cash_flow": _float(row.get("S2030_0250")),
+                            "capital_expenditures": _float(row.get("S2030_0320")),
+                        }
+                    )
                 for year, values in by_year.items():
                     snapshot = statements.get((year, period_id))
                     if snapshot is None:
@@ -394,16 +398,13 @@ class SseXbrlStatementProvider:
                         and snapshot.capital_expenditures is not None
                     ):
                         snapshot.free_cash_flow = (
-                            snapshot.operating_cash_flow
-                            - snapshot.capital_expenditures
+                            snapshot.operating_cash_flow - snapshot.capital_expenditures
                         )
                         snapshot.diagnostics.append(
                             "free_cash_flow=operating_cash_flow-capital_expenditures"
                         )
                     if any(value is not None for value in values.values()):
-                        snapshot.source = (
-                            "sse_xbrl_performance+sse_xbrl_full_statement"
-                        )
+                        snapshot.source = "sse_xbrl_performance+sse_xbrl_full_statement"
                         snapshot.diagnostics.append(
                             "supplemented_from_free_sse_full_xbrl_statement"
                         )
@@ -435,22 +436,26 @@ class SseXbrlStatementProvider:
                     "REPORT_PERIOD_ID": period_id,
                 },
             )
-            attempts.append({
-                "source": "sse_xbrl_full_statement",
-                "sql_id": sql_id,
-                "period_id": period_id,
-                "status": "success" if rows else "empty",
-                "rows": len(rows),
-            })
+            attempts.append(
+                {
+                    "source": "sse_xbrl_full_statement",
+                    "sql_id": sql_id,
+                    "period_id": period_id,
+                    "status": "success" if rows else "empty",
+                    "rows": len(rows),
+                }
+            )
             return rows
         except Exception as exc:
-            attempts.append({
-                "source": "sse_xbrl_full_statement",
-                "sql_id": sql_id,
-                "period_id": period_id,
-                "status": "failed",
-                "reason": str(exc),
-            })
+            attempts.append(
+                {
+                    "source": "sse_xbrl_full_statement",
+                    "sql_id": sql_id,
+                    "period_id": period_id,
+                    "status": "failed",
+                    "reason": str(exc),
+                }
+            )
             return []
 
 
@@ -473,8 +478,8 @@ class CninfoAnnualReportProvider:
         config: dict | None = None,
         http: requests.Session | None = None,
     ):
-        audit = ((config or {}).get("instrument_audit", {}) or {})
-        settings = ((config or {}).get("point_in_time_data", {}) or {})
+        audit = (config or {}).get("instrument_audit", {}) or {}
+        settings = (config or {}).get("point_in_time_data", {}) or {}
         output_dir = Path(settings.get("output_dir", "data/point_in_time"))
         self.pdf_cache_dir = Path(
             settings.get(
@@ -554,21 +559,23 @@ class CninfoAnnualReportProvider:
         if not normalized.startswith(("0", "2", "3", "5", "6", "9")):
             return StatementFetchResult(
                 statements=[],
-                attempts=[{
-                    "source": "cninfo_annual_report",
-                    "status": "not_applicable",
-                    "reason": "not an A-share security",
-                }],
+                attempts=[
+                    {
+                        "source": "cninfo_annual_report",
+                        "status": "not_applicable",
+                        "reason": "not an A-share security",
+                    }
+                ],
             )
         org_id = self._org_id(normalized)
-        announcements = self._annual_announcements(
-            normalized, org_id, start, end
+        announcements = self._annual_announcements(normalized, org_id, start, end)
+        attempts.append(
+            {
+                "source": "cninfo_annual_report_index",
+                "status": "success" if announcements else "empty",
+                "rows": len(announcements),
+            }
         )
-        attempts.append({
-            "source": "cninfo_annual_report_index",
-            "status": "success" if announcements else "empty",
-            "rows": len(announcements),
-        })
         statements: list[FinancialStatementSnapshot] = []
         for year, announcement in sorted(announcements.items()):
             url = self.STATIC_ROOT + str(announcement["adjunctUrl"]).lstrip("/")
@@ -610,8 +617,7 @@ class CninfoAnnualReportProvider:
                     and values.get("capital_expenditures") is not None
                 ):
                     values["free_cash_flow"] = (
-                        values["operating_cash_flow"]
-                        - values["capital_expenditures"]
+                        values["operating_cash_flow"] - values["capital_expenditures"]
                     )
                     diagnostics.append(
                         "free_cash_flow=operating_cash_flow-capital_expenditures"
@@ -630,21 +636,25 @@ class CninfoAnnualReportProvider:
                         **values,
                     )
                 )
-                attempts.append({
-                    "source": "cninfo_annual_report",
-                    "year": year,
-                    "status": "cached" if cache_hit else "success",
-                    "fields": sorted(values),
-                    "url": url,
-                })
+                attempts.append(
+                    {
+                        "source": "cninfo_annual_report",
+                        "year": year,
+                        "status": "cached" if cache_hit else "success",
+                        "fields": sorted(values),
+                        "url": url,
+                    }
+                )
             except Exception as exc:
-                attempts.append({
-                    "source": "cninfo_annual_report",
-                    "year": year,
-                    "status": "failed",
-                    "reason": str(exc),
-                    "url": url,
-                })
+                attempts.append(
+                    {
+                        "source": "cninfo_annual_report",
+                        "year": year,
+                        "status": "failed",
+                        "reason": str(exc),
+                        "url": url,
+                    }
+                )
         return StatementFetchResult(statements=statements, attempts=attempts)
 
     def _org_id(self, code: str) -> str:
@@ -692,9 +702,7 @@ class CninfoAnnualReportProvider:
         response.raise_for_status()
         selected: dict[int, dict[str, Any]] = {}
         for row in response.json().get("announcements", []) or []:
-            title = re.sub(
-                r"<[^>]+>", "", str(row.get("announcementTitle", ""))
-            )
+            title = re.sub(r"<[^>]+>", "", str(row.get("announcementTitle", "")))
             compact = re.sub(r"\s+", "", title)
             match = re.search(r"(20\d{2})年?年度报告", compact)
             if not match or "摘要" in compact or not row.get("adjunctUrl"):
@@ -771,73 +779,67 @@ class CninfoAnnualReportProvider:
                 rf"归属于上市公司股东的净资产[（(](?P<unit>元|千元|万元)[）)](?P<value>{cls.MONEY})",
                 rf"归属于母公司所有者权益合计(?P<value>{cls.MONEY})",
             ),
-            "basic_eps": (
-                rf"基本每股收益[（(]元/?股[）)](?P<value>{cls.NUMBER})",
-            ),
-            "diluted_eps": (
-                rf"稀释每股收益[（(]元/?股[）)](?P<value>{cls.NUMBER})",
-            ),
-            "reported_roe": (
-                rf"加权平均净资产收益率(?P<value>{cls.NUMBER})%",
-            ),
+            "basic_eps": (rf"基本每股收益[（(]元/?股[）)](?P<value>{cls.NUMBER})",),
+            "diluted_eps": (rf"稀释每股收益[（(]元/?股[）)](?P<value>{cls.NUMBER})",),
+            "reported_roe": (rf"加权平均净资产收益率(?P<value>{cls.NUMBER})%",),
         }
-        patterns.update({
-            "cash_and_cash_equivalents": (
-                rf"\u5e74\u672b\u73b0\u91d1\u53ca\u73b0\u91d1"
-                rf"\u7b49\u4ef7\u7269\u4f59\u989d(?P<value>{cls.MONEY})",
-            ),
-            "restricted_cash": (
-                rf"\u53d7\u9650\u5236\u7684\u8d27\u5e01\u8d44\u91d1"
-                rf"(?P<value>{cls.MONEY})",
-            ),
-            "short_term_borrowings": (
-                rf"\u77ed\u671f\u501f\u6b3e(?P<value>{cls.MONEY})",
-            ),
-            "current_portion_noncurrent_debt": (
-                rf"\u4e00\u5e74\u5185\u5230\u671f\u7684\u975e\u6d41"
-                rf"\u52a8\u8d1f\u503a(?:[一二三四五六七八九十]+"
-                rf"[\uff08(]\d+"
-                rf"[\uff09)])?(?P<value>{cls.MONEY})",
-            ),
-            "long_term_borrowings": (
-                rf"\u957f\u671f\u501f\u6b3e(?P<value>{cls.MONEY})",
-            ),
-            "bonds_payable": (
-                rf"\u5e94\u4ed8\u503a\u5238(?:[一二三四五六七八九十]+"
-                rf"[\uff08(]"
-                rf"\d+[\uff09)])?(?P<value>{cls.MONEY})",
-            ),
-            "lease_liabilities": (
-                rf"\u79df\u8d41\u8d1f\u503a(?P<value>{cls.MONEY})",
-            ),
-            "interest_expense": (
-                rf"\u5229\u606f\u8d39\u7528(?:[\uff08(]a[\uff09)])?"
-                rf"(?P<value>[\uff08(]?{cls.MONEY}[\uff09)]?)",
-            ),
-            "income_tax_expense": (
-                rf"\u51cf[:\uff1a]?\u6240\u5f97\u7a0e(?:[\uff08(]"
-                rf"\u8d39\u7528[\uff09)]/\u8d37\u9879)?"
-                rf"(?:[一二三四五六七八九十]+[\uff08(]\d+"
-                rf"[\uff09)])?"
-                rf"[\uff08(](?P<value>{cls.MONEY})[\uff09)]",
-            ),
-            "profit_before_tax": (
-                rf"(?:\u4e09\u3001)?\u5229\u6da6\u603b\u989d"
-                rf"(?P<value>{cls.MONEY})",
-            ),
-        })
+        patterns.update(
+            {
+                "cash_and_cash_equivalents": (
+                    rf"\u5e74\u672b\u73b0\u91d1\u53ca\u73b0\u91d1"
+                    rf"\u7b49\u4ef7\u7269\u4f59\u989d(?P<value>{cls.MONEY})",
+                ),
+                "restricted_cash": (
+                    rf"\u53d7\u9650\u5236\u7684\u8d27\u5e01\u8d44\u91d1"
+                    rf"(?P<value>{cls.MONEY})",
+                ),
+                "short_term_borrowings": (
+                    rf"\u77ed\u671f\u501f\u6b3e(?P<value>{cls.MONEY})",
+                ),
+                "current_portion_noncurrent_debt": (
+                    rf"\u4e00\u5e74\u5185\u5230\u671f\u7684\u975e\u6d41"
+                    rf"\u52a8\u8d1f\u503a(?:[一二三四五六七八九十]+"
+                    rf"[\uff08(]\d+"
+                    rf"[\uff09)])?(?P<value>{cls.MONEY})",
+                ),
+                "long_term_borrowings": (
+                    rf"\u957f\u671f\u501f\u6b3e(?P<value>{cls.MONEY})",
+                ),
+                "bonds_payable": (
+                    rf"\u5e94\u4ed8\u503a\u5238(?:[一二三四五六七八九十]+"
+                    rf"[\uff08(]"
+                    rf"\d+[\uff09)])?(?P<value>{cls.MONEY})",
+                ),
+                "lease_liabilities": (
+                    rf"\u79df\u8d41\u8d1f\u503a(?P<value>{cls.MONEY})",
+                ),
+                "interest_expense": (
+                    rf"\u5229\u606f\u8d39\u7528(?:[\uff08(]a[\uff09)])?"
+                    rf"(?P<value>[\uff08(]?{cls.MONEY}[\uff09)]?)",
+                ),
+                "income_tax_expense": (
+                    rf"\u51cf[:\uff1a]?\u6240\u5f97\u7a0e(?:[\uff08(]"
+                    rf"\u8d39\u7528[\uff09)]/\u8d37\u9879)?"
+                    rf"(?:[一二三四五六七八九十]+[\uff08(]\d+"
+                    rf"[\uff09)])?"
+                    rf"[\uff08(](?P<value>{cls.MONEY})[\uff09)]",
+                ),
+                "profit_before_tax": (
+                    rf"(?:\u4e09\u3001)?\u5229\u6da6\u603b\u989d"
+                    rf"(?P<value>{cls.MONEY})",
+                ),
+            }
+        )
         bank_table_prefix = (
             r"\u4eba\u6c11\u5e01"
             r"(?P<unit>\u767e\u4e07\u5143).*?"
         )
         bank_patterns: dict[str, tuple[str, ...]] = {
             "revenue": (
-                bank_table_prefix
-                + rf"\u8425\u4e1a\u6536\u5165(?P<value>{cls.MONEY})",
+                bank_table_prefix + rf"\u8425\u4e1a\u6536\u5165(?P<value>{cls.MONEY})",
             ),
             "net_income_parent": (
-                bank_table_prefix
-                + rf"\u5f52\u5c5e\u4e8e\u6bcd\u516c\u53f8\u80a1\u4e1c"
+                bank_table_prefix + rf"\u5f52\u5c5e\u4e8e\u6bcd\u516c\u53f8\u80a1\u4e1c"
                 rf"\u7684\u51c0\u5229\u6da6(?P<value>{cls.MONEY})",
             ),
             "adjusted_net_income_parent": (
@@ -865,20 +867,17 @@ class CninfoAnnualReportProvider:
                 rf"\u6743\u76ca(?P<value>{cls.MONEY})",
             ),
             "basic_eps": (
-                bank_table_prefix
-                + rf"\u57fa\u672c\u6bcf\u80a1\u6536\u76ca"
+                bank_table_prefix + rf"\u57fa\u672c\u6bcf\u80a1\u6536\u76ca"
                 rf"(?:[\uff08(]\d+[\uff09)])?(?P<value>{cls.NUMBER})",
             ),
             "diluted_eps": (
-                bank_table_prefix
-                + rf"\u7a00\u91ca\u6bcf\u80a1\u6536\u76ca"
+                bank_table_prefix + rf"\u7a00\u91ca\u6bcf\u80a1\u6536\u76ca"
                 rf"(?:[\uff08(]\d+[\uff09)])?(?P<value>{cls.NUMBER})",
             ),
         }
         layout_patterns: dict[str, tuple[str, ...]] = {
             "net_income_parent": (
-                bank_table_prefix
-                + rf"\u5f52\u5c5e\u4e8e\u672c\u884c\u80a1\u4e1c\u7684"
+                bank_table_prefix + rf"\u5f52\u5c5e\u4e8e\u672c\u884c\u80a1\u4e1c\u7684"
                 rf"\u51c0\u5229\u6da6(?P<value>{cls.MONEY})",
             ),
             "adjusted_net_income_parent": (
@@ -904,8 +903,7 @@ class CninfoAnnualReportProvider:
                 rf"\u5408\u8ba1",
                 rf"\u5f52\u5c5e\u4e8e\u672c\u516c\u53f8\u80a1\u4e1c"
                 rf"(?P<value>{cls.MONEY})\u7684\u51c0\u8d44\u4ea7",
-                bank_table_prefix
-                + rf"\u5f52\u5c5e\u4e8e\u672c\u884c\u80a1\u4e1c"
+                bank_table_prefix + rf"\u5f52\u5c5e\u4e8e\u672c\u884c\u80a1\u4e1c"
                 rf"\u6743\u76ca\u5408\u8ba1(?P<value>{cls.MONEY})",
                 rf"\u5f52\u5c5e\u4e8e\u672c\u884c\u80a1\u4e1c"
                 rf"\u6743\u76ca\u5408\u8ba1(?P<value>{cls.MONEY})",
@@ -965,9 +963,7 @@ class CninfoAnnualReportProvider:
                     if not match:
                         continue
                     raw_number = match.group("value")
-                    accounting_negative = str(raw_number).startswith(
-                        ("(", "\uff08")
-                    )
+                    accounting_negative = str(raw_number).startswith(("(", "\uff08"))
                     number = _float(str(raw_number).strip("()\uff08\uff09"))
                     if number is None:
                         continue
@@ -1001,9 +997,7 @@ class CninfoAnnualReportProvider:
             if all(field in values for field in patterns):
                 break
         if not values:
-            raise ValueError(
-                "no audited financial labels parsed from CNINFO PDF"
-            )
+            raise ValueError("no audited financial labels parsed from CNINFO PDF")
         return values, parser_name
 
 
@@ -1023,6 +1017,7 @@ class HkexStatementProvider:
     ROOT_URL = "https://www1.hkexnews.hk/"
     REFERER = "https://www1.hkexnews.hk/search/titlesearch.xhtml?lang=EN"
     MAX_REPORTS_DEFAULT = 36
+    REPORT_KINDS = frozenset({"year", "half_year"})
     _DATE_FORMATS = ("%d/%m/%Y", "%d %B %Y", "%Y-%m-%d")
     _MONTH_NAMES = (
         "january|february|march|april|may|june|july|august|september|"
@@ -1035,8 +1030,8 @@ class HkexStatementProvider:
         config: dict | None = None,
         http: requests.Session | None = None,
     ):
-        audit = ((config or {}).get("instrument_audit", {}) or {})
-        settings = ((config or {}).get("point_in_time_data", {}) or {})
+        audit = (config or {}).get("instrument_audit", {}) or {}
+        settings = (config or {}).get("point_in_time_data", {}) or {}
         self.timeout = int(audit.get("timeout_seconds", 20))
         self.user_agent = audit.get(
             "user_agent",
@@ -1046,6 +1041,18 @@ class HkexStatementProvider:
             1,
             int(settings.get("hkex_max_reports_per_code", self.MAX_REPORTS_DEFAULT)),
         )
+        configured_kinds = settings.get("hkex_report_kinds", self.REPORT_KINDS)
+        if isinstance(configured_kinds, str):
+            configured_kinds = [configured_kinds]
+        self.report_kinds = frozenset(
+            str(item).strip() for item in (configured_kinds or [])
+        )
+        unknown_kinds = sorted(self.report_kinds - self.REPORT_KINDS)
+        if unknown_kinds or not self.report_kinds:
+            raise ValueError(
+                "hkex_report_kinds must be a non-empty subset of "
+                f"{sorted(self.REPORT_KINDS)}"
+            )
         self.http = http or requests.Session()
         self._stock_ids: dict[str, str] | None = None
 
@@ -1112,28 +1119,31 @@ class HkexStatementProvider:
     @classmethod
     def _period_end(cls, text: str) -> date | None:
         compact = re.sub(r"\s+", " ", text).replace("−", "-")
-        named = re.search(
+        candidates: list[date] = []
+        named = re.findall(
             rf"(?:year|period|six months|half[- ]year)\s+ended\s+"
             rf"(\d{{1,2}}\s+(?:{cls._MONTH_NAMES})\s+20\d{{2}})",
             compact,
             flags=re.IGNORECASE,
         )
-        if named:
-            return cls._date(named.group(1))
-        numeric = re.search(
+        candidates.extend(
+            item for value in named if (item := cls._date(value)) is not None
+        )
+        numeric = re.findall(
             r"(?:year|period|six months|half[- ]year)\s+ended\s+"
             r"(\d{1,2}[/-]\d{1,2}[/-]20\d{2})",
             compact,
             flags=re.IGNORECASE,
         )
-        if numeric:
-            raw = numeric.group(1).replace("-", "/")
+        for value in numeric:
+            raw = value.replace("-", "/")
             for fmt in ("%d/%m/%Y", "%Y/%m/%d"):
                 try:
-                    return datetime.strptime(raw, fmt).date()
+                    candidates.append(datetime.strptime(raw, fmt).date())
+                    break
                 except ValueError:
                     continue
-        return None
+        return max(candidates) if candidates else None
 
     @staticmethod
     def _document_kind(headline: str) -> str | None:
@@ -1189,7 +1199,12 @@ class HkexStatementProvider:
             kind = self._document_kind(headline)
             published_at = self._date(release_node.get_text(" ", strip=True))
             href = str(link.get("href") or "").strip()
-            if kind is None or published_at is None or not href:
+            if (
+                kind is None
+                or kind not in self.report_kinds
+                or published_at is None
+                or not href
+            ):
                 continue
             if published_at > end:
                 continue
@@ -1211,23 +1226,141 @@ class HkexStatementProvider:
             ),
             reverse=True,
         )
-        attempts = [{
-            "source": "hkex_title_search",
-            "status": "success" if result else "empty",
-            "stock_id": stock_id,
-            "rows": len(result),
-            "url": response.url,
-        }]
+        attempts = [
+            {
+                "source": "hkex_title_search",
+                "status": "success" if result else "empty",
+                "stock_id": stock_id,
+                "rows": len(result),
+                "url": response.url,
+            }
+        ]
         return result[: self.max_reports], attempts
 
     @classmethod
     def _extract_pdf_text(cls, content: bytes) -> tuple[str, str]:
+        """Extract PDF text without retaining pdfplumber's page caches.
+
+        HKEX annual reports can contain hundreds of pages.  Building
+        ``pdfplumber`` layout objects for every page made a single issuer
+        consume more than a gigabyte of memory.  ``pdfminer`` therefore
+        streams one page at a time and retains only opening/context pages and
+        pages around consolidated-statement headings.  ``pdfplumber`` remains
+        a compatibility fallback and releases each page cache eagerly.
+        """
+
         logging.getLogger("pdfminer").setLevel(logging.WARNING)
+        try:
+            from pdfminer.converter import PDFPageAggregator
+            from pdfminer.layout import LAParams, LTTextLine
+            from pdfminer.pdfinterp import PDFPageInterpreter, PDFResourceManager
+            from pdfminer.pdfpage import PDFPage
+
+            manager = PDFResourceManager()
+            device = PDFPageAggregator(
+                manager,
+                laparams=LAParams(char_margin=1.0, word_margin=0.1),
+            )
+            interpreter = PDFPageInterpreter(manager, device)
+            retained: list[str] = []
+            previous = ""
+            retain_after_heading = 0
+            headings = (
+                "consolidated statement",
+                "statement of profit",
+                "statement of comprehensive income",
+                "financial position",
+                "cash flows",
+                "cash flow statement",
+                "income statement",
+                "balance sheet",
+                "earnings per share",
+                "equity attributable",
+            )
+
+            def _text_lines(item: object) -> list[object]:
+                if isinstance(item, LTTextLine):
+                    return [item]
+                try:
+                    children = iter(item)
+                except TypeError:
+                    return []
+                result: list[object] = []
+                for child in children:
+                    result.extend(_text_lines(child))
+                return result
+
+            try:
+                for page_number, page in enumerate(
+                    PDFPage.get_pages(io.BytesIO(content), caching=False)
+                ):
+                    interpreter.process_page(page)
+                    layout = device.get_result()
+                    # Text in a statement table is usually emitted as one
+                    # object per cell.  Sorting every object independently
+                    # makes a column of labels appear before a column of
+                    # values, so ``Revenue`` can accidentally be paired with
+                    # a year or a note number.  Reconstruct visual rows first
+                    # and only then read them left-to-right.
+                    line_items = [
+                        (
+                            float(item.x0),
+                            (float(item.y0) + float(item.y1)) / 2.0,
+                            str(item.get_text()).strip(),
+                        )
+                        for item in _text_lines(layout)
+                        if str(item.get_text()).strip()
+                    ]
+                    row_groups: list[list[tuple[float, float, str]]] = []
+                    for item in sorted(line_items, key=lambda value: -value[1]):
+                        if row_groups and abs(item[1] - row_groups[-1][0][1]) <= 1.5:
+                            row_groups[-1].append(item)
+                        else:
+                            row_groups.append([item])
+                    page_text = "\n".join(
+                        " ".join(
+                            item[2] for item in sorted(row, key=lambda value: value[0])
+                        )
+                        for row in row_groups
+                    )
+                    normalized = re.sub(r"\s+", " ", page_text).lower()
+                    has_heading = any(item in normalized for item in headings)
+                    keep = page_number < 8 or has_heading or retain_after_heading
+                    if has_heading and previous:
+                        retained.append(previous)
+                    if keep and page_text:
+                        retained.append(page_text)
+                    retain_after_heading = (
+                        2 if has_heading else max(0, retain_after_heading - 1)
+                    )
+                    previous = page_text
+            finally:
+                device.close()
+            # Keep physical-page boundaries: the parser below intentionally
+            # excludes five-year financial-summary pages from the audited
+            # consolidated-statement tables.
+            text = "\f".join(retained)
+            if text.strip():
+                return text, "pdfminer_stream"
+        except Exception as exc:
+            # Continue to the legacy parser below.  Its failure is preserved
+            # to make an unsupported/malformed official PDF auditable.
+            logger.debug("HKEX pdfminer stream parser failed: %s", exc)
         try:
             import pdfplumber
 
             with pdfplumber.open(io.BytesIO(content)) as pdf:
-                pages = [page.extract_text() or "" for page in pdf.pages]
+                pages = []
+                for page in pdf.pages:
+                    try:
+                        pages.append(page.extract_text() or "")
+                    finally:
+                        flush = getattr(page, "flush_cache", None)
+                        if callable(flush):
+                            flush()
+                flush_pdf = getattr(pdf, "flush_cache", None)
+                if callable(flush_pdf):
+                    flush_pdf()
             return "\n".join(pages), "pdfplumber"
         except ImportError:
             try:
@@ -1242,18 +1375,48 @@ class HkexStatementProvider:
     def _currency_and_multiplier(cls, text: str) -> tuple[str, float, str]:
         sample = text[:30_000]
         upper = sample.upper()
+        declared_currency = re.search(
+            r"\b(?P<currency>RMB|CNY|HKD|HK\$|USD|US\$)\s*['’]?\s*"
+            r"(?:000|000000|million|millions|thousand|thousands)\b",
+            sample,
+            flags=re.IGNORECASE,
+        )
+        currency_token = (
+            declared_currency.group("currency").upper()
+            if declared_currency is not None
+            else ""
+        )
         currency = (
-            "HKD"
-            if "HK$" in upper or "HKD" in upper
+            "CNY"
+            if currency_token in {"RMB", "CNY"}
+            else "HKD"
+            if currency_token in {"HKD", "HK$"}
+            else "USD"
+            if currency_token in {"USD", "US$"}
             else "CNY"
             if "RMB" in upper or "CNY" in upper or "人民币" in sample
+            else "HKD"
+            if "HK$" in upper or "HKD" in upper
             else "USD"
             if "US$" in upper or "USD" in upper
             else "HKD"
         )
+        declared_word_match = re.search(
+            r"\b(?:RMB|CNY|HKD|HK\$|USD|US\$)\s*['’]?\s*"
+            r"(thousand|thousands|million|millions)\b",
+            sample,
+            flags=re.IGNORECASE,
+        )
+        if declared_word_match:
+            word = declared_word_match.group(1).lower()
+            return (
+                currency,
+                1_000_000.0 if word.startswith("million") else 1_000.0,
+                word,
+            )
         unit_match = re.search(
             r"(?:HK\$|RMB|US\$|USD|HKD|CNY)?\s*['’]?\s*"
-            r"(\d{3}|\d{6})\b",
+            r"(000|000000)\b",
             sample,
             flags=re.IGNORECASE,
         )
@@ -1280,8 +1443,24 @@ class HkexStatementProvider:
 
     @classmethod
     def _line_value(cls, text: str, patterns: tuple[str, ...]) -> float | None:
-        for line in text.splitlines():
-            normalized = re.sub(r"\s+", " ", line).replace("−", "-")
+        return cls._line_value_from_lines(text.splitlines(), patterns)
+
+    @classmethod
+    def _line_value_from_lines(
+        cls,
+        lines: Iterable[str],
+        patterns: tuple[str, ...],
+        *,
+        allow_following_lines: int = 0,
+    ) -> float | None:
+        normalized_lines = [
+            re.sub(r"\s+", " ", line).replace("−", "-").strip() for line in lines
+        ]
+        for index, normalized in enumerate(normalized_lines):
+            if allow_following_lines:
+                normalized = " ".join(
+                    normalized_lines[index : index + allow_following_lines + 1]
+                )
             for pattern in patterns:
                 match = re.search(pattern, normalized, flags=re.IGNORECASE)
                 if not match:
@@ -1305,41 +1484,233 @@ class HkexStatementProvider:
         return None
 
     @classmethod
+    def _eps_line_value(
+        cls, lines: Iterable[str], patterns: tuple[str, ...]
+    ) -> float | None:
+        """Read the current EPS column while ignoring a statement note number."""
+
+        for line in lines:
+            normalized = re.sub(r"\s+", " ", line).replace("−", "-")
+            for pattern in patterns:
+                match = re.search(pattern, normalized, flags=re.IGNORECASE)
+                if not match:
+                    continue
+                parsed: list[tuple[float, str]] = []
+                for token in re.findall(cls._NUMBER, normalized[match.end() :]):
+                    value = _float(token.strip("()"))
+                    if value is not None:
+                        parsed.append((value, token))
+                # EPS has a decimal in normal presentation.  A preceding
+                # integer is almost always the note reference, not EPS.
+                for value, token in parsed:
+                    if "." in token:
+                        return value
+                if len(parsed) == 1:
+                    return parsed[0][0]
+        return None
+
+    @classmethod
+    def _share_value_from_lines(
+        cls, lines: Iterable[str], patterns: tuple[str, ...]
+    ) -> float | None:
+        """Read a disclosed weighted share count and its displayed unit."""
+
+        normalized_lines = [
+            re.sub(r"\s+", " ", line).replace("−", "-").strip() for line in lines
+        ]
+        for index, line in enumerate(normalized_lines):
+            window = " ".join(normalized_lines[index : index + 5])
+            for pattern in patterns:
+                match = re.search(pattern, window, flags=re.IGNORECASE)
+                if not match:
+                    continue
+                parsed: list[tuple[float, str]] = []
+                for token in re.findall(cls._NUMBER, window[match.end() :]):
+                    value = _float(token.strip("()"))
+                    if value is not None:
+                        parsed.append((value, token))
+                for value, token in parsed:
+                    if "," in token or abs(value) >= 1_000:
+                        scale = (
+                            1_000_000.0
+                            if re.search(r"\bmillion shares?\b", window, re.I)
+                            else 1_000.0
+                            if re.search(r"\bthousand shares?\b", window, re.I)
+                            else 1.0
+                        )
+                        return value * scale
+        return None
+
+    @staticmethod
+    def _audited_statement_text(text: str) -> str:
+        """Return actual consolidated statement pages, excluding summaries.
+
+        A report's opening "Financial Summary" often contains the same field
+        labels as the audited accounts, but its five-year layout is not a
+        current-period statement.  The streaming extractor preserves form-feed
+        delimiters so a singular consolidated-statement title can select the
+        audited pages.  Synthetic/unit-test text without page delimiters is
+        deliberately retained whole for backwards-compatible parsing.
+        """
+
+        pages = [page for page in text.split("\f") if page.strip()]
+        if len(pages) <= 1:
+            return text
+        headings = (
+            r"\bconsolidated statement of profit",
+            r"\bconsolidated statement of comprehensive income",
+            r"\bconsolidated statement of financial position",
+            r"\bconsolidated statement of cash flows",
+            r"\bconsolidated income statement\b",
+            r"\bconsolidated balance sheet\b",
+        )
+        selected_indices: set[int] = set()
+        for index, page in enumerate(pages):
+            if not any(
+                re.search(pattern, page, flags=re.IGNORECASE) for pattern in headings
+            ):
+                continue
+            if not re.search(
+                r"\b(?:RMB|HK\$|HKD|US\$|USD|CNY)\s*['’]?\s*"
+                r"(?:000|000000|million|millions|thousand|thousands)\b",
+                page,
+                flags=re.IGNORECASE,
+            ):
+                continue
+            # Statement tables regularly continue over the next one to four
+            # pages without repeating the title or the unit declaration.
+            selected_indices.update(range(index, min(index + 5, len(pages))))
+        selected = [pages[index] for index in sorted(selected_indices)]
+        return "\n".join(selected) if selected else text
+
+    @classmethod
+    def _financial_summary_value(
+        cls, text: str, patterns: tuple[str, ...]
+    ) -> float | None:
+        """Use the latest column of an official five-year financial summary.
+
+        This is a fallback only for fields whose audited statement row is
+        split across several lines (for example, a revenue subtotal beneath
+        multiple business segments).  It never uses a summary from a separate
+        document and takes the last value only after detecting the ascending
+        multi-year header.
+        """
+
+        for page in text.split("\f"):
+            normalized_page = re.sub(r"\s+", " ", page)
+            if not re.search(r"\bfinancial summary\b", normalized_page, re.I):
+                continue
+            if not re.search(
+                r"\byear ended\b.*?20\d{2}.*?20\d{2}.*?20\d{2}",
+                normalized_page,
+                re.I,
+            ):
+                continue
+            for line in page.splitlines():
+                normalized_line = re.sub(r"\s+", " ", line).replace("−", "-")
+                if not any(
+                    re.search(pattern, normalized_line, flags=re.IGNORECASE)
+                    for pattern in patterns
+                ):
+                    continue
+                numbers = [
+                    _float(token.strip("()"))
+                    for token in re.findall(cls._NUMBER, normalized_line)
+                ]
+                parsed = [value for value in numbers if value is not None]
+                if len(parsed) >= 2:
+                    return parsed[-1]
+        return None
+
+    @staticmethod
+    def _validate_audited_values(values: dict[str, float]) -> None:
+        """Reject internally impossible table pairings instead of guessing.
+
+        This deliberately only catches order-of-magnitude contradictions.  It
+        does not impose a profitability screen, since banks and holding
+        companies can have unusual but legitimate statement ratios.
+        """
+
+        revenue = values.get("revenue")
+        profit = values.get("net_income_parent")
+        if (
+            revenue is not None
+            and profit is not None
+            and abs(profit) > max(abs(revenue) * 2.0, 1.0)
+        ):
+            raise ValueError(
+                "HKEX statement table pairing is internally inconsistent: "
+                "profit materially exceeds revenue"
+            )
+
+    @classmethod
     def _parse_pdf(cls, content: bytes) -> tuple[dict[str, float], str, date, str]:
         text, parser_name = cls._extract_pdf_text(content)
         period_end = cls._period_end(text)
         if period_end is None:
             raise ValueError("HKEX report period end was not found")
-        currency, multiplier, unit = cls._currency_and_multiplier(text)
+        statement_text = cls._audited_statement_text(text)
+        currency, multiplier, unit = cls._currency_and_multiplier(statement_text)
         labels: dict[str, tuple[str, ...]] = {
-            "revenue": (r"\b(?:revenue|turnover|operating revenue)\b",),
+            "revenue": (r"^\s*(?:revenue|revenues|turnover|operating revenue)\b",),
             "net_income_parent": (
                 r"\bprofit attributable to (?:owners|equity holders|shareholders)\b",
                 r"\bprofit attributable to owners of the company\b",
+                r"^equity holders of the company\b",
             ),
             "parent_equity": (
                 r"\b(?:total )?equity attributable to "
                 r"(?:owners|equity holders|shareholders)\b",
             ),
             "operating_cash_flow": (
-                r"\bnet cash (?:generated from|from) operating activities\b",
+                r"\bnet cash(?: flows)? (?:generated from|from) "
+                r"operating activities\b",
             ),
             "capital_expenditures": (
-                r"\b(?:purchase of|additions to) property,? plant and equipment\b",
+                r"\b(?:purchase of/?prepayments? for|purchase of|additions to) "
+                r"(?:property,? plant and equipment|prepayments? for "
+                r"property,? plant and equipment)\b",
                 r"\bcapital expenditure(?:s)?\b",
             ),
             "basic_eps": (r"\bbasic earnings per share\b",),
             "diluted_eps": (r"\bdiluted earnings per share\b",),
             "diluted_average_shares": (
-                r"\bweighted average number of (?:ordinary )?shares\b",
+                r"\bweighted average number of ordinary shares for the "
+                r"calculation of diluted eps\b",
             ),
         }
         values: dict[str, float] = {}
         for field, patterns in labels.items():
-            value = cls._line_value(text, patterns)
+            if field in {"basic_eps", "diluted_eps"}:
+                extended_patterns = patterns + (
+                    r"^\s*[-–]\s*basic\b"
+                    if field == "basic_eps"
+                    else r"^\s*[-–]\s*diluted\b",
+                )
+                value = cls._eps_line_value(
+                    statement_text.splitlines(), extended_patterns
+                )
+            elif field == "diluted_average_shares":
+                value = cls._share_value_from_lines(text.splitlines(), patterns)
+            else:
+                value = cls._line_value_from_lines(
+                    statement_text.splitlines(),
+                    patterns,
+                    allow_following_lines=2 if field == "capital_expenditures" else 0,
+                )
+            if value is None and field in {
+                "revenue",
+                "net_income_parent",
+                "parent_equity",
+            }:
+                value = cls._financial_summary_value(text, patterns)
             if value is None:
                 continue
-            if field in {"basic_eps", "diluted_eps"}:
+            if field in {
+                "basic_eps",
+                "diluted_eps",
+                "diluted_average_shares",
+            }:
                 values[field] = value
             elif field == "capital_expenditures":
                 values[field] = abs(value) * multiplier
@@ -1354,6 +1725,7 @@ class HkexStatementProvider:
             )
         if not values:
             raise ValueError("no audited HKEX financial labels parsed from PDF")
+        cls._validate_audited_values(values)
         values["_currency"] = currency
         values["_unit"] = unit
         return values, parser_name, period_end, currency
@@ -1367,11 +1739,13 @@ class HkexStatementProvider:
         except Exception as exc:
             return StatementFetchResult(
                 statements=[],
-                attempts=[{
-                    "source": "hkex_title_search",
-                    "status": "failed",
-                    "reason": str(exc),
-                }],
+                attempts=[
+                    {
+                        "source": "hkex_title_search",
+                        "status": "failed",
+                        "reason": str(exc),
+                    }
+                ],
             )
         for document in documents:
             url = str(document["url"])
@@ -1386,12 +1760,14 @@ class HkexStatementProvider:
                     response.content
                 )
                 if not start <= period_end <= end:
-                    attempts.append({
-                        "source": "hkex_results_pdf",
-                        "status": "out_of_range",
-                        "url": url,
-                        "period_end": period_end.isoformat(),
-                    })
+                    attempts.append(
+                        {
+                            "source": "hkex_results_pdf",
+                            "status": "out_of_range",
+                            "url": url,
+                            "period_end": period_end.isoformat(),
+                        }
+                    )
                     continue
                 kind = str(document["kind"])
                 snapshot = FinancialStatementSnapshot(
@@ -1433,20 +1809,24 @@ class HkexStatementProvider:
                     current.published_at or date.min,
                 ):
                     statements[key] = snapshot
-                attempts.append({
-                    "source": "hkex_results_pdf",
-                    "status": "success",
-                    "url": url,
-                    "period_end": period_end.isoformat(),
-                    "parser": parser_name,
-                })
+                attempts.append(
+                    {
+                        "source": "hkex_results_pdf",
+                        "status": "success",
+                        "url": url,
+                        "period_end": period_end.isoformat(),
+                        "parser": parser_name,
+                    }
+                )
             except Exception as exc:
-                attempts.append({
-                    "source": "hkex_results_pdf",
-                    "status": "failed",
-                    "url": url,
-                    "reason": str(exc),
-                })
+                attempts.append(
+                    {
+                        "source": "hkex_results_pdf",
+                        "status": "failed",
+                        "url": url,
+                        "reason": str(exc),
+                    }
+                )
         return StatementFetchResult(
             statements=sorted(
                 statements.values(),
@@ -1486,9 +1866,7 @@ STATEMENT_VALUE_FIELDS = (
 
 
 def _statement_completeness(item: FinancialStatementSnapshot) -> int:
-    return sum(
-        getattr(item, field) is not None for field in STATEMENT_VALUE_FIELDS
-    )
+    return sum(getattr(item, field) is not None for field in STATEMENT_VALUE_FIELDS)
 
 
 def merge_statement_sources(
@@ -1535,16 +1913,20 @@ def merge_statement_sources(
                         if value is not None:
                             setattr(merged, field, value)
                 merged.source = "+".join(
-                    dict.fromkeys([
-                        *merged.source.split("+"),
-                        *candidate.source.split("+"),
-                    ])
+                    dict.fromkeys(
+                        [
+                            *merged.source.split("+"),
+                            *candidate.source.split("+"),
+                        ]
+                    )
                 )
                 merged.diagnostics = list(
-                    dict.fromkeys([
-                        *merged.diagnostics,
-                        *candidate.diagnostics,
-                    ])
+                    dict.fromkeys(
+                        [
+                            *merged.diagnostics,
+                            *candidate.diagnostics,
+                        ]
+                    )
                 )
         else:
             merged = supplement.copy(deep=True)
@@ -1573,11 +1955,13 @@ def merge_statement_sources(
         )
         merged.source_url = supplement.source_url or merged.source_url
         merged.diagnostics = list(
-            dict.fromkeys([
-                *merged.diagnostics,
-                *supplement.diagnostics,
-                f"official_fields_overlaid_from:{supplement.source}",
-            ])
+            dict.fromkeys(
+                [
+                    *merged.diagnostics,
+                    *supplement.diagnostics,
+                    f"official_fields_overlaid_from:{supplement.source}",
+                ]
+            )
         )
         result.append(merged)
     selected: dict[tuple[date, date, str], FinancialStatementSnapshot] = {}
@@ -1619,10 +2003,7 @@ class PointInTimeFundamentalStore:
         statements = []
         for item in rows:
             statement = FinancialStatementSnapshot(**item)
-            if (
-                "cninfo_annual_report" in statement.source
-                and statement.source_url
-            ):
+            if "cninfo_annual_report" in statement.source and statement.source_url:
                 match = re.search(
                     r"/finalpage/(20\d{2}-\d{2}-\d{2})/",
                     statement.source_url,
@@ -1653,12 +2034,11 @@ class PointInTimeFundamentalStore:
         existing = self.read_all(code)
         if replace_sources:
             existing = [
-                item for item in existing
+                item
+                for item in existing
                 if not replace_sources.intersection(item.source.split("+"))
             ]
-        selected: dict[
-            tuple[date, date, str], FinancialStatementSnapshot
-        ] = {}
+        selected: dict[tuple[date, date, str], FinancialStatementSnapshot] = {}
         for item in [*existing, *statements]:
             if item.published_at is None:
                 logger.warning(
@@ -1673,9 +2053,8 @@ class PointInTimeFundamentalStore:
                 item.source,
             )
             current = selected.get(key)
-            if (
-                current is None
-                or self._completeness(item) >= self._completeness(current)
+            if current is None or self._completeness(item) >= self._completeness(
+                current
             ):
                 selected[key] = item
         ordered = sorted(
