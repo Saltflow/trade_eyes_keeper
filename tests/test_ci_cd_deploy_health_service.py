@@ -64,3 +64,28 @@ def test_deploy_connectivity_probe_allows_a_realistic_ssh_handshake(monkeypatch)
     assert ci_cd_deploy._test_ssh_connectivity() == (True, "")
     assert "ConnectTimeout=20" in captured["command"]
     assert captured["timeout"] == 30
+
+
+def test_ssh_command_is_noninteractive_and_uses_keepalives(monkeypatch):
+    captured = {}
+
+    class Result:
+        returncode = 0
+        stdout = "ok\n"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["stdin"] = kwargs["stdin"]
+        captured["timeout"] = kwargs["timeout"]
+        return Result()
+
+    monkeypatch.setattr(ci_cd_deploy.subprocess, "run", fake_run)
+
+    assert ci_cd_deploy._ssh_cmd("echo ok", timeout=47) == (True, "ok\n", "")
+    assert "ConnectTimeout=20" in captured["command"]
+    assert "ServerAliveInterval=10" in captured["command"]
+    assert "ServerAliveCountMax=3" in captured["command"]
+    assert "BatchMode=yes" in captured["command"]
+    assert captured["stdin"] is ci_cd_deploy.subprocess.DEVNULL
+    assert captured["timeout"] == 47

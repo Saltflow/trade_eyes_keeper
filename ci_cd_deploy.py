@@ -216,7 +216,13 @@ def _ssh_cmd(cmd, description="", timeout=60):
         "-o",
         "StrictHostKeyChecking=no",
         "-o",
-        "ConnectTimeout=10",
+        "ConnectTimeout=20",
+        "-o",
+        "ServerAliveInterval=10",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        "BatchMode=yes",
         f"{REMOTE_SSH_USER}@{REMOTE_HOST}",
         cmd,
     ]
@@ -227,6 +233,7 @@ def _ssh_cmd(cmd, description="", timeout=60):
             text=True,
             encoding="utf-8",
             errors="replace",
+            stdin=subprocess.DEVNULL,
             timeout=timeout,
         )
         out = result.stdout
