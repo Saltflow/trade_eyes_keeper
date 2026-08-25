@@ -43,3 +43,24 @@ def test_deploy_prefers_user_scoped_key_when_legacy_relative_key_is_absent(
     assert ci_cd_deploy._get_ssh_key().endswith(
         "/.ssh/trade_eyes_keeper_deploy_key"
     )
+
+
+def test_deploy_connectivity_probe_allows_a_realistic_ssh_handshake(monkeypatch):
+    captured = {}
+
+    class Result:
+        returncode = 0
+        stdout = "pong\n"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["timeout"] = kwargs["timeout"]
+        return Result()
+
+    monkeypatch.setattr(ci_cd_deploy.subprocess, "run", fake_run)
+    monkeypatch.setattr(ci_cd_deploy, "REMOTE_HOST", "127.0.0.2")
+
+    assert ci_cd_deploy._test_ssh_connectivity() == (True, "")
+    assert "ConnectTimeout=20" in captured["command"]
+    assert captured["timeout"] == 30

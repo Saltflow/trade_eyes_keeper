@@ -117,11 +117,14 @@ def _test_ssh_connectivity():
     cmd = [
         "ssh", "-i", _get_ssh_key(),
         "-o", "StrictHostKeyChecking=no",
-        "-o", "ConnectTimeout=8", "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=20",
+        "-o", "ServerAliveInterval=10",
+        "-o", "ServerAliveCountMax=3",
+        "-o", "BatchMode=yes",
         f"{REMOTE_SSH_USER}@{REMOTE_HOST}", "echo pong",
     ]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if r.returncode == 0 and "pong" in r.stdout:
             return True, ""
         return False, r.stderr.strip() or "no response"
