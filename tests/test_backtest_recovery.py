@@ -20,7 +20,7 @@ from src.interactive.commands import handlers
 from src.interactive.command_parser import ErrorCommand, parse_command
 
 
-def _price_history(periods: int = 1_500) -> pd.DataFrame:
+def _price_history(periods: int = 2_000) -> pd.DataFrame:
     dates = pd.date_range("2024-01-02", periods=periods, freq="B")
     close = 20 + np.linspace(0, 12, periods) + np.sin(np.arange(periods) / 9)
     return pd.DataFrame(

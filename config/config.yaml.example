@@ -84,7 +84,8 @@ instrument_audit:
 # Point-in-time statements, raw/qfq prices and corporate actions (strategy opt-in)
 point_in_time_data:
   output_dir: data/point_in_time
-  history_years: 6
+  # 84-month walk-forward history plus the optimizer's six-month calendar buffer.
+  history_years: 9
   official_statement_crawlers: true
   official_pdf_recent_years: 3
   # Required by the HKD value-policy example when an H share reports in CNY.
@@ -97,6 +98,7 @@ point_in_time_data:
   cninfo_pdf_cache_dir: data/point_in_time/provider_cache/cninfo
   market_history:
     compare_fallback_on_partial: true
+    prefer_explainable_actions: true
     coverage_tolerance_days: 31
     baostock_socket_timeout_seconds: 20
 

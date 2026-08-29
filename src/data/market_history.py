@@ -76,6 +76,54 @@ class CorporateAction(BaseModel):
     diagnostics: list[str] = Field(default_factory=list)
 
 
+def corporate_action_issues(
+    actions: Iterable[CorporateAction] | None,
+) -> tuple[str, ...]:
+    """Return unresolved or invalid corporate actions without guessing.
+
+    A source-level adjustment factor is not an executable action: it does not
+    tell the simulator whether shares changed, cash was distributed, or a
+    rights issue occurred.  Keep that distinction explicit so source routing
+    and optimizer preflight can make the same decision as the simulator.
+    """
+    issues: list[str] = []
+    for action in actions or ():
+        code = str(getattr(action, "code", ""))
+        ex_date = getattr(action, "ex_date", None)
+        label = f"{code} {ex_date}"
+        if getattr(action, "rights_price", None) is not None:
+            issues.append(f"rights issue is not supported: {label}")
+            continue
+        cash = getattr(action, "cash_per_share", None)
+        multiplier = getattr(action, "share_multiplier", None)
+        if cash is None and multiplier is None:
+            issues.append(f"unresolved corporate action factor: {label}")
+            continue
+        if cash is not None:
+            try:
+                cash_value = float(cash)
+            except (TypeError, ValueError):
+                cash_value = float("nan")
+            if not np.isfinite(cash_value) or cash_value < 0.0:
+                issues.append(f"invalid cash dividend: {label}")
+                continue
+        if multiplier is not None:
+            try:
+                multiplier_value = float(multiplier)
+            except (TypeError, ValueError):
+                multiplier_value = float("nan")
+            if not np.isfinite(multiplier_value) or multiplier_value <= 0.0:
+                issues.append(f"invalid share multiplier: {label}")
+    return tuple(issues)
+
+
+def corporate_actions_are_explainable(
+    actions: Iterable[CorporateAction] | None,
+) -> bool:
+    """Return whether every stored action can be applied by the simulator."""
+    return not corporate_action_issues(actions)
+
+
 @dataclass
 class PriceHistoryBundle:
     """Aligned raw and forward-adjusted prices for one instrument.
@@ -501,6 +549,8 @@ class YahooMarketHistoryProvider:
             chart.get("events", {}) or {},
             currency,
             response.url,
+            start=start,
+            end=end,
         )
         return PriceHistoryBundle(
             code=str(code),
@@ -516,12 +566,20 @@ class YahooMarketHistoryProvider:
         events: dict[str, Any],
         currency: str | None,
         source_url: str,
+        *,
+        start: date | None = None,
+        end: date | None = None,
     ) -> list[CorporateAction]:
         actions: list[CorporateAction] = []
         for event in (events.get("dividends", {}) or {}).values():
             ex_date = _event_date(event)
             amount = _float(event.get("amount"))
-            if ex_date and amount is not None:
+            if (
+                ex_date
+                and amount is not None
+                and (start is None or ex_date >= start)
+                and (end is None or ex_date <= end)
+            ):
                 actions.append(
                     CorporateAction(
                         code=str(code),
@@ -546,6 +604,10 @@ class YahooMarketHistoryProvider:
                 if numerator and denominator and denominator > 0:
                     ratio = numerator / denominator
             if ex_date and ratio and ratio > 0:
+                if start is not None and ex_date < start:
+                    continue
+                if end is not None and ex_date > end:
+                    continue
                 actions.append(
                     CorporateAction(
                         code=str(code),
@@ -567,15 +629,35 @@ def _at(values: Iterable[Any], index: int) -> float | None:
 
 def _event_date(event: dict[str, Any]) -> date | None:
     value = event.get("date")
-    parsed = _date(value)
-    if parsed is not None:
-        return parsed
     if value is None:
         return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if re.fullmatch(r"\d{8}", stripped):
+            try:
+                return datetime.strptime(stripped, "%Y%m%d").date()
+            except ValueError:
+                return None
+    # Yahoo returns Unix seconds as JSON numbers.  Parse those before the
+    # permissive ISO parser: Python also accepts the first eight digits of a
+    # timestamp as a basic YYYYMMDD date, which would silently move a real
+    # action centuries into the past.
     try:
-        return datetime.fromtimestamp(int(value), tz=timezone.utc).date()
-    except (TypeError, ValueError, OSError):
+        numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
+        numeric = numeric or (
+            isinstance(value, str)
+            and bool(re.fullmatch(r"[+-]?\d+(?:\.\d+)?", value.strip()))
+        )
+        if numeric:
+            seconds = float(value)
+            if not np.isfinite(seconds):
+                return None
+            if abs(seconds) > 100_000_000_000:
+                seconds /= 1000.0
+            return datetime.fromtimestamp(seconds, tz=timezone.utc).date()
+    except (TypeError, ValueError, OSError, OverflowError):
         return None
+    return _date(value)
 
 
 def _deduplicate_actions(actions: Iterable[CorporateAction]) -> list[CorporateAction]:
@@ -614,6 +696,9 @@ class MarketHistoryProvider:
         ) or {}
         self.compare_fallback_on_partial = bool(
             settings.get("compare_fallback_on_partial", True)
+        )
+        self.prefer_explainable_actions = bool(
+            settings.get("prefer_explainable_actions", True)
         )
         self.coverage_tolerance_days = max(
             0, int(settings.get("coverage_tolerance_days", 31))
@@ -662,6 +747,32 @@ class MarketHistoryProvider:
         )
         return chosen
 
+    @classmethod
+    def _prefer_explainable_actions(
+        cls,
+        primary: PriceHistoryBundle,
+        fallback: PriceHistoryBundle,
+    ) -> PriceHistoryBundle:
+        """Prefer a full-coverage fallback with executable actions."""
+        primary_issues = corporate_action_issues(primary.actions)
+        fallback_issues = corporate_action_issues(fallback.actions)
+        primary_state = "complete" if not primary_issues else "incomplete"
+        fallback_state = "complete" if not fallback_issues else "incomplete"
+        fallback.diagnostics.extend(
+            [
+                (
+                    "corporate_action_comparison:"
+                    f"{primary.source}={primary_state};"
+                    f"{fallback.source}={fallback_state}"
+                ),
+                (
+                    "corporate_action_selected:"
+                    f"{fallback.source};rejected={primary.source}"
+                ),
+            ]
+        )
+        return fallback
+
     def fetch(self, code: str, start: date, end: date) -> PriceHistoryBundle:
         if detect_market(code) == "a_share":
             try:
@@ -671,21 +782,48 @@ class MarketHistoryProvider:
                 bundle = self.yahoo.fetch(code, start, end)
                 bundle.diagnostics.append(f"baostock_failed:{exc}")
                 return bundle
-            if (
-                not self.compare_fallback_on_partial
-                or self._covers_requested_start(primary, start)
-            ):
+            primary_has_coverage = self._covers_requested_start(primary, start)
+            primary_action_issues = corporate_action_issues(primary.actions)
+            should_probe_fallback = (
+                self.compare_fallback_on_partial and not primary_has_coverage
+            ) or (
+                self.prefer_explainable_actions and bool(primary_action_issues)
+            )
+            if not should_probe_fallback:
                 return primary
             try:
                 fallback = self.yahoo.fetch(code, start, end)
             except Exception as exc:
-                primary.diagnostics.append(
-                    "partial_coverage_fallback_failed:"
-                    f"requested_start={start.isoformat()};"
-                    f"actual_start={self._first_date(primary).isoformat()};"
-                    f"reason={exc}"
-                )
+                if not primary_has_coverage:
+                    primary.diagnostics.append(
+                        "partial_coverage_fallback_failed:"
+                        f"requested_start={start.isoformat()};"
+                        f"actual_start={self._first_date(primary).isoformat()};"
+                        f"reason={exc}"
+                    )
+                else:
+                    primary.diagnostics.append(
+                        "corporate_action_fallback_failed:"
+                        f"source={primary.source};reason={exc}"
+                    )
                 return primary
+            fallback_has_coverage = self._covers_requested_start(fallback, start)
+            fallback_action_issues = corporate_action_issues(fallback.actions)
+            if (
+                self.prefer_explainable_actions
+                and primary_action_issues
+                and fallback_has_coverage
+                and not fallback_action_issues
+            ):
+                return self._prefer_explainable_actions(primary, fallback)
+            if not primary_has_coverage:
+                return self._prefer_coverage(primary, fallback, start)
+            if primary_action_issues and fallback_action_issues:
+                primary.diagnostics.append(
+                    "corporate_action_fallback_unresolved:"
+                    f"source={fallback.source};issues="
+                    + "|".join(fallback_action_issues)
+                )
             return self._prefer_coverage(primary, fallback, start)
         return self.yahoo.fetch(code, start, end)
 

@@ -28,13 +28,13 @@ soft_constraints:
   min_sharpe: 0.5
   sharpe_penalty_weight: 0.3
 walk_forward:
-  # Per-window indicator/signal-state lookback; Solver selection sees the
-  # first 51 calendar months and never sees the final 9-month holdout.
+  # Per-window indicator/signal-state lookback.  The four newest overlapping
+  # 9-month windows are holdout-only; two overlapping windows are purged.
   state_lookback_months: 12
   test_months: 9
   step_months: 3
-  # 11 ranking + 2 overlap-isolation + 1 independent hold-out.
-  num_windows: 14
+  # 16 ranking + 2 overlap-isolation + 4 holdout windows.
+  num_windows: 22
   window_weights:
   - 1.0
   - 1.0
@@ -43,11 +43,10 @@ walk_forward:
   - 1.0
   - 1.0
   window_range_penalty: 0.5
-  data_years: 5
-  # ``num_windows`` is the total number of windows.  The newest
-  # ``validation_windows`` are held out for the daily-report validation.
-  # The two windows overlapping the newest hold-out are isolated.
-  validation_windows: 1
+  data_years: 8
+  # ``num_windows`` is the total number of windows.  The newest four
+  # validation windows are held out for validation and never enter Solver.
+  validation_windows: 4
   purge_overlapping_windows: true
 genetic_search:
   phase1_random_samples: 30000

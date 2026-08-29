@@ -134,7 +134,10 @@ def _min_optimizer_history_rows(constraints) -> int:
     return constraints.walk_forward.total_months_needed * 21
 
 
-def _has_optimizer_history(data: pd.DataFrame, constraints) -> bool:
+def _has_optimizer_history(
+    data: pd.DataFrame,
+    constraints,
+) -> bool:
     """Return whether one symbol spans the full configured calendar horizon."""
     if data is None or data.empty:
         return False
@@ -144,9 +147,8 @@ def _has_optimizer_history(data: pd.DataFrame, constraints) -> bool:
     if len(dates) < 2:
         return False
     latest = pd.Timestamp(dates.max()).normalize() + pd.Timedelta(days=1)
-    required_start = latest - pd.DateOffset(
-        months=constraints.walk_forward.total_months_needed
-    )
+    horizon = constraints.walk_forward.total_months_needed
+    required_start = latest - pd.DateOffset(months=horizon)
     return pd.Timestamp(dates.min()).normalize() <= required_start
 
 
@@ -161,7 +163,7 @@ def _optimizer_evaluation_budget(constraints) -> int:
 
 def _optimizer_validation_start(constraints) -> str:
     """Legacy fallback when an artifact predates persisted WF boundaries."""
-    months = max(1, int(constraints.walk_forward.test_months))
+    months = max(1, int(constraints.walk_forward.holdout_calendar_span_months))
     return (pd.Timestamp.now().normalize() - pd.DateOffset(months=months)).strftime(
         "%Y-%m-%d"
     )
@@ -219,6 +221,122 @@ def _load_optimizer_benchmarks(data_source, constraints, group: str, days: int) 
     return result
 
 
+def _bundle_qfq_frame(bundle) -> pd.DataFrame:
+    """Convert one point-in-time bundle to the strategy's qfq OHLC schema."""
+    frame = bundle.prices
+    return pd.DataFrame(
+        {
+            "date": pd.to_datetime(frame["date"], errors="coerce"),
+            "open": pd.to_numeric(frame["qfq_open"], errors="coerce"),
+            "high": pd.to_numeric(frame["qfq_high"], errors="coerce"),
+            "low": pd.to_numeric(frame["qfq_low"], errors="coerce"),
+            "close": pd.to_numeric(frame["qfq_close"], errors="coerce"),
+            "volume": pd.to_numeric(frame["volume"], errors="coerce"),
+            "tradable": frame["tradable"].astype(bool),
+        }
+    )
+
+
+def _load_optimizer_market_bundles(
+    config: dict,
+    codes: list[str],
+    days: int,
+    *,
+    label: str,
+) -> dict[str, object]:
+    """Load the strict raw/qfq/action contract for one optimizer universe.
+
+    Optimizer input is deliberately not allowed to fall back to the legacy
+    adjusted-only cache.  A missing bundle or insufficient calendar coverage
+    makes this group fail closed so a partial validation cannot be promoted.
+    """
+    bundles, errors = _load_optimizer_market_bundles_with_errors(
+        config, codes, days
+    )
+    if errors:
+        raise RuntimeError(
+            f"{label} point-in-time raw/qfq coverage validation failed: "
+            + "; ".join(errors)
+        )
+    return bundles
+
+
+def _load_optimizer_market_bundles_with_errors(
+    config: dict,
+    codes: list[str],
+    days: int,
+) -> tuple[dict[str, object], list[str]]:
+    """Load bundles and retain per-symbol failures for optimizer filtering."""
+    from src.backtest.execution import build_corporate_action_schedule
+    from src.data.market_history import (
+        PointInTimeMarketStore,
+        corporate_action_issues,
+    )
+
+    settings = config.get("point_in_time_data", {}) or {}
+    root = settings.get("output_dir", "data/point_in_time")
+    store = PointInTimeMarketStore(root)
+    today = pd.Timestamp.now().normalize()
+    requested_start = today - pd.Timedelta(days=max(1, int(days)))
+    bundles: dict[str, object] = {}
+    errors: list[str] = []
+    for code in dict.fromkeys(str(item) for item in codes):
+        try:
+            bundle = store.read(code)
+            if bundle is None:
+                raise ValueError("bundle is absent")
+            frame = bundle.prices
+            dates = pd.to_datetime(frame["date"], errors="coerce").dropna()
+            if dates.empty:
+                raise ValueError("bundle has no valid dates")
+            if dates.min().normalize() > requested_start + pd.Timedelta(days=31):
+                raise ValueError(
+                    f"coverage starts at {dates.min().date()}, requested {requested_start.date()}"
+                )
+            if dates.max().normalize() < today - pd.Timedelta(days=14):
+                raise ValueError(
+                    f"coverage ends at {dates.max().date()}, current data is stale"
+                )
+            for column in (
+                "raw_open", "raw_high", "raw_low", "raw_close",
+                "qfq_open", "qfq_high", "qfq_low", "qfq_close",
+                "qfq_factor",
+            ):
+                if pd.to_numeric(frame[column], errors="coerce").isna().any():
+                    raise ValueError(f"column {column} contains missing values")
+            action_issues = corporate_action_issues(bundle.actions)
+            if action_issues:
+                raise ValueError("; ".join(action_issues))
+            build_corporate_action_schedule(
+                bundle.actions,
+                frame["date"],
+                [code],
+            )
+            bundles[code] = bundle
+        except Exception as exc:
+            errors.append(f"{code}: {exc}")
+    return bundles, errors
+
+
+def _load_optimizer_benchmark_bundles(
+    config: dict,
+    constraints,
+    group: str,
+    days: int,
+) -> dict[str, object]:
+    codes = [
+        code
+        for code in dict.fromkeys(constraints.benchmark_codes_for(group))
+        if code != "risk_free"
+    ]
+    return _load_optimizer_market_bundles(
+        config,
+        codes,
+        days,
+        label=f"{group} benchmark",
+    )
+
+
 def rebuild_active_optimizer_summary(config: dict) -> OptimizerRunSummary | None:
     """Recreate a complete three-market optimizer report from the active run.
 
@@ -234,9 +352,6 @@ def rebuild_active_optimizer_summary(config: dict) -> OptimizerRunSummary | None
     constraints = get_constraints()
     lookback_days = _optimizer_lookback_days(constraints)
     evaluation_budget = _optimizer_evaluation_budget(constraints)
-    from src.data.data_source import DataSource
-
-    data_source = DataSource(config)
     summaries: dict[str, OptimizerGroupSummary] = {}
     configured_codes = [_stock_code(stock) for stock in config.get("stocks", [])]
 
@@ -296,41 +411,46 @@ def rebuild_active_optimizer_summary(config: dict) -> OptimizerRunSummary | None
             artifact=f"{group}_best_params.yaml",
         )
 
-        stocks_data = {}
-        for code in configured_codes:
-            if _detect_fine_group(code) != group:
-                continue
-            try:
-                data = data_source.fetch_stock_data(code, days=lookback_days)
-            except Exception as exc:
-                logging.getLogger(__name__).warning(
-                    "Unable to load %s for %s summary rebuild: %s", code, group, exc
+        try:
+            group_codes = [
+                code for code in configured_codes if _detect_fine_group(code) == group
+            ]
+            market_bundles = _load_optimizer_market_bundles(
+                config,
+                group_codes,
+                lookback_days,
+                label=f"{group} summary",
+            )
+            stocks_data = {
+                code: _bundle_qfq_frame(bundle)
+                for code, bundle in market_bundles.items()
+            }
+            if stocks_data:
+                context_enricher = _strategy_context_enricher(
+                    active.strategy, config, group, list(stocks_data)
                 )
-                continue
-            if data is not None and len(data) >= 60:
-                stocks_data[code] = data
-
-        if stocks_data:
-            context_enricher = _strategy_context_enricher(
-                active.strategy, config, group, list(stocks_data)
+                reports = evaluate_all_groups(
+                    stocks_data,
+                    list(stocks_data),
+                    active.strategy,
+                    active.params_by_group[group],
+                    constraints.execution,
+                    benchmark_bundles=_load_optimizer_benchmark_bundles(
+                        config, constraints, group, lookback_days
+                    ),
+                    market_bundles=market_bundles,
+                    target_groups=[group],
+                    start_date=validation_start,
+                    end_date=validation_end,
+                    context_enricher=context_enricher,
+                )
+                validation = reports.get(group)
+                if validation is not None:
+                    summary.validation = _optimizer_validation_snapshot(validation)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "%s summary rebuild skipped: %s", group, exc
             )
-            reports = evaluate_all_groups(
-                stocks_data,
-                list(stocks_data),
-                active.strategy,
-                active.params_by_group[group],
-                constraints.execution,
-                benchmark_data=_load_optimizer_benchmarks(
-                    data_source, constraints, group, lookback_days
-                ),
-                target_groups=[group],
-                start_date=validation_start,
-                end_date=validation_end,
-                context_enricher=context_enricher,
-            )
-            validation = reports.get(group)
-            if validation is not None:
-                summary.validation = _optimizer_validation_snapshot(validation)
 
         if active.run_id:
             persist_group_summary(active.run_id, summary)
@@ -409,19 +529,39 @@ def run_optimization(
     if skipped:
         logger.info("Optimization skips configured symbols: %s", sorted(skipped))
 
+    constraints = get_constraints()
+    lookback_days = _optimizer_lookback_days(constraints)
+    preloaded_market_bundles: dict[str, dict[str, object]] = {}
+    if "point_in_time_data" in config:
+        for group in target_groups:
+            codes = groups.get(group, [])
+            if not codes:
+                continue
+            bundles, errors = _load_optimizer_market_bundles_with_errors(
+                config,
+                codes,
+                lookback_days,
+            )
+            if errors:
+                logger.warning(
+                    "%s optimizer excludes these symbols from search only: %s",
+                    group,
+                    "; ".join(errors),
+                )
+            groups[group] = list(bundles)
+            preloaded_market_bundles[group] = bundles
+
     required_groups = tuple(group for group, codes in groups.items() if codes)
     if not required_groups:
         logger.error("No optimizer-eligible market group has configured symbols")
         return {}
 
-    constraints = get_constraints()
     promotion_policy = PromotionPolicy.load()
     incumbent_run = load_latest_strategy_run(groups=OPTIMIZER_GROUPS)
     prune_optimizer_runs(
         keep_completed=constraints.search.run_retention_count,
         protected_run_ids=(run_id,),
     )
-    lookback_days = _optimizer_lookback_days(constraints)
     evaluation_budget = _optimizer_evaluation_budget(constraints)
     logger.info(
         "Starting %s optimization: A=%d HK=%d US=%d, lookback=%d days",
@@ -432,9 +572,6 @@ def run_optimization(
         lookback_days,
     )
 
-    from src.data.data_source import DataSource
-
-    data_source = DataSource(config)
     completed: dict[str, int] = {}
     for group, codes in groups.items():
         if not codes:
@@ -442,36 +579,48 @@ def run_optimization(
             summaries[group].status = "no_symbols"
             continue
 
-        stocks_data: dict[str, pd.DataFrame] = {}
-        for code in codes:
-            try:
-                data = data_source.fetch_stock_data(code, days=lookback_days)
-            except Exception as exc:
-                logger.warning("Unable to load %s for %s optimization: %s", code, group, exc)
-                continue
-            if data is None or data.empty:
-                continue
-            if not _has_optimizer_history(data, constraints):
-                logger.warning(
-                    "Skipping %s from %s optimization: history does not cover "
-                    "the configured %d-month walk-forward horizon",
-                    code,
-                    group,
-                    constraints.walk_forward.total_months_needed,
-                )
-                continue
-            stocks_data[code] = data
-
-        if not stocks_data:
-            logger.warning("Skipping %s optimization: no usable market data", group)
-            summaries[group].status = "no_data"
-            continue
-
         constraints.set_group(group)
         try:
-            optimizer_benchmarks = _load_optimizer_benchmarks(
-                data_source, constraints, group, lookback_days
-            )
+            market_bundles = None
+            benchmark_bundles = None
+            optimizer_benchmarks = None
+            if "point_in_time_data" in config:
+                market_bundles = preloaded_market_bundles.get(group)
+                if market_bundles is None:
+                    market_bundles = _load_optimizer_market_bundles(
+                        config,
+                        codes,
+                        lookback_days,
+                        label=f"{group} universe",
+                    )
+                stocks_data = {
+                    code: _bundle_qfq_frame(bundle)
+                    for code, bundle in market_bundles.items()
+                }
+                if not stocks_data:
+                    raise RuntimeError("no usable point-in-time market bundles")
+                benchmark_bundles = _load_optimizer_benchmark_bundles(
+                    config, constraints, group, lookback_days
+                )
+            else:
+                # Small legacy callers/tests can still inject a DataSource.
+                # The production config always declares point_in_time_data,
+                # so optimizer validation there cannot take this path.
+                from src.data.data_source import DataSource
+
+                data_source = DataSource(config)
+                stocks_data = {}
+                for code in codes:
+                    data = data_source.fetch_stock_data(code, days=lookback_days)
+                    if data is not None and not data.empty and _has_optimizer_history(
+                        data, constraints
+                    ):
+                        stocks_data[code] = data
+                if not stocks_data:
+                    raise RuntimeError("no usable legacy market data")
+                optimizer_benchmarks = _load_optimizer_benchmarks(
+                    data_source, constraints, group, lookback_days
+                )
             context_enricher = _strategy_context_enricher(
                 strategy, config, group, list(stocks_data)
             )
@@ -482,7 +631,13 @@ def run_optimization(
                 group,
                 _constraints=constraints,
                 output_dir=run_dir,
-                benchmark_data=optimizer_benchmarks,
+                benchmark_data=(
+                    optimizer_benchmarks
+                    if market_bundles is None
+                    else None
+                ),
+                benchmark_bundles=benchmark_bundles,
+                market_bundles=market_bundles,
                 context_enricher=context_enricher,
             )
         except Exception:
@@ -542,6 +697,8 @@ def run_optimization(
                     params,
                     constraints.execution,
                     benchmark_data=optimizer_benchmarks,
+                    benchmark_bundles=benchmark_bundles,
+                    market_bundles=market_bundles,
                     target_groups=[group],
                     start_date=validation_start,
                     end_date=validation_end,
@@ -564,6 +721,8 @@ def run_optimization(
                             incumbent_run.params_by_group[group],
                             constraints.execution,
                             benchmark_data=optimizer_benchmarks,
+                            benchmark_bundles=benchmark_bundles,
+                            market_bundles=market_bundles,
                             target_groups=[group],
                             start_date=validation_start,
                             end_date=validation_end,

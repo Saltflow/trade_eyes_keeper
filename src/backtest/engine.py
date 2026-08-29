@@ -23,7 +23,12 @@ from ..strategy import (
     TradePlan,
 )
 from ..markets import _detect_fine_group
-from .execution import DEFAULT_FILL_PRICE_POLICY, ExecutionPriceSlice
+from .execution import (
+    CorporateActionSlice,
+    DEFAULT_FILL_PRICE_POLICY,
+    ExecutionPriceSlice,
+    build_corporate_action_schedule,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +92,7 @@ def buy_and_hold_nav(
     lot_size: int,
     commission_rate: float,
     weights: np.ndarray | None = None,
+    corporate_actions=None,
 ) -> np.ndarray:
     """Static buy-and-hold NAV using the same fee, lots and stress price."""
     closes = np.asarray(close_prices, dtype=np.float64)
@@ -118,22 +124,44 @@ def buy_and_hold_nav(
         requested = requested / requested.sum()
     shares = np.zeros(columns, dtype=np.float64)
     cash = float(initial_cash)
-    for column in range(columns):
-        execution_price = buys[0, column]
-        if execution_price <= 0 or not np.isfinite(execution_price):
-            continue
-        budget = initial_cash * requested[column]
-        quantity = int(
-            budget / (execution_price * (1.0 + commission_rate)) / lot_size
-        ) * lot_size
-        if quantity <= 0:
-            continue
-        cost = quantity * execution_price * (1.0 + commission_rate)
-        if cost > cash:
-            continue
-        shares[column] = quantity
-        cash -= cost
-    return cash + valuation.dot(shares)
+    if corporate_actions is None:
+        dividend_matrix = np.zeros_like(closes, dtype=np.float64)
+        multiplier_matrix = np.ones_like(closes, dtype=np.float64)
+    else:
+        dividend_matrix = np.asarray(
+            corporate_actions.cash_dividends, dtype=np.float64
+        )
+        multiplier_matrix = np.asarray(
+            corporate_actions.share_multipliers, dtype=np.float64
+        )
+        if dividend_matrix.shape != closes.shape:
+            raise ValueError("benchmark actions and prices must have the same shape")
+    nav = np.zeros(rows, dtype=np.float64)
+    for row in range(rows):
+        for column in range(columns):
+            if shares[column] > 0.0:
+                cash += shares[column] * dividend_matrix[row, column]
+                multiplier = multiplier_matrix[row, column]
+                if multiplier != 1.0:
+                    shares[column] *= multiplier
+        if row == 0:
+            for column in range(columns):
+                execution_price = buys[0, column]
+                if execution_price <= 0 or not np.isfinite(execution_price):
+                    continue
+                budget = initial_cash * requested[column]
+                quantity = int(
+                    budget / (execution_price * (1.0 + commission_rate)) / lot_size
+                ) * lot_size
+                if quantity <= 0:
+                    continue
+                cost = quantity * execution_price * (1.0 + commission_rate)
+                if cost > cash:
+                    continue
+                shares[column] = quantity
+                cash -= cost
+        nav[row] = cash + valuation[row].dot(shares)
+    return nav
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -249,6 +277,8 @@ if HAS_NUMBA:
         buy_prices,
         sell_prices,
         tradable,
+        cash_dividends,
+        share_multipliers,
         initial_cash,
         buy_cash_limit,
         sell_cash_limit,
@@ -284,6 +314,16 @@ if HAS_NUMBA:
         order = np.empty(N, dtype=np.int64)
 
         for t in range(T):
+            # Ex-date actions are applied before orders.  This credits cash
+            # dividends and changes share count/cost per share without
+            # manufacturing a price return in the raw-price NAV path.
+            for n in range(N):
+                if shares[n] > 0.0:
+                    cash += shares[n] * cash_dividends[t, n]
+                    multiplier = share_multipliers[t, n]
+                    if multiplier != 1.0:
+                        shares[n] *= multiplier
+                        cost_basis[n] /= multiplier
             # Sell first.  Sort candidates by strength descending; the input
             # columns are lexically sorted codes, giving a stable tie-breaker.
             count = 0
@@ -437,6 +477,8 @@ if HAS_NUMBA:
         buy_prices,
         sell_prices,
         tradable,
+        cash_dividends,
+        share_multipliers,
         date_ordinals,
         initial_cash,
         per_symbol_cap,
@@ -477,6 +519,13 @@ if HAS_NUMBA:
         desired_buys = np.zeros(columns, dtype=np.float64)
 
         for row in range(rows):
+            for column in range(columns):
+                if shares[column] > 0.0:
+                    cash += shares[column] * cash_dividends[row, column]
+                    multiplier = share_multipliers[row, column]
+                    if multiplier != 1.0:
+                        shares[column] *= multiplier
+                        cost_basis[column] /= multiplier
             state_changed = False
             # Explicit exits always happen before allocation.  The strategy
             # marks catastrophe exits separately so they bypass the 30-day
@@ -811,6 +860,9 @@ class FastEvaluator:
         sell_prices = np.asarray(
             resolved_prices.sell_prices, dtype=np.float32
         )
+        action_schedule = resolved_prices.corporate_actions
+        if action_schedule is None:
+            action_schedule = CorporateActionSlice.empty(T, N)
         for n in range(N):
             last = 0.0
             for t in range(T):
@@ -884,6 +936,12 @@ class FastEvaluator:
                 np.ascontiguousarray(buy_prices, dtype=np.float32),
                 np.ascontiguousarray(sell_prices, dtype=np.float32),
                 np.ascontiguousarray(tradable, dtype=np.bool_),
+                np.ascontiguousarray(
+                    action_schedule.cash_dividends, dtype=np.float32
+                ),
+                np.ascontiguousarray(
+                    action_schedule.share_multipliers, dtype=np.float32
+                ),
                 np.ascontiguousarray(date_ordinals, dtype=np.int64),
                 float(self.initial_cash),
                 float(trade_plan.execution.get("per_symbol_cap", 0.20)),
@@ -913,6 +971,12 @@ class FastEvaluator:
                 np.ascontiguousarray(buy_prices, dtype=np.float32),
                 np.ascontiguousarray(sell_prices, dtype=np.float32),
                 np.ascontiguousarray(tradable, dtype=np.bool_),
+                np.ascontiguousarray(
+                    action_schedule.cash_dividends, dtype=np.float32
+                ),
+                np.ascontiguousarray(
+                    action_schedule.share_multipliers, dtype=np.float32
+                ),
                 float(self.initial_cash), buy_cash_limit, sell_cash_limit,
                 int(self.lot_size), float(self.commission_rate),
                 int(self.min_holding_days),
@@ -937,6 +1001,7 @@ class FastEvaluator:
             pending_order_count=pending_order_count,
             cash_rejected_order_count=cash_rejected_order_count,
             concentration_hhi=concentration_hhi,
+            corporate_actions=action_schedule,
         )
 
     def evaluate_batch(
@@ -1012,6 +1077,7 @@ def selected_basket_hold_return(
     initial_cash: float,
     lot_size: int,
     commission_rate: float,
+    corporate_actions: CorporateActionSlice | None = None,
 ) -> float:
     """Causal first-entry basket held without exits, top-ups or rebalancing.
 
@@ -1044,6 +1110,8 @@ def selected_basket_hold_return(
     if len(event_starts) > 1:
         event_starts[1:] &= ~entries[:-1]
     rows, columns = entries.shape
+    if corporate_actions is None:
+        corporate_actions = CorporateActionSlice.empty(rows, columns)
     shares = np.zeros(columns, dtype=np.float64)
     entered = np.zeros(columns, dtype=bool)
     committed_weights = np.zeros(columns, dtype=np.float64)
@@ -1065,6 +1133,15 @@ def selected_basket_hold_return(
         trade_plan.execution.get("total_exposure_cap", 0.80)
     )
     for row in range(rows):
+        for column in range(columns):
+            if shares[column] > 0.0:
+                cash += (
+                    shares[column]
+                    * corporate_actions.cash_dividends[row, column]
+                )
+                multiplier = corporate_actions.share_multipliers[row, column]
+                if multiplier != 1.0:
+                    shares[column] *= multiplier
         candidates = [
             column
             for column in range(columns)
@@ -1147,6 +1224,7 @@ def _compute_stats(
     pending_order_count=0,
     cash_rejected_order_count=0,
     concentration_hhi=0.0,
+    corporate_actions=None,
     selected_basket_hold_return=None,
     timing_value_add=None,
     initial_asset=None,
@@ -1293,6 +1371,9 @@ def simulate_portfolio(
     ).copy()
     buy_prices = np.asarray(resolved_prices.buy_prices, dtype=np.float32)
     sell_prices = np.asarray(resolved_prices.sell_prices, dtype=np.float32)
+    action_schedule = resolved_prices.corporate_actions
+    if action_schedule is None:
+        action_schedule = CorporateActionSlice.empty(T, N)
     for n in range(N):
         last = 0.0
         for t in range(T):
@@ -1381,6 +1462,12 @@ def simulate_portfolio(
             np.ascontiguousarray(buy_prices, dtype=np.float32),
             np.ascontiguousarray(sell_prices, dtype=np.float32),
             np.ascontiguousarray(tradable, dtype=np.bool_),
+            np.ascontiguousarray(
+                action_schedule.cash_dividends, dtype=np.float32
+            ),
+            np.ascontiguousarray(
+                action_schedule.share_multipliers, dtype=np.float32
+            ),
             np.ascontiguousarray(date_ordinals, dtype=np.int64),
             float(initial_cash),
             float(trade_plan.execution.get("per_symbol_cap", 0.20)),
@@ -1409,6 +1496,12 @@ def simulate_portfolio(
             np.ascontiguousarray(buy_prices, dtype=np.float32),
             np.ascontiguousarray(sell_prices, dtype=np.float32),
             np.ascontiguousarray(tradable, dtype=np.bool_),
+            np.ascontiguousarray(
+                action_schedule.cash_dividends, dtype=np.float32
+            ),
+            np.ascontiguousarray(
+                action_schedule.share_multipliers, dtype=np.float32
+            ),
             float(initial_cash), float(buy_cash_limit), float(sell_cash_limit),
             int(lot_size), float(commission_rate), int(min_holding_days),
             np.ascontiguousarray(snapshot_mask),
@@ -1483,6 +1576,7 @@ def simulate_portfolio(
         float(initial_cash),
         int(lot_size),
         float(commission_rate),
+        action_schedule,
     )
 
     return PortfolioTrace(
@@ -1527,6 +1621,22 @@ class WindowSlice:
     test_end_date: str = ""
 
 
+def _bundle_to_qfq_ohlc(bundle) -> pd.DataFrame:
+    """Expose the point-in-time bundle in the legacy indicator schema."""
+    frame = bundle.prices.copy()
+    return pd.DataFrame(
+        {
+            "date": pd.to_datetime(frame["date"], errors="coerce"),
+            "open": pd.to_numeric(frame["qfq_open"], errors="coerce"),
+            "high": pd.to_numeric(frame["qfq_high"], errors="coerce"),
+            "low": pd.to_numeric(frame["qfq_low"], errors="coerce"),
+            "close": pd.to_numeric(frame["qfq_close"], errors="coerce"),
+            "volume": pd.to_numeric(frame["volume"], errors="coerce"),
+            "tradable": frame["tradable"].astype(bool),
+        }
+    )
+
+
 class WalkForwardManager:
     """Walk-Forward 窗口管理器 + 指标矩阵构建。"""
 
@@ -1536,6 +1646,8 @@ class WalkForwardManager:
         config,
         stock_codes: list[str],
         benchmark_data: dict[str, pd.DataFrame] | None = None,
+        benchmark_bundles: dict[str, object] | None = None,
+        market_bundles: dict[str, object] | None = None,
     ):
         from ..data.technical_indicators import compute_all
         from ..search.config import WalkForwardConfig
@@ -1543,12 +1655,35 @@ class WalkForwardManager:
         self.stock_codes = sorted(dict.fromkeys(stock_codes))
         self.wf_config: WalkForwardConfig = config.walk_forward
         self.benchmark_data = benchmark_data or {}
+        self.market_bundles = market_bundles or {}
+        self.benchmark_bundles = benchmark_bundles or {}
+
+        if self.market_bundles:
+            from ..data.market_history import PriceHistoryBundle
+
+            stocks_data = {}
+            for code in self.stock_codes:
+                bundle = self.market_bundles.get(code)
+                if not isinstance(bundle, PriceHistoryBundle):
+                    raise ValueError(
+                        f"missing point-in-time raw/qfq bundle for {code}"
+                    )
+                self.market_bundles[code] = bundle.validate()
+                stocks_data[code] = _bundle_to_qfq_ohlc(self.market_bundles[code])
 
         computed = compute_all(stocks_data)
-        self._build_unified_data(computed, self.stock_codes)
+        self._build_unified_data(
+            computed,
+            self.stock_codes,
+            market_bundles=self.market_bundles,
+        )
 
     def _build_unified_data(
-        self, computed: dict[str, pd.DataFrame], stock_codes: list[str]
+        self,
+        computed: dict[str, pd.DataFrame],
+        stock_codes: list[str],
+        *,
+        market_bundles: dict[str, object] | None = None,
     ):
         dates_sets = []
         for code in stock_codes:
@@ -1577,6 +1712,10 @@ class WalkForwardManager:
         self.price_open_matrix = np.full((self.T, N), np.nan, dtype=np.float32)
         self.price_high_matrix = np.full((self.T, N), np.nan, dtype=np.float32)
         self.price_low_matrix = np.full((self.T, N), np.nan, dtype=np.float32)
+        self.raw_price_matrix = np.full((self.T, N), np.nan, dtype=np.float32)
+        self.raw_price_high_matrix = np.full((self.T, N), np.nan, dtype=np.float32)
+        self.raw_price_low_matrix = np.full((self.T, N), np.nan, dtype=np.float32)
+        self.execution_tradable_matrix = np.zeros((self.T, N), dtype=bool)
 
         for i, code in enumerate(stock_codes):
             df = computed.get(code)
@@ -1599,10 +1738,63 @@ class WalkForwardManager:
             if "low" in aligned.columns:
                 self.price_low_matrix[:, i] = aligned["low"].values
 
+            bundle = (market_bundles or {}).get(code)
+            if bundle is not None:
+                raw = bundle.prices.copy()
+                raw["date"] = pd.to_datetime(raw["date"], errors="coerce")
+                raw = raw.set_index("date").reindex(self.dates)
+                for target, source in (
+                    (self.raw_price_matrix, "raw_close"),
+                    (self.raw_price_high_matrix, "raw_high"),
+                    (self.raw_price_low_matrix, "raw_low"),
+                ):
+                    target[:, i] = pd.to_numeric(
+                        raw[source], errors="coerce"
+                    ).to_numpy(dtype=np.float32)
+                qfq_valid = (
+                    np.isfinite(self.price_matrix[:, i])
+                    & (self.price_matrix[:, i] > 0)
+                )
+                raw_valid = (
+                    np.isfinite(self.raw_price_matrix[:, i])
+                    & (self.raw_price_matrix[:, i] > 0)
+                    & np.isfinite(self.raw_price_high_matrix[:, i])
+                    & (self.raw_price_high_matrix[:, i] > 0)
+                    & np.isfinite(self.raw_price_low_matrix[:, i])
+                    & (self.raw_price_low_matrix[:, i] > 0)
+                )
+                if not np.all(qfq_valid == raw_valid):
+                    raise ValueError(
+                        f"raw/qfq coverage mismatch for {code} on the common market calendar"
+                    )
+                self.execution_tradable_matrix[:, i] = raw_valid
+
+        if not market_bundles:
+            self.raw_price_matrix = self.price_matrix.copy()
+            self.raw_price_high_matrix = self.price_high_matrix.copy()
+            self.raw_price_low_matrix = self.price_low_matrix.copy()
+            self.execution_tradable_matrix = (
+                np.isfinite(self.raw_price_matrix) & (self.raw_price_matrix > 0)
+            )
+        from .execution import build_corporate_action_schedule
+
+        actions = []
+        for code in stock_codes:
+            bundle = (market_bundles or {}).get(code)
+            if bundle is not None:
+                actions.extend(bundle.actions)
+        self.action_schedule = build_corporate_action_schedule(
+            actions, self.dates, stock_codes
+        )
+
         self.benchmark_series: dict[str, np.ndarray] = {}
         self.benchmark_high_series: dict[str, np.ndarray] = {}
         self.benchmark_raw_returns: dict[str, np.ndarray] = {}
-        for code, raw_df in self.benchmark_data.items():
+        benchmark_items = dict(self.benchmark_data)
+        for code, bundle in self.benchmark_bundles.items():
+            benchmark_items[code] = _bundle_to_qfq_ohlc(bundle)
+        self.benchmark_action_schedules: dict[str, object] = {}
+        for code, raw_df in benchmark_items.items():
             if raw_df is None or raw_df.empty or "close" not in raw_df.columns:
                 continue
             benchmark = raw_df.copy()
@@ -1612,11 +1804,39 @@ class WalkForwardManager:
             else:
                 benchmark.index = pd.to_datetime(benchmark.index)
             series = benchmark["close"].reindex(self.dates).ffill()
+            if code in self.benchmark_bundles:
+                bundle = self.benchmark_bundles[code]
+                raw_frame = bundle.prices.copy()
+                raw_frame["date"] = pd.to_datetime(
+                    raw_frame["date"], errors="coerce"
+                )
+                raw_frame = raw_frame.set_index("date").reindex(self.dates)
+                series = pd.to_numeric(
+                    raw_frame["raw_close"], errors="coerce"
+                ).ffill()
             values = series.to_numpy(dtype=np.float64)
             if np.isfinite(values).any():
                 self.benchmark_series[str(code)] = values
                 self.benchmark_raw_returns[str(code)] = values.copy()
-            if "high" in benchmark.columns:
+            if code in self.benchmark_bundles:
+                raw_frame = self.benchmark_bundles[code].prices.copy()
+                raw_frame["date"] = pd.to_datetime(
+                    raw_frame["date"], errors="coerce"
+                )
+                raw_frame = raw_frame.set_index("date").reindex(self.dates)
+                high_values = pd.to_numeric(
+                    raw_frame["raw_high"], errors="coerce"
+                ).ffill().to_numpy(dtype=np.float64)
+                low_values = pd.to_numeric(
+                    raw_frame["raw_low"], errors="coerce"
+                ).ffill().to_numpy(dtype=np.float64)
+                action = build_corporate_action_schedule(
+                    self.benchmark_bundles[code].actions,
+                    self.dates,
+                    [str(code)],
+                )
+                self.benchmark_action_schedules[str(code)] = action
+            elif "high" in benchmark.columns:
                 high_values = (
                     pd.to_numeric(benchmark["high"], errors="coerce")
                     .reindex(self.dates)
@@ -1627,6 +1847,11 @@ class WalkForwardManager:
                 high_values = values.copy()
             if np.isfinite(high_values).any():
                 self.benchmark_high_series[str(code)] = high_values
+            if code in self.benchmark_bundles:
+                self.benchmark_low_series = getattr(
+                    self, "benchmark_low_series", {}
+                )
+                self.benchmark_low_series[str(code)] = low_values
 
     def build_matrices(self):
         return self.indicator_matrix, self.price_matrix, self.price_open_matrix
@@ -1781,6 +2006,7 @@ class Backtester:
         trade_plan: TradePlan,
         market_data: StrategyMarketData,
         benchmark_data: dict[str, pd.DataFrame] | None = None,
+        benchmark_bundles: dict[str, object] | None = None,
         benchmark_codes: list[str] | None = None,
         primary_benchmark: str = "risk_free",
         risk_free_rate: float = 0.02,
@@ -1795,7 +2021,19 @@ class Backtester:
                 market_data.lows,
             )
         trace = self.simulate(trade_plan, market_data, execution_prices)
-        benchmark_data = benchmark_data or {}
+        benchmark_data = dict(benchmark_data or {})
+        benchmark_actions: dict[str, CorporateActionSlice] = {}
+        if benchmark_bundles:
+            for code, bundle in benchmark_bundles.items():
+                frame = bundle.prices.copy()
+                benchmark_data[str(code)] = pd.DataFrame(
+                    {
+                        "date": pd.to_datetime(frame["date"], errors="coerce"),
+                        "high": pd.to_numeric(frame["raw_high"], errors="coerce"),
+                        "low": pd.to_numeric(frame["raw_low"], errors="coerce"),
+                        "close": pd.to_numeric(frame["raw_close"], errors="coerce"),
+                    }
+                )
         benchmark_returns: dict[str, float] = {}
         benchmark_win_rates: dict[str, float] = {}
         benchmark_excess_returns: dict[str, float] = {}
@@ -1815,6 +2053,11 @@ class Backtester:
             entry_prices = _benchmark_stress_prices(
                 trace.nav_dates, benchmark_data.get(code)
             )
+            bundle = (benchmark_bundles or {}).get(code)
+            if bundle is not None:
+                benchmark_actions[code] = build_corporate_action_schedule(
+                    bundle.actions, trace.nav_dates, [str(code)]
+                )
             benchmark_group = _detect_fine_group(str(code))
             benchmark_fx = float(
                 self.execution.fx_rates.get(benchmark_group, 1.0)
@@ -1822,6 +2065,11 @@ class Backtester:
             benchmark_lot = int(
                 self.execution.lot_sizes.get(benchmark_group, 1)
             )
+            benchmark_corporate_actions = benchmark_actions.get(code)
+            if benchmark_corporate_actions is not None:
+                benchmark_corporate_actions = benchmark_corporate_actions.scaled(
+                    benchmark_fx
+                )
             detail = _tradable_benchmark_detail(
                 np.asarray(trace.nav_series, dtype=float),
                 benchmark_close * benchmark_fx,
@@ -1829,6 +2077,7 @@ class Backtester:
                 float(self.execution.initial_capital),
                 benchmark_lot,
                 float(self.execution.commission_rate),
+                benchmark_corporate_actions,
             )
             if detail is not None:
                 raw_return = (
@@ -1859,6 +2108,7 @@ class Backtester:
                 float(self.execution.initial_capital),
                 int(self.execution.lot_sizes.get(self.group, 100)),
                 float(self.execution.commission_rate),
+                resolved_execution.corporate_actions,
             )
             if detail is not None:
                 raw_components = []
@@ -1974,6 +2224,7 @@ def build_trade_plan(
     start_date: str | None = None,
     end_date: str | None = None,
     context_enricher=None,
+    market_bundles: dict[str, object] | None = None,
 ) -> tuple[
     TradePlan | None,
     StrategyMarketData | None,
@@ -2024,6 +2275,51 @@ def build_trade_plan(
         market=market_group,
         observation_counts=observation_counts,
     )
+    raw_price = price.copy()
+    raw_high = market_data.highs.copy()
+    raw_low = market_data.lows.copy()
+    action_schedule = None
+    if market_bundles:
+        from src.data.market_history import PriceHistoryBundle
+
+        raw_price = np.full((T, N), np.nan, dtype=np.float32)
+        raw_high = np.full((T, N), np.nan, dtype=np.float32)
+        raw_low = np.full((T, N), np.nan, dtype=np.float32)
+        actions = []
+        date_index = pd.DatetimeIndex(pd.to_datetime(dates))
+        for column, code in enumerate(active_codes):
+            bundle = market_bundles.get(code)
+            if not isinstance(bundle, PriceHistoryBundle):
+                raise ValueError(f"missing point-in-time bundle for {code}")
+            frame = bundle.validate().prices.copy()
+            frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+            aligned = frame.set_index("date").reindex(date_index)
+            raw_price[:, column] = pd.to_numeric(
+                aligned["raw_close"], errors="coerce"
+            ).to_numpy(dtype=np.float32)
+            raw_high[:, column] = pd.to_numeric(
+                aligned["raw_high"], errors="coerce"
+            ).to_numpy(dtype=np.float32)
+            raw_low[:, column] = pd.to_numeric(
+                aligned["raw_low"], errors="coerce"
+            ).to_numpy(dtype=np.float32)
+            raw_valid = (
+                np.isfinite(raw_price[:, column])
+                & (raw_price[:, column] > 0)
+                & np.isfinite(raw_high[:, column])
+                & (raw_high[:, column] > 0)
+                & np.isfinite(raw_low[:, column])
+                & (raw_low[:, column] > 0)
+            )
+            qfq_valid = tradable[:, column]
+            if not np.array_equal(raw_valid, qfq_valid):
+                raise ValueError(
+                    f"raw/qfq coverage mismatch for {code} in trade-plan history"
+                )
+            actions.extend(bundle.actions)
+        action_schedule = build_corporate_action_schedule(
+            actions, date_index, active_codes
+        )
     if context_enricher is not None:
         # Context adapters are strategy-owned and causal.  The shared plan
         # builder deliberately has no strategy-id knowledge: it only attaches
@@ -2049,9 +2345,10 @@ def build_trade_plan(
         else:
             return None, None, None, list(active_codes)
         execution_prices = DEFAULT_FILL_PRICE_POLICY.build(
-            price,
-            market_data.highs,
-            market_data.lows,
+            raw_price,
+            raw_high,
+            raw_low,
+            corporate_actions=action_schedule,
             start=window_start,
             end=window_end,
         )
@@ -2065,9 +2362,10 @@ def build_trade_plan(
         dates = [date for date, keep in zip(dates, date_mask) if keep]
     else:
         execution_prices = DEFAULT_FILL_PRICE_POLICY.build(
-            price,
-            market_data.highs,
-            market_data.lows,
+            raw_price,
+            raw_high,
+            raw_low,
+            corporate_actions=action_schedule,
         )
         highs = market_data.highs
         lows = market_data.lows
@@ -2304,6 +2602,7 @@ def _tradable_benchmark_detail(
     initial_cash: float,
     lot_size: int,
     commission_rate: float,
+    corporate_actions: CorporateActionSlice | None = None,
     validation_days: int = 9 * 21,
 ) -> dict[str, object] | None:
     """Evaluate a tradable baseline, re-entering with costs at every start."""
@@ -2327,6 +2626,7 @@ def _tradable_benchmark_detail(
         initial_cash,
         lot_size,
         commission_rate,
+        corporate_actions=corporate_actions,
     )
     benchmark_return = (full_nav[-1] / initial_cash - 1.0) * 100.0
     cut = max(0, len(strategy) - validation_days)
@@ -2564,6 +2864,8 @@ def evaluate_all_groups(
     params: Params,
     exec_cfg,
     benchmark_data: dict[str, pd.DataFrame] | None = None,
+    benchmark_bundles: dict[str, object] | None = None,
+    market_bundles: dict[str, object] | None = None,
     target_groups: list[str] | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -2627,6 +2929,11 @@ def evaluate_all_groups(
             start_date,
             end_date,
             context_enricher=context_enricher,
+            market_bundles={
+                code: market_bundles[code]
+                for code in active_codes
+                if market_bundles is not None and code in market_bundles
+            },
         )
         if trade_plan is None or market_data is None:
             continue
@@ -2647,6 +2954,7 @@ def evaluate_all_groups(
             trade_plan,
             market_data,
             benchmark_data=benchmark_data or {},
+            benchmark_bundles=benchmark_bundles,
             benchmark_codes=benchmark_codes,
             primary_benchmark=primary_benchmark,
             risk_free_rate=risk_free,

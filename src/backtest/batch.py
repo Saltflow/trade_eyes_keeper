@@ -49,6 +49,8 @@ if HAS_NUMBA_BATCH:
         buy_prices,
         sell_prices,
         tradable,
+        cash_dividends,
+        share_multipliers,
         initial_cash,
         buy_cash_limits,
         sell_cash_limits,
@@ -78,6 +80,8 @@ if HAS_NUMBA_BATCH:
                 buy_prices,
                 sell_prices,
                 tradable,
+                cash_dividends,
+                share_multipliers,
                 initial_cash,
                 buy_cash_limits[candidate_index],
                 sell_cash_limits[candidate_index],
@@ -147,6 +151,11 @@ def evaluate_cash_batch(
     tradable = window_inputs.get("tradable")
     if tradable is None:
         tradable = resolved_prices.tradable
+    action_schedule = resolved_prices.corporate_actions
+    if action_schedule is None:
+        from .execution import CorporateActionSlice
+
+        action_schedule = CorporateActionSlice.empty(row_count, symbol_count)
     valuation_prices = np.asarray(
         resolved_prices.valuation_prices, dtype=np.float32
     ).copy()
@@ -178,6 +187,12 @@ def evaluate_cash_batch(
         np.ascontiguousarray(resolved_prices.buy_prices, dtype=np.float32),
         np.ascontiguousarray(resolved_prices.sell_prices, dtype=np.float32),
         np.ascontiguousarray(tradable, dtype=np.bool_),
+        np.ascontiguousarray(
+            action_schedule.cash_dividends, dtype=np.float32
+        ),
+        np.ascontiguousarray(
+            action_schedule.share_multipliers, dtype=np.float32
+        ),
         float(evaluator.initial_cash),
         np.asarray([plan.buy_cash_limit for plan in trade_plans]),
         np.asarray([plan.sell_cash_limit for plan in trade_plans]),

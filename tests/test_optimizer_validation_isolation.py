@@ -20,12 +20,17 @@ from src.backtest.engine import (
 from src.search.config import ExecutionConfig
 from src.strategy import StrategyMarketData, TradePlan
 from src.search.workflow import (
+    aggregate_holdout_metrics,
     _compute_ranking_wf_score,
     _partition_window_indexes,
     _save_optimizer_result,
 )
 from src.search.artifacts import OptimizerGroupSummary, persist_group_summary
-from main import _min_optimizer_history_rows, _optimizer_lookback_days
+from main import (
+    _has_optimizer_history,
+    _min_optimizer_history_rows,
+    _optimizer_lookback_days,
+)
 
 
 def _constraints() -> StrategyConstraints:
@@ -75,6 +80,44 @@ def test_ranking_score_excludes_held_out_window_and_extends_weights():
     assert constraints.walk_forward.ranking_window_count == 2
     # A short legacy weight array must not silently discard a historical window.
     assert constraints.walk_forward.ranking_weights(4) == [1.0, 2.0, 2.0, 2.0]
+
+
+def test_holdout_summary_aggregates_overlapping_windows_explicitly():
+    controls = ("510880", "510300", "risk_free")
+    stats = [
+        WindowStats(
+            strategy_return=10.0,
+            max_drawdown_pct=-3.0,
+            sharpe_ratio=1.0,
+            benchmark_returns={
+                "510880": 8.0,
+                "510300": 6.0,
+                "risk_free": 4.0,
+            },
+        ),
+        WindowStats(
+            strategy_return=2.0,
+            max_drawdown_pct=-8.0,
+            sharpe_ratio=0.5,
+            benchmark_returns={
+                "510880": 3.0,
+                "510300": 1.0,
+                "risk_free": 0.0,
+            },
+        ),
+    ]
+
+    summary = aggregate_holdout_metrics(stats, controls)
+
+    assert summary["window_count"] == 2
+    assert summary["return_pct"] == pytest.approx(6.0)
+    assert summary["excess_return_pct"] == pytest.approx(0.0)
+    assert summary["max_drawdown_pct"] == pytest.approx(-8.0)
+    assert summary["majority_benchmark_excess_pct"] == pytest.approx(2.5)
+    assert summary["sharpe_ratio"] == pytest.approx(0.75)
+    assert summary["aggregation"] == (
+        "overlapping_window_mean_and_worst_drawdown"
+    )
 
 
 def test_persisted_summary_converts_numpy_scalars_to_yaml(tmp_path):
@@ -173,6 +216,25 @@ def test_optimizer_history_preflight_requires_the_full_configured_horizon():
     # The calendar lookback must retain margin beyond the exact WF horizon;
     # otherwise date intersections can leave a market a few trading days short.
     assert _optimizer_lookback_days(constraints) == 2006
+
+
+def test_legacy_optimizer_history_cannot_bypass_the_84_month_contract():
+    constraints = StrategyConstraints(
+        {
+            "walk_forward": {
+                "state_lookback_months": 12,
+                "test_months": 9,
+                "step_months": 3,
+                "num_windows": 22,
+                "validation_windows": 4,
+            }
+        }
+    )
+    dates = pd.to_datetime(["2021-08-29", "2026-08-29"])
+    data = pd.DataFrame({"date": dates, "close": [10.0, 10.0]})
+
+    assert constraints.walk_forward.total_months_needed == 84
+    assert not _has_optimizer_history(data, constraints)
 
 
 def test_optimizer_lookback_honors_configured_history_years():

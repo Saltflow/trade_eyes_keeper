@@ -109,6 +109,43 @@ class WalkForwardConfig:
         """Number of configured validation windows actually available."""
         return min(self.validation_windows, self.num_windows)
 
+    @property
+    def purge_overlap_window_count(self) -> int:
+        """Number of candidate windows embargoed before the holdout."""
+        if not self.purge_overlapping_windows or self.held_out_window_count <= 0:
+            return 0
+        overlapping_steps = int(
+            np.ceil(self.test_months / max(self.step_months, 1))
+        ) - 1
+        return min(self.ranking_window_count, max(0, overlapping_steps))
+
+    @property
+    def independent_ranking_window_count(self) -> int:
+        """Ranking windows remaining after the explicit overlap purge."""
+        return max(0, self.ranking_window_count - self.purge_overlap_window_count)
+
+    @property
+    def holdout_window_months(self) -> int:
+        """Total test-window months represented by the held-out windows."""
+        return self.held_out_window_count * self.test_months
+
+    @property
+    def holdout_calendar_span_months(self) -> int:
+        """Calendar span from first to last held-out test window."""
+        if self.held_out_window_count <= 0:
+            return 0
+        return self.test_months + (self.held_out_window_count - 1) * self.step_months
+
+    @property
+    def ranking_budget_months(self) -> int:
+        """Non-overlap accounting: total horizon minus holdout and purge."""
+        return max(
+            0,
+            self.total_months_needed
+            - self.holdout_window_months
+            - self.purge_overlap_window_count * self.step_months,
+        )
+
     def ranking_weights(self, count: int) -> list[float]:
         """Return one non-negative scoring weight for every ranking window.
 
@@ -128,7 +165,7 @@ class WalkForwardConfig:
 
     @property
     def search_history_months(self) -> int:
-        """Calendar months observable by candidate selection (60 - holdout 9)."""
+        """Calendar months through the first held-out test window."""
         return max(0, self.total_months_needed - self.test_months)
 
     @property

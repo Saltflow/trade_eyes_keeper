@@ -36,6 +36,14 @@
   positive return in at least 6/11 windows, beating any two controls in at least
   6/11 windows, and positive mean `M_i`.
 
+### 搜参数据源与标的池边界（2026-08-28）
+
+- 配置中的监控标的、日报标的和回填标的池保持不变；点时数据缺失、覆盖不足或公司行为无法解释的标的，
+  只在 `--optimize` 的候选输入预检阶段排除，并记录为 `search only`，不得从配置中删除。
+- A 股 Baostock 价格覆盖完整但仅提供未拆解复权因子的记录，会额外探测 Yahoo；只有 Yahoo 同时满足覆盖起点和现金分红/拆分可执行性时才替换该搜参 bundle。
+- Yahoo 公司行为时间戳先按 Unix 秒/毫秒解析，再解析 ISO 日期；并丢弃请求历史区间外的事件，避免时间戳被误读为公元 17/18 世纪日期。
+- Solver、参数空间、预算、评分和 raw 成交/qfq 信号合同不变；搜参前统一检查公司行为可解释性，验证链路继续 fail closed。
+
 ## 基本面定价画像契约（2026-08-18）
 
 - `src/fundamental_embedding` 是独立的逐时点研究链路，不进入当前技术面
@@ -1521,3 +1529,20 @@ pytest tests/test_import_smoke.py         # 导入完整性
   政策做时间外应用。`--frozen-policy-report` 必须校验源经济合同，且仅从源报告的
   `validation_start` 起评价接收池；它不会按接收池标签重训或更改参数。接收池应用的
   小样本只提供迁移证据，仍须通过统一策略收益/回撤/三基准 Gate 才能成为候选。
+
+### 搜参验证链路：raw/qfq 与 84 个月窗口（2026-08-26）
+
+- 技术指标和信号固定使用 qfq；成交、持仓估值和 NAV 固定使用 raw 不复权价格。
+  `PointInTimeMarketStore` 的 bundle 同时携带 raw/qfq 行情及公司行为，缺失、覆盖不足
+  或 raw/qfq 覆盖不一致时验证 fail closed，不回退到 adjusted-only legacy cache。
+- 除权除息日在统一执行 schedule 中处理：现金分红增加现金，送转股/拆股调整持仓数量
+  和每股成本；现金 cap、target-weight、scalar、batch、Numba 与基准 buy-and-hold
+  共用同一合同。
+- walk-forward 固定为 `12/9/3/22`，其中 16 个 ranking、2 个 overlap purge、4 个
+  9 个月 holdout 窗口；holdout 总窗口月数为 36，不进入 Solver。Solver ID、参数 schema、
+  参数空间、预算和评分公式不变。
+- 日粒度仍是默认。服务器负载过高时的 weekly 降载模式只登记为 TODO，启用前必须完成
+  周/日一致性、负载和运行时对比验收；周粒度买入取周最高、卖出取周最低。
+- Holdout 报告新增整体汇总：由于4个9个月窗口相互重叠，收益、最强基准超额和 Sharpe
+  采用窗口等权均值，最大回撤取窗口最差值；不将重叠窗口错误串联复利。多数基准超额
+  同时保留并作为 Holdout Gate 的相对比较口径。

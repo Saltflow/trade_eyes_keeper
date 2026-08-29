@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
 import pytest
 
+import main
 from src.data.market_history import (
     CorporateAction,
     MarketHistoryProvider,
     PointInTimeMarketStore,
     PriceHistoryBundle,
     YahooMarketHistoryProvider,
+    _event_date,
 )
 from src.data.point_in_time_backfill import PointInTimeBackfillService
 from src.instruments.models import FinancialStatementSnapshot
@@ -178,6 +180,35 @@ def test_yahoo_keeps_raw_price_and_parses_actions():
     assert split.share_multiplier == 2.0
 
 
+def test_yahoo_event_timestamp_is_not_parsed_as_basic_iso_date():
+    assert _event_date({"date": "1733103000"}) == date(2024, 12, 2)
+
+
+def test_yahoo_basic_yyyymmdd_event_date_is_parsed_as_calendar_date():
+    assert _event_date({"date": "20260829"}) == date(2026, 8, 29)
+
+
+def test_yahoo_filters_events_outside_requested_history():
+    events = {
+        "dividends": {
+            "old": {"date": 1733103000, "amount": 1.0},
+            "current": {"date": 1774828800, "amount": 1.5},
+        }
+    }
+    actions = YahooMarketHistoryProvider._actions(
+        "GOOG",
+        events,
+        "USD",
+        "https://example.test/chart",
+        start=date(2026, 3, 1),
+        end=date(2026, 3, 31),
+    )
+
+    assert [(item.ex_date, item.cash_per_share) for item in actions] == [
+        (date(2026, 3, 30), 1.5)
+    ]
+
+
 class _StaticMarketProvider:
     def __init__(self, bundle=None, error=None):
         self.bundle = bundle
@@ -242,6 +273,99 @@ def test_a_share_complete_primary_history_skips_fallback():
 
     assert selected is primary.bundle
     assert fallback.calls == []
+
+
+def test_a_share_prefers_full_yahoo_actions_over_unresolved_primary_factor():
+    primary = _StaticMarketProvider(
+        _bundle(
+            "601398",
+            dates=("2020-01-02", "2020-01-03"),
+            actions=[
+                CorporateAction(
+                    code="601398",
+                    action_type="adjustment_factor_change",
+                    ex_date=date(2020, 1, 2),
+                    raw_adjustment_factor=0.8,
+                    source="baostock_adjust_factor",
+                )
+            ],
+        )
+    )
+    primary.bundle.source = "baostock"
+    fallback = _StaticMarketProvider(
+        _bundle(
+            "601398",
+            dates=("2020-01-02", "2020-01-03"),
+            actions=[
+                CorporateAction(
+                    code="601398",
+                    action_type="cash_dividend",
+                    ex_date=date(2020, 1, 2),
+                    cash_per_share=0.2,
+                    source="yahoo_chart_dividends",
+                )
+            ],
+        )
+    )
+    fallback.bundle.source = "yahoo_chart"
+    provider = MarketHistoryProvider(
+        {
+            "point_in_time_data": {
+                "market_history": {"prefer_explainable_actions": True}
+            }
+        },
+        baostock_provider=primary,
+        yahoo_provider=fallback,
+    )
+
+    selected = provider.fetch("601398", date(2020, 1, 1), date(2026, 1, 1))
+
+    assert selected is fallback.bundle
+    assert len(primary.calls) == 1
+    assert len(fallback.calls) == 1
+    assert any(
+        item.startswith("corporate_action_selected:yahoo_chart")
+        for item in selected.diagnostics
+    )
+
+
+def test_optimizer_preflight_excludes_bad_bundle_without_mutating_symbol_pool(
+    tmp_path,
+):
+    today = pd.Timestamp.now().normalize().date()
+    dates = (
+        (today - timedelta(days=3100)).isoformat(),
+        (today - timedelta(days=1)).isoformat(),
+    )
+    store = PointInTimeMarketStore(tmp_path)
+    store.write(_bundle("GOOD", dates=dates))
+    store.write(
+        _bundle(
+            "BAD",
+            dates=dates,
+            actions=[
+                CorporateAction(
+                    code="BAD",
+                    action_type="adjustment_factor_change",
+                    ex_date=today - timedelta(days=100),
+                    raw_adjustment_factor=0.8,
+                    source="baostock_adjust_factor",
+                )
+            ],
+        )
+    )
+    config = {"point_in_time_data": {"output_dir": str(tmp_path)}}
+    codes = ["GOOD", "BAD"]
+
+    bundles, errors = main._load_optimizer_market_bundles_with_errors(
+        config,
+        codes,
+        3102,
+    )
+
+    assert codes == ["GOOD", "BAD"]
+    assert set(bundles) == {"GOOD"}
+    assert errors and errors[0].startswith("BAD: unresolved corporate action factor")
 
 
 def test_a_share_partial_history_survives_fallback_failure():

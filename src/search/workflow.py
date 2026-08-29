@@ -101,6 +101,70 @@ def _compute_ranking_wf_score(
     )
 
 
+def aggregate_holdout_metrics(
+    stats: list[WindowStats] | tuple[WindowStats, ...],
+    control_benchmarks=(),
+) -> dict[str, float | int | None]:
+    """Aggregate final holdout windows without compounding overlaps.
+
+    Holdout windows are deliberately overlapping (four nine-month windows in
+    the current contract), so they do not form one chronological equity
+    curve.  Report the equal-window mean for return, majority-control excess,
+    and Sharpe; use the worst window for maximum drawdown.  Keeping this
+    policy in the artifact writer prevents reports from silently presenting
+    an invalid compounded 36-month result.
+    """
+    rows = list(stats)
+    if not rows:
+        return {
+            "window_count": 0,
+            "return_pct": None,
+            "excess_return_pct": None,
+            "max_drawdown_pct": None,
+            "majority_benchmark_excess_pct": None,
+            "sharpe_ratio": None,
+            "aggregation": "overlapping_window_mean_and_worst_drawdown",
+        }
+
+    returns = np.asarray(
+        [float(getattr(stat, "strategy_return", 0.0)) for stat in rows],
+        dtype=np.float64,
+    )
+    excess_returns = np.asarray(
+        [float(getattr(stat, "test_excess_return", 0.0)) for stat in rows],
+        dtype=np.float64,
+    )
+    drawdowns = np.asarray(
+        [float(getattr(stat, "max_drawdown_pct", 0.0)) for stat in rows],
+        dtype=np.float64,
+    )
+    sharpes = np.asarray(
+        [float(getattr(stat, "sharpe_ratio", 0.0)) for stat in rows],
+        dtype=np.float64,
+    )
+    majority_excess = np.asarray(
+        [majority_benchmark_excess(stat, control_benchmarks) for stat in rows],
+        dtype=np.float64,
+    )
+
+    def finite_mean(values: np.ndarray) -> float | None:
+        valid = values[np.isfinite(values)]
+        return float(np.mean(valid)) if len(valid) else None
+
+    finite_drawdowns = drawdowns[np.isfinite(drawdowns)]
+    return {
+        "window_count": len(rows),
+        "return_pct": finite_mean(returns),
+        "excess_return_pct": finite_mean(excess_returns),
+        "max_drawdown_pct": (
+            float(np.min(finite_drawdowns)) if len(finite_drawdowns) else None
+        ),
+        "majority_benchmark_excess_pct": finite_mean(majority_excess),
+        "sharpe_ratio": finite_mean(sharpes),
+        "aggregation": "overlapping_window_mean_and_worst_drawdown",
+    }
+
+
 def _prepare_wf_evaluation_contexts(
     windows: list,
     state_scope: str,
@@ -155,6 +219,9 @@ def _prepare_wf_evaluation_contexts(
     price_matrix = wf_manager.price_matrix
     high_matrix = wf_manager.price_high_matrix
     low_matrix = wf_manager.price_low_matrix
+    raw_price_matrix = getattr(wf_manager, "raw_price_matrix", price_matrix)
+    raw_high_matrix = getattr(wf_manager, "raw_price_high_matrix", high_matrix)
+    raw_low_matrix = getattr(wf_manager, "raw_price_low_matrix", low_matrix)
     market_group = str(getattr(wf_manager, "market_group", "a_share"))
     lifetime_observation_counts = np.cumsum(
         np.isfinite(price_matrix) & (price_matrix > 0), axis=0, dtype=np.int32
@@ -200,9 +267,10 @@ def _prepare_wf_evaluation_contexts(
         if context_enricher is not None:
             signal_market_data = context_enricher(signal_market_data)
         execution_prices = DEFAULT_FILL_PRICE_POLICY.build(
-            price_matrix,
-            high_matrix,
-            low_matrix,
+            raw_price_matrix,
+            raw_high_matrix,
+            raw_low_matrix,
+            corporate_actions=getattr(wf_manager, "action_schedule", None),
             start=window.test_start,
             end=window.test_end,
         )
@@ -233,10 +301,18 @@ def _prepare_wf_evaluation_contexts(
                 benchmark_high_series.get(benchmark_code, raw_close),
                 dtype=np.float64,
             )
+            benchmark_low_series = getattr(wf_manager, "benchmark_low_series", {})
+            raw_low = np.asarray(
+                benchmark_low_series.get(benchmark_code, raw_close),
+                dtype=np.float64,
+            )
             benchmark_execution = DEFAULT_FILL_PRICE_POLICY.build(
                 raw_close,
                 raw_high,
-                raw_close,
+                raw_low,
+                corporate_actions=getattr(
+                    wf_manager, "benchmark_action_schedules", {}
+                ).get(benchmark_code),
                 start=window.test_start,
                 end=window.test_end,
             )
@@ -268,6 +344,7 @@ def _prepare_wf_evaluation_contexts(
                 benchmark_lot,
                 evaluator.commission_rate,
                 weights=np.array([1.0]),
+                corporate_actions=resolved_benchmark.corporate_actions,
             )
             benchmark_initial_values[benchmark_code] = evaluator.initial_cash
             raw_window = benchmark_execution.valuation_prices[:, 0]
@@ -360,6 +437,7 @@ def _evaluate_params_wf(
                 float(evaluator.initial_cash),
                 int(evaluator.lot_size),
                 float(evaluator.commission_rate),
+                resolved.corporate_actions,
             )
             stats.selected_basket_hold_return = basket_return
             stats.timing_value_add = round(
@@ -396,6 +474,8 @@ def run_optimizer(
     output_dir=None,
     benchmark_data: dict | None = None,
     context_enricher=None,
+    market_bundles: dict | None = None,
+    benchmark_bundles: dict | None = None,
 ) -> tuple[list, StrategyConstraints]:
     """Run the configured Solver through the stable SearchController."""
     from ..backtest.engine import WalkForwardManager, FastEvaluator
@@ -418,7 +498,12 @@ def run_optimizer(
     exec_cfg = constraints.execution
 
     wf_manager = WalkForwardManager(
-        stocks_data, constraints, stock_codes, benchmark_data=benchmark_data
+        stocks_data,
+        constraints,
+        stock_codes,
+        benchmark_data=benchmark_data,
+        market_bundles=market_bundles,
+        benchmark_bundles=benchmark_bundles,
     )
     wf_manager.market_group = group
     if context_enricher is not None:
@@ -451,6 +536,15 @@ def run_optimizer(
         wf_manager.price_matrix,
         wf_manager.price_high_matrix,
         wf_manager.price_low_matrix,
+        getattr(wf_manager, "raw_price_matrix", wf_manager.price_matrix),
+        getattr(wf_manager, "raw_price_high_matrix", wf_manager.price_high_matrix),
+        getattr(wf_manager, "raw_price_low_matrix", wf_manager.price_low_matrix),
+        getattr(wf_manager, "action_schedule", None).cash_dividends
+        if getattr(wf_manager, "action_schedule", None) is not None
+        else np.zeros_like(wf_manager.price_matrix),
+        getattr(wf_manager, "action_schedule", None).share_multipliers
+        if getattr(wf_manager, "action_schedule", None) is not None
+        else np.ones_like(wf_manager.price_matrix),
     ):
         contiguous = np.ascontiguousarray(array)
         data_hasher.update(str(contiguous.shape).encode("ascii"))
@@ -465,6 +559,7 @@ def run_optimizer(
         for series_name, source in (
             ("close", wf_manager.benchmark_series),
             ("high", wf_manager.benchmark_high_series),
+            ("low", getattr(wf_manager, "benchmark_low_series", {})),
         ):
             values = source.get(benchmark_code)
             data_hasher.update(f"{benchmark_code}:{series_name}:".encode("utf-8"))
@@ -541,10 +636,22 @@ def run_optimizer(
                 "search_history_months": (
                     constraints.walk_forward.search_history_months
                 ),
+                "ranking_budget_months": (
+                    constraints.walk_forward.ranking_budget_months
+                ),
                 "state_lookback_months": (
                     constraints.walk_forward.state_lookback_months
                 ),
                 "holdout_months": constraints.walk_forward.test_months,
+                "holdout_window_count": (
+                    constraints.walk_forward.held_out_window_count
+                ),
+                "holdout_window_months": (
+                    constraints.walk_forward.holdout_window_months
+                ),
+                "purged_overlap_window_count": (
+                    constraints.walk_forward.purge_overlap_window_count
+                ),
             },
         },
     )
@@ -634,11 +741,14 @@ def run_optimizer(
     results = validated
     if results:
         validation_period = {}
-        if windows:
-            held_out = windows[-1]
+        if windows and validation_indexes:
+            held_out_start = windows[validation_indexes[0]]
+            held_out_end = windows[validation_indexes[-1]]
             validation_period = {
-                "start": str(wf_manager.dates[held_out.test_start].date()),
-                "end": str(wf_manager.dates[held_out.test_end - 1].date()),
+                "start": str(wf_manager.dates[held_out_start.test_start].date()),
+                "end": str(wf_manager.dates[held_out_end.test_end - 1].date()),
+                "window_count": len(validation_indexes),
+                "window_months": constraints.walk_forward.holdout_window_months,
             }
         _save_optimizer_result(
             results,
@@ -761,6 +871,10 @@ def _save_optimizer_result(
         )
         for index, stat in enumerate(top.validation_stats)
     ]
+    holdout_summary = aggregate_holdout_metrics(
+        top.validation_stats,
+        constraints.benchmark_codes,
+    )
     holdout_passed = bool(top.validation_stats) and all(
         np.isfinite(majority_benchmark_excess(stat, constraints.benchmark_codes))
         and majority_benchmark_excess(stat, constraints.benchmark_codes) > 0
@@ -822,6 +936,7 @@ def _save_optimizer_result(
         "ranking_windows": ranking_reports,
         "isolated_windows": isolated_reports,
         "holdout_windows": holdout_reports,
+        "holdout_summary": holdout_summary,
         "activation": {
             "eligible": activation_eligible,
             "holdout_passed": holdout_passed,
@@ -853,10 +968,25 @@ def _save_optimizer_result(
                 "search_history_months": (
                     constraints.walk_forward.search_history_months
                 ),
+                "ranking_budget_months": (
+                    constraints.walk_forward.ranking_budget_months
+                ),
                 "state_lookback_months": (
                     constraints.walk_forward.state_lookback_months
                 ),
                 "holdout_months": constraints.walk_forward.test_months,
+                "holdout_window_count": (
+                    constraints.walk_forward.held_out_window_count
+                ),
+                "holdout_window_months": (
+                    constraints.walk_forward.holdout_window_months
+                ),
+                "holdout_calendar_span_months": (
+                    constraints.walk_forward.holdout_calendar_span_months
+                ),
+                "purged_overlap_window_count": (
+                    constraints.walk_forward.purge_overlap_window_count
+                ),
             },
             "selection_formula": (
                 f"wf_score - {constraints.genetic_search.sensitivity_penalty_weight:g} "
