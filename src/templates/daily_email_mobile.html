@@ -44,6 +44,21 @@
   .metric-value {{ font-size:16px; }}
   .detail-label {{ margin-top:10px; color:#526b86; font-size:12px; font-weight:700; }}
   .muted-note,.sub-note {{ margin-top:6px; color:#7a8998; font-size:11px; overflow-wrap:anywhere; }}
+  .nav-boxplot-card {{ margin-top:8px; padding:10px 8px 8px; border:1px solid #e0e8f0;
+    border-radius:8px; background:#fbfdff; overflow:hidden; }}
+  .nav-boxplot {{ display:flex; gap:3px; align-items:flex-start; min-height:138px;
+    width:100%; overflow:hidden; }}
+  .nav-boxplot-item {{ flex:1 1 0; min-width:16px; text-align:center; }}
+  .nav-boxplot-plot {{ position:relative; height:108px; border-bottom:1px solid #cbd8e5; }}
+  .nav-boxplot-whisker {{ position:absolute; left:50%; width:1px; background:#86a1ba;
+    transform:translateX(-50%); }}
+  .nav-boxplot-cap {{ position:absolute; left:20%; width:60%; border-top:1px solid #66849f; }}
+  .nav-boxplot-box {{ position:absolute; left:13%; width:74%; min-height:4px;
+    border:1px solid #3274a8; border-radius:3px; background:#cfe5f7; }}
+  .nav-boxplot-median {{ position:absolute; left:13%; width:74%; border-top:2px solid #d35454; }}
+  .nav-boxplot-label {{ margin-top:5px; color:#6d7f91; font-size:9px; line-height:1.1;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+  .nav-boxplot-scale {{ margin-top:4px; color:#8998a8; font-size:10px; text-align:right; }}
   .empty-card {{ margin-top:8px; padding:12px; border:1px solid #dce8e0;
     border-radius:8px; background:#f5fbf7; color:#356b4a; font-size:13px; }}
   .deployment-card {{ margin-bottom:14px; padding:10px 12px; border:1px solid #c9d8e7;

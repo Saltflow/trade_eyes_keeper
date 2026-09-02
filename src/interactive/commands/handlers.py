@@ -80,6 +80,10 @@ def handle_help() -> str:
                 ("/daily", "触发完整日报"),
                 ("/brief [afternoon]", "触发简报（默认早盘）"),
                 (
+                    "/report_frequency [daily|weekly|off]",
+                    "设置日报频次；weekly 每周五，告警仍即时发送",
+                ),
+                (
                     "/backtest 代码 起 止",
                     "回测 例 <code>/backtest 601919 2024-01-01 2024-12-31</code>",
                 ),
@@ -543,6 +547,40 @@ def handle_daily() -> str:
     if _run_main(["--once"], env_extra={"BOT_FORCE": "1"}):
         return "⏳ 完整日报已触发。稍后飞书+邮件会推送。"
     return "❌ 日报触发失败"
+
+
+def handle_daily_report_frequency(frequency: str | None = None) -> str:
+    """查看或修改定时普通日报的发送频次。
+
+    频次只控制无告警时的定时日报；有价格/策略告警仍立即发送，
+    ``/daily`` 手动触发也始终发送。
+    """
+    labels = {
+        "daily": "每天（交易日）",
+        "weekly": "每周五",
+        "off": "关闭定时普通日报",
+    }
+    config = _load_config()
+    scheduler = config.get("scheduler", {}) or {}
+    current = str(scheduler.get("daily_report_frequency", "daily")).lower()
+    if current not in labels:
+        current = "daily"
+
+    if not frequency:
+        return (
+            f"<b>日报频次</b>: {labels[current]} (<code>{current}</code>)\n"
+            "可选: <code>daily</code> 每个交易日、"
+            "<code>weekly</code> 每周五、<code>off</code> 关闭普通日报。\n"
+            "价格/策略告警仍即时发送；手动 <code>/daily</code> 不受影响。"
+        )
+
+    mode = str(frequency).strip().lower()
+    if mode not in labels:
+        return "❌ 频次只能是 daily、weekly 或 off。"
+    scheduler["daily_report_frequency"] = mode
+    config["scheduler"] = scheduler
+    _save_config(config)
+    return f"✅ 日报频次已改为 {labels[mode]} (<code>{mode}</code>)。"
 
 
 def handle_schedule(action: str, task_id: str, time_str: str) -> str:

@@ -11,6 +11,7 @@ from .command_parser import (
     BriefCommand,
     ConfigCommand,
     DailyCommand,
+    DailyReportFrequencyCommand,
     ErrorCommand,
     HelpCommand,
     ListCommand,
@@ -32,6 +33,7 @@ from .commands.handlers import (
     handle_brief,
     handle_config,
     handle_daily,
+    handle_daily_report_frequency,
     handle_help,
     handle_list,
     handle_mode,
@@ -162,6 +164,8 @@ def _dispatch(cmd) -> str:
         return handle_optimize()
     if isinstance(cmd, DailyCommand):
         return handle_daily()
+    if isinstance(cmd, DailyReportFrequencyCommand):
+        return handle_daily_report_frequency(cmd.frequency)
     if isinstance(cmd, ScheduleCommand):
         return handle_schedule(cmd.action, cmd.task_id, cmd.time_str)
     if isinstance(cmd, AlertsCommand):

@@ -1498,6 +1498,15 @@ pytest tests/test_import_smoke.py         # 导入完整性
   所有任务必须 `coalesce=true`、`max_instances=1`，服务器短时高负载不得因
   APScheduler 默认约1秒的misfire窗口而直接丢弃整次推送。
 
+### 日报移动端与发送频次（2026-09-02）
+
+- 日报正文继续保留部署节点和公网 IP，用于确认线上版本；示例账户只展示
+  NAV/回报/现金等摘要，不在日报展开持仓明细。
+- 周 NAV 改为无脚本的移动端箱线图：优先使用日 NAV 序列计算周内四分位数，
+  老缓存只有 OHLC 时使用可审计的 OHLC 区间回退，避免把长数值串贴进邮件。
+- Bot 新增 `/report_frequency daily|weekly|off`（别名 `/daily_frequency`）。
+  该开关只影响无告警的普通日报；价格/策略告警仍即时发送，手动 `/daily` 始终有效。
+
 ### CAPM 股权 DCF 买入价历史校准（2026-08-24）
 
 - 新增独立的 `scripts/calibrate_capm_dcf_entry.py` 与

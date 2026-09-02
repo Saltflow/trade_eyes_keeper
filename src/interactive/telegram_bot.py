@@ -10,6 +10,7 @@ import requests
 from .command_parser import (
     AddCommand,
     BacktestCommand,
+    DailyReportFrequencyCommand,
     ErrorCommand,
     HelpCommand,
     ListCommand,
@@ -22,6 +23,7 @@ from .command_parser import (
 from .commands.handlers import (
     handle_add,
     handle_backtest,
+    handle_daily_report_frequency,
     handle_help,
     handle_list,
     handle_optimize,
@@ -140,6 +142,8 @@ class TelegramBot:
             response = handle_backtest(cmd.stock_code, cmd.start_date, cmd.end_date)
         elif isinstance(cmd, OptimizeCommand):
             response = handle_optimize()
+        elif isinstance(cmd, DailyReportFrequencyCommand):
+            response = handle_daily_report_frequency(cmd.frequency)
         elif isinstance(cmd, SwitchOptimizerCommand):
             response = handle_switch_optimizer(cmd.kind)
         elif isinstance(cmd, ErrorCommand):

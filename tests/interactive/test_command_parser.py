@@ -6,6 +6,7 @@ from src.interactive.command_parser import (
     BriefCommand,
     CommandType,
     DailyCommand,
+    DailyReportFrequencyCommand,
     ErrorCommand,
     HelpCommand,
     ListCommand,
@@ -203,3 +204,17 @@ class TestCommandParser:
     def test_parse_daily(self):
         cmd = parse_command("/daily")
         assert isinstance(cmd, DailyCommand)
+
+    def test_parse_daily_report_frequency(self):
+        for text, expected in (
+            ("/report_frequency", None),
+            ("/report_frequency weekly", "weekly"),
+            ("/daily_frequency off", "off"),
+        ):
+            cmd = parse_command(text)
+            assert isinstance(cmd, DailyReportFrequencyCommand)
+            assert cmd.frequency == expected
+
+    def test_parse_daily_report_frequency_rejects_unknown_value(self):
+        cmd = parse_command("/report_frequency monthly")
+        assert isinstance(cmd, ErrorCommand)

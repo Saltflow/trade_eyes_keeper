@@ -68,6 +68,7 @@ from src.instruments.audit import load_latest_audit
 
 OPTIMIZER_GROUPS = ("a_share", "hk", "us")
 DEFAULT_OPTIMIZER_GROUPS = OPTIMIZER_GROUPS
+DAILY_REPORT_FREQUENCIES = {"daily", "weekly", "off"}
 
 
 def _stock_code(stock: object) -> str:
@@ -935,6 +936,41 @@ def load_config(config_path=None):
         sys.exit(1)
 
 
+def should_send_daily_report(
+    config: dict,
+    *,
+    now: datetime | None = None,
+    force: bool = False,
+) -> bool:
+    """Return whether the scheduled normal daily report should be sent.
+
+    ``weekly`` means Friday in the configured scheduler timezone.  Alerts are
+    handled separately by ``run_daily_task`` and remain immediate.
+    """
+    if force:
+        return True
+    scheduler = config.get("scheduler", {}) or {}
+    frequency = str(scheduler.get("daily_report_frequency", "daily")).lower()
+    if frequency not in DAILY_REPORT_FREQUENCIES:
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "未知日报频次 %r，按 daily 处理",
+            scheduler.get("daily_report_frequency"),
+        )
+        frequency = "daily"
+    if frequency == "off":
+        return False
+    if frequency == "weekly":
+        try:
+            report_weekday = int(scheduler.get("daily_report_weekday", 4))
+        except (TypeError, ValueError):
+            report_weekday = 4
+        if report_weekday not in range(7):
+            report_weekday = 4
+        return (now or datetime.now()).weekday() == report_weekday
+    return True
+
+
 def run_daily_task(force: bool = False):
     """每日运行的任务
 
@@ -1220,9 +1256,19 @@ def run_daily_task(force: bool = False):
         if session.alerts:
             logger.info(f"发现{len(session.alerts)}个满足条件的警报")
             notifier.send_from_session(session)
-        else:
+        elif should_send_daily_report(config, force=force):
             logger.info("没有满足条件的股票，发送每日报告")
             notifier.send_daily_report_from_session(session)
+        else:
+            frequency = str(
+                (config.get("scheduler", {}) or {}).get(
+                    "daily_report_frequency", "daily"
+                )
+            ).lower()
+            logger.info(
+                "日报频次为 %s，今日无告警，跳过普通日报发送；手动 /daily 仍可触发",
+                frequency,
+            )
         logger.info("每日任务执行完成")
     except Exception as e:
         logger.error(f"执行任务时发生错误: {e}", exc_info=True)

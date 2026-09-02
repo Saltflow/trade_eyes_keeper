@@ -138,6 +138,8 @@ llm:
 ```yaml
 scheduler:
   run_time: "19:00"             # 每日完整日报运行时间（24小时制）
+  daily_report_frequency: daily  # daily / weekly（每周五）/ off
+  daily_report_weekday: 4         # weekly 使用，0=周一 … 4=周五
   cache_bypass_cutoff: "15:55"  # 超过此时间且缓存非当日则强制刷新
   timezone: Asia/Shanghai
   brief_reports:
@@ -156,6 +158,8 @@ scheduler:
 | 字段 | 说明 |
 |------|------|
 | `run_time` | 完整日报（含图表/基本面/公告/PDF）触发时间 |
+| `daily_report_frequency` | 普通日报频次；`daily` 每个交易日、`weekly` 每周五、`off` 关闭。告警日报仍即时发送 |
+| `daily_report_weekday` | `weekly` 模式的星期，0=周一至6=周日 |
 | `brief_reports` | 轻量简报列表，仅价格+锚点，每条独立配置时间和标签 |
 | `skip_weekends` | 周末是否跳过（A股/港股休市） |
 

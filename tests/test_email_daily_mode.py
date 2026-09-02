@@ -269,3 +269,51 @@ class TestDailyModeEmail:
         assert "技术面" in html
         assert "MACD柱" in html
         assert "601728" in html
+
+    def test_daily_weekly_nav_uses_boxplot_and_hides_holdings(self):
+        notifier = _make_notifier()
+        position = {
+            "code": "601728", "shares": 1000, "cost": 10.0,
+            "price": 12.0, "value": 12000, "pnl": 2000,
+            "pnl_pct": 20.0,
+        }
+        report = _make_report(
+            weekly_nav_ohlc={
+                "labels": ["2026-W01", "2026-W02"],
+                "open": [100000.0, 100500.0],
+                "high": [101000.0, 101500.0],
+                "low": [99000.0, 100000.0],
+                "close": [100500.0, 101000.0],
+            },
+            final_holdings=[position],
+        )
+        section = notifier._build_daily_strategy_section({"a_share": report})
+
+        assert "周 NAV 箱线图" in section
+        assert "nav-boxplot" in section
+        assert "2026-W01" in section
+        assert "2026-W01 100500" not in section
+        assert "期末持仓" not in section
+        assert "1000股" not in section
+
+    def test_daily_reference_portfolio_hides_holding_details(self):
+        notifier = _make_notifier()
+        session = type("Session", (), {
+            "ref_portfolio_status": {
+                "a_share": {
+                    "_label": "A股",
+                    "inception_date": "2026-07-14",
+                    "nav": 101000.0,
+                    "nav_return_pct": 1.0,
+                    "trading_days": 3,
+                    "cash": 50000.0,
+                    "holdings": [{"code": "601728", "shares": 1000}],
+                }
+            }
+        })()
+
+        html = notifier._build_daily_ref_portfolio_html(session)
+
+        assert "示例账户" in html
+        assert "101,000" in html
+        assert "601728" not in html

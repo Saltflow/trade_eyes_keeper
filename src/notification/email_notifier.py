@@ -2036,6 +2036,120 @@ class EmailNotifier(BaseNotifier):
             pass
         return "—", None, None
 
+    def _build_daily_nav_boxplot(self, report, max_weeks: int = 12) -> str:
+        """Render a compact, email-safe weekly NAV boxplot.
+
+        The preferred source is the daily NAV series carried by
+        ``EvaluationReport``.  Older cached reports may only contain weekly
+        OHLC, so they get a deterministic OHLC-derived fallback instead of
+        expanding into a long text listing.
+        """
+        nav_dates = self._daily_get(report, "nav_dates", []) or []
+        nav_series = self._daily_get(report, "nav_series", []) or []
+        boxes = []
+
+        if len(nav_dates) == len(nav_series) and nav_dates:
+            frame = pd.DataFrame(
+                {
+                    "date": pd.to_datetime(nav_dates, errors="coerce"),
+                    "nav": pd.to_numeric(nav_series, errors="coerce"),
+                }
+            ).dropna()
+            frame = frame[np.isfinite(frame["nav"])]
+            if not frame.empty:
+                frame["week"] = frame["date"].dt.to_period("W-SUN")
+                for period, group in frame.groupby("week", sort=True):
+                    values = group["nav"].to_numpy(dtype=float)
+                    if not len(values):
+                        continue
+                    q1, median, q3 = np.percentile(values, [25, 50, 75])
+                    boxes.append(
+                        {
+                            "label": str(period),
+                            "low": float(np.min(values)),
+                            "q1": float(q1),
+                            "median": float(median),
+                            "q3": float(q3),
+                            "high": float(np.max(values)),
+                        }
+                    )
+
+        if not boxes:
+            weekly = self._daily_get(report, "weekly_nav_ohlc", {}) or {}
+            labels = weekly.get("labels", []) or []
+            opens = weekly.get("open", []) or []
+            highs = weekly.get("high", []) or []
+            lows = weekly.get("low", []) or []
+            closes = weekly.get("close", []) or []
+            count = min(len(labels), len(opens), len(highs), len(lows), len(closes))
+            for index in range(count):
+                try:
+                    opening = float(opens[index])
+                    closing = float(closes[index])
+                    low = float(lows[index])
+                    high = float(highs[index])
+                    values = [low, high, opening, closing]
+                    if not all(np.isfinite(value) for value in values):
+                        continue
+                    boxes.append(
+                        {
+                            "label": str(labels[index]),
+                            "low": min(values),
+                            "q1": min(opening, closing),
+                            "median": (opening + closing) / 2.0,
+                            "q3": max(opening, closing),
+                            "high": max(values),
+                        }
+                    )
+                except (TypeError, ValueError):
+                    continue
+
+        if not boxes:
+            return ""
+        boxes = boxes[-max_weeks:]
+        plot_low = min(item["low"] for item in boxes)
+        plot_high = max(item["high"] for item in boxes)
+        span = plot_high - plot_low
+        if not np.isfinite(span) or span <= 0:
+            span = 1.0
+            plot_low -= 0.5
+
+        def _top(value: float) -> str:
+            position = (plot_high - value) / span * 100.0
+            return f"{max(0.0, min(100.0, position)):.2f}%"
+
+        items = []
+        for item in boxes:
+            box_top = _top(item["q3"])
+            box_bottom = _top(item["q1"])
+            box_height = max(4.0, float(box_bottom[:-1]) - float(box_top[:-1]))
+            whisker_top = _top(item["high"])
+            whisker_height = max(
+                2.0,
+                float(_top(item["low"])[:-1]) - float(whisker_top[:-1]),
+            )
+            items.append(
+                '<div class="nav-boxplot-item">'
+                '<div class="nav-boxplot-plot">'
+                f'<span class="nav-boxplot-whisker" style="top:{whisker_top};height:{whisker_height:.2f}%"></span>'
+                f'<span class="nav-boxplot-cap nav-boxplot-cap-top" style="top:{whisker_top}"></span>'
+                f'<span class="nav-boxplot-cap nav-boxplot-cap-bottom" style="top:{_top(item["low"])}"></span>'
+                f'<span class="nav-boxplot-box" style="top:{box_top};height:{box_height:.2f}%"></span>'
+                f'<span class="nav-boxplot-median" style="top:{_top(item["median"])}"></span>'
+                '</div>'
+                f'<div class="nav-boxplot-label">{_html_escape(item["label"])}</div>'
+                '</div>'
+            )
+        return (
+            '<div class="nav-boxplot-card">'
+            '<div class="nav-boxplot" role="img" aria-label="最近周 NAV 箱线图">'
+            + "".join(items)
+            + "</div>"
+            f'<div class="muted-note">最近 {len(boxes)} 周 · 须线为周内范围，箱体为 NAV 四分位区间，中线为中位数</div>'
+            f'<div class="nav-boxplot-scale">区间 {_html_escape(self._daily_metric(plot_low, "", 0))} — {_html_escape(self._daily_metric(plot_high, "", 0))}</div>'
+            '</div>'
+        )
+
     def _build_daily_focus_section(self, alert_stocks, stock_data, signal_scan=None):
         alerts = list(alert_stocks or [])
         rows = self._daily_row_map(stock_data)
@@ -2144,48 +2258,10 @@ class EmailNotifier(BaseNotifier):
             composition = self._daily_get(report, "composition", []) or []
             if composition:
                 parts.append(f'<div class="stock-line">成分：{_html_escape(", ".join(map(str, composition)))}</div>')
-            final_holdings = self._daily_get(report, "final_holdings", []) or []
-            if final_holdings:
-                parts.append('<div class="detail-label">期末持仓</div>')
-                for position in final_holdings:
-                    parts.append(
-                        '<div class="holding-line">'
-                        f'{_html_escape(self._daily_get(position, "code", "—"))} · '
-                        f'{_html_escape(self._daily_metric(self._daily_get(position, "shares"), "股", 0))} · '
-                        f'市值 {_html_escape(self._daily_metric(self._daily_get(position, "value"), "", 2))} · '
-                        f'盈亏 {_html_escape(self._daily_metric(self._daily_get(position, "pnl"), "", 2))} '
-                        f'({_html_escape(self._daily_metric(self._daily_get(position, "pnl_pct"), "%", 1))})'
-                        "</div>"
-                    )
-            quarterly = self._daily_get(report, "quarterly_holdings", []) or []
-            if quarterly:
-                parts.append('<div class="detail-label">季末持仓</div>')
-                for quarter in quarterly:
-                    q_label = f'{self._daily_get(quarter, "quarter", "—")} · {self._daily_get(quarter, "date", "—")}'
-                    q_positions = self._daily_get(quarter, "positions", []) or []
-                    position_text = "；".join(
-                        f'{self._daily_get(pos, "code", "—")} {_daily_pos_value}'
-                        for pos in q_positions
-                        for _daily_pos_value in [self._daily_metric(self._daily_get(pos, "value"), "", 0)]
-                    ) or "空仓"
-                    parts.append(
-                        f'<div class="quarter-card"><strong>{_html_escape(q_label)}</strong>'
-                        f'<div class="quarter-position">现金 {_html_escape(self._daily_metric(self._daily_get(quarter, "cash"), "", 0))} · '
-                        f'仓位 {_html_escape(self._daily_metric(self._daily_get(quarter, "pos_pct"), "%", 1))}</div>'
-                        f'<div class="quarter-position">{_html_escape(position_text)}</div></div>'
-                    )
-            weekly = self._daily_get(report, "weekly_nav_ohlc", {}) or {}
-            weekly_labels = weekly.get("labels", []) or []
-            weekly_close = weekly.get("close", []) or []
-            if weekly_labels and weekly_close:
-                parts.append('<div class="detail-label">周 NAV</div>')
-                weekly_values = " · ".join(
-                    f'{_html_escape(label)} {_html_escape(self._daily_metric(value, "", 0))}'
-                    for label, value in zip(weekly_labels, weekly_close)
-                )
-                parts.append(
-                    f'<div class="quarter-card"><div class="quarter-position">{weekly_values}</div></div>'
-                )
+            nav_boxplot = self._build_daily_nav_boxplot(report)
+            if nav_boxplot:
+                parts.append('<div class="detail-label">周 NAV 箱线图</div>')
+                parts.append(nav_boxplot)
             parts.append('</div>')
         if backtest:
             parts.append('<div class="group-heading">历史回测</div>')
@@ -2346,7 +2422,6 @@ class EmailNotifier(BaseNotifier):
             status = statuses.get(group)
             if not isinstance(status, dict):
                 continue
-            holdings = status.get("holdings") or []
             lines = [
                 '<div class="portfolio-card">'
                 f'<div class="card-title">{_html_escape(status.get("_label", labels.get(group, group)))}</div>'
@@ -2355,22 +2430,13 @@ class EmailNotifier(BaseNotifier):
                 f'回报 {_html_escape(self._daily_metric(status.get("nav_return_pct"), "%", 2))} · '
                 f'交易日 {_html_escape(status.get("trading_days", "—"))}</div>'
             ]
-            for holding in holdings:
-                lines.append(
-                    '<div class="holding-line">'
-                    f'{_html_escape(self._daily_get(holding, "code", "—"))} · '
-                    f'{_html_escape(self._daily_metric(self._daily_get(holding, "shares"), "股", 0))} · '
-                    f'现价 {_html_escape(self._daily_metric(self._daily_get(holding, "price"), "", 2))} · '
-                    f'市值 {_html_escape(self._daily_metric(self._daily_get(holding, "market_value"), "", 0))} · '
-                    f'成本 {_html_escape(self._daily_metric(self._daily_get(holding, "avg_cost"), "", 2))}</div>'
-                )
-            if not holdings:
-                lines.append('<div class="muted-note">空仓</div>')
+            if status.get("requires_manual_reset"):
+                lines.append('<div class="muted-note">旧账户未绑定当前运行，需通过机器人 /ref_date 重置后恢复交易。</div>')
             lines.append(f'<div class="stock-line">现金：{_html_escape(self._daily_metric(status.get("cash"), "", 2))}</div></div>')
             sections.append("".join(lines))
         if not sections:
-            return '<section class="daily-section"><div class="section-heading">参考持仓</div><div class="empty-card">暂无参考持仓数据。</div></section>'
-        return '<section class="daily-section"><div class="section-heading">参考持仓</div>' + "".join(sections) + '</section>'
+            return '<section class="daily-section"><div class="section-heading">示例账户</div><div class="empty-card">暂无示例账户数据。</div></section>'
+        return '<section class="daily-section"><div class="section-heading">参考持仓 · 示例账户</div>' + "".join(sections) + '</section>'
 
     def _build_daily_report_links(self):
         optimizer_dir = Path("data/optimizer")

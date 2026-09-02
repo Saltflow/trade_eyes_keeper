@@ -15,6 +15,7 @@ class CommandType(Enum):
     BRIEF = auto()
     OPTIMIZE = auto()
     DAILY = auto()
+    DAILY_REPORT_FREQUENCY = auto()
     SCHEDULE = auto()
     ALERTS = auto()
     RESET_ALERTS = auto()
@@ -90,6 +91,14 @@ class OptimizeCommand:
 @dataclass
 class DailyCommand:
     cmd_type: CommandType = CommandType.DAILY
+
+
+@dataclass
+class DailyReportFrequencyCommand:
+    """View or change scheduled normal daily-report frequency."""
+
+    frequency: str | None = None  # daily / weekly / off
+    cmd_type: CommandType = CommandType.DAILY_REPORT_FREQUENCY
 
 
 @dataclass
@@ -255,6 +264,16 @@ def parse_command(text: str):
 
     if cmd_name == "daily":
         return DailyCommand()
+
+    if cmd_name in ("report_frequency", "daily_frequency"):
+        frequency = args.strip().lower()
+        if not frequency:
+            return DailyReportFrequencyCommand()
+        if frequency not in ("daily", "weekly", "off"):
+            return ErrorCommand(
+                message="频次只能是 daily、weekly 或 off。格式: /report_frequency weekly"
+            )
+        return DailyReportFrequencyCommand(frequency=frequency)
 
     if cmd_name == "ref_date":
         return RefDateCommand(date_str=args.strip() or None)
