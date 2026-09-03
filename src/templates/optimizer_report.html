@@ -80,7 +80,7 @@
   <div class="card">
     <div class="label">最优测试超额</div>
     <div class="value__TEST_COLOR__">__TEST_RET__%</div>
-    <div class="sub">12-24月外样本</div>
+    <div class="sub">Holdout 整体指标</div>
   </div>
   <div class="card">
     <div class="label">最大回撤</div>
@@ -130,7 +130,7 @@
 <div id="selected_stocks"></div>
 
 <div class="footer">
-  股票量化系统 · 策略搜索优化器 · 基于 2 年历史数据 · 训练 0-12月 / 测试 12-24月
+  股票量化系统 · 策略搜索优化器 · 84 个月窗口 · Ranking / Purged / Holdout
 </div>
 
 <script>
@@ -177,7 +177,7 @@ const DATA = __JSON_DATA__;
   if (!window._plotly_ok) return;
   var sp = DATA.best_phases || {};
   var phases = ['observe', 'deploy', 'test'];
-  var labels = ['观察 0-6月', '部署 6-12月', '验证 12-24月'];
+  var labels = ['Ranking 16', 'Purged 2', 'Holdout 4'];
   var colors = ['#8899aa', '#4c72b0', '#55a868'];
   var returns = phases.map(function(p) { return sp[p] ? sp[p].excess_return || 0 : 0; });
   var dds = phases.map(function(p) { return sp[p] ? sp[p].max_drawdown || 0 : 0; });

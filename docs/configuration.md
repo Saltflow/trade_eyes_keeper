@@ -43,6 +43,22 @@ data_source:
   fallback_to_web_crawler: true
 ```
 
+### sina_options
+
+```yaml
+sina_options:
+  enabled: true
+  timeout_seconds: 20  # 新浪期权请求超时秒数
+  quote_batch_size: 50  # ETF 期权批量行情每次请求的合约数
+```
+
+期权通过 `DataSource.option_data_source` 访问。当前支持中金所 IO/HO/MO
+指数期权，以及上交所 510050、510300、510500、588000、588080 ETF 期权。
+其中中证 500 对应上交所 510500 ETF 期权；中金所 MO 是中证 1000 期权。
+新浪提供的是月度到期合约，周/月数据需要将单合约日线通过
+`resample_option_bars(..., "W-FRI")` 或 `resample_option_bars(..., "M")`
+聚合得到。
+
 ### baostock
 
 回测与历史数据专用数据源配置。

@@ -32,6 +32,12 @@ data_source:
   etf_force_web_crawler: true
   fallback_to_web_crawler: true
 
+# ── 新浪股指/ETF 期权 ──
+sina_options:
+  enabled: true
+  timeout_seconds: 20
+  quote_batch_size: 50
+
 # ── 邮件 (填入你的 SMTP 信息) ──
 email:
   enable_ssl: true

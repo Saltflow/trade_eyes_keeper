@@ -46,6 +46,8 @@ class DataSource:
 
         # web_crawler 延迟初始化
         self._web_crawler = None
+        # 新浪期权数据源延迟初始化，避免普通股票任务额外建立 Session
+        self._option_data_source = None
 
     @property
     def web_crawler(self):
@@ -54,6 +56,15 @@ class DataSource:
 
             self._web_crawler = StockWebCrawler(self.config)
         return self._web_crawler
+
+    @property
+    def option_data_source(self):
+        """新浪股指/ETF 期权数据源（按需初始化）。"""
+        if self._option_data_source is None:
+            from .option_data import SinaOptionDataSource
+
+            self._option_data_source = SinaOptionDataSource(self.config)
+        return self._option_data_source
 
     # ------------------------------------------------------------------
     # 对外接口

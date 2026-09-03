@@ -64,6 +64,7 @@ from src.search.promotion import (
 )
 from src.instruments import InstrumentAuditService
 from src.instruments.audit import load_latest_audit
+from src.data.backtest_data import prepare_backtest_data
 
 
 OPTIMIZER_GROUPS = ("a_share", "hk", "us")
@@ -355,6 +356,24 @@ def rebuild_active_optimizer_summary(config: dict) -> OptimizerRunSummary | None
     evaluation_budget = _optimizer_evaluation_budget(constraints)
     summaries: dict[str, OptimizerGroupSummary] = {}
     configured_codes = [_stock_code(stock) for stock in config.get("stocks", [])]
+    if "point_in_time_data" in config:
+        all_benchmarks = [
+            code
+            for group in _configured_optimizer_groups(config)
+            for code in constraints.benchmark_codes_for(group)
+            if code != "risk_free"
+        ]
+        end = pd.Timestamp.now().normalize().date()
+        prepare_backtest_data(
+            config,
+            configured_codes,
+            end - pd.Timedelta(days=lookback_days).to_pytimedelta(),
+            end,
+            purpose="optimizer_summary",
+            benchmark_codes=all_benchmarks,
+            strategy=active.strategy,
+            require_current=True,
+        )
 
     for group in OPTIMIZER_GROUPS:
         artifact_path = (
@@ -534,6 +553,36 @@ def run_optimization(
     lookback_days = _optimizer_lookback_days(constraints)
     preloaded_market_bundles: dict[str, dict[str, object]] = {}
     if "point_in_time_data" in config:
+        optimizer_codes = [
+            code for group_codes in groups.values() for code in group_codes
+        ]
+        benchmark_codes = [
+            code
+            for group in target_groups
+            for code in constraints.benchmark_codes_for(group)
+            if code != "risk_free"
+        ]
+        optimizer_end = pd.Timestamp.now().normalize().date()
+        optimizer_start = optimizer_end - pd.Timedelta(days=lookback_days).to_pytimedelta()
+        readiness = prepare_backtest_data(
+            config,
+            optimizer_codes,
+            optimizer_start,
+            optimizer_end,
+            purpose="optimizer",
+            benchmark_codes=benchmark_codes,
+            strategy=strategy,
+            require_current=True,
+            readiness_path=run_dir / "data_readiness.json",
+        )
+        if readiness.issues:
+            logger.warning(
+                "Optimizer data readiness has %d unresolved symbols: %s",
+                len(readiness.issues),
+                "; ".join(
+                    f"{item.code}: {item.reason}" for item in readiness.issues
+                ),
+            )
         for group in target_groups:
             codes = groups.get(group, [])
             if not codes:
@@ -803,10 +852,11 @@ def run_optimization(
             promotion_decision.compared_group_count,
             list(promotion_decision.reasons),
         )
-    auto_promote = bool(
-        promotion_policy.auto_activate_if_better and promotion_decision.passed
-    )
-    should_activate = bool(not manual_activation or auto_promote)
+    # A search run is always published as an auditable candidate.  Promotion
+    # remains a separate, explicit ``--activate-run`` operation even when the
+    # configured relative-promotion policy passes; a scheduled search must
+    # never mutate the production strategy pointer by itself.
+    should_activate = False
     published = publish_complete_run(
         run_id,
         strategy.name,
@@ -819,7 +869,7 @@ def run_optimization(
     activated = bool(published and should_activate)
     if activated:
         logger.info("Published active optimizer run %s (%s)", run_id, strategy.name)
-    elif published and manual_activation:
+    elif published:
         logger.info(
             "Saved candidate optimizer run %s (%s); activate explicitly with "
             "python main.py --activate-run %s",

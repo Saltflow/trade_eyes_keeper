@@ -388,26 +388,84 @@ def _get_backtest_params(group: str, strategy):
 def handle_backtest(code: str, start: str, end: str) -> str:
     """单票回测（使用统一评估引擎 evaluate_all_groups）。"""
     try:
-        from ...data.data_source import DataSource
         from ...backtest.engine import evaluate_all_groups
+        from ...data.backtest_data import prepare_backtest_data
         from ...search.config import get_execution_config
         from ...markets import _detect_fine_group
         import pandas as pd
 
         config = _load_config()
-        ds = DataSource(config)
 
         s = datetime.strptime(start, "%Y-%m-%d")
         e = datetime.strptime(end, "%Y-%m-%d")
-        requested_days = (e - s).days
-        days = max(requested_days + 365, 1000)
+        strategy = _get_backtest_strategy(config)
+        if strategy is None:
+            return "❌ 未配置有效的回测策略"
+        group = _detect_fine_group(code)
+        params, using_fallback_params = _get_backtest_params(group, strategy)
 
-        history = ds.fetch_stock_data(code, days=days)
-        if history is None or history.empty or "date" not in history.columns:
-            return f"❌ 未获取到 <code>{code}</code> 的行情数据"
+        market_bundles = None
+        benchmark_bundles = None
+        if "point_in_time_data" in config:
+            from ...search.config import get_constraints
 
-        history = history.copy()
-        history["date"] = pd.to_datetime(history["date"])
+            constraints = get_constraints()
+            benchmark_codes = [
+                item
+                for item in constraints.benchmark_codes_for(group)
+                if item != "risk_free"
+            ]
+            warmup_start = (
+                pd.Timestamp(s)
+                - pd.DateOffset(
+                    months=constraints.walk_forward.state_lookback_months
+                )
+            ).date()
+            prepared = prepare_backtest_data(
+                config,
+                [code],
+                warmup_start,
+                e.date(),
+                purpose="interactive_backtest",
+                benchmark_codes=benchmark_codes,
+                strategy=strategy,
+                require_current=False,
+            )
+            if prepared.issues or code not in prepared.bundles:
+                details = "; ".join(
+                    f"{item.code}: {item.reason}" for item in prepared.issues
+                ) or "行情包未就绪"
+                return f"❌ 回测数据未就绪 <code>{code}</code>：{details}"
+            market_bundles = {code: prepared.bundles[code]}
+            benchmark_bundles = {
+                item: bundle
+                for item, bundle in prepared.bundles.items()
+                if item != code
+            }
+            frame = prepared.bundles[code].prices
+            history = pd.DataFrame(
+                {
+                    "date": pd.to_datetime(frame["date"], errors="coerce"),
+                    "open": pd.to_numeric(frame["qfq_open"], errors="coerce"),
+                    "high": pd.to_numeric(frame["qfq_high"], errors="coerce"),
+                    "low": pd.to_numeric(frame["qfq_low"], errors="coerce"),
+                    "close": pd.to_numeric(frame["qfq_close"], errors="coerce"),
+                    "volume": pd.to_numeric(frame["volume"], errors="coerce"),
+                    "tradable": frame["tradable"].astype(bool),
+                }
+            )
+        else:
+            from ...data.data_source import DataSource
+
+            ds = DataSource(config)
+            requested_days = (e - s).days
+            days = max(requested_days + 365, 1000)
+            history = ds.fetch_stock_data(code, days=days)
+            if history is None or history.empty or "date" not in history.columns:
+                return f"❌ 未获取到 <code>{code}</code> 的行情数据"
+
+            history = history.copy()
+            history["date"] = pd.to_datetime(history["date"])
         history = history.sort_values("date").reset_index(drop=True)
         actual_start = str(history["date"].min())[:10]
         actual_end = str(history["date"].max())[:10]
@@ -420,18 +478,14 @@ def handle_backtest(code: str, start: str, end: str) -> str:
                 f"❌ <code>{code}</code> 在 {start} ~ {end} 无数据\n"
                 f"缓存数据范围: {actual_start} ~ {actual_end}"
             )
-
-        strategy = _get_backtest_strategy(config)
-        if strategy is None:
-            return "❌ 未配置有效的回测策略"
-        group = _detect_fine_group(code)
-        params, using_fallback_params = _get_backtest_params(group, strategy)
         reports = evaluate_all_groups(
             {code: history[history["date"] <= pd.Timestamp(end)]},
             [code],
             strategy,
             params,
             get_execution_config(),
+            benchmark_bundles=benchmark_bundles,
+            market_bundles=market_bundles,
             target_groups=[group],
             start_date=start,
             end_date=end,
@@ -440,8 +494,18 @@ def handle_backtest(code: str, start: str, end: str) -> str:
         if report is None:
             return f"❌ <code>{code}</code> 评估失败，无可交易数据"
 
-        bh_start = float(data["close"].iloc[0])
-        bh_end = float(data["close"].iloc[-1])
+        if market_bundles:
+            raw = market_bundles[code].prices.copy()
+            raw["date"] = pd.to_datetime(raw["date"], errors="coerce")
+            raw = raw[
+                (raw["date"] >= pd.Timestamp(start))
+                & (raw["date"] <= pd.Timestamp(end))
+            ]
+            bh_start = float(raw["raw_close"].iloc[0])
+            bh_end = float(raw["raw_close"].iloc[-1])
+        else:
+            bh_start = float(data["close"].iloc[0])
+            bh_end = float(data["close"].iloc[-1])
         bh_return = (bh_end - bh_start) / bh_start * 100
 
         return (

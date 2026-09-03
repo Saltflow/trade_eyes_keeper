@@ -42,6 +42,9 @@
     gap:6px; margin-top:8px; }}
   .metric-cell {{ width:auto; padding:7px 8px; }}
   .metric-value {{ font-size:16px; }}
+  .window-chip-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; margin-top:7px; }}
+  .window-chip {{ min-width:0; padding:7px 8px; border:1px solid #d9e7f2; border-radius:7px; background:#f7fbff; color:#526b86; font-size:11px; line-height:1.45; overflow-wrap:anywhere; }}
+  .window-chip strong {{ color:#173b62; font-size:12px; }}
   .detail-label {{ margin-top:10px; color:#526b86; font-size:12px; font-weight:700; }}
   .muted-note,.sub-note {{ margin-top:6px; color:#7a8998; font-size:11px; overflow-wrap:anywhere; }}
   .nav-boxplot-card {{ margin-top:8px; padding:10px 8px 8px; border:1px solid #e0e8f0;
@@ -75,6 +78,7 @@
     .summary-value {{ font-size:18px !important; }}
     .stock-title,.focus-title {{ font-size:13px !important; }}
     .metric-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)) !important; }}
+    .window-chip-grid {{ grid-template-columns:1fr !important; }}
   }}
 </style>
 </head>
@@ -99,12 +103,13 @@
         {portfolio_chart_section}
         <!-- Monitoring -->
         {monitor_section}
-        <!-- 搜参策略结果 -->
+        <!-- 搜参策略结果详情 -->
+        {report_links}
+        <!-- Deployment/account status only; no final or quarterly holdings. -->
         {ref_portfolio_section}
         {instrument_profile_section}
         {announcements_section}
         {placement_section}
-        {report_links}
       </td></tr>
       <tr>
         <td style="padding:12px 18px 18px;border-top:1px solid #e3ebf3;color:#8a98a7;font-size:11px;text-align:center;">

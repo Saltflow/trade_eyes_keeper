@@ -294,6 +294,70 @@ def _parse_params(data: dict, strategy_name: str) -> Params | None:
     )
 
 
+def _selection_diagnostics(data: dict) -> dict[str, object]:
+    """Expose immutable search diagnostics to daily/report consumers."""
+    search = data.get("search", {})
+    search = search if isinstance(search, dict) else {}
+    sensitivity = data.get("sensitivity", {})
+    sensitivity = sensitivity if isinstance(sensitivity, dict) else {}
+    windows: list[dict] = []
+    window_sources = [
+        ("ranking", "ranking_windows"),
+        (
+            "purged",
+            "purged_windows"
+            if data.get("purged_windows") is not None
+            else "isolated_windows",
+        ),
+        ("holdout", "holdout_windows"),
+    ]
+    for role, key in window_sources:
+        rows = data.get(key, [])
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            item = dict(row)
+            item.setdefault("role", role)
+            windows.append(item)
+    # A new artifact has explicit global indexes. Legacy artifacts still get a
+    # deterministic order for rendering, while retaining all original fields.
+    windows.sort(key=lambda item: int(item.get("global_index", 0) or 0))
+    for index, item in enumerate(windows, 1):
+        item.setdefault("global_index", index)
+    result = {
+        "wf_score": data.get("wf_score"),
+        "ranking_diagnostics": (
+            dict(search.get("ranking_diagnostics", {}))
+            if isinstance(search.get("ranking_diagnostics"), dict)
+            else {}
+        ),
+        "sensitivity": dict(sensitivity),
+        "selection_score": search.get("selection_score"),
+    }
+    if windows or isinstance(data.get("holdout_summary"), dict):
+        result.update({
+            "holdout_summary": (
+                dict(data.get("holdout_summary", {}))
+                if isinstance(data.get("holdout_summary"), dict)
+                else {}
+            ),
+            "window_counts": {
+                "total": int(
+                    search.get("total_window_count", len(windows)) or 0
+                ),
+                "ranking": int(search.get("ranking_window_count", 0) or 0),
+                "purged": int(
+                    search.get("purged_overlap_window_count", 0) or 0
+                ),
+                "holdout": int(search.get("validation_window_count", 0) or 0),
+            },
+            "windows": windows,
+        })
+    return result
+
+
 def _migrate_legacy_execution(values: dict[str, int], strategy_name: str) -> dict:
     """Translate an old percentage/rule-limit artifact once at load time."""
     from .config import get_constraints
@@ -476,22 +540,7 @@ def load_latest_strategy_run(
                     for key, value in period.items()
                     if key in {"start", "end"} and value
                 }
-            search = (data or {}).get("search", {})
-            sensitivity = (data or {}).get("sensitivity", {})
-            selection_by_group[group] = {
-                "wf_score": (data or {}).get("wf_score"),
-                "ranking_diagnostics": dict(search)
-                .get("ranking_diagnostics", {})
-                if isinstance(search, dict)
-                and isinstance(search.get("ranking_diagnostics"), dict)
-                else {},
-                "sensitivity": (
-                    dict(sensitivity) if isinstance(sensitivity, dict) else {}
-                ),
-                "selection_score": (
-                    search.get("selection_score") if isinstance(search, dict) else None
-                ),
-            }
+            selection_by_group[group] = _selection_diagnostics(data or {})
         return ActiveStrategyRun(
             strategy_name=strategy_name,
             timestamp=str(manifest["timestamp"]),
@@ -534,19 +583,7 @@ def load_latest_strategy_run(
                 for key, value in period.items()
                 if key in {"start", "end"} and value
             }
-        search = data.get("search", {})
-        sensitivity = data.get("sensitivity", {})
-        selection_by_group[group] = {
-            "wf_score": data.get("wf_score"),
-            "ranking_diagnostics": dict(search).get("ranking_diagnostics", {})
-            if isinstance(search, dict)
-            and isinstance(search.get("ranking_diagnostics"), dict)
-            else {},
-            "sensitivity": dict(sensitivity) if isinstance(sensitivity, dict) else {},
-            "selection_score": search.get("selection_score")
-            if isinstance(search, dict)
-            else None,
-        }
+        selection_by_group[group] = _selection_diagnostics(data)
     timestamp = max(item[0] for item in legacy)
     return ActiveStrategyRun(
         strategy_name,

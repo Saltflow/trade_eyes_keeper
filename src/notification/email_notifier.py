@@ -42,6 +42,18 @@ def _fmt(v, unit="", fmt_spec=".2f"):
     return f"{v:{fmt_spec}}"
 
 
+def _signed_text_metric(value, unit="%", precision=2) -> str:
+    """Format optional report metrics without turning missing data into zero."""
+    if value is None:
+        return "—"
+    try:
+        if pd.isna(value):
+            return "—"
+        return f"{float(value):+.{precision}f}{unit}"
+    except (TypeError, ValueError):
+        return "—"
+
+
 def _html_escape(value, default="—") -> str:
     """Escape notification data without collapsing real zeroes to a dash."""
     if value is None:
@@ -571,7 +583,7 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
         sensitivity = selection.get("sensitivity", {})
         if ranking:
             lines.append(
-                "  排名筛选（仅 13 个历史窗口）: "
+                "  Ranking 窗口筛选: "
                 f"加权绝对收益 {float(ranking.get('weighted_strategy_return', 0.0)):+.2f}% | "
                 f"正收益窗口 {int(ranking.get('positive_return_windows', 0))}/"
                 f"{int(ranking.get('ranking_window_count', 0))} | "
@@ -589,71 +601,16 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
             )
         if r.composition:
             lines.append(f"  成分: {', '.join(r.composition)}")
-        final_positions = getattr(r, "final_holdings", None) or []
-        if final_positions:
-            holding_text = ", ".join(
-                f"{position.get('code', '?')} "
-                f"{float(position.get('shares', 0)):.0f}股 "
-                f"({float(position.get('weight', 0)):.1f}%)"
-                for position in final_positions
-            )
-        else:
-            holding_text = "空仓"
-        lines.append(
-            f"  期末资产 {float(getattr(r, 'final_asset', 0)):,.2f} | "
-            f"现金 {float(getattr(r, 'final_cash', 0)):,.2f} | "
-            f"持仓市值 {float(getattr(r, 'final_holdings_value', 0)):,.2f} | "
-            f"仓位 {float(getattr(r, 'final_position_pct', 0)):.1f}%"
-        )
-        lines.append(f"  期末持仓: {holding_text}")
-        for position in final_positions:
+        holdout = selection.get("holdout_summary", {})
+        if isinstance(holdout, dict) and holdout:
             lines.append(
-                "    "
-                f"{position.get('code', '?')} 成本 "
-                f"{float(position.get('cost', 0)):.2f} / 期末价 "
-                f"{float(position.get('price', 0)):.2f} / 市值 "
-                f"{float(position.get('value', 0)):,.2f} / 盈亏 "
-                f"{float(position.get('pnl', 0)):+,.2f} "
-                f"({float(position.get('pnl_pct', 0)):+.1f}%)"
+                "  Holdout整体（窗口等权；最大回撤取最差）: "
+                f"收益 {_signed_text_metric(holdout.get('return_pct'))} | "
+                f"超额 {_signed_text_metric(holdout.get('excess_return_pct'))} | "
+                f"最大回撤 {_signed_text_metric(holdout.get('max_drawdown_pct'))} | "
+                f"Sharpe {_signed_text_metric(holdout.get('sharpe_ratio'), '', 3)}"
             )
-
-        weekly = getattr(r, "weekly_nav_ohlc", None) or {}
-        weekly_labels = weekly.get("labels", [])
-        weekly_open = weekly.get("open", [])
-        weekly_high = weekly.get("high", [])
-        weekly_low = weekly.get("low", [])
-        weekly_close = weekly.get("close", [])
-        weekly_count = min(
-            len(weekly_labels), len(weekly_open), len(weekly_high),
-            len(weekly_low), len(weekly_close),
-        )
-        if weekly_count:
-            lines.append("  周 NAV K线（最近8个自然周，O/H/L/C）:")
-            for index in range(max(0, weekly_count - 8), weekly_count):
-                lines.append(
-                    f"    {weekly_labels[index]} "
-                    f"{weekly_open[index]:.2f}/"
-                    f"{weekly_high[index]:.2f}/"
-                    f"{weekly_low[index]:.2f}/"
-                    f"{weekly_close[index]:.2f}"
-                )
-
-        if qh:
-            lines.append("  季末持仓:")
-            for snapshot in qh:
-                positions = snapshot.get("positions", []) or []
-                position_text = ", ".join(
-                    f"{position.get('code', '?')} "
-                    f"{float(position.get('shares', 0)):.0f}股"
-                    for position in positions
-                ) or "空仓"
-                lines.append(
-                    f"    {snapshot.get('quarter', '?')} "
-                    f"({snapshot.get('date', '-')}) NAV "
-                    f"{float(snapshot.get('nav', 0)):,.2f} / "
-                    f"现金 {float(snapshot.get('cash', 0)):,.2f} / "
-                    f"{position_text}"
-                )
+        lines.append("  持仓明细和周 NAV OHLC 已移至 HTML/PDF 详情。")
         warming = getattr(r, "warming_codes", None) or []
         if warming:
             lines.append(f"  预热中（暂不交易）: {', '.join(warming)}")
@@ -1375,9 +1332,12 @@ class EmailNotifier(BaseNotifier):
             label = group_labels.get(group, group)
             html += f"<p><strong>{label} — 基于最新优化策略 (Rank {bt.get('strategy_rank', '?')})</strong></p>\n"
             html += '<table style="border-collapse:collapse;width:100%;margin:8px 0;font-size:12px" cellpadding="6" cellspacing="0" border="0">\n'
-            html += '<tr style="background:#34495e;color:#fff"><th>指标</th><th>全期</th><th>观察0-6m</th><th>部署6-12m</th><th>验证12-24m</th></tr>\n'
+            html += '<tr style="background:#34495e;color:#fff"><th>指标</th><th>全期</th><th>Ranking</th><th>Purged</th><th>Holdout</th></tr>\n'
 
             phases = bt.get("phase_metrics", {})
+            ranking_phase = phases.get("ranking", phases.get("observe"))
+            purged_phase = phases.get("purged", phases.get("deploy"))
+            holdout_phase = phases.get("holdout", phases.get("test"))
             # 全期总收益含资金注入，无直接可比超额 → 各阶段超额见分列
             _excess_all = "—"
             total_excess_col = _excess_all
@@ -1399,33 +1359,33 @@ class EmailNotifier(BaseNotifier):
 
             html += (
                 f"<tr><td>超额收益</td><td>{total_excess_col}</td>"
-                f"<td>{_pval(phases.get('observe'), 'excess_return')}</td>"
-                f"<td>{_pval(phases.get('deploy'), 'excess_return')}</td>"
-                f"<td>{_pval(phases.get('test'), 'excess_return')}</td></tr>\n"
+                f"<td>{_pval(ranking_phase, 'excess_return')}</td>"
+                f"<td>{_pval(purged_phase, 'excess_return')}</td>"
+                f"<td>{_pval(holdout_phase, 'excess_return')}</td></tr>\n"
             )
             html += (
                 f"<tr><td>最大回撤</td><td>{dd}</td>"
-                f"<td>{_pval(phases.get('observe'), 'max_drawdown')}</td>"
-                f"<td>{_pval(phases.get('deploy'), 'max_drawdown')}</td>"
-                f"<td>{_pval(phases.get('test'), 'max_drawdown')}</td></tr>\n"
+                f"<td>{_pval(ranking_phase, 'max_drawdown')}</td>"
+                f"<td>{_pval(purged_phase, 'max_drawdown')}</td>"
+                f"<td>{_pval(holdout_phase, 'max_drawdown')}</td></tr>\n"
             )
             html += (
                 f"<tr><td>Sharpe</td><td>{sp}</td>"
-                f"<td>{_pval(phases.get('observe'), 'sharpe_ratio')}</td>"
-                f"<td>{_pval(phases.get('deploy'), 'sharpe_ratio')}</td>"
-                f"<td>{_pval(phases.get('test'), 'sharpe_ratio')}</td></tr>\n"
+                f"<td>{_pval(ranking_phase, 'sharpe_ratio')}</td>"
+                f"<td>{_pval(purged_phase, 'sharpe_ratio')}</td>"
+                f"<td>{_pval(holdout_phase, 'sharpe_ratio')}</td></tr>\n"
             )
             html += (
                 f"<tr><td>交易次数</td><td>{trades}</td>"
-                f"<td>{getattr(phases.get('observe'), 'trade_count', '-')}</td>"
-                f"<td>{getattr(phases.get('deploy'), 'trade_count', '-')}</td>"
-                f"<td>{getattr(phases.get('test'), 'trade_count', '-')}</td></tr>\n"
+                f"<td>{getattr(ranking_phase, 'trade_count', '-')}</td>"
+                f"<td>{getattr(purged_phase, 'trade_count', '-')}</td>"
+                f"<td>{getattr(holdout_phase, 'trade_count', '-')}</td></tr>\n"
             )
 
             # 基准对比
             bm = bt.get("benchmarks", {})
             if bm:
-                test_excess = getattr(phases.get("test"), "excess_return", 0)
+                test_excess = getattr(holdout_phase, "excess_return", 0)
                 html += "<tr><td>vs基准</td><td colspan='4'>"
                 parts = []
                 for name, val in bm.items():
@@ -1646,7 +1606,7 @@ class EmailNotifier(BaseNotifier):
             sensitivity = selection.get("sensitivity", {})
             if ranking:
                 summary += (
-                    "<br><b>排名筛选（仅 13 个历史窗口）</b>: "
+                    "<br><b>排名筛选（Ranking 窗口）</b>: "
                     f"加权绝对收益 {float(ranking.get('weighted_strategy_return', 0.0)):+.2f}% | "
                     f"正收益窗口 {int(ranking.get('positive_return_windows', 0))}/"
                     f"{int(ranking.get('ranking_window_count', 0))} | "
@@ -2250,6 +2210,42 @@ class EmailNotifier(BaseNotifier):
                 f'<div class="metric-cell"><div class="metric-label">Sharpe / 交易</div><div class="metric-value">{_html_escape(self._daily_metric(self._daily_get(report, "sharpe_ratio"), "", 2))} / {_html_escape(self._daily_get(report, "trade_count", "—"))}</div></div>'
                 '</div>'
             )
+            selection = self._daily_get(report, "selection_diagnostics", {}) or {}
+            if not isinstance(selection, dict):
+                selection = {}
+            holdout = selection.get("holdout_summary", {})
+            holdout = holdout if isinstance(holdout, dict) else {}
+            holdout_windows = [
+                item for item in (selection.get("windows", []) or [])
+                if isinstance(item, dict) and item.get("role") == "holdout"
+            ]
+            if holdout or holdout_windows:
+                parts.append('<div class="detail-label">Holdout 整体 · 4 个窗口</div>')
+                parts.append(
+                    '<div class="metric-grid holdout-grid">'
+                    f'<div class="metric-cell"><div class="metric-label">整体收益</div><div class="metric-value">{_html_escape(self._daily_metric(holdout.get("return_pct"), "%", 2))}</div></div>'
+                    f'<div class="metric-cell"><div class="metric-label">整体超额</div><div class="metric-value">{_html_escape(self._daily_metric(holdout.get("excess_return_pct"), "%", 2))}</div></div>'
+                    f'<div class="metric-cell"><div class="metric-label">最差最大回撤</div><div class="metric-value">{_html_escape(self._daily_metric(holdout.get("max_drawdown_pct"), "%", 2))}</div></div>'
+                    f'<div class="metric-cell"><div class="metric-label">整体 Sharpe</div><div class="metric-value">{_html_escape(self._daily_metric(holdout.get("sharpe_ratio"), "", 3))}</div></div>'
+                    '</div>'
+                )
+                chips = []
+                for item in holdout_windows[:4]:
+                    period = item.get("period", {}) or {}
+                    if not isinstance(period, dict):
+                        period = {}
+                    chips.append(
+                        '<div class="window-chip">'
+                        f'<strong>H{_html_escape(item.get("role_index", "—"))}</strong> '
+                        f'{_html_escape(period.get("test_start", "—"))} → {_html_escape(period.get("test_end", "—"))}'
+                        f'<br>收益 {_html_escape(self._daily_metric(item.get("return"), "%", 1))} · '
+                        f'超额 {_html_escape(self._daily_metric(item.get("excess_return"), "%", 1))} · '
+                        f'DD {_html_escape(self._daily_metric(item.get("max_drawdown"), "%", 1))} · '
+                        f'Sharpe {_html_escape(self._daily_metric(item.get("sharpe_ratio"), "", 2))}'
+                        '</div>'
+                    )
+                if chips:
+                    parts.append('<div class="window-chip-grid">' + "".join(chips) + '</div>')
             benchmark_returns, win_rates = _format_benchmark_comparison(report)
             if benchmark_returns:
                 parts.append(f'<div class="detail-label">基准比较</div><div class="stock-line">{_html_escape(" · ".join(benchmark_returns))}</div>')
@@ -2444,6 +2440,10 @@ class EmailNotifier(BaseNotifier):
             return ""
         report_files = {
             "A股": sorted(optimizer_dir.glob("*_a_share_report.html"), key=lambda p: p.stat().st_mtime, reverse=True),
+            "港股": sorted(optimizer_dir.glob("*_hk_report.html"), key=lambda p: p.stat().st_mtime, reverse=True),
+            "美股": sorted(optimizer_dir.glob("*_us_report.html"), key=lambda p: p.stat().st_mtime, reverse=True),
+            # Keep links to installations that generated the old combined
+            # report until their next optimizer run.
             "境外": sorted(optimizer_dir.glob("*_non_a_share_report.html"), key=lambda p: p.stat().st_mtime, reverse=True),
         }
         if not any(report_files.values()):

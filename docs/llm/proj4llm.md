@@ -1,3 +1,16 @@
+### 新浪期权数据源接入（2026-09-02）
+
+- 新增 `src/data/option_data.py`，通过新浪公开接口读取中金所 IO/HO/MO
+  指数期权和上交所 ETF 期权的合约月份、Call/Put 实时链与单合约日线。
+- 沪深 300 可使用中金所 IO 或 510300 ETF 期权；中证 500 使用上交所
+  510500 ETF 期权。中金所 MO 是中证 1000，不能标注为中证 500。
+- `DataSource.option_data_source` 提供延迟初始化入口。ETF 行情请求按批次
+  合并，新浪 GBK 行情、JSON 和 JSONP 响应分别解码/解析，并在接口异常时
+  fail closed，不用空值或模拟数据填充。
+- 新浪当前提供月度到期合约，不虚构周到期合约。周/月 K 线由
+  `resample_option_bars(daily, "W-FRI")` 和 `resample_option_bars(daily, "M")`
+  从日线聚合；`contract_month` 保留新浪的 YYMM 合约月份。
+
 ## Authoritative time and ranking contract (2026-08-02)
 
 > This section supersedes every historical description below that calls the
@@ -1018,7 +1031,7 @@ config/optimizer.yaml → StrategyOptimizer → PortfolioEvaluator
 - FCF is always OCF minus capital expenditures on the same cumulative basis, then normalized to standalone quarters. Reports expose latest-quarter FCF and TTM FCF separately; annual fallback is explicitly labeled.
 - A source replacement migration removes legacy SEC rows produced by the old comparative-column mapper. A-share sources already declare cumulative periods and missing quarterly capital expenditures remain explicit missing data.
     0-12月搜索        0-24月最终评估
-                     按12-24月外样本排名
+                     按完整窗口角色与 Holdout 聚合指标审阅
 
 ### 日报邮件移动端版式重设计（2026-08-22）
 - 每日 19:00 日报统一使用移动端优先的单列卡片布局；告警与无告警路径共用同一份完整 HTML 模板。
@@ -1555,3 +1568,21 @@ pytest tests/test_import_smoke.py         # 导入完整性
 - Holdout 报告新增整体汇总：由于4个9个月窗口相互重叠，收益、最强基准超额和 Sharpe
   采用窗口等权均值，最大回撤取窗口最差值；不将重叠窗口错误串联复利。多数基准超额
   同时保留并作为 Holdout Gate 的相对比较口径。
+
+### 回测自动补数与窗口/日报重设计（2026-09-03）
+
+- 普通 `/backtest CODE START END` 和 `--optimize` 在外层先准备 raw/qfq/公司行为
+  行情包，缺失或不完整时通过 `MarketHistoryProvider` 补数并写回 Point-in-Time
+  store；补数后再次校验覆盖、时间戳、raw/qfq 恒等式和公司行为可解释性。指标、
+  `Backtester` 与 `evaluate_all_groups()` 仍是纯计算边界，不在仿真途中联网。
+- 搜参不修改监控配置；补数仍失败的代码只在搜参输入阶段排除，并记录代码、来源、
+  缺失区间和失败原因。新搜参结果始终先作为 candidate 保存，生产策略必须通过
+  `--activate-run` 显式切换。
+- 搜参报告保存每个窗口的 `role`、分组序号、全局序号和训练/测试日期，固定展示
+  `22 / 16 / 2 / 4`（总数 / Ranking / Purged / Holdout）。Holdout 的整体收益、
+  超额和 Sharpe 为四个重叠窗口等权平均，最大回撤取最差窗口。
+- 19:00 日报首屏改为部署状态、A/HK/US 决策指标、告警/信号、Holdout 小卡片和
+  图表；主机名、公网 IP 保留。周 NAV 只显示移动端 boxplot，日报不贴周 OHLC、
+  最终持仓或季末持仓明细，详情通过时效报告链接/PDF 查看。
+- Bot 频次使用 `/report_frequency daily|weekly|off`（兼容 `/daily_frequency`）：
+  普通无告警日报按配置发送，告警即时发送，手动 `/daily` 强制发送。

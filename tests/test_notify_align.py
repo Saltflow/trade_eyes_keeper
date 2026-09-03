@@ -117,7 +117,7 @@ class TestStrategyTextSummary:
         assert "无风险" in out
         assert "三基线收益 / 策略超额" in out
 
-    def test_shared_im_summary_uses_unified_report_snapshots(self):
+    def test_text_summary_omits_long_nav_and_holding_details(self):
         from notification.email_notifier import build_strategy_text_summary
 
         position = {
@@ -141,12 +141,11 @@ class TestStrategyTextSummary:
             _make_session(evaluation_reports={"a_share": report})
         )
 
-        assert "周 NAV K线" in out
-        assert "2026-W27 100000.00/106000.00/99000.00/105000.00" in out
-        assert "季末持仓" in out
-        assert "2026-06-30" in out
-        assert "期末持仓" in out
-        assert "成本 30.00 / 期末价 35.00" in out
+        assert "周 NAV K线" not in out
+        assert "2026-W27 100000.00/106000.00/99000.00/105000.00" not in out
+        assert "季末持仓" not in out
+        assert "期末持仓" not in out
+        assert "持仓明细和周 NAV OHLC 已移至 HTML/PDF 详情" in out
 
     def test_signals_readable_names(self):
         from notification.email_notifier import build_strategy_text_summary

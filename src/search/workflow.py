@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -643,6 +644,7 @@ def run_optimizer(
                     constraints.walk_forward.state_lookback_months
                 ),
                 "holdout_months": constraints.walk_forward.test_months,
+                "holdout_test_months": constraints.walk_forward.test_months,
                 "holdout_window_count": (
                     constraints.walk_forward.held_out_window_count
                 ),
@@ -780,7 +782,14 @@ def _save_optimizer_result(
     windows = list(windows or [])
     strategy_codes = list(strategy_codes or [])
 
-    def serialize_window(stat, window=None):
+    def serialize_window(
+        stat,
+        window=None,
+        *,
+        role: str = "",
+        role_index: int | None = None,
+        global_index: int | None = None,
+    ):
         final_asset = float(getattr(stat, "final_asset", 0.0) or 0.0)
         shares = np.asarray(getattr(stat, "final_shares", []), dtype=float)
         prices = np.asarray(getattr(stat, "final_prices", []), dtype=float)
@@ -843,33 +852,66 @@ def _save_optimizer_result(
                 "test_start": window.test_start_date,
                 "test_end": window.test_end_date,
             }
+        if role:
+            result["role"] = role
+        if role_index is not None:
+            result["role_index"] = int(role_index)
+        if global_index is not None:
+            result["global_index"] = int(global_index)
         return result
 
+    ranking_indexes, purged_indexes, validation_indexes = (
+        _partition_window_indexes(
+            windows,
+            constraints,
+            validation_window_count=len(top.validation_stats),
+        )
+        if windows
+        else ([], [], [])
+    )
+    # Compatibility with test doubles/legacy solver results that do not carry
+    # the complete window list: preserve the old positional serialization.
+    if not ranking_indexes and top.ranking_stats:
+        ranking_indexes = list(range(len(top.ranking_stats)))
+    if not validation_indexes and top.validation_stats:
+        offset = len(top.ranking_stats) + int(top.purged_window_count)
+        validation_indexes = list(
+            range(offset, offset + len(top.validation_stats))
+        )
     ranking_reports = [
-        serialize_window(stat, windows[index] if index < len(windows) else None)
-        for index, stat in enumerate(top.ranking_stats)
+        serialize_window(
+            stat,
+            windows[index] if index < len(windows) else None,
+            role="ranking",
+            role_index=role_index,
+            global_index=index + 1,
+        )
+        for role_index, (index, stat) in enumerate(
+            zip(ranking_indexes, top.ranking_stats), 1
+        )
     ]
-    validation_offset = len(top.ranking_stats) + int(top.purged_window_count)
     isolated_reports = [
         serialize_window(
             top.all_stats[index],
             windows[index] if index < len(windows) else None,
+            role="purged",
+            role_index=role_index,
+            global_index=index + 1,
         )
-        for index in range(
-            len(top.ranking_stats),
-            min(validation_offset, len(top.all_stats)),
-        )
+        for role_index, index in enumerate(purged_indexes, 1)
+        if index < len(top.all_stats)
     ]
     holdout_reports = [
         serialize_window(
             stat,
-            (
-                windows[validation_offset + index]
-                if validation_offset + index < len(windows)
-                else None
-            ),
+            windows[index] if index < len(windows) else None,
+            role="holdout",
+            role_index=role_index,
+            global_index=index + 1,
         )
-        for index, stat in enumerate(top.validation_stats)
+        for role_index, (index, stat) in enumerate(
+            zip(validation_indexes, top.validation_stats), 1
+        )
     ]
     holdout_summary = aggregate_holdout_metrics(
         top.validation_stats,
@@ -935,6 +977,7 @@ def _save_optimizer_result(
         "wf_score": top.objective_score,
         "ranking_windows": ranking_reports,
         "isolated_windows": isolated_reports,
+        "purged_windows": isolated_reports,
         "holdout_windows": holdout_reports,
         "holdout_summary": holdout_summary,
         "activation": {
@@ -975,6 +1018,7 @@ def _save_optimizer_result(
                     constraints.walk_forward.state_lookback_months
                 ),
                 "holdout_months": constraints.walk_forward.test_months,
+                "holdout_test_months": constraints.walk_forward.test_months,
                 "holdout_window_count": (
                     constraints.walk_forward.held_out_window_count
                 ),
@@ -1002,8 +1046,16 @@ def _save_optimizer_result(
         "sensitivity": dict(top.sensitivity),
         "universe_robustness": universe_robustness,
     }
-    from pathlib import Path
-
+    readiness_path = Path(output_dir) / "data_readiness.json" if output_dir else None
+    if readiness_path is not None and readiness_path.is_file():
+        try:
+            readiness = json.loads(readiness_path.read_text(encoding="utf-8"))
+            if isinstance(readiness, dict):
+                data["data_readiness"] = readiness
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "Unable to include data readiness in %s: %s", readiness_path, exc
+            )
     out_dir = Path(output_dir) if output_dir is not None else Path("data/optimizer")
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{group}_best_params.yaml"
@@ -1015,4 +1067,13 @@ def _save_optimizer_result(
         ),
         encoding="utf-8",
     )
+    from .reporting import write_optimizer_report
+
+    report_path = out_dir / f"{group}_report.html"
+    write_optimizer_report(data, report_path)
+    # Daily emails discover the newest per-group report from the optimizer
+    # root, while the run-local copy remains immutable with its artifact.
+    if out_dir.name and out_dir.parent.name == "runs":
+        root_report = out_dir.parent.parent / f"{out_dir.name}_{group}_report.html"
+        write_optimizer_report(data, root_report)
     logger.info("Selected optimizer parameters saved: %s", path)
