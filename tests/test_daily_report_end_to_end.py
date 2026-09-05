@@ -1,6 +1,7 @@
 """日报完整链路端到端测试。
 
-验证 run_daily_task 跑通后邮件 HTML 的策略结果段非空、含真数据、收益非零。
+验证 run_daily_task 跑通后邮件 HTML 的策略结果段要么包含 active 策略，
+要么明确报告市场未激活；不能静默套用旧策略。
 """
 
 import os
@@ -17,8 +18,8 @@ os.environ.setdefault("LOG_LEVEL", "WARNING")
 @pytest.mark.skipif(
     os.getenv("CI") == "true", reason="CI 环境不跑完整日报数据拉取"
 )
-def test_daily_report_strategy_section_not_empty(monkeypatch):
-    """run_daily_task 完成后，最新邮件 HTML 的策略段不能是空占位。"""
+def test_daily_report_strategy_section_is_active_or_fail_closed(monkeypatch):
+    """日报没有 active entry 时必须显式 fail closed。"""
     # Avoid leaking transport/test flags into later notifier tests in the same
     # pytest process. monkeypatch restores both variables after this test.
     monkeypatch.setenv("SKIP_EMAIL", "true")
@@ -49,16 +50,16 @@ def test_daily_report_strategy_section_not_empty(monkeypatch):
         next_section = html.find("<!-- Monitoring -->", start)
     section = html[start:next_section] if next_section > start else html[start:]
 
-    # 数据关键词存在
+    # 没有 v4 active entry 时，严格按市场 fail closed；不能读取旧配置。
     found = any(
         kw in section
         for kw in ["验证期涨幅", "最大回撤", "超额", "夏普", "平均现金仓位", "基准"]
     )
-    assert found, (
-        f"策略结果段为空：只含占位标记。"
-        f"邮件: {latest.name}\n"
-        f"段内容: {section[:300]}"
-    )
+    if not found:
+        assert any(
+            marker in section for marker in ["未激活", "没有有效策略", "无 active"]
+        ), f"策略结果段既无 active 数据也无 fail-closed 提示: {latest.name}"
+        return
 
     # 验证期涨幅 ≠ 0.0%（零交易的特征）
     m = re.search(

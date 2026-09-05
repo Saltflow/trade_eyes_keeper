@@ -3,9 +3,9 @@
 enabled: true
 auto_activate_if_better: true
 
-# Three market groups use equal independent capital pools. A candidate must
-# improve the combined return and at least two groups, while remaining within
-# explicit per-market return and drawdown safety tolerances.
+# These defaults describe an explicit combined-portfolio comparison. The
+# production optimizer scopes this policy to one market before comparing a
+# candidate with that market's incumbent.
 minimum_portfolio_return_improvement_pct: 0.0
 minimum_improved_groups: 2
 maximum_group_return_regression_pct: 5.0

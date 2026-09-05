@@ -24,6 +24,7 @@ class CommandType(Enum):
     SKIP = auto()
     SWITCH_OPTIMIZER = auto()
     REF_DATE = auto()
+    REF_POSITION = auto()
     ERROR = auto()
 
 
@@ -85,6 +86,7 @@ class RefDateCommand:
 
 @dataclass
 class OptimizeCommand:
+    group: str | None = None
     cmd_type: CommandType = CommandType.OPTIMIZE
 
 
@@ -154,11 +156,32 @@ class SkipCommand:
 
 @dataclass
 class SwitchOptimizerCommand:
-    kind: str | None = None  # None=列出可用引擎, str=切换到该引擎
+    kind: str | None = None  # None=列出可用策略, str=切换到该策略
+    group: str | None = None  # 设置策略时必须指定市场
     cmd_type: CommandType = CommandType.SWITCH_OPTIMIZER
 
 
+@dataclass
+class RefPositionCommand:
+    """Set or adjust one bound reference portfolio position."""
+
+    action: str  # set / buy / sell
+    group: str
+    code: str
+    shares: int
+    price: float
+    cmd_type: CommandType = CommandType.REF_POSITION
+
+
 _STOCK_CODE_RE = re.compile(r"^[A-Za-z0-9]{1,8}(\.[A-Za-z]{1,4})?$")
+_MARKET_GROUPS = {"a_share", "hk", "us"}
+_MARKET_GROUP_ALIASES = {
+    "a": "a_share",
+    "a_share": "a_share",
+    "ashare": "a_share",
+    "hk": "hk",
+    "us": "us",
+}
 
 
 def _validate_stock_code(code: str) -> str | None:
@@ -185,12 +208,6 @@ def _validate_codes(raw: str) -> tuple[list[str], str | None]:
         if not _STOCK_CODE_RE.match(code):
             return [], f"股票代码格式无效: {code}，应为 1-8 位字母数字"
     return codes, None
-    """验证股票代码格式。返回错误消息或 None（有效）。"""
-    if not code:
-        return "缺少股票代码，格式: /add 601728"
-    if not _STOCK_CODE_RE.match(code):
-        return f"股票代码格式无效: {code}，应为 1-8 位字母数字"
-    return None
 
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -258,9 +275,22 @@ def parse_command(text: str):
         return BriefCommand(report_id="morning_snapshot")
 
     if cmd_name == "optimize":
-        if args.strip():
-            return ErrorCommand(message="/optimize 不接受参数；活动策略由配置决定")
-        return OptimizeCommand()
+        optimize_args = args.strip().split()
+        if not optimize_args:
+            return ErrorCommand(
+                message="搜参必须指定市场。格式: /optimize a_share|hk|us"
+            )
+        if len(optimize_args) > 1:
+            return ErrorCommand(
+                message="/optimize 不接受参数（策略/预设）；可选单市场，如 /optimize a_share"
+            )
+        group = optimize_args[0].lower()
+        group = _MARKET_GROUP_ALIASES.get(group)
+        if group is None:
+            return ErrorCommand(
+                message="市场只能是 a_share、hk 或 us。格式: /optimize a_share"
+            )
+        return OptimizeCommand(group=group)
 
     if cmd_name == "daily":
         return DailyCommand()
@@ -277,6 +307,36 @@ def parse_command(text: str):
 
     if cmd_name == "ref_date":
         return RefDateCommand(date_str=args.strip() or None)
+
+    if cmd_name in ("ref_position", "ref_holding", "ref_holdings"):
+        sub = args.strip().split()
+        if len(sub) != 5:
+            return ErrorCommand(
+                message=(
+                    "格式: /ref_position set|buy|sell 市场 代码 股数 成交价；"
+                    "例 /ref_position set a_share 510300 10000 3.85"
+                )
+            )
+        action = sub[0].lower()
+        if action not in {"set", "buy", "sell"}:
+            return ErrorCommand(message="操作只能是 set、buy 或 sell")
+        group = _MARKET_GROUP_ALIASES.get(sub[1].lower())
+        if group is None:
+            return ErrorCommand(message="市场只能是 a_share、hk 或 us")
+        code = sub[2].upper()
+        code_error = _validate_stock_code(code)
+        if code_error:
+            return ErrorCommand(message=code_error)
+        try:
+            shares = int(sub[3])
+            price = float(sub[4])
+        except ValueError:
+            return ErrorCommand(message="股数必须为整数，成交价必须为正数")
+        if shares < 0 or (action != "set" and shares == 0):
+            return ErrorCommand(message="股数无效：set 可为 0，buy/sell 必须大于 0")
+        if price <= 0:
+            return ErrorCommand(message="成交价必须大于 0")
+        return RefPositionCommand(action, group, code, shares, price)
 
     if cmd_name == "schedule":
         parts = args.split()
@@ -351,12 +411,20 @@ def parse_command(text: str):
     if cmd_name == "switch_optimizer":
         from src.strategy import list_strategies
 
-        sub = args.strip()
+        sub = args.strip().split()
         if not sub:
             return SwitchOptimizerCommand(kind=None)  # 列出可用引擎
         valid = {item["key"] for item in list_strategies()}
-        if sub.lower() in valid:
-            return SwitchOptimizerCommand(kind=sub.lower())
-        return ErrorCommand(message=f"未知引擎: {sub}。可用: {', '.join(sorted(valid))}")
+        if len(sub) != 2:
+            return ErrorCommand(
+                message="设置策略时必须指定市场。格式: /switch_optimizer 市场 策略"
+            )
+        group = _MARKET_GROUP_ALIASES.get(sub[0].lower())
+        if group is None:
+            return ErrorCommand(message="市场只能是 a_share、hk 或 us")
+        kind = sub[1].lower()
+        if kind in valid:
+            return SwitchOptimizerCommand(kind=kind, group=group)
+        return ErrorCommand(message=f"未知引擎: {kind}。可用: {', '.join(sorted(valid))}")
 
     return ErrorCommand(message=f"未知命令: /{cmd_name}。发送 /help 查看可用命令")

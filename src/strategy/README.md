@@ -8,7 +8,8 @@ calculate performance.
    `value_momentum.py`.
 2. Decorate the concrete class with `@register_strategy("value_momentum")`.
 3. Implement `param_space`, `make_signals`, and `to_human_readable`.
-4. Set `optimizer.engine: value_momentum` in configuration when it should run.
+4. Set `optimizer.markets.<market>.strategy: value_momentum` explicitly for
+   each market that should run it; there is no global strategy fallback.
 
 Minimal shape:
 

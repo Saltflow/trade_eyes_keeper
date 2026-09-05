@@ -5,7 +5,10 @@
   - WalkForwardConfig / GeneticSearchConfig / DiscreteSearchConfig：搜索配置
   - StrategyConstraints：硬性/软性约束检查
   - WindowStats / BacktestConfig：回测结果载体 + 时间线配置
-  - get_constraints()：模块级单例
+  - get_market_optimizer_config()：严格的单市场独立配置
+
+生产搜参必须使用 ``get_market_optimizer_config``；旧的
+``get_constraints`` 仅保留给低层兼容测试，不参与市场策略选择。
 
 用法:
     from src.search.config import get_constraints
@@ -17,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional as _Optional
@@ -26,10 +30,24 @@ import pandas as _pd
 import yaml
 from pydantic import BaseModel as _BaseModel, Field as _Field
 
+from .contracts import stable_hash
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_PATH = (
     Path(__file__).parent.parent.parent / "config" / "optimizer_constraints.yaml"
+)
+DEFAULT_APPLICATION_PATH = (
+    Path(__file__).parent.parent.parent / "config" / "config.yaml"
+)
+MARKET_GROUPS = ("a_share", "hk", "us")
+MARKET_CONFIG_FIELDS = (
+    "strategy",
+    "solver_id",
+    "gate_profile",
+    "walk_forward_profile",
+    "execution_profile",
+    "benchmark_profile",
 )
 
 # ═══════════════════════════════════════════════════════════════
@@ -463,6 +481,9 @@ class StrategyConstraints:
         self.benchmark_codes: list[str] = []
         self.risk_free_rate: float = 0.02
         self._raw_benchmarks = bc
+        self.market_group: str | None = None
+        self.market_config_hash: str = ""
+        self.market_metadata: dict[str, object] = {}
 
     def set_group(self, group: str):
         self.benchmark_codes = list(self._raw_benchmarks.get(group, []))
@@ -524,6 +545,52 @@ class StrategyConstraints:
         if sharpe_ratio < self.min_sharpe:
             return (self.min_sharpe - sharpe_ratio) * self.sharpe_penalty_weight
         return 0.0
+
+
+@dataclass
+class MarketOptimizerConfig:
+    """Fully resolved optimizer contract for exactly one market.
+
+    The application must resolve one of these objects before entering the
+    optimizer.  ``constraints`` is intentionally unique to this market; it is
+    never mutated by another market's evaluation.
+    """
+
+    group: str
+    strategy_name: str
+    solver_id: str
+    gate_profile: str
+    walk_forward_profile: str
+    execution_profile: str
+    benchmark_profile: str
+    constraints: StrategyConstraints
+    config_hash: str
+
+    @property
+    def strategy(self):
+        from ..strategy import get_strategy
+
+        return get_strategy(self.strategy_name)
+
+    @property
+    def search(self) -> SearchRuntimeConfig:
+        return self.constraints.search
+
+    @property
+    def execution(self) -> ExecutionConfig:
+        return self.constraints.execution
+
+    def to_contract(self) -> dict[str, object]:
+        return {
+            "group": self.group,
+            "strategy": self.strategy_name,
+            "solver_id": self.solver_id,
+            "gate_profile": self.gate_profile,
+            "walk_forward_profile": self.walk_forward_profile,
+            "execution_profile": self.execution_profile,
+            "benchmark_profile": self.benchmark_profile,
+            "config_hash": self.config_hash,
+        }
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -698,6 +765,353 @@ def load_constraints(path: Path | str | None = None) -> StrategyConstraints:
     with open(config_path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
     return StrategyConstraints(raw)
+
+
+def _load_yaml_mapping(path: Path) -> dict:
+    if not path.exists():
+        raise ValueError(f"configuration file not found: {path}")
+    try:
+        with path.open(encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError(f"unable to load configuration {path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError(f"configuration root must be a mapping: {path}")
+    return raw
+
+
+def _profile_mapping(raw: dict, section: str, profile_id: str, group: str) -> dict:
+    profiles = raw.get(section)
+    if not isinstance(profiles, dict):
+        raise ValueError(
+            f"{group}: required profile registry {section!r} is missing"
+        )
+    value = profiles.get(profile_id)
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"{group}: unknown or invalid {section} profile {profile_id!r}"
+        )
+    return deepcopy(value)
+
+
+def _profile_value(raw: dict, section: str, profile_id: str, group: str):
+    profiles = raw.get(section)
+    if not isinstance(profiles, dict) or profile_id not in profiles:
+        raise ValueError(
+            f"{group}: unknown or missing {section} profile {profile_id!r}"
+        )
+    value = profiles[profile_id]
+    if not isinstance(value, (dict, list, tuple)):
+        raise ValueError(
+            f"{group}: invalid {section} profile {profile_id!r}"
+        )
+    return deepcopy(value)
+
+
+def _application_config(application_config: dict | Path | str | None) -> dict:
+    if isinstance(application_config, dict):
+        return deepcopy(application_config)
+    return _load_yaml_mapping(
+        Path(application_config) if application_config else DEFAULT_APPLICATION_PATH
+    )
+
+
+def _resolved_market_raw(
+    application_config: dict,
+    group: str,
+    constraints_raw: dict,
+) -> tuple[dict, dict]:
+    optimizer = application_config.get("optimizer")
+    if not isinstance(optimizer, dict):
+        raise ValueError("optimizer.markets is required")
+    forbidden = sorted(
+        key
+        for key in ("engine", "strategy_by_group")
+        if key in optimizer
+    )
+    if forbidden:
+        raise ValueError(
+            "global optimizer fallback fields are forbidden: "
+            + ", ".join(forbidden)
+        )
+    markets = optimizer.get("markets")
+    if not isinstance(markets, dict):
+        raise ValueError("optimizer.markets must be a mapping")
+    unknown = sorted(set(markets) - set(MARKET_GROUPS))
+    missing = sorted(set(MARKET_GROUPS) - set(markets))
+    if unknown:
+        raise ValueError(f"optimizer.markets has unknown groups: {unknown}")
+    if missing:
+        raise ValueError(f"optimizer.markets is missing groups: {missing}")
+    spec = markets.get(group)
+    if not isinstance(spec, dict):
+        raise ValueError(f"optimizer.markets.{group} must be a mapping")
+    missing_fields = [key for key in MARKET_CONFIG_FIELDS if not spec.get(key)]
+    if missing_fields:
+        raise ValueError(
+            f"{group}: missing required optimizer fields: {missing_fields}"
+        )
+
+    strategy_name = str(spec["strategy"]).strip().lower()
+    solver_id = str(spec["solver_id"]).strip().lower()
+    gate_profile = str(spec["gate_profile"]).strip()
+    walk_forward_profile = str(spec["walk_forward_profile"]).strip()
+    execution_profile = str(spec["execution_profile"]).strip()
+    benchmark_profile = str(spec["benchmark_profile"]).strip()
+    if not all(
+        (strategy_name, solver_id, gate_profile, walk_forward_profile,
+         execution_profile, benchmark_profile)
+    ):
+        raise ValueError(f"{group}: optimizer fields cannot be empty")
+
+    from ..strategy import get_strategy
+    from .gates import CandidateGatePipeline
+    from .registry import create_solver
+    strategy = get_strategy(strategy_name)
+    if strategy is None:
+        raise ValueError(f"{group}: unknown strategy {strategy_name!r}")
+    if not strategy.supports_market(group):
+        raise ValueError(
+            f"{group}: strategy {strategy_name!r} does not support this market"
+        )
+    try:
+        solver = create_solver(solver_id)
+    except ValueError as exc:
+        raise ValueError(f"{group}: {exc}") from exc
+
+    raw = deepcopy(constraints_raw)
+    raw["walk_forward"] = _profile_mapping(
+        raw, "walk_forward_profiles", walk_forward_profile, group
+    )
+    raw["execution_params"] = _profile_mapping(
+        raw, "execution_profiles", execution_profile, group
+    )
+    walk_forward = raw["walk_forward"]
+    required_wf_fields = (
+        "state_lookback_months",
+        "test_months",
+        "step_months",
+        "num_windows",
+        "validation_windows",
+        "data_years",
+    )
+    missing_wf_fields = [
+        key for key in required_wf_fields if key not in walk_forward
+    ]
+    if missing_wf_fields:
+        raise ValueError(
+            f"{group}: {walk_forward_profile} is missing Walk-Forward fields "
+            f"{missing_wf_fields}"
+        )
+    try:
+        positive_wf_fields = (
+            "state_lookback_months",
+            "test_months",
+            "step_months",
+            "num_windows",
+            "data_years",
+        )
+        if any(float(walk_forward[key]) <= 0 for key in positive_wf_fields):
+            raise ValueError("Walk-Forward lengths and data_years must be positive")
+        if float(walk_forward["validation_windows"]) < 0:
+            raise ValueError("validation_windows cannot be negative")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{group}: invalid Walk-Forward profile") from exc
+
+    execution_profile_raw = raw["execution_params"]
+    required_execution_fields = (
+        "initial_capital",
+        "commission_rate",
+        "min_holding_days",
+        "lot_sizes",
+        "fx_rates",
+    )
+    missing_execution_fields = [
+        key for key in required_execution_fields if key not in execution_profile_raw
+    ]
+    if missing_execution_fields:
+        raise ValueError(
+            f"{group}: {execution_profile} is missing execution fields "
+            f"{missing_execution_fields}"
+        )
+    lot_sizes = execution_profile_raw["lot_sizes"]
+    fx_rates = execution_profile_raw["fx_rates"]
+    if not isinstance(lot_sizes, dict) or group not in lot_sizes:
+        raise ValueError(
+            f"{group}: execution profile must declare lot_sizes.{group}"
+        )
+    if not isinstance(fx_rates, dict) or group not in fx_rates:
+        raise ValueError(
+            f"{group}: execution profile must declare fx_rates.{group}"
+        )
+    try:
+        if float(execution_profile_raw["initial_capital"]) <= 0:
+            raise ValueError("initial_capital must be positive")
+        if float(execution_profile_raw["commission_rate"]) < 0:
+            raise ValueError("commission_rate cannot be negative")
+        if int(execution_profile_raw["min_holding_days"]) < 0:
+            raise ValueError("min_holding_days cannot be negative")
+        if int(lot_sizes[group]) <= 0 or float(fx_rates[group]) <= 0:
+            raise ValueError("market lot size and FX rate must be positive")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{group}: invalid execution profile") from exc
+    benchmark_profile_value = _profile_value(
+        raw, "benchmark_profiles", benchmark_profile, group
+    )
+    if isinstance(benchmark_profile_value, dict):
+        benchmark_codes = benchmark_profile_value.get("codes")
+        if not isinstance(benchmark_codes, list) or not benchmark_codes:
+            raise ValueError(f"{group}: benchmark profile must contain codes")
+        risk_free_rate = benchmark_profile_value.get("risk_free_rate")
+    else:
+        benchmark_codes = benchmark_profile_value
+        risk_free_rate = None
+    benchmarks = raw.get("benchmarks", {})
+    if not isinstance(benchmarks, dict):
+        benchmarks = {}
+    benchmarks[group] = list(benchmark_codes)
+    rates = dict(benchmarks.get("risk_free_rates", {}) or {})
+    if risk_free_rate is not None:
+        rates[group] = float(risk_free_rate)
+    elif group not in rates:
+        raise ValueError(f"{group}: benchmark profile has no risk-free rate")
+    benchmarks["risk_free_rates"] = rates
+    raw["benchmarks"] = benchmarks
+
+    search = raw.get("search", {})
+    if not isinstance(search, dict):
+        raise ValueError("search must be a mapping")
+    if "solver_id" in search or "gate_profile" in search:
+        raise ValueError(
+            "global search.solver_id/search.gate_profile are forbidden; "
+            "declare them under every optimizer.markets entry"
+        )
+    search = deepcopy(search)
+    search["solver_id"] = solver_id
+    search["gate_profile"] = gate_profile
+    solver_configs = search.get("solvers", {})
+    if not isinstance(solver_configs, dict) or solver_id not in solver_configs:
+        raise ValueError(f"{group}: no search configuration for Solver {solver_id!r}")
+    market_search = spec.get("search", {})
+    if market_search is not None and not isinstance(market_search, dict):
+        raise ValueError(f"{group}: optimizer market search must be a mapping")
+    if isinstance(market_search, dict):
+        conflicting_search_keys = sorted(
+            key for key in ("solver_id", "gate_profile") if key in market_search
+        )
+        if conflicting_search_keys:
+            raise ValueError(
+                f"{group}: search selection must use the market fields; "
+                f"do not duplicate {conflicting_search_keys} under search"
+            )
+        search.update(deepcopy(market_search))
+        search["solver_id"] = solver_id
+        search["gate_profile"] = gate_profile
+    solver_overrides = spec.get("solver_config", {}) or {}
+    if not isinstance(solver_overrides, dict):
+        raise ValueError(f"{group}: solver_config must be a mapping")
+    solver_configs = deepcopy(solver_configs)
+    solver_configs[solver_id] = {
+        **dict(solver_configs[solver_id] or {}),
+        **deepcopy(solver_overrides),
+    }
+    search["solvers"] = solver_configs
+    raw["search"] = search
+
+    CandidateGatePipeline.from_config(raw, gate_profile)
+    schema = strategy.parameter_schema
+    if any(item.active_if for item in schema.parameters) and not solver.capabilities.conditional_parameters:
+        raise ValueError(
+            f"{group}: Solver {solver_id!r} cannot handle conditional parameters"
+        )
+    # The actual SearchController performs the complete capability assertion;
+    # this lightweight call catches the common incompatible contract here.
+    if solver.capabilities.requires_gradients:
+        raise ValueError(
+            f"{group}: Solver {solver_id!r} requires unavailable gradients"
+        )
+
+    contract = {
+        "group": group,
+        "strategy": strategy_name,
+        "solver_id": solver_id,
+        "gate_profile": gate_profile,
+        "walk_forward_profile": walk_forward_profile,
+        "execution_profile": execution_profile,
+        "benchmark_profile": benchmark_profile,
+        "market_spec": spec,
+        "constraints": raw,
+    }
+    return raw, contract
+
+
+def load_market_optimizer_config(
+    group: str,
+    application_config: dict | Path | str | None = None,
+    constraints_path: Path | str | None = None,
+) -> MarketOptimizerConfig:
+    """Resolve one strict, independent optimizer contract for ``group``."""
+    if group not in MARKET_GROUPS:
+        raise ValueError(f"unknown optimizer market group: {group}")
+    app = _application_config(application_config)
+    constraints_path = Path(constraints_path) if constraints_path else DEFAULT_PATH
+    constraints_raw = _load_yaml_mapping(constraints_path)
+    raw, contract = _resolved_market_raw(app, group, constraints_raw)
+    constraints = StrategyConstraints(raw)
+    constraints.benchmark_codes = list(raw["benchmarks"][group])
+    constraints.risk_free_rate = float(
+        raw["benchmarks"]["risk_free_rates"][group]
+    )
+    constraints.market_group = group
+    constraints.market_config_hash = stable_hash(contract)
+    constraints.market_metadata = {
+        "market_group": group,
+        "strategy_id": contract["strategy"],
+        "solver_id": contract["solver_id"],
+        "gate_profile": contract["gate_profile"],
+        "walk_forward_profile": contract["walk_forward_profile"],
+        "execution_profile": contract["execution_profile"],
+        "benchmark_profile": contract["benchmark_profile"],
+        "market_config_hash": constraints.market_config_hash,
+    }
+    return MarketOptimizerConfig(
+        group=group,
+        strategy_name=str(contract["strategy"]),
+        solver_id=str(contract["solver_id"]),
+        gate_profile=str(contract["gate_profile"]),
+        walk_forward_profile=str(contract["walk_forward_profile"]),
+        execution_profile=str(contract["execution_profile"]),
+        benchmark_profile=str(contract["benchmark_profile"]),
+        constraints=constraints,
+        config_hash=constraints.market_config_hash,
+    )
+
+
+def get_market_optimizer_config(
+    group: str,
+    application_config: dict | Path | str | None = None,
+    constraints_path: Path | str | None = None,
+) -> MarketOptimizerConfig:
+    return load_market_optimizer_config(group, application_config, constraints_path)
+
+
+def get_market_optimizer_configs(
+    application_config: dict | Path | str | None = None,
+    constraints_path: Path | str | None = None,
+    groups: tuple[str, ...] = MARKET_GROUPS,
+) -> dict[str, MarketOptimizerConfig]:
+    """Validate and resolve all requested markets without any fallback."""
+    selected = tuple(dict.fromkeys(groups))
+    invalid = sorted(set(selected) - set(MARKET_GROUPS))
+    if invalid:
+        raise ValueError(f"unknown optimizer market groups: {invalid}")
+    app = _application_config(application_config)
+    return {
+        group: load_market_optimizer_config(
+            group, app, constraints_path
+        )
+        for group in selected
+    }
 
 
 _global_constraints: StrategyConstraints | None = None

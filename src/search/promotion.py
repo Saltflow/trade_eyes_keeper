@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Mapping
 
@@ -34,6 +34,21 @@ class PromotionPolicy:
     minimum_trade_count: int = 1
     minimum_benchmark_count: int = 3
     required_group_count: int = 3
+
+    def for_independent_market(self) -> "PromotionPolicy":
+        """Scope the relative comparison to one market.
+
+        The YAML defaults retain the historical three-market portfolio policy
+        for callers that explicitly compare a combined portfolio.  The
+        production optimizer, however, publishes and activates one market at
+        a time, so a missing sibling market must not make this comparison
+        incomplete.
+        """
+        return replace(
+            self,
+            minimum_improved_groups=1,
+            required_group_count=1,
+        )
 
     @classmethod
     def load(cls, path: Path | str = DEFAULT_POLICY_PATH) -> PromotionPolicy:

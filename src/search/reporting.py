@@ -71,6 +71,8 @@ def render_optimizer_report(data: Mapping[str, object]) -> str:
     benchmarks = benchmarks if isinstance(benchmarks, list) else []
     activation = data.get("activation", {})
     activation = activation if isinstance(activation, dict) else {}
+    market_contract = data.get("market_contract", {})
+    market_contract = market_contract if isinstance(market_contract, dict) else {}
     readiness = data.get("data_readiness", {})
     readiness = readiness if isinstance(readiness, dict) else {}
     readiness_issues = readiness.get("issues", [])
@@ -158,6 +160,11 @@ th,td{{border-bottom:1px solid #e5edf4;padding:8px;text-align:left;vertical-alig
 </head>
 <body><main class="page">
 <section class="hero"><h1>{_esc(title)}</h1><div class="meta">Solver {_esc(data.get('solver_id'))} · 参数 schema {_esc(data.get('parameter_schema'))} · 激活状态 {_esc(passed)}</div></section>
+<section class="card"><h2>市场独立合同</h2><div class="contract">
+<div>市场：{_esc(data.get('group'))}</div><div>策略：{_esc(data.get('strategy_id'))}</div><div>Solver：{_esc(data.get('solver_id'))}</div>
+<div>Gate：{_esc(data.get('gate_profile'))}</div><div>Walk-Forward：{_esc(market_contract.get('walk_forward_profile'))}</div><div>Execution：{_esc(market_contract.get('execution_profile'))}</div>
+<div>Benchmark：{_esc(market_contract.get('benchmark_profile'))}</div><div>配置指纹：{_esc(data.get('market_config_hash'))}</div><div>Gate 条件指纹：{_esc(search.get('gate_profile_hash'))}</div>
+</div></section>
 <section class="card"><h2>窗口合同总览</h2><div class="grid">
 <div class="metric"><span>总窗口</span><strong>{counts[0]}</strong></div><div class="metric"><span>Ranking</span><strong>{counts[1]}</strong></div><div class="metric"><span>Purged</span><strong>{counts[2]}</strong></div><div class="metric"><span>Holdout</span><strong>{counts[3]}</strong></div>
 </div><div class="meta">合同：{_esc(contract.get('total_months'))} 个月历史 · 状态预热 {_esc(contract.get('state_lookback_months'))} 个月 · Holdout {_esc(contract.get('holdout_window_count'))} × {_esc(holdout_test_months)} 个月窗口（总跨度 {_esc(contract.get('holdout_window_months'))} 个月） · 重叠窗口不复合计算</div></section>

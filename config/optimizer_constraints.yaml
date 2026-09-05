@@ -95,8 +95,6 @@ validation:
 # Solver selection is independent of strategies, evaluation and gates.  A new
 # algorithm registers itself under src/search/solvers and is selected here.
 search:
-  solver_id: local_genetic
-  gate_profile: standard
   batch_size: 128
   parallel_axis: candidate_window
   # Candidate scoring uses persistent worker processes. Each worker receives
@@ -263,3 +261,71 @@ execution_params:
     a_share: 1.0
     hk: 0.9
     us: 7.0
+
+# Market-scoped contracts.  The application configuration must explicitly
+# select one profile for each market; these registries are never fallbacks.
+walk_forward_profiles:
+  a_share_84m:
+    state_lookback_months: 12
+    test_months: 9
+    step_months: 3
+    num_windows: 22
+    window_weights: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    window_range_penalty: 0.5
+    data_years: 8
+    validation_windows: 4
+    purge_overlapping_windows: true
+  hk_84m:
+    state_lookback_months: 12
+    test_months: 9
+    step_months: 3
+    num_windows: 22
+    window_weights: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    window_range_penalty: 0.5
+    data_years: 8
+    validation_windows: 4
+    purge_overlapping_windows: true
+  us_84m:
+    state_lookback_months: 12
+    test_months: 9
+    step_months: 3
+    num_windows: 22
+    window_weights: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    window_range_penalty: 0.5
+    data_years: 8
+    validation_windows: 4
+    purge_overlapping_windows: true
+
+execution_profiles:
+  a_share_cny:
+    initial_capital: 100000
+    commission_rate: 0.005
+    min_holding_days: 30
+    lot_sizes: {a_share: 100, hk: 100, us: 1}
+    fx_rates: {a_share: 1.0, hk: 0.9, us: 7.0}
+  hk_hkd:
+    initial_capital: 100000
+    commission_rate: 0.005
+    min_holding_days: 30
+    lot_sizes: {a_share: 100, hk: 100, us: 1}
+    fx_rates: {a_share: 1.0, hk: 0.9, us: 7.0}
+  us_usd:
+    initial_capital: 100000
+    commission_rate: 0.005
+    min_holding_days: 30
+    lot_sizes: {a_share: 100, hk: 100, us: 1}
+    fx_rates: {a_share: 1.0, hk: 0.9, us: 7.0}
+
+benchmark_profiles:
+  a_share:
+  - '510880'
+  - '510300'
+  - risk_free
+  hk:
+  - VOO
+  - BRK.B
+  - risk_free
+  us:
+  - VOO
+  - BRK.B
+  - risk_free

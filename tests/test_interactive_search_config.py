@@ -16,21 +16,15 @@ def _isolated_constraints(tmp_path: Path, monkeypatch) -> Path:
     return target
 
 
-def test_config_updates_effective_solver_gate_and_runtime(tmp_path, monkeypatch):
+def test_config_rejects_global_solver_and_gate_fallbacks(tmp_path, monkeypatch):
     path = _isolated_constraints(tmp_path, monkeypatch)
 
-    assert "✅" in handlers.handle_config("set", "solver", "random")
-    assert "✅" in handlers.handle_config("set", "budget", "12000")
-    assert "✅" in handlers.handle_config(
-        "set",
-        "positive_windows",
-        "5",
+    assert handlers.handle_config("set", "solver", "random").startswith("❌")
+    assert handlers.handle_config("set", "budget", "12000").startswith("❌")
+    assert handlers.handle_config("set", "gate_profile", "exploratory").startswith(
+        "❌"
     )
-    assert "✅" in handlers.handle_config(
-        "set",
-        "majority_windows",
-        "6",
-    )
+    assert handlers.handle_config("set", "positive_windows", "5").startswith("❌")
     assert "✅" in handlers.handle_config("set", "workers", "auto")
     assert "✅" in handlers.handle_config("set", "batch_size", "128")
     assert "\u2705" in handlers.handle_config(
@@ -38,17 +32,11 @@ def test_config_updates_effective_solver_gate_and_runtime(tmp_path, monkeypatch)
     )
 
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert raw["search"]["solver_id"] == "random"
-    assert raw["search"]["solvers"]["random"]["budget"] == 12000
+    assert "solver_id" not in raw["search"]
+    assert "gate_profile" not in raw["search"]
     assert raw["search"]["workers"] is None
     assert raw["search"]["batch_size"] == 128
     assert raw["search"]["candidate_retention_ratio"] == 0.10
-    standard = {
-        rule["id"]: rule["value"]
-        for rule in raw["gate_profiles"]["standard"]["rules"]
-    }
-    assert standard["positive_return_windows"] == 5
-    assert standard["majority_benchmark_win_windows"] == 6
 
 
 def test_invalid_config_is_rejected_without_replacing_file(tmp_path, monkeypatch):

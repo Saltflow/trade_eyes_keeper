@@ -7,7 +7,8 @@ belong here when they output parameter candidates.
 1. Add one module under `src/search/solvers/`, for example `bayesian.py`.
 2. Decorate the class with `@register_solver("bayesian")`.
 3. Implement the seven-method ask/tell contract below.
-4. Set `search.solver_id: bayesian` and add its configuration block.
+4. Add the Solver configuration to `search.solvers`, then select it explicitly
+   as `optimizer.markets.<market>.solver_id` for every market that should use it.
 
 ```python
 from src.search import CandidateBatch, EvaluationBatch, SearchProblem, Solver

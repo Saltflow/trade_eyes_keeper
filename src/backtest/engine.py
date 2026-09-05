@@ -2870,6 +2870,7 @@ def evaluate_all_groups(
     start_date: str | None = None,
     end_date: str | None = None,
     context_enricher=None,
+    market_constraints=None,
 ) -> dict[str, EvaluationReport]:
     """日报/IM 的唯一评估入口。
 
@@ -2884,6 +2885,8 @@ def evaluate_all_groups(
         exec_cfg: get_execution_config() 返回值
         benchmark_data: 基准价格数据
         target_groups: 分组子集，None=全部
+        market_constraints: 可选的严格单市场 StrategyConstraints。传入后，
+            基准和无风险利率只从该实例读取，不修改全局约束对象。
 
     Returns:
         {group_key: EvaluationReport}
@@ -2938,11 +2941,26 @@ def evaluate_all_groups(
         if trade_plan is None or market_data is None:
             continue
 
-        constraints = get_constraints()
-        constraints.set_group(group_name)
-        benchmark_codes = constraints.benchmark_codes_for(group_name)
-        primary_benchmark = constraints.primary_benchmark_for(group_name)
-        risk_free = constraints.risk_free_rate
+        if market_constraints is None:
+            # Legacy/unit callers that do not provide a market contract keep
+            # the historical single-market behavior. Production callers pass
+            # a fresh market-scoped instance and never enter this branch.
+            constraints = get_constraints()
+            constraints.set_group(group_name)
+            benchmark_codes = constraints.benchmark_codes_for(group_name)
+            primary_benchmark = constraints.primary_benchmark_for(group_name)
+            risk_free = constraints.risk_free_rate
+        else:
+            configured_group = getattr(market_constraints, "market_group", None)
+            if configured_group is not None and configured_group != group_name:
+                raise ValueError(
+                    f"evaluation constraints belong to {configured_group}, "
+                    f"not {group_name}"
+                )
+            constraints = market_constraints
+            benchmark_codes = list(constraints.benchmark_codes)
+            primary_benchmark = constraints.primary_benchmark_for(group_name)
+            risk_free = float(constraints.risk_free_rate)
         execution = SimpleNamespace(
             initial_capital=float(exec_cfg.initial_capital),
             commission_rate=float(exec_cfg.commission_rate),

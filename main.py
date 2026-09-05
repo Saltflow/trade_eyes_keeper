@@ -35,7 +35,7 @@ from src.data.announcement_fetcher import AnnouncementFetcher
 from src.session.session_manager import SessionManager
 from src.strategy import get_strategy
 from src.backtest import build_trade_plan, evaluate_all_groups
-from src.search import get_constraints, get_execution_config
+from src.search import get_market_optimizer_config, get_market_optimizer_configs
 from src.markets import _detect_fine_group, get_skip_search, get_skip_signals
 from src.core.ref_portfolio import (
     RefPortfolioManager,
@@ -90,10 +90,21 @@ def _configured_optimizer_groups(config: dict) -> tuple[str, ...]:
     return tuple(group for group in OPTIMIZER_GROUPS if group in present)
 
 
-def _get_configured_strategy(config: dict):
-    """Return the registered strategy selected by the optimizer config."""
-    name = (config.get("optimizer", {}) or {}).get("engine") or "percentile"
-    return get_strategy(str(name))
+def _get_configured_strategy(config: dict, group: str | None = None):
+    """Return the strictly configured strategy for one market."""
+    if group not in OPTIMIZER_GROUPS:
+        raise ValueError("an explicit optimizer market group is required")
+    return get_market_optimizer_config(group, application_config=config).strategy
+
+
+def _configured_strategies(config: dict, groups: tuple[str, ...]) -> dict[str, object]:
+    """Resolve and validate the configured strategy independently per group."""
+    return {
+        group: market_config.strategy
+        for group, market_config in get_market_optimizer_configs(
+            config, groups=groups
+        ).items()
+    }
 
 
 def _strategy_context_enricher(
@@ -347,41 +358,55 @@ def rebuild_active_optimizer_summary(config: dict) -> OptimizerRunSummary | None
     parameters over the configured validation horizon and persists the report
     metadata next to the run artifact for future resends.
     """
-    active = load_latest_strategy_run(groups=_configured_optimizer_groups(config))
-    if active is None or active.strategy is None:
+    configured_groups = _configured_optimizer_groups(config)
+    active = load_latest_strategy_run(groups=configured_groups)
+    if active is None:
+        # The active pointer is an index of independently activated markets;
+        # a partial pointer is valid and must still produce a report for the
+        # markets that are actually active.
+        active_groups = tuple(
+            group
+            for group in configured_groups
+            if load_latest_strategy_run(groups=(group,)) is not None
+        )
+        active = (
+            load_latest_strategy_run(groups=active_groups)
+            if active_groups
+            else None
+        )
+    if active is None:
         return None
 
-    constraints = get_constraints()
-    lookback_days = _optimizer_lookback_days(constraints)
-    evaluation_budget = _optimizer_evaluation_budget(constraints)
+    optimizer_root = Path("data/optimizer")
+    active_manifest = None
+    if active.run_ids_by_group:
+        from src.search.artifacts import _load_active_manifest, _artifact_path
+
+        found_manifest = _load_active_manifest(optimizer_root)
+        if found_manifest is not None:
+            active_manifest = found_manifest[1]
     summaries: dict[str, OptimizerGroupSummary] = {}
     configured_codes = [_stock_code(stock) for stock in config.get("stocks", [])]
-    if "point_in_time_data" in config:
-        all_benchmarks = [
-            code
-            for group in _configured_optimizer_groups(config)
-            for code in constraints.benchmark_codes_for(group)
-            if code != "risk_free"
-        ]
-        end = pd.Timestamp.now().normalize().date()
-        prepare_backtest_data(
-            config,
-            configured_codes,
-            end - pd.Timedelta(days=lookback_days).to_pytimedelta(),
-            end,
-            purpose="optimizer_summary",
-            benchmark_codes=all_benchmarks,
-            strategy=active.strategy,
-            require_current=True,
-        )
 
     for group in OPTIMIZER_GROUPS:
-        artifact_path = (
-            Path("data/optimizer")
-            / "runs"
-            / active.run_id
-            / f"{group}_best_params.yaml"
+        group_strategy = active.strategy_for(group)
+        if group_strategy is None or group not in active.params_by_group:
+            continue
+        market_config = get_market_optimizer_config(
+            group, application_config=config
         )
+        constraints = market_config.constraints
+        lookback_days = _optimizer_lookback_days(constraints)
+        evaluation_budget = _optimizer_evaluation_budget(constraints)
+        group_run_id = active.run_id_for(group)
+        artifact_path = optimizer_root / f"{group}_best_params.yaml"
+        if isinstance(active_manifest, dict):
+            entry = (active_manifest.get("groups", {}) or {}).get(group, {})
+            artifact_ref = entry.get("artifact") if isinstance(entry, dict) else None
+            if artifact_ref:
+                artifact_path = _artifact_path(optimizer_root, str(artifact_ref))
+        if artifact_path is None:
+            artifact_path = optimizer_root / f"{group}_best_params.yaml"
         try:
             artifact = yaml.safe_load(artifact_path.read_text(encoding="utf-8")) or {}
         except (OSError, yaml.YAMLError):
@@ -412,7 +437,9 @@ def rebuild_active_optimizer_summary(config: dict) -> OptimizerRunSummary | None
                 else None
             ),
             params=dict(active.params_by_group[group].values),
-            execution=dict(active.strategy.execution_params(active.params_by_group[group])),
+            execution=dict(
+                group_strategy.execution_params(active.params_by_group[group])
+            ),
             ranking_window_count=int(search.get("ranking_window_count", 0)),
             validation_window_count=int(search.get("validation_window_count", 0)),
             purged_window_count=int(search.get("purged_overlap_window_count", 0)),
@@ -429,6 +456,17 @@ def rebuild_active_optimizer_summary(config: dict) -> OptimizerRunSummary | None
             ),
             status="completed",
             artifact=f"{group}_best_params.yaml",
+            strategy_name=group_strategy.name,
+            strategy_label=group_strategy.label,
+            solver_id=active.solver_by_group.get(group, market_config.solver_id),
+            gate_profile=market_config.gate_profile,
+            walk_forward_profile=market_config.walk_forward_profile,
+            execution_profile=market_config.execution_profile,
+            benchmark_profile=market_config.benchmark_profile,
+            market_config_hash=active.config_hash_by_group.get(
+                group, market_config.config_hash
+            ),
+            run_id=group_run_id,
         )
 
         try:
@@ -447,17 +485,18 @@ def rebuild_active_optimizer_summary(config: dict) -> OptimizerRunSummary | None
             }
             if stocks_data:
                 context_enricher = _strategy_context_enricher(
-                    active.strategy, config, group, list(stocks_data)
+                    group_strategy, config, group, list(stocks_data)
                 )
                 reports = evaluate_all_groups(
                     stocks_data,
                     list(stocks_data),
-                    active.strategy,
+                    group_strategy,
                     active.params_by_group[group],
                     constraints.execution,
                     benchmark_bundles=_load_optimizer_benchmark_bundles(
                         config, constraints, group, lookback_days
                     ),
+                    market_constraints=constraints,
                     market_bundles=market_bundles,
                     target_groups=[group],
                     start_date=validation_start,
@@ -472,125 +511,144 @@ def rebuild_active_optimizer_summary(config: dict) -> OptimizerRunSummary | None
                 "%s summary rebuild skipped: %s", group, exc
             )
 
-        if active.run_id:
-            persist_group_summary(active.run_id, summary)
+        if group_run_id:
+            persist_group_summary(group_run_id, summary)
         summaries[group] = summary
 
+    labels = {
+        strategy.label
+        for strategy in (
+            active.strategy_for(group) for group in active.params_by_group
+        )
+        if strategy is not None
+    }
     return OptimizerRunSummary(
         active.strategy_name,
-        active.strategy.label,
+        next(iter(labels)) if len(labels) == 1 else "按市场策略",
         active.timestamp,
         0.0,
         summaries,
         activated=True,
+        strategy_by_group=dict(active.strategy_by_group),
+        run_ids_by_group=dict(active.run_ids_by_group),
     )
 
 
-def run_optimization(
+def _run_optimization_group(
     config: dict,
-    target_groups: tuple[str, ...] = DEFAULT_OPTIMIZER_GROUPS,
+    group: str,
+    market_config=None,
+    *,
+    report_sink: list[OptimizerRunSummary] | None = None,
 ) -> dict[str, int]:
-    """Run the configured strategy through the unified optimizer."""
+    """Run one market's configured strategy and Solver in isolation."""
     logger = logging.getLogger(__name__)
-    strategy = _get_configured_strategy(config)
+    market_config = market_config or get_market_optimizer_config(
+        group, application_config=config
+    )
+    strategy = market_config.strategy
     if strategy is None:
-        logger.error("No registered strategy is configured for optimization")
-        return {}
+        raise ValueError(f"unknown configured strategy for {group}")
 
-    target_groups = tuple(group for group in target_groups if group in OPTIMIZER_GROUPS)
-    if not target_groups:
-        logger.error("No valid optimizer market group was requested")
-        return {}
-    unsupported_groups = [
-        group for group in target_groups if not strategy.supports_market(group)
-    ]
-    if unsupported_groups:
-        logger.error(
-            "Strategy %s cannot produce a complete active run; unsupported "
-            "markets: %s",
-            strategy.name,
-            ", ".join(unsupported_groups),
-        )
-        return {group: 0 for group in target_groups}
+    constraints = market_config.constraints
+    strategies_by_group = {group: strategy}
+    run_strategy_name = strategy.name
+    run_strategy_label = strategy.label
 
     started_at = datetime.now()
     started = monotonic()
-    run_id = new_run_id(strategy.name, started_at)
+    run_id = new_run_id(run_strategy_name, started_at, group=group)
     run_dir = Path("data/optimizer") / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
     summaries = {
-        group: OptimizerGroupSummary(group=group) for group in OPTIMIZER_GROUPS
+        group: OptimizerGroupSummary(
+            group=group,
+            run_id=run_id,
+            strategy_name=strategy.name,
+            strategy_label=strategy.label,
+            solver_id=market_config.solver_id,
+            gate_profile=market_config.gate_profile,
+            walk_forward_profile=market_config.walk_forward_profile,
+            execution_profile=market_config.execution_profile,
+            benchmark_profile=market_config.benchmark_profile,
+            market_config_hash=market_config.config_hash,
+        )
     }
+
+    def emit_report(report: OptimizerRunSummary) -> None:
+        if report_sink is not None:
+            report_sink.append(report)
+        else:
+            _notify_optimizer_run(config, report)
 
     configured_stocks = config.get("stocks", []) or []
     if not configured_stocks:
         logger.error("No stocks are configured for optimization")
-        _notify_optimizer_run(
-            config,
+        emit_report(
             OptimizerRunSummary(
-                strategy.name,
-                strategy.label,
+                run_strategy_name,
+                run_strategy_label,
                 started_at.isoformat(),
                 monotonic() - started,
                 summaries,
+                run_id=run_id,
+                status="no_symbols",
+                strategy_by_group={
+                    group: strategy.name
+                    for group, strategy in strategies_by_group.items()
+                },
+                run_ids_by_group={group: run_id},
             ),
         )
         return {}
 
     skipped = get_skip_search(config)
-    groups: dict[str, list[str]] = {group: [] for group in target_groups}
+    groups: dict[str, list[str]] = {group: []}
     for stock in configured_stocks:
         code = _stock_code(stock)
         if not code or code in skipped:
             continue
-        group = _detect_fine_group(code)
-        if group in groups:
-            groups[group].append(code)
+        code_group = _detect_fine_group(code)
+        if code_group in groups:
+            groups[code_group].append(code)
 
     if skipped:
         logger.info("Optimization skips configured symbols: %s", sorted(skipped))
 
-    constraints = get_constraints()
     lookback_days = _optimizer_lookback_days(constraints)
     preloaded_market_bundles: dict[str, dict[str, object]] = {}
     if "point_in_time_data" in config:
-        optimizer_codes = [
-            code for group_codes in groups.values() for code in group_codes
-        ]
-        benchmark_codes = [
-            code
-            for group in target_groups
-            for code in constraints.benchmark_codes_for(group)
-            if code != "risk_free"
-        ]
         optimizer_end = pd.Timestamp.now().normalize().date()
         optimizer_start = optimizer_end - pd.Timedelta(days=lookback_days).to_pytimedelta()
-        readiness = prepare_backtest_data(
-            config,
-            optimizer_codes,
-            optimizer_start,
-            optimizer_end,
-            purpose="optimizer",
-            benchmark_codes=benchmark_codes,
-            strategy=strategy,
-            require_current=True,
-            readiness_path=run_dir / "data_readiness.json",
-        )
-        if readiness.issues:
-            logger.warning(
-                "Optimizer data readiness has %d unresolved symbols: %s",
-                len(readiness.issues),
-                "; ".join(
-                    f"{item.code}: {item.reason}" for item in readiness.issues
-                ),
-            )
-        for group in target_groups:
-            codes = groups.get(group, [])
-            if not codes:
-                continue
-            bundles, errors = _load_optimizer_market_bundles_with_errors(
+        codes = groups.get(group, [])
+        if codes:
+            benchmark_codes = [
+                code
+                for code in dict.fromkeys(constraints.benchmark_codes_for(group))
+                if code != "risk_free"
+            ]
+            readiness = prepare_backtest_data(
                 config,
                 codes,
-                lookback_days,
+                optimizer_start,
+                optimizer_end,
+                purpose="optimizer",
+                benchmark_codes=benchmark_codes,
+                strategy=strategy,
+                require_current=True,
+                readiness_path=run_dir / "data_readiness.json",
+            )
+            if readiness.issues:
+                logger.warning(
+                    "%s optimizer data readiness has %d unresolved symbols: %s",
+                    group,
+                    len(readiness.issues),
+                    "; ".join(
+                        f"{item.code}: {item.reason}" for item in readiness.issues
+                    ),
+                )
+            bundles, errors = _load_optimizer_market_bundles_with_errors(
+                config, codes, lookback_days
             )
             if errors:
                 logger.warning(
@@ -604,18 +662,37 @@ def run_optimization(
     required_groups = tuple(group for group, codes in groups.items() if codes)
     if not required_groups:
         logger.error("No optimizer-eligible market group has configured symbols")
+        summaries[group].status = "no_symbols"
+        emit_report(
+            OptimizerRunSummary(
+                run_strategy_name,
+                run_strategy_label,
+                started_at.isoformat(),
+                monotonic() - started,
+                summaries,
+                run_id=run_id,
+                strategy_by_group={group: strategy.name},
+                run_ids_by_group={group: run_id},
+            )
+        )
         return {}
 
-    promotion_policy = PromotionPolicy.load()
-    incumbent_run = load_latest_strategy_run(groups=OPTIMIZER_GROUPS)
+    # Relative promotion is evaluated against this market's incumbent only.
+    # The config default remains three-market for explicit portfolio
+    # comparisons, but must not leak into the independent publication path.
+    promotion_policy = PromotionPolicy.load().for_independent_market()
+    incumbent_run = load_latest_strategy_run(groups=(group,))
     prune_optimizer_runs(
         keep_completed=constraints.search.run_retention_count,
         protected_run_ids=(run_id,),
     )
     evaluation_budget = _optimizer_evaluation_budget(constraints)
     logger.info(
-        "Starting %s optimization: A=%d HK=%d US=%d, lookback=%d days",
-        strategy.name,
+        "Starting per-market optimization (%s): A=%d HK=%d US=%d, lookback=%d days",
+        ", ".join(
+            f"{group}={strategy.name}"
+            for group, strategy in strategies_by_group.items()
+        ),
         len(groups.get("a_share", [])),
         len(groups.get("hk", [])),
         len(groups.get("us", [])),
@@ -624,12 +701,17 @@ def run_optimization(
 
     completed: dict[str, int] = {}
     for group, codes in groups.items():
+        strategy = strategies_by_group[group]
+        summaries[group].strategy_name = strategy.name
+        summaries[group].strategy_label = strategy.label
+        summaries[group].solver_id = market_config.solver_id
+        summaries[group].gate_profile = market_config.gate_profile
+        summaries[group].market_config_hash = market_config.config_hash
         if not codes:
             logger.info("Skipping %s optimization: no eligible symbols", group)
             summaries[group].status = "no_symbols"
             continue
 
-        constraints.set_group(group)
         try:
             market_bundles = None
             benchmark_bundles = None
@@ -722,6 +804,15 @@ def run_optimization(
                 sensitivity=dict(getattr(results[0], "sensitivity", {}) or {}),
                 status="completed",
                 artifact=f"{group}_best_params.yaml",
+                strategy_name=strategy.name,
+                strategy_label=strategy.label,
+                solver_id=market_config.solver_id,
+                gate_profile=market_config.gate_profile,
+                walk_forward_profile=market_config.walk_forward_profile,
+                execution_profile=market_config.execution_profile,
+                benchmark_profile=market_config.benchmark_profile,
+                market_config_hash=market_config.config_hash,
+                run_id=run_id,
             )
             try:
                 artifact_path = run_dir / f"{group}_best_params.yaml"
@@ -753,21 +844,26 @@ def run_optimization(
                     start_date=validation_start,
                     end_date=validation_end,
                     context_enricher=context_enricher,
+                    market_constraints=constraints,
                 )
                 validation = validation_reports.get(group)
                 if validation is not None:
                     summaries[group].validation = _optimizer_validation_snapshot(
                         validation
                     )
+                    incumbent_strategy = (
+                        incumbent_run.strategy_for(group)
+                        if incumbent_run is not None
+                        else None
+                    )
                     if (
-                        incumbent_run is not None
-                        and incumbent_run.strategy is not None
+                        incumbent_strategy is not None
                         and group in incumbent_run.params_by_group
                     ):
                         incumbent_reports = evaluate_all_groups(
                             stocks_data,
                             list(stocks_data),
-                            incumbent_run.strategy,
+                            incumbent_strategy,
                             incumbent_run.params_by_group[group],
                             constraints.execution,
                             benchmark_data=optimizer_benchmarks,
@@ -777,11 +873,12 @@ def run_optimization(
                             start_date=validation_start,
                             end_date=validation_end,
                             context_enricher=_strategy_context_enricher(
-                                incumbent_run.strategy,
+                                incumbent_strategy,
                                 config,
                                 group,
                                 list(stocks_data),
                             ),
+                            market_constraints=constraints,
                         )
                         incumbent_validation = incumbent_reports.get(group)
                         if incumbent_validation is not None:
@@ -793,8 +890,8 @@ def run_optimization(
                             summaries[group].validation["_comparison_contract"] = {
                                 "start": validation_start,
                                 "end": validation_end,
-                                "incumbent_run_id": incumbent_run.run_id,
-                                "incumbent_strategy": incumbent_run.strategy_name,
+                                "incumbent_run_id": incumbent_run.run_id_for(group),
+                                "incumbent_strategy": incumbent_strategy.name,
                             }
             except Exception:
                 logger.exception("%s optimizer validation report failed", group)
@@ -811,18 +908,10 @@ def run_optimization(
             logger.warning("%s optimization completed without valid candidates", group)
             summaries[group].status = "no_candidates"
 
-    manual_activation = bool(getattr(strategy, "manual_activation", False))
-    publication_groups = (
-        OPTIMIZER_GROUPS if manual_activation else required_groups
-    )
+    publication_groups = required_groups
     promotion_decision = PromotionDecision(False, ("incumbent_unavailable",))
-    if incumbent_run is not None and incumbent_run.strategy is not None:
-        candidate_reports = {
-            group: summaries[group].validation
-            for group in publication_groups
-            if summaries[group].status == "completed"
-            and summaries[group].validation
-        }
+    if incumbent_run is not None and summaries[group].validation:
+        candidate_reports = {group: summaries[group].validation}
         incumbent_reports = {
             group: report
             for group, candidate in candidate_reports.items()
@@ -838,14 +927,14 @@ def run_optimization(
             summaries,
             promotion_decision,
             promotion_policy,
-            incumbent_run_id=incumbent_run.run_id,
-            incumbent_strategy=incumbent_run.strategy_name,
+            incumbent_run_id=incumbent_run.run_id_for(group),
+            incumbent_strategy=incumbent_run.strategy_by_group.get(group, ""),
         )
         logger.info(
             "Relative promotion decision for %s versus %s: passed=%s, "
             "portfolio improvement=%s, improved groups=%d/%d, reasons=%s",
             run_id,
-            incumbent_run.run_id,
+            incumbent_run.run_id_for(group),
             promotion_decision.passed,
             promotion_decision.portfolio_return_improvement_pct,
             promotion_decision.improved_group_count,
@@ -859,22 +948,23 @@ def run_optimization(
     should_activate = False
     published = publish_complete_run(
         run_id,
-        strategy.name,
+        run_strategy_name,
         started_at.isoformat(),
         summaries,
         required_groups=publication_groups,
-        all_groups=publication_groups,
+        all_groups=(group,),
         activate=should_activate,
+        strategy_by_group={group: strategy.name},
     )
     activated = bool(published and should_activate)
     if activated:
-        logger.info("Published active optimizer run %s (%s)", run_id, strategy.name)
+        logger.info("Published active optimizer run %s (%s)", run_id, run_strategy_name)
     elif published:
         logger.info(
             "Saved candidate optimizer run %s (%s); activate explicitly with "
             "python main.py --activate-run %s",
             run_id,
-            strategy.name,
+            run_strategy_name,
             run_id,
         )
     else:
@@ -883,23 +973,93 @@ def run_optimization(
             "strategy was not changed",
             run_id,
         )
-    _notify_optimizer_run(
-        config,
+    failed_groups = [
+        market
+        for market, item in summaries.items()
+        if item.status in {"failed", "interrupted"}
+    ]
+    emit_report(
         OptimizerRunSummary(
-            strategy.name,
-            strategy.label,
+            run_strategy_name,
+            run_strategy_label,
             started_at.isoformat(),
             monotonic() - started,
             summaries,
             activated=activated,
             run_id=run_id,
             candidate=bool(published and not activated),
+            status="failed" if failed_groups else "completed",
+            failure_reason=(
+                "市场搜参失败: " + ", ".join(failed_groups)
+                if failed_groups
+                else ""
+            ),
+            strategy_by_group={group: strategy.name},
+            run_ids_by_group={group: run_id},
         ),
     )
     prune_optimizer_runs(
         keep_completed=constraints.search.run_retention_count,
     )
 
+    return completed
+
+
+def run_optimization(
+    config: dict,
+    target_groups: tuple[str, ...] = DEFAULT_OPTIMIZER_GROUPS,
+) -> dict[str, int]:
+    """Run independent optimizer jobs, one immutable run per market."""
+    requested = tuple(dict.fromkeys(target_groups))
+    invalid = tuple(group for group in requested if group not in OPTIMIZER_GROUPS)
+    if invalid or not requested:
+        logging.getLogger(__name__).error(
+            "Invalid optimizer market groups: %s", invalid
+        )
+        return {}
+    market_configs = get_market_optimizer_configs(config, groups=requested)
+    completed: dict[str, int] = {}
+    reports: list[OptimizerRunSummary] = []
+    for group in requested:
+        completed.update(
+            _run_optimization_group(
+                config,
+                group,
+                market_configs[group],
+                report_sink=reports,
+            )
+        )
+    if reports:
+        merged_groups = {}
+        strategy_by_group = {}
+        run_ids_by_group = {}
+        failure_reasons = []
+        for report in reports:
+            merged_groups.update(report.groups)
+            strategy_by_group.update(report.strategy_by_group)
+            run_ids_by_group.update(report.run_ids_by_group)
+            if report.failure_reason:
+                failure_reasons.append(report.failure_reason)
+        _notify_optimizer_run(
+            config,
+            OptimizerRunSummary(
+                strategy_name="",
+                strategy_label="按市场独立搜参",
+                timestamp=min(report.timestamp for report in reports),
+                elapsed_seconds=sum(report.elapsed_seconds for report in reports),
+                groups=merged_groups,
+                activated=all(report.activated for report in reports),
+                candidate=any(report.candidate for report in reports),
+                status=(
+                    "completed"
+                    if all(report.status == "completed" for report in reports)
+                    else "partial"
+                ),
+                failure_reason="; ".join(failure_reasons),
+                strategy_by_group=strategy_by_group,
+                run_ids_by_group=run_ids_by_group,
+            ),
+        )
     return completed
 
 
@@ -914,11 +1074,42 @@ def _notify_optimizer_run(config: dict, report: OptimizerRunSummary) -> None:
 
 
 def _get_active_strategy_and_params(config: dict):
-    """Resolve alerts from the newest complete optimizer run, not config state."""
-    active = load_latest_strategy_run(groups=_configured_optimizer_groups(config))
-    if active and active.strategy is not None:
-        return active.strategy, active.params_by_group, active.timestamp
-    return _get_configured_strategy(config), {}, None
+    """Return a uniform active strategy only for a single requested market."""
+    strategies, params, timestamp, _ = _get_active_group_context(config)
+    if len(strategies) == 1:
+        return next(iter(strategies.values())), params, timestamp
+    return None, params, timestamp
+
+
+def _get_active_group_context(config: dict):
+    """Resolve strategy and parameters independently for each market group."""
+    groups = _configured_optimizer_groups(config)
+    strategies = {}
+    params = {}
+    active_groups = []
+    timestamps = []
+    for group in groups:
+        active = load_latest_strategy_run(groups=(group,))
+        if active is None:
+            logging.getLogger(__name__).warning(
+                "%s has no active optimizer artifact; no fallback strategy will be used",
+                group,
+            )
+            continue
+        strategy = active.strategy_for(group)
+        group_params = active.params_by_group.get(group)
+        if strategy is None or group_params is None:
+            continue
+        strategies[group] = strategy
+        params[group] = group_params
+        active_groups.append(group)
+        timestamps.append(active.timestamp)
+    combined = (
+        load_latest_strategy_run(groups=tuple(active_groups))
+        if active_groups
+        else None
+    )
+    return strategies, params, max(timestamps) if timestamps else None, combined
 
 # 设置日志
 def setup_logging(config):
@@ -1121,26 +1312,28 @@ def run_daily_task(force: bool = False):
         # 3b. 策略信号扫描
         try:
             logger.info("开始策略信号扫描")
-            scan_strategy, scan_params, scan_timestamp = _get_active_strategy_and_params(config)
+            scan_strategies, scan_params, scan_timestamp, _ = (
+                _get_active_group_context(config)
+            )
             if scan_timestamp:
                 logger.info("Signal scan uses active optimizer run from %s", scan_timestamp)
             a_alerts = _scan_group(
                 session,
-                scan_strategy,
+                scan_strategies.get("a_share"),
                 "a_share",
                 scan_params.get("a_share"),
                 config=config,
             )
             hk_alerts = _scan_group(
                 session,
-                scan_strategy,
+                scan_strategies.get("hk"),
                 "hk",
                 scan_params.get("hk"),
                 config=config,
             )
             us_alerts = _scan_group(
                 session,
-                scan_strategy,
+                scan_strategies.get("us"),
                 "us",
                 scan_params.get("us"),
                 config=config,
@@ -1172,12 +1365,16 @@ def run_daily_task(force: bool = False):
         try:
             logger.info("开始投资组合策略分析")
 
-            strategy, active_params, active_timestamp = _get_active_strategy_and_params(config)
+            strategies_by_group, active_params, active_timestamp, active_run = (
+                _get_active_group_context(config)
+            )
 
-            if strategy is None:
+            if not strategies_by_group:
                 logger.warning("未找到有效策略，跳过策略评估")
             else:
-                exec_cfg = get_execution_config()
+                market_configs = get_market_optimizer_configs(
+                    config, groups=OPTIMIZER_GROUPS
+                )
                 stocks_data = {}
                 for configured_stock in config.get("stocks", []):
                     code = _stock_code(configured_stock)
@@ -1190,9 +1387,16 @@ def run_daily_task(force: bool = False):
                 if active_timestamp:
                     logger.info("Portfolio evaluation uses active optimizer run from %s", active_timestamp)
                 active_run = load_latest_strategy_run(
-                    groups=_configured_optimizer_groups(config)
+                    groups=tuple(
+                        group
+                        for group in _configured_optimizer_groups(config)
+                        if group in active_params
+                    )
                 )
                 for group in OPTIMIZER_GROUPS:
+                    strategy = strategies_by_group.get(group)
+                    if strategy is None:
+                        continue
                     if not strategy.supports_market(group):
                         logger.info(
                             "Strategy %s does not support %s; skip evaluation",
@@ -1209,6 +1413,7 @@ def run_daily_task(force: bool = False):
                             group,
                         )
                         continue
+                    exec_cfg = market_configs[group].execution
                     group_last_dates = []
                     for code, frame in stocks_data.items():
                         if _detect_fine_group(code) != group or frame.empty:
@@ -1244,6 +1449,7 @@ def run_daily_task(force: bool = False):
                         context_enricher=_strategy_context_enricher(
                             strategy, config, group, list(stocks_data)
                         ),
+                        market_constraints=market_configs[group].constraints,
                     )
                     for report in group_reports.values():
                         if active_run is not None:
@@ -1273,17 +1479,29 @@ def run_daily_task(force: bool = False):
         # ── 参考持仓状态（只读，日报不做调仓，三分仓）──
 
         stock_data_df = session.get_all_dataframe()
+        try:
+            reference_market_configs = get_market_optimizer_configs(
+                config, groups=OPTIMIZER_GROUPS
+            )
+        except ValueError as exc:
+            logger.error("参考持仓市场执行合同无效，跳过持仓估值: %s", exc)
+            reference_market_configs = {}
         all_statuses = {}
         for group_key, label, file_name in [
             ("a_share", "A股", "data/ref_portfolio_a.yaml"),
             ("hk", "港股", "data/ref_portfolio_hk.yaml"),
             ("us", "美股", "data/ref_portfolio_us.yaml"),
         ]:
+            market_config = reference_market_configs.get(group_key)
+            if market_config is None:
+                continue
             mgr = RefPortfolioManager(file_path=file_name)
             pf = mgr.load()
             if not mgr.is_initialized(pf):
                 continue
-            fx = {"a_share": 1.0, "hk": 0.9, "us": 7.0}.get(group_key, 1.0)
+            fx = float(
+                market_config.execution.fx_rates.get(group_key, 1.0)
+            )
             prices = {}
             for _, row in stock_data_df.iterrows():
                 code = str(row.get("stock_code", ""))
@@ -1376,10 +1594,11 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
         # 策略信号扫描
         try:
             (
-                brief_strategy,
+                brief_strategies,
                 brief_params,
                 brief_timestamp,
-            ) = _get_active_strategy_and_params(config)
+                _,
+            ) = _get_active_group_context(config)
             if brief_timestamp:
                 logger.info(
                     "Brief scan uses active optimizer run from %s",
@@ -1388,7 +1607,7 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
             brief_skipped_signals = get_skip_signals(config)
             a_alerts = _scan_group(
                 session,
-                brief_strategy,
+                brief_strategies.get("a_share"),
                 "a_share",
                 brief_params.get("a_share"),
                 skip_codes=brief_skipped_signals,
@@ -1396,7 +1615,7 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
             )
             hk_alerts = _scan_group(
                 session,
-                brief_strategy,
+                brief_strategies.get("hk"),
                 "hk",
                 brief_params.get("hk"),
                 skip_codes=brief_skipped_signals,
@@ -1404,7 +1623,7 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
             )
             us_alerts = _scan_group(
                 session,
-                brief_strategy,
+                brief_strategies.get("us"),
                 "us",
                 brief_params.get("us"),
                 skip_codes=brief_skipped_signals,
@@ -1423,7 +1642,9 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
 
         # ── 参考持仓三分仓调仓（A股/港股/美股各自独立资金池）──
 
-        exec_cfg = get_execution_config()
+        market_configs = get_market_optimizer_configs(
+            config, groups=OPTIMIZER_GROUPS
+        )
         stock_data_df = session.get_all_dataframe()
         historical = getattr(session, "_historical", {}) or {}
         skipped_signals = get_skip_signals(config)
@@ -1431,20 +1652,23 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
         POOLS = {
             "a_share": {
                 "file": "data/ref_portfolio_a.yaml",
-                "lot": exec_cfg.lot_sizes.get("a_share", 100),
-                "fx": exec_cfg.fx_rates.get("a_share", 1.0),
+                "lot": market_configs["a_share"].execution.lot_sizes["a_share"],
+                "fx": market_configs["a_share"].execution.fx_rates["a_share"],
+                "execution": market_configs["a_share"].execution,
                 "label": "A股",
             },
             "hk": {
                 "file": "data/ref_portfolio_hk.yaml",
-                "lot": exec_cfg.lot_sizes.get("hk", 100),
-                "fx": exec_cfg.fx_rates.get("hk", 0.9),
+                "lot": market_configs["hk"].execution.lot_sizes["hk"],
+                "fx": market_configs["hk"].execution.fx_rates["hk"],
+                "execution": market_configs["hk"].execution,
                 "label": "港股",
             },
             "us": {
                 "file": "data/ref_portfolio_us.yaml",
-                "lot": exec_cfg.lot_sizes.get("us", 1),
-                "fx": exec_cfg.fx_rates.get("us", 7.0),
+                "lot": market_configs["us"].execution.lot_sizes["us"],
+                "fx": market_configs["us"].execution.fx_rates["us"],
+                "execution": market_configs["us"].execution,
                 "label": "美股",
             },
         }
@@ -1475,7 +1699,11 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                     pool["label"],
                 )
             else:
+                exec_cfg = pool["execution"]
                 pinned = load_strategy_run(pf.strategy_run_id, groups=(group_key,))
+                pinned_strategy = (
+                    pinned.strategy_for(group_key) if pinned is not None else None
+                )
                 params = (
                     pinned.params_by_group.get(group_key)
                     if pinned is not None
@@ -1483,12 +1711,12 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                 )
                 binding_valid = bool(
                     pinned is not None
-                    and pinned.strategy is not None
-                    and pinned.strategy_name == pf.strategy_id
+                    and pinned_strategy is not None
+                    and pinned_strategy.name == pf.strategy_id
                     and params is not None
                     and stable_hash(
                         {
-                            "strategy_id": pinned.strategy_name,
+                            "strategy_id": pinned_strategy.name,
                             "values": params.values,
                         }
                     )
@@ -1527,12 +1755,12 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                             trade_plan, market_data, _, _ = build_trade_plan(
                                 historical,
                                 active_codes,
-                                pinned.strategy,
+                                pinned_strategy,
                                 params,
                                 start_date=pf.inception_date,
                                 end_date=today.strftime("%Y-%m-%d"),
                                 context_enricher=_strategy_context_enricher(
-                                    pinned.strategy,
+                                    pinned_strategy,
                                     config,
                                     group_key,
                                     active_codes,
@@ -1545,7 +1773,7 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                                     market_data,
                                     today.strftime("%Y-%m-%d"),
                                     run_id=pinned.run_id,
-                                    strategy_id=pinned.strategy_name,
+                                    strategy_id=pinned_strategy.name,
                                     lot_size=pool["lot"],
                                     commission_rate=exec_cfg.commission_rate,
                                     min_holding_days=exec_cfg.min_holding_days,
@@ -1609,26 +1837,36 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
 
 
 def _fetch_benchmarks(config, session) -> dict:
-    """拉取基准 ETF 数据（510300/510880/VOO/BRK.B）。
+    """拉取当前三个市场合同声明的基准数据。
 
     优先从 session._historical 读（已拉取过的历史数据）。
     """
     historical = getattr(session, "_historical", {}) or {}
-    bench_codes_map = {
-        "510300": 730,   # 沪深300
-        "510880": 730,   # 红利ETF
-        "VOO": 730,      # 标普500
-        "BRK.B": 730,    # 伯克希尔
+    try:
+        market_configs = get_market_optimizer_configs(
+            config, groups=OPTIMIZER_GROUPS
+        )
+    except ValueError as exc:
+        logger.error("无法读取市场基准合同，跳过基准拉取: %s", exc)
+        return {}
+    benchmark_codes = {
+        code
+        for market_config in market_configs.values()
+        for code in market_config.constraints.benchmark_codes
+        if code != "risk_free"
     }
     bench_data = {}
 
-    for bc, days in bench_codes_map.items():
+    for bc in sorted(benchmark_codes):
         if bc in historical:
             bench_data[bc] = historical[bc]
             continue
         try:
             df = StockDataFetcher(config).data_source.fetch_stock_data(
-                bc, days=days
+                bc, days=max(
+                    _optimizer_lookback_days(market_config.constraints)
+                    for market_config in market_configs.values()
+                )
             )
             if df is not None and not df.empty:
                 bench_data[bc] = df
@@ -1654,7 +1892,9 @@ def _scan_group(
         active = load_latest_strategy_run(groups=(group,))
         params = (
             active.params_by_group.get(group)
-            if active is not None and active.strategy_name == strategy.name
+            if active is not None
+            and active.strategy_for(group) is not None
+            and active.strategy_for(group).name == strategy.name
             else None
         )
     if params is None:
@@ -1901,6 +2141,12 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     )
     mode.add_argument("--health-server", action="store_true", help="start health server")
     mode.add_argument("--interactive", action="store_true", help="start Telegram bot")
+    parser.add_argument(
+        "--group",
+        dest="market_group",
+        choices=OPTIMIZER_GROUPS,
+        help="limit --optimize or --activate-run to one market group",
+    )
     return parser
 
 
@@ -1914,9 +2160,12 @@ def main(argv: list[str] | None = None):
         and os.environ.get("OPTIMIZER_GUARD_CHILD") != "1"
     ):
         environment = dict(os.environ)
+        guard_argv = [sys.executable, "-m", "src.optimizer_guard"]
+        if args.market_group:
+            guard_argv.extend(["--group", args.market_group])
         os.execve(
             sys.executable,
-            [sys.executable, "-m", "src.optimizer_guard"],
+            guard_argv,
             environment,
         )
     config = load_config()
@@ -1936,11 +2185,23 @@ def main(argv: list[str] | None = None):
                     lock_path,
                 )
                 return
-            completed = run_optimization(config, target_groups=OPTIMIZER_GROUPS)
+            target_groups = (
+                (args.market_group,) if args.market_group else OPTIMIZER_GROUPS
+            )
+            completed = run_optimization(config, target_groups=target_groups)
             logger.info("Optimization finished: %s", completed or "no group completed")
     elif args.activate_run:
-        if activate_run(args.activate_run, groups=OPTIMIZER_GROUPS):
-            logger.info("Activated optimizer candidate: %s", args.activate_run)
+        if not args.market_group:
+            logger.error(
+                "--activate-run requires --group; activation is one market at a time"
+            )
+            return
+        if activate_run(args.activate_run, group=args.market_group):
+            logger.info(
+                "Activated %s optimizer candidate: %s",
+                args.market_group,
+                args.activate_run,
+            )
         else:
             logger.error(
                 "Candidate activation rejected; current active strategy is unchanged"

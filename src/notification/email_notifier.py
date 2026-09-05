@@ -648,7 +648,10 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
 def optimizer_notification_title(report, group_name: str = "") -> str:
     """Return one consistent success/failure title for every channel."""
 
-    failed = str(getattr(report, "status", "completed")) != "completed"
+    failed = str(getattr(report, "status", "completed")) in {
+        "failed",
+        "interrupted",
+    }
     title = (
         "\u7b56\u7565\u4f18\u5316\u5931\u8d25"
         if failed
@@ -818,7 +821,10 @@ def _build_optimizer_run_summary(report) -> str:
         "not_run": "未执行",
     }
     lines = [f"<b>{optimizer_notification_title(report)}</b>"]
-    lines.append(f"策略: <b>{report.strategy_label}</b> ({report.strategy_name})")
+    lines.append(
+        "每个市场独立搜索、独立验收、独立激活；"
+        "未激活市场不会读取其他市场策略。"
+    )
     failure_reason = str(getattr(report, "failure_reason", "") or "")
     if failure_reason:
         lines.append(f"<b>\u5931\u8d25\u539f\u56e0:</b> {failure_reason}")
@@ -830,16 +836,27 @@ def _build_optimizer_run_summary(report) -> str:
         lines.append("<b>已发布:</b> 此运行已成为日报、简报和回测的当前告警策略。")
     elif getattr(report, "candidate", False):
         run_id = getattr(report, "run_id", "")
+        completed_groups = [
+            group
+            for group, item in report.groups.items()
+            if getattr(item, "status", "") == "completed"
+        ]
+        activation_scope = (
+            f" --group {completed_groups[0]}"
+            if len(completed_groups) == 1
+            else ""
+        )
         lines.append(
             "<b>候选已保存:</b> 当前活动策略未切换。"
             + (
-                f"人工确认后运行 python main.py --activate-run {run_id}。"
+                f"人工确认后运行 python main.py --activate-run {run_id}"
+                f"{activation_scope}。"
                 if run_id
                 else "通过验收后可人工激活。"
             )
         )
     else:
-        lines.append("<b>未切换:</b> 三个市场未全部完成，系统继续使用上一次完整策略。")
+        lines.append("<b>未切换:</b> 本次候选未激活；当前生产指针保持不变。")
 
     for group in ("a_share", "hk", "us"):
         item = report.groups.get(group)
@@ -848,6 +865,32 @@ def _build_optimizer_run_summary(report) -> str:
             continue
         status = status_labels.get(item.status, item.status)
         lines.append(f"<br><b>{labels[group]}</b>: {status}")
+        item_strategy = getattr(item, "strategy_name", "")
+        if item_strategy:
+            lines.append(f"候选策略: <code>{item_strategy}</code>")
+        solver_id = str(getattr(item, "solver_id", "") or "")
+        gate_profile = str(getattr(item, "gate_profile", "") or "")
+        config_hash = str(getattr(item, "market_config_hash", "") or "")
+        item_run_id = str(
+            getattr(item, "run_id", "")
+            or (getattr(report, "run_ids_by_group", {}) or {}).get(group, "")
+        )
+        if solver_id:
+            lines.append(f"Solver: <code>{solver_id}</code>")
+        if gate_profile:
+            lines.append(f"Gate: <code>{gate_profile}</code>")
+        for field_name, label in (
+            ("walk_forward_profile", "Walk-Forward"),
+            ("execution_profile", "Execution"),
+            ("benchmark_profile", "Benchmark"),
+        ):
+            profile = str(getattr(item, field_name, "") or "")
+            if profile:
+                lines.append(f"{label}: <code>{profile}</code>")
+        if config_hash:
+            lines.append(f"配置指纹: <code>{config_hash}</code>")
+        if item_run_id:
+            lines.append(f"独立 run_id: <code>{item_run_id}</code>")
         if item.status != "completed":
             evaluated = int(getattr(item, "evaluated_count", 0) or 0)
             if evaluated:
@@ -2165,7 +2208,8 @@ class EmailNotifier(BaseNotifier):
         if not has_content:
             return (
                 '<section class="daily-section"><div class="section-heading">策略信号与组合表现</div>'
-                '<div class="empty-card">暂无策略信号和组合评估数据。</div></section>'
+                '<div class="empty-card">A股、港股、美股均未激活独立策略；'
+                '本日报已 fail closed，未使用其他市场或旧配置。</div></section>'
             )
         parts = [
             '<section class="daily-section"><div class="section-heading">策略信号与组合表现</div>'
@@ -2193,6 +2237,17 @@ class EmailNotifier(BaseNotifier):
             else:
                 parts.append('<div class="empty-card">今日无策略触发信号。</div>')
         group_labels = {"a_share": "A股组合", "hk": "港股组合", "us": "美股组合", "non_a_share": "境外组合"}
+        inactive_labels = [
+            label
+            for group_key, label in group_labels.items()
+            if group_key != "non_a_share" and group_key not in reports
+        ]
+        if inactive_labels:
+            parts.append(
+                '<div class="empty-card">'
+                f'{_html_escape("、".join(inactive_labels))}未激活独立策略；'
+                '未读取其他市场策略。</div>'
+            )
         for group_key, label in group_labels.items():
             report = reports.get(group_key) if isinstance(reports, dict) else None
             if report is None:

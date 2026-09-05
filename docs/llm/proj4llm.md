@@ -57,6 +57,18 @@
 - Yahoo 公司行为时间戳先按 Unix 秒/毫秒解析，再解析 ISO 日期；并丢弃请求历史区间外的事件，避免时间戳被误读为公元 17/18 世纪日期。
 - Solver、参数空间、预算、评分和 raw 成交/qfq 信号合同不变；搜参前统一检查公司行为可解释性，验证链路继续 fail closed。
 
+### 三市场独立发布与 84 个月激活修复（2026-09-05）
+
+- A 股、港股、美股的搜参、候选发布、相对比较和手动激活均按市场独立执行；
+  某一市场没有候选，不再阻止其他市场保存候选或激活。
+- 线上运行必须部署包含市场后缀的独立 `run_id`，并使用
+  `python main.py --activate-run RUN_ID --group MARKET`；旧的单 run 三市场 gate
+  不属于当前合同。
+- 相对晋级比较的三市场默认策略只用于显式组合比较，市场本地比较会将比较范围
+  收窄为一个市场，不修改 Solver、参数空间或评分公式。
+- 激活校验按 artifact 中全部 holdout 窗口逐窗检查，多窗口 84 个月合同不再被
+  旧的单窗口条件拒绝；每个窗口仍必须通过既有 Holdout 门槛。
+
 ## 基本面定价画像契约（2026-08-18）
 
 - `src/fundamental_embedding` 是独立的逐时点研究链路，不进入当前技术面
@@ -149,6 +161,16 @@
   `search/solvers`。两类插件均自动发现，新增实现不得修改中央字典、
   `SearchController`、`Backtester` 或 `main.py`。离线 benchmark 和搜索深度
   分析位于 `src/experiments`，不得发布或激活生产参数。
+- 三市场优化单元完全隔离：`a_share`、`hk`、`us` 必须在
+  `config/config.yaml -> optimizer.markets` 中分别声明 strategy、Solver、Gate、
+  Walk-Forward、execution 和 benchmark profile。`get_market_optimizer_config()`
+  为每个市场创建独立约束实例；缺少字段、未知插件或不兼容参数直接失败，
+  不读取 `optimizer.engine`、`strategy_by_group` 或全局 Solver/Gate 回退。
+- `python main.py --optimize` 为每个市场生成独立 run、archive、checkpoint、
+  readiness 和 HTML 报告；`--group` 只运行指定市场。候选必须使用
+  `--activate-run RUN_ID --group MARKET` 显式激活，active manifest schema v4
+  只保存每个市场的独立指针、strategy、Solver、配置指纹和激活时间。旧版单策略/混合
+  manifest 不自动读取；日报、信号、回测和参考组合遇到未激活市场时 fail closed。
 - 生产代码不再包含 `GeneticOptimizer`、`ScoredEncoding`、策略专属
   `scanner.py` 转发层或 percentile 的独立评分扫描 API；候选参数直接以
   `Params` 在统一评价和验证链路间传递。旧 YAML 字段转换只允许存在于
@@ -158,14 +180,15 @@
   -> ValidationController`。`SearchController` 只管理预算、缓存、排名窗调度、
   排名档案和 checkpoint；其中不得按 Solver ID 或策略 ID 分支。新增优化算法只需
   新增并注册一个实现 `initialize / ask / tell / should_stop / finalists /
-  state_dict / load_state_dict` 的 Solver 模块，再配置 `search.solver_id`。
+  state_dict / load_state_dict` 的 Solver 模块，再在每个
+  `optimizer.markets.<market>.solver_id` 中显式选择。
 - 当前注册 Solver 为 `genetic`、`local_genetic`、`random` 和严格单线
   `simulated_annealing`。`local_genetic` 保留随机初始化，生成阶段使用
   90% 交叉后局部变异子代和 10% 确定性配额随机移民；每个非移民子代至少
   变异一个活跃参数，最大档距按代数从 3 收缩到 1，并在 Solver 边界去重。
   生产搜参默认使用 `local_genetic`；预算保持每市场
   `30,000 + 5 × 25,000 = 155,000` 次、5 代不变。新 Solver 只可通过
-  `search.solver_id` 显式选择。`--optimize` 使用跨进程单实例锁；日调度默认不
+  各市场的 `solver_id` 显式选择。`--optimize` 使用跨进程单实例锁；日调度默认不
   自动启动全量优化，必须通过 `scheduler.optimize_enabled: true` 显式开启。
   要求梯度的未来 Solver 必须在启动前通过能力协商；当前
   Evaluator 声明 `cpu_scalar`、`cpu_batch` 与 `cpu_process`，无梯度、无 GPU 后端。神经网络若
@@ -326,16 +349,16 @@
   触发日收盘价估值。评价窗口最后一日缺少后一日价格时，买单标记待执行且
   不计入窗口。`cash_cap`、`target_weight` 和全部配置的可交易控制基准必须消费
   同一个成交合同，不得按策略、市场或参考标的另建成交路径。
-- 权威搜参跨度为 60 个自然月：14 个窗口、12 个月训练、9 个月测试、
-  3 个月步长。前 11 个测试窗参与排名，接下来 2 窗因与留出期重叠而隔离，
-  最后 1 窗只作独立留出。隔离窗和留出窗不得参与排名、敏感性、删标的
+- 权威搜参跨度为 84 个自然月：22 个窗口、12 个月状态预热、9 个月测试、
+  3 个月步长。前 16 个测试窗参与排名，接下来 2 窗因与留出期重叠而隔离，
+  最后 4 窗只作独立留出。隔离窗和留出窗不得参与排名、敏感性、删标的
   稳健性或候选选择。
 - 所有策略按市场统一比较三个配置控制基准：A 股为无风险、510300、510880，
   港股和美股为无风险、VOO、BRK.B。可交易基准使用同样的 0.5% 单边费率、
   自身市场手数/汇率和悲观买价；同池静态等权仅作诊断，不参与 Gate。
   每窗排序仍记录相对三个配置基准中最强者的超额，Gate、留出验收和激活则
   要求超过任意两个基准，即相对当窗第二强基准的超额为正。
-- 默认 `standard` Gate 要求至少 6/11 排名窗正收益、至少 6/11 窗战胜
+- 默认 `standard` Gate 要求至少 6/16 排名窗正收益、至少 6/16 窗战胜
   三个基准中的至少两个，且相对每窗第二强基准的平均超额为正；该门槛完全
   来自配置，可替换 Profile 或改为比例，再应用回撤、交易密度、稳定性和
   夏普约束。参数敏感性逐参数 ±1 档；标的池敏感性是独立且权重更高的门槛：
@@ -357,11 +380,11 @@
   回撤准备、三日恢复单次确认、30 日正常退出和固定 3ATR 灾难退出。
   `technical_ensemble` 是 22 技术列、批量评价和跨 Solver 比较实现；
   `ma60_band` 只用于四只 A 股的固定规则诊断，不代表 A/HK/US 生产策略。
-- `regime_pullback` 和 `technical_ensemble` 搜参只保存三市场完整候选，绝不自动替换当前活动策略。
+- `regime_pullback` 和 `technical_ensemble` 搜参按市场保存候选，绝不自动替换当前活动策略。
   候选必须留出胜出且通过全部稳健性门槛，之后由
-  `python main.py --activate-run <run_id>` 原子激活。
-- 新产物写 `strategy_id`、参数结构标识、执行快照、11 个排名窗、2 个隔离窗、
-  1 个留出窗、三重基准和删标的报告。旧 YAML 字段只能在
+  `python main.py --activate-run <run_id> --group <market>` 原子激活。
+- 新产物写 `strategy_id`、参数结构标识、执行快照、16 个排名窗、2 个隔离窗、
+  4 个留出窗、三重基准和删标的报告。旧 YAML 字段只能在
   `src.search.artifacts` 读取边界迁移，不得泄漏进核心。
 
 ## 2026-07-31：类型化标的画像与财务/基金穿透契约
@@ -1586,3 +1609,15 @@ pytest tests/test_import_smoke.py         # 导入完整性
   最终持仓或季末持仓明细，详情通过时效报告链接/PDF 查看。
 - Bot 频次使用 `/report_frequency daily|weekly|off`（兼容 `/daily_frequency`）：
   普通无告警日报按配置发送，告警即时发送，手动 `/daily` 强制发送。
+
+### ETF Collar 严格 1x 与 crash-month neutralize（2026-09-03）
+
+- 新增 `scripts/backtest_collar_nav_sizing.py`：510300/510500 的 100% Put、
+  105% Call 每月按 close-mark NAV 重置 ETF 名义本金，Put/Call 均覆盖重置后的
+  ETF 份数；使用连续分数合约作为研究近似，并对每日归因账本做最终 NAV 对账。
+- 同时生成从 test_start 以相同初始资本重新开仓的 OOS 组合，避免把训练期亏损
+  通过固定 ETF 份数转化为测试期隐含杠杆；历史新浪数据无 bid/ask 时，买入取 H、
+  卖出取 L，日内估值取 close，到期按内在价值结算。
+- crash-month 稳健性不再删除月份，而是将排名靠前的相对优势月份设为
+  `R_collar,t = R_spot,t`，保留所有月份并按月度相对增长因子复利；结果写入
+  `cache/analysis/collar_nav_resized/{510300,510500}/`。

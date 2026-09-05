@@ -1147,6 +1147,154 @@ class RefPortfolioManager:
             new_pf.trading_days = pf.trading_days + int(previous != plan_date)
         return new_pf, trades
 
+    def adjust_position(
+        self,
+        pf: RefPortfolio,
+        code: str,
+        action: str,
+        shares: int,
+        price: float,
+        trade_date: str,
+        *,
+        commission_rate: float = DEFAULT_COMMISSION_RATE,
+        lot_size: int = 100,
+        fx_rate: float = 1.0,
+        event_id: str = "",
+        reason: str = "manual_bot",
+    ) -> tuple[RefPortfolio, list[Trade]]:
+        """Apply one explicit bot position change and return an auditable copy.
+
+        ``price`` is entered in the instrument's native currency; the
+        portfolio stores cash, trade costs and average cost in CNY. ``set``
+        means target shares, while ``buy``/``sell`` mean a quantity delta.
+        This method deliberately bypasses signal timing and holding-period
+        rules because the operator supplied an explicit execution price.
+        """
+        action = str(action).strip().lower()
+        code = str(code).strip().upper()
+        if action not in {"set", "buy", "sell"}:
+            raise ValueError("action must be set, buy or sell")
+        if not self.is_initialized(pf) or not pf.is_bound:
+            raise ValueError("reference portfolio must be initialized and bound")
+        if not code:
+            raise ValueError("code is required")
+        if int(shares) != shares or shares < 0:
+            raise ValueError("shares must be a non-negative integer")
+        shares = int(shares)
+        if action != "set" and shares <= 0:
+            raise ValueError("buy/sell shares must be positive")
+        if lot_size <= 0:
+            raise ValueError("lot_size must be positive")
+        if shares % lot_size:
+            raise ValueError(f"shares must be a multiple of lot size {lot_size}")
+        try:
+            datetime.strptime(trade_date, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("trade_date must use YYYY-MM-DD") from exc
+        price = float(price)
+        fx_rate = float(fx_rate)
+        commission_rate = float(commission_rate)
+        if not np.isfinite(price) or price <= 0:
+            raise ValueError("price must be positive")
+        if not np.isfinite(fx_rate) or fx_rate <= 0:
+            raise ValueError("fx_rate must be positive")
+        if not np.isfinite(commission_rate) or commission_rate < 0:
+            raise ValueError("commission_rate must be non-negative")
+
+        event_id = event_id or (
+            f"manual:{trade_date}:{action}:{code}:{shares}:{price:.8f}"
+        )
+        current = pf.holdings.get(code)
+        current_shares = current.shares if current is not None else 0
+        if event_id in pf.processed_events and (
+            action != "set" or current_shares == shares
+        ):
+            return self._copy_portfolio(pf), []
+
+        if action == "set":
+            target_shares = shares
+        elif action == "buy":
+            target_shares = current_shares + shares
+        else:
+            target_shares = current_shares - shares
+        if target_shares < 0:
+            raise ValueError(
+                f"sell shares exceed {code} holding ({current_shares})"
+            )
+
+        delta = target_shares - current_shares
+        new_pf = self._copy_portfolio(pf)
+        new_pf.processed_events.append(event_id)
+        new_pf.processed_events = list(dict.fromkeys(new_pf.processed_events))
+        if delta == 0:
+            return new_pf, []
+
+        price_cny = price * fx_rate
+        quantity = abs(delta)
+        gross = quantity * price_cny
+        commission = gross * commission_rate
+        if delta > 0:
+            total_cost = gross + commission
+            if total_cost > new_pf.cash + 1e-9:
+                raise ValueError(
+                    f"cash insufficient: need {total_cost:.2f}, "
+                    f"available {new_pf.cash:.2f}"
+                )
+            new_pf.cash -= total_cost
+            holding = new_pf.holdings.get(code)
+            if holding is None:
+                new_pf.holdings[code] = Holding(
+                    code=code,
+                    shares=quantity,
+                    avg_cost=price_cny,
+                    last_buy_date=trade_date,
+                )
+            else:
+                basis = holding.shares * holding.avg_cost + total_cost
+                holding.shares += quantity
+                holding.avg_cost = basis / holding.shares
+                holding.last_buy_date = trade_date
+            trade = Trade(
+                date=trade_date,
+                code=code,
+                action="buy",
+                shares=quantity,
+                price=round(price_cny, 4),
+                cost=gross,
+                reason=reason,
+                commission=commission,
+                event_id=event_id,
+                run_id=pf.strategy_run_id,
+                strategy_id=pf.strategy_id,
+            )
+        else:
+            holding = new_pf.holdings.get(code)
+            if holding is None or holding.shares < quantity:
+                raise ValueError(f"sell shares exceed {code} holding")
+            holding.shares -= quantity
+            new_pf.cash += gross - commission
+            if holding.shares == 0:
+                del new_pf.holdings[code]
+            trade = Trade(
+                date=trade_date,
+                code=code,
+                action="sell",
+                shares=quantity,
+                price=round(price_cny, 4),
+                cost=-gross,
+                reason=reason,
+                commission=commission,
+                event_id=event_id,
+                run_id=pf.strategy_run_id,
+                strategy_id=pf.strategy_id,
+            )
+        new_pf.trade_log.append(trade)
+        new_pf.last_rebalance_date = trade_date
+        new_pf.trading_days = pf.trading_days + int(
+            (pf.last_rebalance_date or "")[:10] != trade_date
+        )
+        return new_pf, [trade]
+
     # ── 查询 ──
 
     @staticmethod

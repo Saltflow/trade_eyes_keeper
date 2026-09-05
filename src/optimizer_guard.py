@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import argparse
 import subprocess
 import sys
 import time
@@ -38,6 +39,32 @@ def _discover_run(
         if item.stat().st_mtime >= started_epoch - 1.0
     ]
     return max(recent, key=lambda item: item.stat().st_mtime) if recent else None
+
+
+def _discover_runs(
+    runs_root: Path,
+    previous: set[str],
+    started_epoch: float,
+) -> dict[str, Path]:
+    """Discover the independent child run for each market, if it exists."""
+    if not runs_root.exists():
+        return {}
+    directories = [item for item in runs_root.iterdir() if item.is_dir()]
+    candidates = [
+        item
+        for item in directories
+        if item.name not in previous or item.stat().st_mtime >= started_epoch - 1.0
+    ]
+    result: dict[str, Path] = {}
+    for group in OPTIMIZER_GROUPS:
+        matching = [
+            item
+            for item in candidates
+            if item.name.endswith(f"_{group}")
+        ]
+        if matching:
+            result[group] = max(matching, key=lambda item: item.stat().st_mtime)
+    return result
 
 
 def _failure_reason(returncode: int) -> str:
@@ -150,38 +177,77 @@ def _notify_failure(
     import main as application
 
     config = application.load_config()
-    strategy = application._get_configured_strategy(config)
     runs_root = repository / "data" / "optimizer" / "runs"
-    run_dir = _discover_run(runs_root, previous_runs, started_epoch)
-    run_id = run_dir.name if run_dir is not None else ""
-    inferred_name = run_id.partition("_")[2] if "_" in run_id else ""
-    strategy_name = getattr(strategy, "name", "") or inferred_name or "unknown"
-    strategy_label = getattr(strategy, "label", "") or strategy_name
+    run_dirs = _discover_runs(runs_root, previous_runs, started_epoch)
+    try:
+        market_configs = application.get_market_optimizer_configs(config)
+    except Exception as exc:
+        print(
+            f"optimizer guard: invalid market configuration: {exc}",
+            file=sys.stderr,
+        )
+        market_configs = {}
+    summaries = {}
+    strategy_by_group = {}
+    run_ids_by_group = {}
+    for group in OPTIMIZER_GROUPS:
+        run_dir = run_dirs.get(group)
+        summary = _group_summary(application, run_dir, group)
+        market_config = market_configs.get(group)
+        if market_config is not None:
+            strategy = market_config.strategy
+            summary.strategy_name = strategy.name
+            summary.strategy_label = strategy.label
+            summary.solver_id = market_config.solver_id
+            summary.gate_profile = market_config.gate_profile
+            summary.walk_forward_profile = market_config.walk_forward_profile
+            summary.execution_profile = market_config.execution_profile
+            summary.benchmark_profile = market_config.benchmark_profile
+            summary.market_config_hash = market_config.config_hash
+            strategy_by_group[group] = strategy.name
+        if run_dir is not None:
+            summary.run_id = run_dir.name
+            run_ids_by_group[group] = run_dir.name
+        summaries[group] = summary
     report = application.OptimizerRunSummary(
-        strategy_name=strategy_name,
-        strategy_label=strategy_label,
+        strategy_name="",
+        strategy_label="按市场独立搜参",
         timestamp=started_at.isoformat(),
         elapsed_seconds=elapsed_seconds,
-        groups={
-            group: _group_summary(application, run_dir, group)
-            for group in OPTIMIZER_GROUPS
-        },
+        groups=summaries,
         activated=False,
-        run_id=run_id,
+        run_id="",
         candidate=False,
         status="failed",
         failure_reason=_failure_reason(returncode),
+        strategy_by_group=strategy_by_group,
+        run_ids_by_group=run_ids_by_group,
     )
-    _write_failure_state(application, run_dir, report, returncode)
+    for run_dir in run_dirs.values():
+        _write_failure_state(application, run_dir, report, returncode)
     application._notify_optimizer_run(config, report)
-    constraints = application.get_constraints()
-    application.prune_optimizer_runs(
-        root=repository / "data" / "optimizer",
-        keep_completed=constraints.search.run_retention_count,
+    if market_configs:
+        keep_completed = max(
+            market_config.search.run_retention_count
+            for market_config in market_configs.values()
+        )
+        application.prune_optimizer_runs(
+            root=repository / "data" / "optimizer",
+            keep_completed=keep_completed,
+        )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Guard the optimizer child process")
+    parser.add_argument(
+        "--group",
+        choices=OPTIMIZER_GROUPS,
+        help="run and report only one independent optimizer market",
     )
-
-
-def main() -> int:
+    # ``main()`` is also called directly by the test suite, where the process
+    # argv belongs to pytest.  The guard only owns its explicit ``--group``
+    # option, so ignore unrelated host-process arguments in that case.
+    args, _unknown = parser.parse_known_args(argv)
     repository = Path(__file__).resolve().parent.parent
     runs_root = repository / "data" / "optimizer" / "runs"
     previous_runs = (
@@ -194,8 +260,11 @@ def main() -> int:
     started = time.monotonic()
     environment = dict(os.environ)
     environment[CHILD_MARKER] = "1"
+    child_argv = [sys.executable, str(repository / "main.py"), "--optimize"]
+    if args.group:
+        child_argv.extend(["--group", args.group])
     completed = subprocess.run(
-        [sys.executable, str(repository / "main.py"), "--optimize"],
+        child_argv,
         cwd=repository,
         env=environment,
         check=False,

@@ -22,6 +22,7 @@ from ..markets import _detect_fine_group
 from .gates import majority_benchmark_excess
 from ..strategy import TradingStrategy, Params, StrategyMarketData
 from .artifacts import as_yaml_primitives
+from .contracts import ParameterSchema
 
 logger = logging.getLogger(__name__)
 
@@ -495,7 +496,16 @@ def run_optimizer(
         constraints = _constraints
     else:
         constraints = get_constraints()
-    constraints.set_group(group)
+    configured_group = getattr(constraints, "market_group", None)
+    if configured_group is not None:
+        if configured_group != group:
+            raise ValueError(
+                f"optimizer constraints belong to {configured_group}, not {group}"
+            )
+    else:
+        # Low-level callers/tests may still construct a bare StrategyConstraints.
+        # Production main.py always supplies a market-scoped contract.
+        constraints.set_group(group)
     exec_cfg = constraints.execution
 
     wf_manager = WalkForwardManager(
@@ -711,6 +721,7 @@ def run_optimizer(
 
     performance = service.performance_snapshot()
     search_metadata = {
+        **dict(getattr(constraints, "market_metadata", {}) or {}),
         "solver_id": solver.solver_id,
         "solver_config": dict(getattr(solver, "effective_config", solver_config)),
         "solver_stop_reason": getattr(solver, "stop_reason", None),
@@ -722,6 +733,11 @@ def run_optimizer(
         "gate_profile": gate_pipeline.profile_id,
         "gate_profile_hash": gate_pipeline.hash,
         "gate_activation_eligible": gate_pipeline.activation_eligible,
+        "gate_contract": {
+            "profile_id": gate_pipeline.profile_id,
+            "activation_eligible": gate_pipeline.activation_eligible,
+            "rules": [rule.to_contract() for rule in gate_pipeline.rules],
+        },
         "search_contract_hash": problem.contract_hash,
         "parameter_schema_hash": schema.hash,
         "feature_contract_hash": feature_hash,
@@ -779,6 +795,14 @@ def _save_optimizer_result(
     top = results[0]
     constraints = constraints or get_constraints()
     params = Params(values=dict(top.parameters), _engine=strategy.name)
+    schema = getattr(strategy, "parameter_schema", None)
+    if schema is None:
+        param_space = getattr(strategy, "param_space", None)
+        schema = (
+            ParameterSchema.from_param_space(param_space)
+            if param_space is not None
+            else ParameterSchema(())
+        )
     windows = list(windows or [])
     strategy_codes = list(strategy_codes or [])
 
@@ -943,6 +967,20 @@ def _save_optimizer_result(
         bool(universe_robustness) and bool(universe_robustness.get("passed"))
     )
     search_metadata = dict(getattr(top, "search_metadata", {}) or {})
+    market_metadata = dict(getattr(constraints, "market_metadata", {}) or {})
+    solver_id = str(search_metadata.get("solver_id") or "").strip()
+    gate_profile = str(search_metadata.get("gate_profile") or "").strip()
+    market_config_hash = str(
+        search_metadata.get("market_config_hash")
+        or market_metadata.get("market_config_hash")
+        or ""
+    ).strip()
+    if getattr(constraints, "market_group", None) is not None and (
+        not solver_id or not gate_profile or not market_config_hash
+    ):
+        raise ValueError(
+            "market-scoped optimizer artifact requires solver, gate and config hash"
+        )
     activation_eligible = bool(
         holdout_passed
         and benchmarks_complete
@@ -960,9 +998,13 @@ def _save_optimizer_result(
             "parameter_schema_id",
             "parameter-space/1",
         ),
-        "solver_id": search_metadata.get("solver_id", "genetic"),
+        "solver_id": solver_id,
         "solver_config": dict(search_metadata.get("solver_config", {})),
-        "gate_profile": search_metadata.get("gate_profile", "standard"),
+        "gate_profile": gate_profile,
+        "gate_contract": dict(search_metadata.get("gate_contract", {})),
+        "market_config_hash": market_config_hash,
+        "market_contract": market_metadata,
+        "parameter_schema_hash": schema.hash,
         "control_benchmarks": list(constraints.benchmark_codes),
         "contracts": {
             key: value
@@ -996,8 +1038,9 @@ def _save_optimizer_result(
             "validation_window_count": len(top.validation_stats),
             "purged_overlap_window_count": top.purged_window_count,
             "budget": int(search_metadata.get("budget", 0)),
-            "solver_id": search_metadata.get("solver_id", "genetic"),
-            "gate_profile": search_metadata.get("gate_profile", "standard"),
+            "solver_id": solver_id,
+            "gate_profile": gate_profile,
+            "market_config_hash": market_config_hash,
             "score_formula": (
                 "weighted_majority_benchmark_excess - "
                 "window_range_penalty * "

@@ -334,7 +334,7 @@ def test_binding_and_event_ids_round_trip():
     assert restored.holdings["601088"].last_buy_date == DATES[-1]
 
 
-def test_exact_run_loader_never_falls_back_to_latest_or_legacy(tmp_path):
+def test_exact_run_loader_ignores_legacy_manifest(tmp_path):
     run_dir = tmp_path / "runs" / "run-1"
     run_dir.mkdir(parents=True)
     artifact = run_dir / "a_share.yaml"
@@ -374,8 +374,9 @@ def test_exact_run_loader_never_falls_back_to_latest_or_legacy(tmp_path):
         root=tmp_path,
     )
 
-    assert loaded is not None
-    assert loaded.run_id == "run-1"
+    # The v3-style manifest is intentionally not migrated into the current
+    # active index.  An explicit v4 search and activation is required.
+    assert loaded is None
     assert load_strategy_run(
         "missing",
         groups=("a_share",),
@@ -399,7 +400,29 @@ def test_manual_ref_reset_pins_all_markets_to_latest_active_run(
 ):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        yaml.safe_dump({"optimizer": {}}),
+        yaml.safe_dump(
+            {
+                "optimizer": {
+                    "markets": {
+                        group: {
+                            "strategy": "percentile",
+                            "solver_id": "random",
+                            "gate_profile": "standard",
+                            "walk_forward_profile": f"{group}_84m",
+                            "execution_profile": (
+                                "a_share_cny"
+                                if group == "a_share"
+                                else "hk_hkd"
+                                if group == "hk"
+                                else "us_usd"
+                            ),
+                            "benchmark_profile": group,
+                        }
+                        for group in ("a_share", "hk", "us")
+                    }
+                }
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(handlers, "CONFIG_PATH", config_path)
@@ -420,6 +443,10 @@ def test_manual_ref_reset_pins_all_markets_to_latest_active_run(
         timestamp="2026-07-30T19:00:00",
         params_by_group=params,
         run_id="run-1",
+        strategy_by_group={group: "percentile" for group in params},
+        solver_by_group={group: "random" for group in params},
+        config_hash_by_group={group: f"hash-{group}" for group in params},
+        run_ids_by_group={group: f"run-{group}" for group in params},
     )
     monkeypatch.setattr(
         "src.search.artifacts.load_latest_strategy_run",
@@ -456,7 +483,9 @@ def test_manual_ref_reset_pins_all_markets_to_latest_active_run(
         "hk",
         "us",
     }
-    assert all(values["strategy_run_id"] == "run-1" for _, values in resets)
+    assert {
+        values["strategy_run_id"] for _, values in resets
+    } == {"run-a_share", "run-hk", "run-us"}
     assert all(values["strategy_id"] == "percentile" for _, values in resets)
     assert all(values["params_hash"] for _, values in resets)
     assert all(values["execution_hash"] for _, values in resets)

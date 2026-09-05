@@ -20,7 +20,13 @@ from .api import (
     finite_score,
     stable_hash,
 )
-from .config import get_constraints, get_execution_config
+from .config import (
+    MarketOptimizerConfig,
+    get_constraints,
+    get_execution_config,
+    get_market_optimizer_config,
+    get_market_optimizer_configs,
+)
 from .controller import SearchController, SearchResult
 from .workflow import run_optimizer
 from .registry import create_solver, list_solvers, register_solver
@@ -43,6 +49,9 @@ __all__ = [
     "finite_score",
     "get_constraints",
     "get_execution_config",
+    "get_market_optimizer_config",
+    "get_market_optimizer_configs",
+    "MarketOptimizerConfig",
     "list_solvers",
     "register_solver",
     "run_optimizer",

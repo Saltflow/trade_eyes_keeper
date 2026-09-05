@@ -18,6 +18,7 @@ from .command_parser import (
     ModeCommand,
     OptimizeCommand,
     RefDateCommand,
+    RefPositionCommand,
     RemoveCommand,
     ResetAlertsCommand,
     ScheduleCommand,
@@ -39,6 +40,7 @@ from .commands.handlers import (
     handle_mode,
     handle_optimize,
     handle_ref_date,
+    handle_ref_position,
     handle_remove,
     handle_reset_alerts,
     handle_save,
@@ -161,7 +163,7 @@ def _dispatch(cmd) -> str:
     if isinstance(cmd, BriefCommand):
         return handle_brief(cmd.report_id)
     if isinstance(cmd, OptimizeCommand):
-        return handle_optimize()
+        return handle_optimize(cmd.group)
     if isinstance(cmd, DailyCommand):
         return handle_daily()
     if isinstance(cmd, DailyReportFrequencyCommand):
@@ -179,9 +181,13 @@ def _dispatch(cmd) -> str:
     if isinstance(cmd, SkipCommand):
         return handle_skip(cmd.kind, cmd.codes, remove=cmd.remove)
     if isinstance(cmd, SwitchOptimizerCommand):
-        return handle_switch_optimizer(cmd.kind)
+        return handle_switch_optimizer(cmd.kind, cmd.group)
     if isinstance(cmd, RefDateCommand):
         return handle_ref_date(cmd.date_str)
+    if isinstance(cmd, RefPositionCommand):
+        return handle_ref_position(
+            cmd.action, cmd.group, cmd.code, cmd.shares, cmd.price
+        )
     if isinstance(cmd, ErrorCommand):
         return f"❌ {cmd.message}"
     return "❌ 未知命令。发送 /help 查看可用命令。"

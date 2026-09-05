@@ -23,6 +23,21 @@ def test_two_matching_markets_cannot_promote_three_market_strategy():
     assert decision.reasons == ("incomplete_group_comparison",)
 
 
+def test_independent_market_comparison_does_not_require_sibling_markets():
+    candidate = {"a_share": _report(3.0)}
+    incumbent = {"a_share": _report(0.0)}
+
+    decision = compare_with_incumbent(
+        candidate,
+        incumbent,
+        PromotionPolicy().for_independent_market(),
+    )
+
+    assert decision.passed
+    assert decision.compared_group_count == 1
+    assert decision.improved_group_count == 1
+
+
 def test_framework_benchmark_in_addition_to_three_controls_is_complete():
     benchmarks = {
         "risk_free": 1.0,

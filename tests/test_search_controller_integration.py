@@ -94,6 +94,8 @@ def test_run_optimizer_uses_configured_solver_and_persists_contracts(tmp_path):
     )
     assert artifact["solver_id"] == "random"
     assert artifact["gate_profile"] == "test_off"
+    assert artifact["gate_contract"]["profile_id"] == "test_off"
+    assert artifact["gate_contract"]["rules"] == []
     assert artifact["activation"]["eligible"] is False
     assert {
         "search_contract_hash",

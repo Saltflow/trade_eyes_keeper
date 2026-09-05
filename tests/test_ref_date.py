@@ -53,9 +53,9 @@ class TestRefDateHandler:
     def test_set_and_show(self):
         from src.interactive.commands.handlers import handle_ref_date
 
-        handle_ref_date("2026-07-14")
-        r = handle_ref_date()
-        assert "2026-07-14" in r
+        r = handle_ref_date("2026-07-14")
+        assert "没有可绑定" in r
+        assert "2026-07-14" not in handle_ref_date()
 
     def test_bad_date_rejected(self):
         from src.interactive.commands.handlers import handle_ref_date

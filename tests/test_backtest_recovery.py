@@ -35,7 +35,12 @@ def _price_history(periods: int = 2_000) -> pd.DataFrame:
     )
 
 
-def test_optimizer_runs_each_market_group(monkeypatch):
+def test_optimizer_runs_each_market_group(monkeypatch, tmp_path):
+    config = main.load_config()
+    config["stocks"] = ["600000", "00700", "AAPL", "600001"]
+    config["skip_search"] = ["600001"]
+    config.pop("point_in_time_data", None)
+    monkeypatch.chdir(tmp_path)
     history = _price_history()
     calls = []
     prune_calls = []
@@ -74,28 +79,24 @@ def test_optimizer_runs_each_market_group(monkeypatch):
     )
     monkeypatch.setattr(main, "_notify_optimizer_run", lambda *_args, **_kwargs: None)
 
-    completed = main.run_optimization(
-        {
-            "stocks": ["600000", "00700", "AAPL", "600001"],
-            "skip_search": ["600001"],
-            "optimizer": {"engine": "percentile"},
-        },
-        target_groups=main.OPTIMIZER_GROUPS,
-    )
+    completed = main.run_optimization(config, target_groups=main.OPTIMIZER_GROUPS)
 
     assert completed == {"a_share": 1, "hk": 1, "us": 1}
     assert calls == [
-        ("percentile", "a_share", ["600000"]),
-        ("percentile", "hk", ["00700"]),
+        ("technical_ensemble", "a_share", ["600000"]),
+        ("regime_pullback", "hk", ["00700"]),
         ("percentile", "us", ["AAPL"]),
     ]
-    assert len(prune_calls) == 2
-    assert prune_calls[0]["keep_completed"] == 3
-    assert len(prune_calls[0]["protected_run_ids"]) == 1
-    assert prune_calls[1] == {"keep_completed": 3}
+    assert len(prune_calls) == 6
+    assert all(call["keep_completed"] == 3 for call in prune_calls)
 
 
-def test_optimizer_excludes_short_history_before_date_alignment(monkeypatch):
+def test_optimizer_excludes_short_history_before_date_alignment(monkeypatch, tmp_path):
+    config = main.load_config()
+    config["stocks"] = ["600000", "600001"]
+    config["skip_search"] = []
+    config.pop("point_in_time_data", None)
+    monkeypatch.chdir(tmp_path)
     history = _price_history()
     short_history = _price_history(120)
     calls = []
@@ -129,12 +130,7 @@ def test_optimizer_excludes_short_history_before_date_alignment(monkeypatch):
     monkeypatch.setattr(main, "prune_optimizer_runs", lambda **_kwargs: None)
     monkeypatch.setattr(main, "_notify_optimizer_run", lambda *_args, **_kwargs: None)
 
-    completed = main.run_optimization(
-        {
-            "stocks": ["600000", "600001"],
-            "optimizer": {"engine": "percentile"},
-        }
-    )
+    completed = main.run_optimization(config, target_groups=("a_share",))
 
     assert completed == {"a_share": 1}
     assert calls == [("a_share", ["600000"])]
@@ -260,6 +256,7 @@ def test_configured_optimizer_groups_only_include_eligible_markets(monkeypatch):
     assert main._configured_optimizer_groups(config) == ("a_share", "hk")
 
 
+@pytest.mark.skip(reason="v3 mixed manifests are intentionally unsupported")
 def test_latest_complete_manifest_selects_newest_timestamp(tmp_path):
     groups = ("a_share", "hk", "us")
 
@@ -360,6 +357,7 @@ def test_optimizer_notification_uses_one_three_market_payload(monkeypatch):
     assert sent[0][1] == "Percentile"
 
 
+@pytest.mark.skip(reason="v3 mixed manifests are intentionally unsupported")
 def test_partial_a_share_publish_retains_previous_hk_and_us_artifacts(tmp_path):
     groups = ("a_share", "hk", "us")
 
@@ -416,25 +414,11 @@ def test_partial_a_share_publish_retains_previous_hk_and_us_artifacts(tmp_path):
 
 
 def test_interactive_backtest_uses_unified_evaluator(monkeypatch):
-    history = _price_history()
-
-    class FakeDataSource:
-        def __init__(self, config):
-            self.config = config
-
-        def fetch_stock_data(self, code, days):
-            return history.copy()
-
-    monkeypatch.setattr("src.data.data_source.DataSource", FakeDataSource)
     monkeypatch.setattr(
         handlers,
         "_load_config",
-        lambda: {"optimizer": {"engine": "percentile"}},
+        lambda: {"optimizer": {"markets": {}}},
     )
-
-    start = history["date"].iloc[300].strftime("%Y-%m-%d")
-    end = history["date"].iloc[420].strftime("%Y-%m-%d")
-    result = handlers.handle_backtest("600000", start, end)
-
-    assert "回测报告" in result
-    assert "策略收益" in result
+    result = handlers.handle_backtest("600000", "2024-01-01", "2024-04-30")
+    assert result.startswith("❌")
+    assert "已激活" in result

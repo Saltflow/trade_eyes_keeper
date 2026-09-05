@@ -92,11 +92,18 @@ def handle_help() -> str:
         (
             "🔬 策略与搜参",
             [
-                ("/optimize", "优化配置中的活动策略并推送三市场候选报告"),
-                ("/switch_optimizer [策略]", "查看/切换下次候选策略"),
+                ("/optimize 市场", "按指定市场独立搜参，如 <code>/optimize a_share</code>"),
+                (
+                    "/switch_optimizer [市场] 策略",
+                    "查看/切换下次候选策略；可按市场设置",
+                ),
                 ("/mode", "查看当前 TradePlan 执行合同"),
                 ("/config [show|set K V|reset]", "查看/修改优化器配置"),
                 ("/ref_date [YYYY-MM-DD]", "设置参考持仓基期（默认今天）"),
+                (
+                    "/ref_position set|buy|sell 市场 代码 股数 价格",
+                    "按显式成交价修改参考持仓并记录交易",
+                ),
             ],
         ),
         (
@@ -212,38 +219,63 @@ def _engine_brief(engine_key: str) -> str:
     return ""
 
 
-def handle_switch_optimizer(kind: str | None = None) -> str:
-    """切换搜参引擎。kind=None → 列出可用引擎。"""
+def handle_switch_optimizer(
+    kind: str | None = None,
+    group: str | None = None,
+) -> str:
+    """View or change the next-search strategy for one required market."""
     from ...strategy import list_strategies, get_strategy
     strategies = list_strategies()
 
     if kind is None:
         config = _load_config()
-        cur = (config.get("optimizer", {}) or {}).get("engine", "percentile")
+        optimizer = config.get("optimizer", {}) or {}
+        markets = optimizer.get("markets", {}) or {}
         lines = [
             "<b>可用候选策略</b>\n",
-            "这里只决定下一次 /optimize 搜索哪个策略；不会切换当前生产运行。\n",
+            "下次搜参策略必须按市场设置；不会切换当前生产运行。",
         ]
+        lines.append(
+            "当前按市场: "
+            + ", ".join(
+                f"{market}={(markets.get(market, {}) or {}).get('strategy', '缺失')}"
+                for market in ("a_share", "hk", "us")
+            )
+            + "\n"
+        )
         for s in strategies:
-            marker = "  ← 当前" if s["key"] == cur else ""
-            lines.append(f"<b>{s['key']}</b> — {s['label']}{marker}")
+            lines.append(f"<b>{s['key']}</b> — {s['label']}")
             lines.append(f"  {s['description']}")
-            if s["key"] != cur:
-                lines.append(f"  切换: <code>/switch_optimizer {s['key']}</code>")
+            lines.append(
+                f"  切换: <code>/switch_optimizer a_share {s['key']}</code>"
+            )
             lines.append("")
         return "\n".join(lines).rstrip()
 
+    if group not in {"a_share", "hk", "us"}:
+        return "❌ 切换策略时必须指定市场：/switch_optimizer a_share 策略"
     s = get_strategy(kind)
     if s is None:
         valid = [x["key"] for x in strategies]
         return f"❌ 未知引擎: {kind}。可用: {', '.join(valid)}"
 
     config = _load_config()
-    old = (config.get("optimizer", {}) or {}).get("engine", "percentile")
-    config.setdefault("optimizer", {})["engine"] = kind
-    _save_config(config)
+    optimizer = config.get("optimizer", {}) or {}
+    markets = optimizer.get("markets", {}) or {}
+    if not isinstance(markets, dict) or not isinstance(markets.get(group), dict):
+        return f"❌ {group} 市场配置缺失，未修改。"
+    old = markets[group].get("strategy", "缺失")
+    candidate = yaml.safe_load(yaml.safe_dump(config, allow_unicode=True))
+    candidate["optimizer"]["markets"][group]["strategy"] = kind
+    try:
+        from ...search.config import get_market_optimizer_config
+
+        get_market_optimizer_config(group, application_config=candidate)
+    except ValueError as exc:
+        return f"❌ {group} 市场策略配置无效，未修改：{exc}"
+    _save_config(candidate)
     return (
-        f"✅ 下次搜参候选策略: <b>{old} → {kind}</b>\n\n"
+        f"✅ {group} 市场下次搜参候选策略: <b>{old} → {kind}</b>\n\n"
         f"{s.label}: {s.description}\n\n"
         "当前生产策略不会改变；候选通过 Gate 后仍须显式激活。"
     )
@@ -320,69 +352,26 @@ def handle_remove(codes: list[str]) -> str:
     return "\n".join(lines)
 
 
-def _get_backtest_strategy(config: dict):
-    """Resolve the newest complete strategy run before consulting defaults."""
+def _get_backtest_strategy(config: dict, group: str | None = None):
+    """Resolve only the explicitly activated strategy for one market."""
     from ...search.artifacts import load_latest_strategy_run
-    from ...strategy import get_strategy
 
-    active = load_latest_strategy_run()
-    if active and active.strategy is not None:
-        return active.strategy
-
-    names = [
-        (config.get("optimizer", {}) or {}).get("engine"),
-        (config.get("dashboard", {}) or {}).get("strategy"),
-        "percentile",
-    ]
-    for name in names:
-        if not name:
-            continue
-        strategy = get_strategy(str(name))
-        if strategy is not None:
-            return strategy
-    return None
+    if group not in {"a_share", "hk", "us"}:
+        return None
+    active = load_latest_strategy_run(groups=(group,))
+    return active.strategy_for(group) if active is not None else None
 
 
 def _get_backtest_params(group: str, strategy):
-    """Load group-specific optimized parameters or use neutral valid values."""
-    from ...strategy import Params
+    """Load parameters from the explicitly activated group artifact only."""
     from ...search.artifacts import load_latest_strategy_run
 
-    active = load_latest_strategy_run()
-    if active and active.strategy_name == strategy.name:
+    active = load_latest_strategy_run(groups=(group,))
+    if active is not None and active.strategy_for(group) is not None and active.strategy_for(group).name == strategy.name:
         params = active.params_by_group.get(group)
         if params is not None:
             return params, False
-
-    path = CONFIG_PATH.parent.parent / "data" / "optimizer" / f"{group}_best_params.yaml"
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except (OSError, yaml.YAMLError) as exc:
-        logger.warning("Cannot load backtest parameters from %s: %s", path, exc)
-        data = {}
-
-    raw_params = data.get("params") if isinstance(data, dict) else None
-    if data.get("engine") == strategy.name and isinstance(raw_params, dict):
-        try:
-            return (
-                Params(
-                    values={
-                        key: int(value)
-                        for key, value in raw_params.items()
-                        if not key.startswith("_")
-                    },
-                    _engine=strategy.name,
-                ),
-                False,
-            )
-        except (TypeError, ValueError) as exc:
-            logger.warning("Invalid backtest parameters in %s: %s", path, exc)
-
-    neutral_values = {
-        dim.name: max((dim.levels - 1) // 2, 0)
-        for dim in strategy.param_space.dims
-    }
-    return Params(values=neutral_values, _engine=strategy.name), True
+    return None, False
 
 
 def handle_backtest(code: str, start: str, end: str) -> str:
@@ -390,7 +379,7 @@ def handle_backtest(code: str, start: str, end: str) -> str:
     try:
         from ...backtest.engine import evaluate_all_groups
         from ...data.backtest_data import prepare_backtest_data
-        from ...search.config import get_execution_config
+        from ...search.config import get_market_optimizer_config
         from ...markets import _detect_fine_group
         import pandas as pd
 
@@ -398,18 +387,21 @@ def handle_backtest(code: str, start: str, end: str) -> str:
 
         s = datetime.strptime(start, "%Y-%m-%d")
         e = datetime.strptime(end, "%Y-%m-%d")
-        strategy = _get_backtest_strategy(config)
-        if strategy is None:
-            return "❌ 未配置有效的回测策略"
         group = _detect_fine_group(code)
+        strategy = _get_backtest_strategy(config, group)
+        if strategy is None:
+            return "❌ 该市场没有已激活的回测策略，请先按市场激活搜参候选"
         params, using_fallback_params = _get_backtest_params(group, strategy)
+        if params is None:
+            return "❌ 该市场没有已激活的回测参数，请先按市场激活搜参候选"
+        market_config = get_market_optimizer_config(
+            group, application_config=config
+        )
 
         market_bundles = None
         benchmark_bundles = None
         if "point_in_time_data" in config:
-            from ...search.config import get_constraints
-
-            constraints = get_constraints()
+            constraints = market_config.constraints
             benchmark_codes = [
                 item
                 for item in constraints.benchmark_codes_for(group)
@@ -483,10 +475,11 @@ def handle_backtest(code: str, start: str, end: str) -> str:
             [code],
             strategy,
             params,
-            get_execution_config(),
+            market_config.execution,
             benchmark_bundles=benchmark_bundles,
             market_bundles=market_bundles,
             target_groups=[group],
+            market_constraints=market_config.constraints,
             start_date=start,
             end_date=end,
         )
@@ -601,9 +594,13 @@ def handle_brief(report_id: str = "morning_snapshot") -> str:
     return f"❌ {label}触发失败"
 
 
-def handle_optimize() -> str:
-    if _run_main(["--optimize"]):
-        return "⏳ 策略优化已在后台启动。完成后自动推送三市场简报。"
+def handle_optimize(group: str | None = None) -> str:
+    if group not in {"a_share", "hk", "us"}:
+        return "❌ 搜参必须指定市场：/optimize a_share|hk|us"
+    args = ["--optimize"]
+    args.extend(["--group", group])
+    if _run_main(args):
+        return f"⏳ {group} 市场策略优化已在后台启动。完成后自动推送候选简报。"
     return "❌ 策略优化启动失败"
 
 
@@ -768,6 +765,12 @@ def _load_opt_config() -> dict:
 
 def _save_opt_config(config: dict) -> None:
     """Validate a temporary optimizer YAML before atomically replacing it."""
+    search = config.get("search", {}) or {}
+    if any(key in search for key in ("solver_id", "gate_profile")):
+        raise ValueError(
+            "search.solver_id/search.gate_profile 已废弃；必须写入 config/config.yaml "
+            "的 optimizer.markets.<market>"
+        )
     tmp = OPT_CONSTRAINTS_PATH.with_suffix(".yaml.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as f:
@@ -888,8 +891,11 @@ _CONFIG_HELP = {
 }
 
 
-def _gate_rule(cfg: dict, rule_id: str) -> dict:
-    profile_id = str((cfg.get("search", {}) or {}).get("gate_profile", "standard"))
+def _gate_rule(cfg: dict, rule_id: str, profile_id: str | None = None) -> dict:
+    if not profile_id:
+        raise ValueError(
+            "Gate Rule 必须通过具体市场的 optimizer.markets.<market>.gate_profile 解析"
+        )
     profile = (cfg.get("gate_profiles", {}) or {}).get(profile_id, {})
     rules = profile.get("rules", []) if isinstance(profile, dict) else []
     for rule in rules:
@@ -911,25 +917,24 @@ def handle_mode(mode: str) -> str:
     if not mode:
         from ...search.artifacts import load_latest_strategy_run
 
-        active = load_latest_strategy_run()
         lines = [
             f"当前模式: <b>{_MODE_LABELS['trade_plan']}</b>",
             "",
             "执行模式由每个已激活参数产物声明，核心回测和参考持仓统一解释。",
             "支持 <code>cash_cap</code> 与 <code>target_weight</code>，不可全局强制切换。",
         ]
-        if active is None:
-            lines.append("  当前没有完整已激活运行")
-        else:
+        for group in ("a_share", "hk", "us"):
+            active = load_latest_strategy_run(groups=(group,))
+            if active is None:
+                lines.append(f"  {group}: 未激活")
+                continue
+            params = active.params_by_group.get(group)
+            execution = params.execution_snapshot if params is not None else {}
             lines.append(
-                f"  运行: <code>{active.run_id}</code> / "
-                f"<code>{active.strategy_name}</code>"
+                f"  {group}: <code>{active.strategy_by_group.get(group, '')}</code> / "
+                f"运行 <code>{active.run_id_for(group)}</code> / "
+                f"{execution.get('model', '未声明')}"
             )
-            for group, params in active.params_by_group.items():
-                execution = params.execution_snapshot
-                lines.append(
-                    f"  {group}: {execution.get('model', 'cash_cap')}"
-                )
         return "\n".join(lines)
 
     return "⚠️ 执行模式由 TradePlan 声明，不能通过 /mode 修改。"
@@ -940,16 +945,13 @@ def _config_value(cfg: dict, key: str):
     kind = spec["kind"]
     search = cfg.get("search", {}) or {}
     if kind == "solver":
-        return search.get("solver_id", "genetic")
+        return "按市场配置"
     if kind == "solver_budget":
-        solver_id = str(search.get("solver_id", "genetic"))
-        return ((search.get("solvers", {}) or {}).get(solver_id, {}) or {}).get(
-            "budget"
-        )
+        return "按市场 Solver 配置"
     if kind == "gate_profile":
-        return search.get("gate_profile", "standard")
+        return "按市场配置"
     if kind == "gate_rule":
-        return _gate_rule(cfg, str(spec["rule"])).get("value")
+        return "按市场 Gate Profile 配置"
     if kind == "workers":
         return search.get("workers")
     return _path_get(cfg, spec["path"])
@@ -959,20 +961,15 @@ def _set_config_value(cfg: dict, key: str, raw_value: str) -> None:
     spec = _CONFIG_HELP[key]
     kind = spec["kind"]
     if kind == "solver":
-        from ...search.registry import list_solvers
-
-        solver_id = raw_value.strip().lower()
-        if solver_id not in list_solvers():
-            raise ValueError(f"未知 Solver；可用: {', '.join(list_solvers())}")
-        cfg.setdefault("search", {})["solver_id"] = solver_id
-        return
+        raise ValueError(
+            "Solver 必须按市场配置；请修改 config/config.yaml 的 "
+            "optimizer.markets.<market>.solver_id"
+        )
     if kind == "gate_profile":
-        profile_id = raw_value.strip()
-        profiles = cfg.get("gate_profiles", {}) or {}
-        if profile_id not in profiles:
-            raise ValueError(f"未知 Gate Profile；可用: {', '.join(profiles)}")
-        cfg.setdefault("search", {})["gate_profile"] = profile_id
-        return
+        raise ValueError(
+            "Gate Profile 必须按市场配置；请修改 config/config.yaml 的 "
+            "optimizer.markets.<market>.gate_profile"
+        )
     if kind == "workers":
         if raw_value.strip().lower() == "auto":
             cfg.setdefault("search", {})["workers"] = None
@@ -1005,9 +1002,9 @@ def _set_config_value(cfg: dict, key: str, raw_value: str) -> None:
     if maximum is not None and parsed > maximum:
         raise ValueError(f"不得大于 {maximum}")
     if kind == "solver_budget":
-        search = cfg.setdefault("search", {})
-        solver_id = str(search.get("solver_id", "genetic"))
-        search.setdefault("solvers", {}).setdefault(solver_id, {})["budget"] = parsed
+        raise ValueError(
+            "Solver 预算必须跟随具体市场的 Solver 配置，不能写入全局回退"
+        )
     elif kind == "gate_rule":
         _gate_rule(cfg, str(spec["rule"]))["value"] = parsed
     elif kind == "workers":
@@ -1016,34 +1013,15 @@ def _set_config_value(cfg: dict, key: str, raw_value: str) -> None:
         _path_set(cfg, spec["path"], parsed)
 
 
+
 def handle_config(action: str, key: str, value: str) -> str:
-    """View or safely update the effective Solver/Gate/runtime configuration."""
+    """View shared runtime settings without reintroducing market fallbacks."""
     cfg = _load_opt_config()
     if action == "reset":
-        defaults = {
-            "solver": "local_genetic",
-            "budget": "155000",
-            "gate_profile": "standard",
-            "positive_windows": "6",
-            "majority_windows": "6",
-            "min_pos": "5",
-            "max_dd": "-40",
-            "window_range_penalty": "0.5",
-            "workers": "auto",
-            "batch_size": "256",
-            "candidate_retention_ratio": "0.05",
-            "buy_cash_levels": "10000,20000,30000,40000,50000",
-            "sell_cash_levels": "10000,20000,30000,40000,50000",
-            "commission": "0.005",
-            "init_capital": "100000",
-        }
-        try:
-            for default_key, default_value in defaults.items():
-                _set_config_value(cfg, default_key, default_value)
-            _save_opt_config(cfg)
-        except Exception as exc:
-            return f"❌ 默认配置校验失败，未保存: {exc}"
-        return "✅ 已恢复统一优化器默认配置"
+        return (
+            "❌ 不再支持统一优化器重置；strategy、Solver、Gate、Walk-Forward、"
+            "执行和基准必须在三个市场配置中分别声明。"
+        )
 
     if action == "set" and key and value:
         if key not in _CONFIG_HELP:
@@ -1059,12 +1037,7 @@ def handle_config(action: str, key: str, value: str) -> str:
         except Exception as exc:
             return f"❌ 配置校验或保存失败，旧配置已保留: {exc}"
         actual = _config_value(cfg, key)
-        warning = ""
-        if key == "gate_profile":
-            profile = (cfg.get("gate_profiles", {}) or {}).get(str(actual), {})
-            if not bool((profile or {}).get("activation_eligible", False)):
-                warning = "\n⚠️ 此 Profile 只用于探索，候选没有激活资格。"
-        return f"✅ {_CONFIG_HELP[key]['label']}: {actual}{warning}"
+        return f"✅ {_CONFIG_HELP[key]['label']}: {actual}"
 
     if key:
         if key not in _CONFIG_HELP:
@@ -1077,70 +1050,140 @@ def handle_config(action: str, key: str, value: str) -> str:
             current = "auto"
         return f"<b>{_CONFIG_HELP[key]['label']}</b>: {current}"
 
-    search = cfg.get("search", {}) or {}
-    wf = cfg.get("walk_forward", {}) or {}
-    profile_id = str(search.get("gate_profile", "standard"))
-    profile = (cfg.get("gate_profiles", {}) or {}).get(profile_id, {}) or {}
     configured = _load_config()
-    candidate_strategy = (
-        (configured.get("optimizer", {}) or {}).get("engine", "percentile")
-    )
-    try:
-        from ...search.artifacts import load_latest_strategy_run
-
-        active = load_latest_strategy_run()
-    except Exception:
-        active = None
-    active_label = (
-        f"{active.strategy_name} / {active.run_id}"
-        if active is not None
-        else "无完整已激活运行"
-    )
+    search = cfg.get("search", {}) or {}
     workers = search.get("workers")
     workers_label = "auto（全部物理核）" if workers is None else str(workers)
-    retention_ratio = float(search.get("candidate_retention_ratio", 0.05))
     try:
-        positive = _config_value(cfg, "positive_windows")
-        majority = _config_value(cfg, "majority_windows")
-        min_pos = _config_value(cfg, "min_pos")
-        max_dd = _config_value(cfg, "max_dd")
-    except ValueError:
-        positive = majority = min_pos = max_dd = "缺失"
+        from ...search.artifacts import load_latest_strategy_run
+        from ...search.config import get_market_optimizer_configs
+
+        market_configs = get_market_optimizer_configs(configured)
+    except Exception as exc:
+        return f"❌ 市场配置不完整，无法显示: {exc}"
+
     lines = [
-        "<b>统一优化配置</b>",
-        f"  下次候选策略: {candidate_strategy}",
-        f"  当前生产策略: {active_label}",
-        f"  Solver: {search.get('solver_id', 'genetic')}",
-        f"  预算: {_config_value(cfg, 'budget')}",
-        (
-            f"  Gate: {profile_id} "
-            f"(可激活={bool(profile.get('activation_eligible', False))})"
-        ),
-        f"  正收益窗口: {positive}/11",
-        f"  战胜任意两个基准: {majority}/11",
-        f"  最低平均仓位: {min_pos}%  最差回撤: {max_dd}%",
-        f"  窗口波动惩罚: {_config_value(cfg, 'window_range_penalty')}",
-        (
-            f"  workers: {workers_label}  batch: {search.get('batch_size', 256)} "
-            f"\u5019\u9009\u4fdd\u7559: {retention_ratio:.1%}"
-        ),
-        (
-            "  固定窗口合同: "
-            f"{wf.get('data_years', 5) * 12}月 / "
-            f"{wf.get('num_windows', 14)}窗 / 11排名+2隔离+1留出"
-        ),
-        (
-            "  现金档位: 买 "
-            f"{_config_value(cfg, 'buy_cash_levels')} / 卖 "
-            f"{_config_value(cfg, 'sell_cash_levels')}"
-        ),
-        f"  手续费: {_config_value(cfg, 'commission')}",
-        "",
-        "修改: <code>/config set KEY VALUE</code>",
-        "workers 使用 <code>auto</code> 可占满物理核",
-        "可配置项: " + ", ".join(_CONFIG_HELP),
+        "<b>三市场独立优化配置</b>",
+        "Solver、Gate、Walk-Forward、执行参数和基准均按市场解析；没有默认回退。",
     ]
+    for group in ("a_share", "hk", "us"):
+        market = market_configs[group]
+        active = load_latest_strategy_run(groups=(group,))
+        if active is None:
+            active_label = "未激活"
+        else:
+            active_label = (
+                f"{active.strategy_by_group.get(group, '')} / "
+                f"{active.run_id_for(group)}"
+            )
+        wf = market.constraints.walk_forward
+        lines.extend(
+            [
+                "",
+                f"<b>{group}</b>",
+                f"  候选 strategy: {market.strategy_name}",
+                f"  Solver: {market.solver_id} / 预算: "
+                f"{market.search.solver_config().get('budget', '未设置')}",
+                f"  Gate: {market.gate_profile}",
+                f"  WF: {market.walk_forward_profile} / "
+                f"{wf.total_months_needed}月 / {wf.num_windows}窗",
+                f"  execution: {market.execution_profile} / benchmark: "
+                f"{market.benchmark_profile}",
+                f"  当前生产: {active_label}",
+                f"  config hash: <code>{market.config_hash}</code>",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            f"共享运行调度: workers={workers_label} / "
+            f"batch={search.get('batch_size', '未设置')} / "
+            f"候选保留={search.get('candidate_retention_ratio', '未设置')}",
+            "策略切换: <code>/switch_optimizer 市场 策略</code>",
+        ]
+    )
     return "\n".join(lines)
+
+
+def handle_ref_position(
+    action: str,
+    group: str,
+    code: str,
+    shares: int,
+    price: float,
+) -> str:
+    """Modify one bound reference position from an explicit bot instruction."""
+    from ...core.ref_portfolio import RefPortfolioManager
+    from ...markets import _detect_fine_group
+    from ...search.config import get_market_optimizer_config
+
+    labels = {"a_share": "A股", "hk": "港股", "us": "美股"}
+    files = {
+        "a_share": "data/ref_portfolio_a.yaml",
+        "hk": "data/ref_portfolio_hk.yaml",
+        "us": "data/ref_portfolio_us.yaml",
+    }
+    if group not in files:
+        return "❌ 市场只能是 a_share、hk 或 us。"
+    try:
+        detected = _detect_fine_group(code)
+    except Exception:
+        detected = ""
+    if detected != group:
+        return f"❌ {code} 不属于 {labels[group]}，未修改参考持仓。"
+
+    mgr = RefPortfolioManager(file_path=files[group])
+    pf = mgr.load()
+    if not mgr.is_initialized(pf):
+        return (
+            f"❌ {labels[group]}参考持仓尚未初始化；"
+            "请先发送 /ref_date YYYY-MM-DD。"
+        )
+    if not pf.is_bound:
+        return (
+            f"❌ {labels[group]}参考持仓未绑定已激活运行，未修改；"
+            "请先重新设置 /ref_date。"
+        )
+
+    try:
+        execution = get_market_optimizer_config(
+            group, application_config=_load_config()
+        ).execution
+    except ValueError as exc:
+        return f"❌ 市场优化配置无效，未修改参考持仓：{exc}"
+    trade_date = datetime.now().strftime("%Y-%m-%d")
+    try:
+        new_pf, trades = mgr.adjust_position(
+            pf,
+            code,
+            action,
+            shares,
+            price,
+            trade_date,
+            commission_rate=execution.commission_rate,
+            lot_size=execution.lot_sizes[group],
+            fx_rate=execution.fx_rates[group],
+            reason="manual_bot",
+        )
+    except ValueError as exc:
+        return f"❌ 参考持仓未修改：{exc}"
+    mgr.save(new_pf)
+
+    holding = new_pf.holdings.get(code)
+    target = holding.shares if holding is not None else 0
+    if not trades:
+        return (
+            f"✅ {labels[group]} <code>{code}</code> 已是目标仓位 "
+            f"{target} 股；未产生重复交易。"
+        )
+    trade = trades[-1]
+    side = "买入" if trade.action == "buy" else "卖出"
+    return (
+        f"✅ {labels[group]}参考持仓已修改\n"
+        f"{side} <code>{code}</code> {trade.shares} 股 @CNY {trade.price:.4f}\n"
+        f"目标仓位: {target} 股 | 现金: {new_pf.cash:,.2f}\n"
+        f"记录: <code>{trade.event_id}</code>"
+    )
 
 
 def handle_ref_date(date_str: str | None = None) -> str:
@@ -1224,21 +1267,35 @@ def handle_ref_date(date_str: str | None = None) -> str:
         return f"❌ 日期格式错误: {date_str}。请使用 YYYY-MM-DD。"
 
     from ...search.artifacts import load_latest_strategy_run
-    from ...search.config import get_execution_config
+    from ...search.config import get_market_optimizer_configs
     from ...search.contracts import stable_hash
 
     active_run = load_latest_strategy_run()
-    if (
-        active_run is None
-        or active_run.run_id in {"", "legacy"}
-        or active_run.strategy is None
-    ):
+    if active_run is None:
         return (
             "❌ 没有可绑定的三市场完整已激活运行；参考持仓未重置。"
             "请先完成并激活一次有效搜参运行。"
         )
-    execution_config = get_execution_config()
-    initial_capital = float(execution_config.initial_capital)
+    active_strategies = {
+        group: active_run.strategy_for(group)
+        for group in ("a_share", "hk", "us")
+    }
+    if any(
+        active_strategies[group] is None
+        or active_run.params_by_group.get(group) is None
+        for group in active_strategies
+    ):
+        return (
+            "❌ 已激活运行缺少完整的三市场策略或参数；参考持仓未重置。"
+            "请先完成并激活一次完整搜参运行。"
+        )
+    try:
+        market_configs = get_market_optimizer_configs(config)
+    except ValueError as exc:
+        return f"❌ 市场优化配置无效，参考持仓未重置：{exc}"
+    initial_capital = float(
+        market_configs["a_share"].execution.initial_capital
+    )
 
     # 防呆：设置新基期前需要确认
     if not pending_date:
@@ -1276,6 +1333,9 @@ def handle_ref_date(date_str: str | None = None) -> str:
         ("us", "美股", "data/ref_portfolio_us.yaml"),
     ]:
         params = active_run.params_by_group.get(group)
+        strategy = active_strategies[group]
+        execution_config = market_configs[group].execution
+        group_run_id = active_run.run_id_for(group)
         if params is None:
             return f"❌ 已激活运行缺少 {label} 参数；参考持仓未重置。"
         mgr = RefPortfolioManager(file_path=fname)
@@ -1283,12 +1343,12 @@ def handle_ref_date(date_str: str | None = None) -> str:
             initial_capital=initial_capital,
             inception_date=date_str,
             market_group=group,
-            strategy_run_id=active_run.run_id,
-            strategy_id=active_run.strategy_name,
+            strategy_run_id=group_run_id,
+            strategy_id=strategy.name,
             strategy_timestamp=active_run.timestamp,
             params_hash=stable_hash(
                 {
-                    "strategy_id": active_run.strategy_name,
+                    "strategy_id": strategy.name,
                     "values": params.values,
                 }
             ),
@@ -1308,7 +1368,7 @@ def handle_ref_date(date_str: str | None = None) -> str:
         f"📅 基期: <b>{date_str}</b>\n"
         f"💰 每组初始资金: {initial_capital:,.0f}\n"
         f"📭 持仓: 已清空\n"
-        f"🔒 固定运行: <code>{active_run.run_id}</code> "
-        f"(<code>{active_run.strategy_name}</code>)\n"
+        f"🔒 固定运行: <code>{', '.join(f'{group}:{active_run.run_id_for(group)}' for group in active_strategies)}</code> "
+        f"({', '.join(f'{group}:{active_strategies[group].name}' for group in active_strategies)})\n"
         f"\n新搜参不会静默切换参考持仓；再次手动重置才会绑定新运行。"
     )

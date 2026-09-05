@@ -127,7 +127,7 @@ def test_short_history_symbol_does_not_truncate_daily_union_calendar():
     assert np.isnan(prices[:220, 1]).all()
 
 
-def test_legacy_artifact_maps_percentage_to_immutable_cash_snapshot(tmp_path):
+def test_legacy_artifact_is_not_loaded_as_current_active_strategy(tmp_path):
     timestamp = "2026-07-27T12:00:00"
     for group in ("a_share", "hk", "us"):
         (tmp_path / f"{group}_best_params.yaml").write_text(
@@ -144,8 +144,6 @@ def test_legacy_artifact_maps_percentage_to_immutable_cash_snapshot(tmp_path):
 
     active = load_latest_strategy_run(root=tmp_path)
 
-    assert active is not None
-    snapshot = active.params_by_group["a_share"].execution_snapshot
-    assert snapshot["model"] == "cash_cap"
-    assert snapshot["migration"] == "legacy_execution_mapped"
-    assert snapshot["buy_cash_limit"] == snapshot["sell_cash_limit"]
+    # v3/legacy artifacts are intentionally not migrated into the v4 active
+    # pointer.  A fresh market search and explicit activation is required.
+    assert active is None

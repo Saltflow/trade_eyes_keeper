@@ -1,14 +1,15 @@
 """Versioned optimizer artifacts and the active-strategy resolver.
 
-An optimizer run is only made active after every configured market has produced
-an artifact.  Daily reports, brief reports and interactive backtests all use
-this module, so they cannot accidentally combine the strategy from one run
-with the parameters from another.
+Optimizer artifacts are immutable and the active manifest is the single source
+of truth. Every optimizer run belongs to exactly one market. The active
+manifest is only an index of independently activated market artifacts; it
+never supplies a global strategy or fallback.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -25,6 +26,8 @@ logger = logging.getLogger(__name__)
 OPTIMIZER_ROOT = Path("data/optimizer")
 RUNS_DIRNAME = "runs"
 LATEST_MANIFEST = "latest_strategy.yaml"
+ACTIVE_SCHEMA_VERSION = 4
+MARKET_GROUPS = ("a_share", "hk", "us")
 
 
 def as_yaml_primitives(value):
@@ -67,6 +70,15 @@ class OptimizerGroupSummary:
     activation: dict[str, object] = field(default_factory=dict)
     status: str = "not_run"
     artifact: str | None = None
+    strategy_name: str = ""
+    strategy_label: str = ""
+    solver_id: str = ""
+    gate_profile: str = ""
+    walk_forward_profile: str = ""
+    execution_profile: str = ""
+    benchmark_profile: str = ""
+    market_config_hash: str = ""
+    run_id: str = ""
 
 
 @dataclass
@@ -83,6 +95,8 @@ class OptimizerRunSummary:
     candidate: bool = False
     status: str = "completed"
     failure_reason: str = ""
+    strategy_by_group: dict[str, str] = field(default_factory=dict)
+    run_ids_by_group: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -95,10 +109,27 @@ class ActiveStrategyRun:
     run_id: str = ""
     validation_by_group: dict[str, dict[str, str]] = field(default_factory=dict)
     selection_by_group: dict[str, dict[str, object]] = field(default_factory=dict)
+    strategy_by_group: dict[str, str] = field(default_factory=dict)
+    solver_by_group: dict[str, str] = field(default_factory=dict)
+    config_hash_by_group: dict[str, str] = field(default_factory=dict)
+    run_ids_by_group: dict[str, str] = field(default_factory=dict)
 
     @property
     def strategy(self):
-        return get_strategy(self.strategy_name)
+        """Return a strategy only when this view contains one market."""
+        if len(self.strategy_by_group) != 1:
+            return None
+        return get_strategy(next(iter(self.strategy_by_group.values())))
+
+    def strategy_for(self, group: str):
+        """Return the strategy pinned to one market group."""
+        name = self.strategy_by_group.get(group)
+        if not name:
+            return None
+        return get_strategy(name)
+
+    def run_id_for(self, group: str) -> str:
+        return self.run_ids_by_group.get(group, "")
 
 
 @dataclass(frozen=True)
@@ -149,15 +180,22 @@ def _complete_run_manifest(base: Path, run_dir: Path) -> dict | None:
     manifest = _load_yaml(manifest_path)
     if not manifest or str(manifest.get("run_id", "")) != run_dir.name:
         return None
+    if int(manifest.get("schema_version", 0) or 0) != ACTIVE_SCHEMA_VERSION:
+        return None
     groups = manifest.get("groups")
     if not isinstance(groups, dict) or not groups:
         return None
-    for entry in groups.values():
+    for group in groups:
+        entry = _manifest_entry(manifest, group)
+        if entry is None:
+            return None
         artifact = entry.get("artifact") if isinstance(entry, dict) else None
         if not isinstance(artifact, str) or not artifact:
             return None
         path = _artifact_path(base, artifact)
         if path is None or not path.is_file():
+            return None
+        if not _artifact_matches_entry(_load_yaml(path) or {}, entry, group):
             return None
     return manifest
 
@@ -273,8 +311,7 @@ def prune_optimizer_runs(
 
 def _parse_params(data: dict, strategy_name: str) -> Params | None:
     raw_params = data.get("params")
-    artifact_strategy = data.get("strategy_id") or data.get("engine")
-    if artifact_strategy != strategy_name or not isinstance(raw_params, dict):
+    if data.get("strategy_id") != strategy_name or not isinstance(raw_params, dict):
         return None
     try:
         values = {
@@ -286,7 +323,7 @@ def _parse_params(data: dict, strategy_name: str) -> Params | None:
         return None
     execution = data.get("execution")
     if not isinstance(execution, dict):
-        execution = _migrate_legacy_execution(values, strategy_name)
+        return None
     return Params(
         values=values,
         _engine=strategy_name,
@@ -358,65 +395,6 @@ def _selection_diagnostics(data: dict) -> dict[str, object]:
     return result
 
 
-def _migrate_legacy_execution(values: dict[str, int], strategy_name: str) -> dict:
-    """Translate an old percentage/rule-limit artifact once at load time."""
-    from .config import get_constraints
-
-    constraints = get_constraints()
-    tiers = constraints.discrete_search
-    buy_levels = [float(value) for value in tiers.buy_limit_levels] or [10000.0]
-    sell_levels = [float(value) for value in tiers.sell_limit_levels] or [10000.0]
-    capital = float(constraints.execution.initial_capital)
-
-    def nearest(levels, amount):
-        return min(levels, key=lambda value: (abs(value - amount), value))
-
-    # Percentile artifacts had one discrete fraction.  Builder had one per
-    # rule; its legacy executor averaged active fractions.  Simplified used
-    # the largest selected rule limit in practice.  Preserve those historic
-    # effective values only until the next native cash-tier search.
-    fractions = [0.05, 0.15, 0.25, 0.35, 0.45]
-    if "position_frac" in values:
-        fraction = fractions[int(values["position_frac"]) % len(fractions)]
-        buy_amount = sell_amount = capital * fraction
-    elif any(key.endswith("_limit") for key in values):
-        buy_amount = max(
-            [buy_levels[int(value) % len(buy_levels)] for key, value in values.items()
-             if key.startswith("buy_") and key.endswith("_limit")]
-            or [buy_levels[0]]
-        )
-        sell_amount = max(
-            [sell_levels[int(value) % len(sell_levels)] for key, value in values.items()
-             if key.startswith("sell_") and key.endswith("_limit")]
-            or [sell_levels[0]]
-        )
-    else:
-        buy_fracs = [
-            float(value) for key, value in values.items()
-            if key.startswith("buy_") and key.endswith("_frac")
-        ]
-        sell_fracs = [
-            float(value) for key, value in values.items()
-            if key.startswith("sell_") and key.endswith("_frac")
-        ]
-        legacy_levels = [0.10, 0.15, 0.20, 0.25, 0.30, 0.40]
-        buy_amount = capital * (
-            sum(legacy_levels[int(v) % len(legacy_levels)] for v in buy_fracs)
-            / max(len(buy_fracs), 1)
-        )
-        sell_amount = capital * (
-            sum(legacy_levels[int(v) % len(legacy_levels)] for v in sell_fracs)
-            / max(len(sell_fracs), 1)
-        )
-    return {
-        "model": "cash_cap",
-        "buy_cash_limit": nearest(buy_levels, buy_amount),
-        "sell_cash_limit": nearest(sell_levels, sell_amount),
-        "migration": "legacy_execution_mapped",
-        "source_engine": strategy_name,
-    }
-
-
 def _load_yaml(path: Path) -> dict | None:
     try:
         value = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -424,33 +402,6 @@ def _load_yaml(path: Path) -> dict | None:
         logger.warning("Cannot read optimizer artifact %s: %s", path, exc)
         return None
     return value if isinstance(value, dict) else None
-
-
-def _manifest_candidates(root: Path) -> list[tuple[str, Path, dict]]:
-    paths = [root / LATEST_MANIFEST]
-    runs_dir = root / RUNS_DIRNAME
-    if runs_dir.exists():
-        paths.extend(runs_dir.glob("*/manifest.yaml"))
-
-    candidates = []
-    seen: set[Path] = set()
-    for path in paths:
-        try:
-            path = path.resolve()
-        except OSError:
-            continue
-        if path in seen or not path.exists():
-            continue
-        seen.add(path)
-        manifest = _load_yaml(path)
-        if not manifest or not manifest.get("activated"):
-            continue
-        timestamp = str(
-            manifest.get("activated_at") or manifest.get("timestamp", "")
-        )
-        if timestamp:
-            candidates.append((timestamp, path, manifest))
-    return candidates
 
 
 def _load_active_manifest(
@@ -464,13 +415,18 @@ def _load_active_manifest(
             not manifest
             or not manifest.get("activated")
             or str(manifest.get("run_id", "")) != run_id
+            or int(manifest.get("schema_version", 0) or 0) != ACTIVE_SCHEMA_VERSION
         ):
             return None
         return path, manifest
-    candidates = _manifest_candidates(root)
-    if not candidates:
+    path = root / LATEST_MANIFEST
+    manifest = _load_yaml(path)
+    if (
+        not manifest
+        or not manifest.get("activated")
+        or int(manifest.get("schema_version", 0) or 0) != ACTIVE_SCHEMA_VERSION
+    ):
         return None
-    _, path, manifest = max(candidates, key=lambda item: item[0])
     return path, manifest
 
 
@@ -486,122 +442,142 @@ def _artifact_path(base: Path, artifact: str) -> Path | None:
     return path
 
 
+def _manifest_entry(manifest: dict, group: str) -> dict | None:
+    """Return a strict v4 market entry, never consulting global fields."""
+    if int(manifest.get("schema_version", 0) or 0) != ACTIVE_SCHEMA_VERSION:
+        return None
+    entries = manifest.get("groups")
+    if not isinstance(entries, dict):
+        return None
+    entry = entries.get(group)
+    if not isinstance(entry, dict):
+        return None
+    required = (
+        "run_id",
+        "artifact",
+        "strategy",
+        "solver_id",
+        "gate_profile",
+        "config_hash",
+    )
+    if any(not str(entry.get(key, "")).strip() for key in required):
+        return None
+    if str(entry.get("group", group)) != group:
+        return None
+    if Path(str(entry["run_id"])).name != str(entry["run_id"]):
+        return None
+    artifact = Path(str(entry["artifact"]))
+    expected_prefix = Path(RUNS_DIRNAME) / str(entry["run_id"])
+    if len(artifact.parts) < 3 or Path(*artifact.parts[:2]) != expected_prefix:
+        return None
+    strategy = str(entry["strategy"])
+    if get_strategy(strategy) is None or strategy == "mixed":
+        return None
+    return entry
+
+
+def _artifact_matches_entry(data: dict, entry: dict, group: str) -> bool:
+    """Require the immutable artifact to repeat the active market contract."""
+    if not isinstance(data, dict) or int(data.get("schema_version", 0) or 0) != 2:
+        return False
+    if str(data.get("group", "")) != group:
+        return False
+    if str(data.get("strategy_id", "")) != str(entry.get("strategy", "")):
+        return False
+    if str(data.get("solver_id", "")) != str(entry.get("solver_id", "")):
+        return False
+    if str(data.get("gate_profile", "")) != str(entry.get("gate_profile", "")):
+        return False
+    if not isinstance(data.get("execution"), dict):
+        return False
+    return str(data.get("market_config_hash", "")) == str(
+        entry.get("config_hash", "")
+    )
+
+
 def load_latest_strategy_run(
-    groups: tuple[str, ...] = ("a_share", "hk", "us"),
+    groups: tuple[str, ...] = MARKET_GROUPS,
     root: Path | str | None = None,
     *,
     _manifest_run_id: str | None = None,
 ) -> ActiveStrategyRun | None:
-    """Load the newest complete optimizer run, falling back to legacy files.
+    """Load explicitly activated v4 market entries only.
 
-    Versioned manifests are preferred and sorted by their persisted timestamp,
-    rather than trusting a configuration value or file-system modification
-    times.  The fallback keeps existing installations functional until their
-    next complete optimization run publishes a manifest.
+    A requested market missing from the active pointer is an unconfigured
+    market, not permission to use another market or an old artifact.
     """
     base = _root(root)
     found = _load_active_manifest(base, _manifest_run_id)
-    if found:
-        _manifest_path, manifest = found
-        strategy_name = str(manifest.get("strategy", ""))
-        if get_strategy(strategy_name) is None:
-            logger.warning(
-                "Newest optimizer run uses unregistered strategy %s", strategy_name)
-            return None
-        params_by_group: dict[str, Params] = {}
-        validation_by_group: dict[str, dict[str, str]] = {}
-        selection_by_group: dict[str, dict[str, object]] = {}
-        entries = manifest.get("groups", {})
-        if not isinstance(entries, dict):
-            return None
-        for group in groups:
-            entry = entries.get(group, {})
-            if not isinstance(entry, dict):
-                return None
-            artifact = entry.get("artifact")
-            if not artifact:
-                return None
-            # Artifacts are always relative to the optimizer root, so the
-            # global latest pointer and its run-local manifest resolve to the
-            # same immutable file.
-            path = _artifact_path(base, str(artifact))
-            if path is None:
-                return None
-            data = _load_yaml(path)
-            params = _parse_params(data or {}, strategy_name)
-            if params is None:
-                logger.warning("Newest optimizer run has invalid %s artifact", group)
-                return None
-            params_by_group[group] = params
-            period = (data or {}).get("validation_period", {})
-            if isinstance(period, dict):
-                validation_by_group[group] = {
-                    key: str(value)
-                    for key, value in period.items()
-                    if key in {"start", "end"} and value
-                }
-            selection_by_group[group] = _selection_diagnostics(data or {})
-        return ActiveStrategyRun(
-            strategy_name=strategy_name,
-            timestamp=str(manifest["timestamp"]),
-            params_by_group=params_by_group,
-            run_id=str(manifest.get("run_id", "")),
-            validation_by_group=validation_by_group,
-            selection_by_group=selection_by_group,
-        )
-
-    if _manifest_run_id is not None:
+    if not found:
         return None
-
-    # Compatibility for artifacts written before run manifests existed.  Pick
-    # the newest timestamp, then only accept a coherent strategy across every
-    # requested market.
-    legacy: list[tuple[str, str, dict]] = []
-    for group in groups:
-        data = _load_yaml(base / f"{group}_best_params.yaml")
-        strategy_id = (data or {}).get("strategy_id") or (data or {}).get("engine")
-        if data and data.get("timestamp") and strategy_id:
-            legacy.append((str(data["timestamp"]), str(strategy_id), data))
-    if not legacy:
+    _manifest_path, manifest = found
+    if int(manifest.get("schema_version", 0) or 0) != ACTIVE_SCHEMA_VERSION:
+        logger.warning("Ignoring unsupported optimizer manifest schema")
         return None
-    _, strategy_name, _ = max(legacy, key=lambda item: item[0])
-    if get_strategy(strategy_name) is None:
+    requested = tuple(dict.fromkeys(groups))
+    if not requested or any(group not in MARKET_GROUPS for group in requested):
         return None
-    params_by_group = {}
+    strategy_by_group: dict[str, str] = {}
+    solver_by_group: dict[str, str] = {}
+    config_hash_by_group: dict[str, str] = {}
+    run_ids_by_group: dict[str, str] = {}
+    params_by_group: dict[str, Params] = {}
     validation_by_group: dict[str, dict[str, str]] = {}
     selection_by_group: dict[str, dict[str, object]] = {}
-    for group in groups:
-        data = _load_yaml(base / f"{group}_best_params.yaml") or {}
-        params = _parse_params(data, strategy_name)
+    for group in requested:
+        entry = _manifest_entry(manifest, group)
+        if entry is None:
+            logger.info("No active optimizer artifact for market %s", group)
+            return None
+        path = _artifact_path(base, str(entry["artifact"]))
+        if path is None:
+            return None
+        data = _load_yaml(path)
+        if not _artifact_matches_entry(data or {}, entry, group):
+            logger.warning(
+                "Ignoring artifact whose market contract does not match %s",
+                group,
+            )
+            return None
+        params = _parse_params(data or {}, str(entry["strategy"]))
         if params is None:
             return None
+        strategy_by_group[group] = str(entry["strategy"])
+        solver_by_group[group] = str(entry["solver_id"])
+        config_hash_by_group[group] = str(entry["config_hash"])
+        run_ids_by_group[group] = str(entry["run_id"])
         params_by_group[group] = params
-        period = data.get("validation_period", {})
+        period = (data or {}).get("validation_period", {})
         if isinstance(period, dict):
             validation_by_group[group] = {
                 key: str(value)
                 for key, value in period.items()
                 if key in {"start", "end"} and value
             }
-        selection_by_group[group] = _selection_diagnostics(data)
-    timestamp = max(item[0] for item in legacy)
+        selection_by_group[group] = _selection_diagnostics(data or {})
+    unique_strategies = set(strategy_by_group.values())
+    strategy_name = next(iter(unique_strategies)) if len(unique_strategies) == 1 else ""
+    unique_run_ids = set(run_ids_by_group.values())
+    run_id = next(iter(unique_run_ids)) if len(unique_run_ids) == 1 else ""
     return ActiveStrategyRun(
-        strategy_name,
-        timestamp,
-        params_by_group,
-        "legacy",
-        validation_by_group,
-        selection_by_group,
+        strategy_name=strategy_name,
+        timestamp=str(manifest.get("timestamp", "")),
+        params_by_group=params_by_group,
+        run_id=run_id,
+        validation_by_group=validation_by_group,
+        selection_by_group=selection_by_group,
+        strategy_by_group=strategy_by_group,
+        solver_by_group=solver_by_group,
+        config_hash_by_group=config_hash_by_group,
+        run_ids_by_group=run_ids_by_group,
     )
-
-
 def load_strategy_run(
     run_id: str,
-    groups: tuple[str, ...] = ("a_share", "hk", "us"),
+    groups: tuple[str, ...] = MARKET_GROUPS,
     root: Path | str | None = None,
 ) -> ActiveStrategyRun | None:
-    """Load one exact activated run without substituting newer or legacy data."""
-    if not run_id or Path(run_id).name != run_id or run_id == "legacy":
+    """Load one exact activated market run without substituting data."""
+    if not run_id or Path(run_id).name != run_id:
         return None
     return load_latest_strategy_run(
         groups,
@@ -615,114 +591,104 @@ def publish_complete_run(
     strategy_name: str,
     timestamp: str,
     groups: dict[str, OptimizerGroupSummary],
-    required_groups: tuple[str, ...] = ("a_share", "hk", "us"),
-    all_groups: tuple[str, ...] = ("a_share", "hk", "us"),
+    required_groups: tuple[str, ...] = ("a_share",),
+    all_groups: tuple[str, ...] = MARKET_GROUPS,
     root: Path | str | None = None,
     activate: bool = True,
+    strategy_by_group: dict[str, str] | None = None,
 ) -> bool:
-    """Persist a complete run and optionally make it active atomically.
-
-    A default A-share-only optimization must not make the active resolver lose
-    the most recently validated HK/US parameters.  Partial publication is
-    therefore allowed only when a compatible active manifest supplies every
-    untouched market artifact.
-    """
+    """Persist exactly one market candidate and optionally activate it."""
+    required_groups = tuple(dict.fromkeys(required_groups))
+    if len(required_groups) != 1 or required_groups[0] not in MARKET_GROUPS:
+        logger.warning("Every optimizer run must contain exactly one market")
+        return False
+    group = required_groups[0]
     base = _root(root)
     run_dir = base / RUNS_DIRNAME / run_id
-    entries: dict[str, dict[str, str]] = {}
-    artifacts_eligible = True
-    activation_refused = False
-    for group in required_groups:
-        summary = groups.get(group)
-        if summary is None or summary.status != "completed" or not summary.artifact:
-            return False
-        artifact_path = run_dir / summary.artifact
-        data = _load_yaml(artifact_path)
-        if _parse_params(data or {}, strategy_name) is None:
-            return False
-        activation = (data or {}).get("activation", {})
-        if isinstance(activation, dict) and "eligible" in activation:
-            artifacts_eligible &= bool(activation.get("eligible"))
-        entries[group] = {
-            "artifact": (Path(RUNS_DIRNAME) / run_id / summary.artifact).as_posix()
-        }
-
-    if set(required_groups) != set(all_groups):
-        found = _load_active_manifest(base)
-        if found is None:
-            logger.warning("Cannot partially publish without an active full strategy")
-            return False
-        _, previous = found
-        if str(previous.get("strategy", "")) != strategy_name:
-            logger.warning("Cannot merge partial run across strategy engines")
-            return False
-        previous_entries = previous.get("groups", {})
-        if not isinstance(previous_entries, dict):
-            return False
-        for group in all_groups:
-            if group in entries:
-                continue
-            previous_entry = previous_entries.get(group)
-            if not isinstance(previous_entry, dict):
-                return False
-            artifact = previous_entry.get("artifact")
-            if not artifact:
-                return False
-            artifact_path = _artifact_path(base, str(artifact))
-            if artifact_path is None:
-                return False
-            data = _load_yaml(artifact_path)
-            if _parse_params(data or {}, strategy_name) is None:
-                return False
-            entries[group] = {"artifact": str(artifact)}
-
-    if activate and not artifacts_eligible:
-        logger.warning(
-            "Run %s is complete but failed activation gates; preserving it as "
-            "an inactive candidate",
-            run_id,
-        )
-        activate = False
-        activation_refused = True
-    manifest = {
-        "schema_version": 2,
+    summary = groups.get(group)
+    if summary is None or summary.status != "completed" or not summary.artifact:
+        return False
+    group_strategy = (strategy_by_group or {}).get(group) or summary.strategy_name
+    if not group_strategy or group_strategy == "mixed" or get_strategy(group_strategy) is None:
+        return False
+    artifact_path = run_dir / summary.artifact
+    data = _load_yaml(artifact_path)
+    if _parse_params(data or {}, group_strategy) is None:
+        return False
+    search = (data or {}).get("search", {})
+    if not isinstance(search, dict):
+        search = {}
+    solver_id = str(
+        summary.solver_id or search.get("solver_id") or (data or {}).get("solver_id", "")
+    ).strip()
+    config_hash = str(
+        summary.market_config_hash
+        or (data or {}).get("market_config_hash", "")
+        or ((data or {}).get("contracts", {}) or {}).get("market_config_hash", "")
+    ).strip()
+    if not solver_id or not config_hash:
+        logger.warning("%s candidate has no complete market contract", group)
+        return False
+    gate_profile = str(
+        summary.gate_profile or search.get("gate_profile", "")
+    ).strip()
+    if not gate_profile:
+        logger.warning("%s candidate has no Gate Profile", group)
+        return False
+    if not _artifact_matches_entry(
+        data or {},
+        {
+            "strategy": group_strategy,
+            "solver_id": solver_id,
+            "gate_profile": gate_profile,
+            "config_hash": config_hash,
+        },
+        group,
+    ):
+        logger.warning("%s candidate artifact metadata is incomplete", group)
+        return False
+    entry = {
+        "group": group,
         "run_id": run_id,
-        "strategy": strategy_name,
-        "timestamp": timestamp,
-        "activated": bool(activate),
-        "candidate": not bool(activate),
-        "activation_eligible": bool(artifacts_eligible),
-        "groups": entries,
+        "artifact": (Path(RUNS_DIRNAME) / run_id / summary.artifact).as_posix(),
+        "strategy": group_strategy,
+        "solver_id": solver_id,
+        "gate_profile": gate_profile,
+        "config_hash": config_hash,
     }
-    if activate:
-        manifest["activated_at"] = datetime.now().isoformat()
+    manifest = {
+        "schema_version": ACTIVE_SCHEMA_VERSION,
+        "run_id": run_id,
+        "market_group": group,
+        "timestamp": timestamp,
+        "activated": False,
+        "candidate": True,
+        "groups": {group: entry},
+    }
     run_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = run_dir / "manifest.yaml"
-    manifest_path.write_text(yaml.safe_dump(
-        manifest, allow_unicode=True), encoding="utf-8")
-
-    if not activate:
-        return not activation_refused
-
-    # ``replace`` makes the global pointer atomic on the same filesystem.
-    base.mkdir(parents=True, exist_ok=True)
-    tmp_path = base / f".{LATEST_MANIFEST}.tmp"
-    tmp_path.write_text(yaml.safe_dump(manifest, allow_unicode=True), encoding="utf-8")
-    tmp_path.replace(base / LATEST_MANIFEST)
-
-    # Keep the historical filenames for external scripts; alerts never read
-    # them once a manifest is available.
-    for group, entry in entries.items():
-        shutil.copy2(base / entry["artifact"], base / f"{group}_best_params.yaml")
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    if activate:
+        return activate_run(run_id, group=group, root=base)
     return True
 
 
 def activate_run(
     run_id: str,
-    groups: tuple[str, ...] = ("a_share", "hk", "us"),
+    group: str | None = None,
     root: Path | str | None = None,
+    *,
+    groups: tuple[str, ...] | None = None,
 ) -> bool:
-    """Atomically activate one complete, registered, holdout-passed candidate."""
+    """Atomically activate one holdout-passed market candidate."""
+    if group is None and groups is not None and len(groups) == 1:
+        group = groups[0]
+    if group not in MARKET_GROUPS:
+        logger.warning("Activation requires exactly one market group")
+        return False
     base = _root(root)
     if not run_id or Path(run_id).name != run_id:
         logger.warning("Invalid optimizer run id: %s", run_id)
@@ -733,72 +699,101 @@ def activate_run(
     if not manifest:
         logger.warning("Optimizer candidate does not exist: %s", run_id)
         return False
-    strategy_name = str(manifest.get("strategy", ""))
-    if get_strategy(strategy_name) is None:
-        logger.warning("Candidate uses unregistered strategy %s", strategy_name)
+    if int(manifest.get("schema_version", 0) or 0) != ACTIVE_SCHEMA_VERSION:
+        logger.warning("Candidate %s uses an unsupported manifest schema", run_id)
         return False
-    if not manifest.get("activation_eligible"):
-        logger.warning("Candidate %s did not pass activation gates", run_id)
+    if str(manifest.get("market_group", "")) != group:
+        logger.warning("Candidate %s does not belong to %s", run_id, group)
         return False
-    entries = manifest.get("groups", {})
-    if not isinstance(entries, dict) or set(groups) - set(entries):
-        logger.warning("Candidate %s is not complete for %s", run_id, groups)
+    entry = (manifest.get("groups", {}) or {}).get(group, {})
+    if not isinstance(entry, dict) or _manifest_entry(manifest, group) is None:
         return False
-    for group in groups:
-        entry = entries.get(group, {})
-        artifact = entry.get("artifact") if isinstance(entry, dict) else None
-        path = _artifact_path(base, str(artifact)) if artifact else None
-        data = _load_yaml(path) if path is not None else None
-        if _parse_params(data or {}, strategy_name) is None:
-            return False
-        activation = (data or {}).get("activation", {})
-        holdout = (data or {}).get("holdout_windows", [])
-        holdout_majority_excess = (
-            float(
-                holdout[0].get(
-                    "majority_benchmark_excess", holdout[0].get("excess_return", 0.0)
-                )
+    artifact = entry.get("artifact")
+    path = _artifact_path(base, str(artifact)) if artifact else None
+    data = _load_yaml(path) if path is not None else None
+    group_strategy = str(entry["strategy"])
+    if not _artifact_matches_entry(data or {}, entry, group):
+        logger.warning("%s candidate artifact does not match its market entry", group)
+        return False
+    if _parse_params(data or {}, group_strategy) is None:
+        return False
+    activation = (data or {}).get("activation", {})
+    holdout = (data or {}).get("holdout_windows", [])
+    holdout_excesses: list[float] = []
+    if isinstance(holdout, list):
+        for window in holdout:
+            if not isinstance(window, dict):
+                holdout_excesses = []
+                break
+            raw_excess = window.get(
+                "majority_benchmark_excess", window.get("excess_return")
             )
-            if isinstance(holdout, list) and len(holdout) == 1
-            else -float("inf")
+            try:
+                excess = float(raw_excess)
+            except (TypeError, ValueError):
+                holdout_excesses = []
+                break
+            if not math.isfinite(excess):
+                holdout_excesses = []
+                break
+            holdout_excesses.append(excess)
+    if (
+        not isinstance(activation, dict)
+        or not activation.get("eligible")
+        or not activation.get("holdout_passed")
+        or not holdout_excesses
+        or not all(excess > 0.0 for excess in holdout_excesses)
+    ):
+        logger.warning(
+            "%s candidate artifact failed holdout checks (%d windows)",
+            group,
+            len(holdout_excesses),
         )
-        if (
-            not isinstance(activation, dict)
-            or not activation.get("eligible")
-            or not activation.get("holdout_passed")
-            or not isinstance(holdout, list)
-            or len(holdout) != 1
-            or holdout_majority_excess <= 0.0
-        ):
-            logger.warning("%s candidate artifact failed holdout checks", group)
-            return False
+        return False
 
-    activated = dict(manifest)
-    activated["activated"] = True
-    activated["candidate"] = False
-    activated["activated_at"] = datetime.now().isoformat()
+    current = _load_active_manifest(base)
+    if current is not None:
+        _, current_manifest = current
+        if int(current_manifest.get("schema_version", 0) or 0) != ACTIVE_SCHEMA_VERSION:
+            logger.warning("Existing active manifest is not a v4 market index")
+            return False
+        current_entries = current_manifest.get("groups", {})
+        if not isinstance(current_entries, dict):
+            return False
+        activated_entries = {
+            key: dict(value)
+            for key, value in current_entries.items()
+            if isinstance(value, dict)
+        }
+    else:
+        activated_entries = {}
+    activated_entry = dict(entry)
+    activated_entry["activated_at"] = datetime.now().isoformat()
+    activated_entries[group] = activated_entry
+    activated = {
+        "schema_version": ACTIVE_SCHEMA_VERSION,
+        "timestamp": datetime.now().isoformat(),
+        "activated_at": datetime.now().isoformat(),
+        "activated": True,
+        "candidate": False,
+        "last_activated_group": group,
+        "last_activated_run_id": run_id,
+        "groups": activated_entries,
+    }
     base.mkdir(parents=True, exist_ok=True)
     tmp_path = base / f".{LATEST_MANIFEST}.tmp"
     tmp_path.write_text(
-        yaml.safe_dump(activated, allow_unicode=True), encoding="utf-8"
+        yaml.safe_dump(activated, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
     )
-    # The active pointer is the commit point.  Until this same-filesystem
-    # replace succeeds, every reader continues using the previous run.
     tmp_path.replace(base / LATEST_MANIFEST)
-    try:
-        manifest_path.write_text(
-            yaml.safe_dump(activated, allow_unicode=True), encoding="utf-8"
-        )
-        for group in groups:
-            artifact = activated["groups"][group]["artifact"]
-            shutil.copy2(base / artifact, base / f"{group}_best_params.yaml")
-    except OSError:
-        # The pointer replacement above is the authoritative atomic commit.
-        # Legacy file synchronization is best-effort and must not turn a
-        # completed activation into a misleading failure response.
-        logger.exception(
-            "Candidate %s activated, but legacy artifact sync failed", run_id
-        )
+    manifest["activated"] = True
+    manifest["candidate"] = False
+    manifest["activated_at"] = activated["activated_at"]
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
     return True
 
 
@@ -809,10 +804,10 @@ def persist_group_summary(
 ) -> None:
     """Store notification metadata beside an immutable parameter artifact.
 
-    The active-parameter resolver intentionally only consumes ``engine`` and
+    The active-parameter resolver consumes the immutable market contract and
     ``params``.  Search and validation metadata lives in the same versioned
     artifact so a later resend can reproduce the optimizer report without
-    guessing from the final GA population size.
+    guessing from the final Solver population size.
     """
     if not summary.artifact:
         return
@@ -843,6 +838,11 @@ def persist_group_summary(
     )
 
 
-def new_run_id(strategy_name: str, now: datetime | None = None) -> str:
+def new_run_id(
+    strategy_name: str,
+    now: datetime | None = None,
+    group: str | None = None,
+) -> str:
     now = now or datetime.now()
-    return f"{now.strftime('%Y%m%dT%H%M%S%f')}_{strategy_name}"
+    suffix = f"_{group}" if group else ""
+    return f"{now.strftime('%Y%m%dT%H%M%S%f')}_{strategy_name}{suffix}"

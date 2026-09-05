@@ -16,6 +16,7 @@ from .command_parser import (
     ListCommand,
     OptimizeCommand,
     RefDateCommand,
+    RefPositionCommand,
     RemoveCommand,
     SwitchOptimizerCommand,
     parse_command,
@@ -28,6 +29,7 @@ from .commands.handlers import (
     handle_list,
     handle_optimize,
     handle_ref_date,
+    handle_ref_position,
     handle_remove,
     handle_switch_optimizer,
 )
@@ -141,15 +143,19 @@ class TelegramBot:
             )
             response = handle_backtest(cmd.stock_code, cmd.start_date, cmd.end_date)
         elif isinstance(cmd, OptimizeCommand):
-            response = handle_optimize()
+            response = handle_optimize(cmd.group)
         elif isinstance(cmd, DailyReportFrequencyCommand):
             response = handle_daily_report_frequency(cmd.frequency)
         elif isinstance(cmd, SwitchOptimizerCommand):
-            response = handle_switch_optimizer(cmd.kind)
+            response = handle_switch_optimizer(cmd.kind, cmd.group)
         elif isinstance(cmd, ErrorCommand):
             response = f"❌ {cmd.message}"
         elif isinstance(cmd, RefDateCommand):
             response = handle_ref_date(cmd.date_str)
+        elif isinstance(cmd, RefPositionCommand):
+            response = handle_ref_position(
+                cmd.action, cmd.group, cmd.code, cmd.shares, cmd.price
+            )
         else:
             response = "❌ 未知错误"
 

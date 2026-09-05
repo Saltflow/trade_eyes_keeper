@@ -11,6 +11,7 @@ from src.interactive.command_parser import (
     HelpCommand,
     ListCommand,
     OptimizeCommand,
+    RefPositionCommand,
     RemoveCommand,
     SaveCommand,
     parse_command,
@@ -186,8 +187,13 @@ class TestCommandParser:
 
     def test_parse_optimize_default(self):
         cmd = parse_command("/optimize")
+        assert isinstance(cmd, ErrorCommand)
+        assert "必须指定市场" in cmd.message
+
+    def test_parse_optimize_market(self):
+        cmd = parse_command("/optimize a_share")
         assert isinstance(cmd, OptimizeCommand)
-        assert cmd.cmd_type == CommandType.OPTIMIZE
+        assert cmd.group == "a_share"
 
     def test_parse_optimize_rejects_legacy_version_argument(self):
         cmd = parse_command("/optimize v1")
@@ -199,6 +205,17 @@ class TestCommandParser:
 
     def test_parse_optimize_deep(self):
         cmd = parse_command("/optimize deep")
+        assert isinstance(cmd, ErrorCommand)
+
+    def test_parse_ref_position(self):
+        cmd = parse_command("/ref_position set a_share 510300 10000 3.85")
+        assert isinstance(cmd, RefPositionCommand)
+        assert (cmd.action, cmd.group, cmd.code) == ("set", "a_share", "510300")
+        assert cmd.shares == 10000
+        assert cmd.price == 3.85
+
+    def test_parse_ref_position_rejects_bad_shape(self):
+        cmd = parse_command("/ref_position buy a_share 510300 100")
         assert isinstance(cmd, ErrorCommand)
 
     def test_parse_daily(self):

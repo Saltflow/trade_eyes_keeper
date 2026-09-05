@@ -12,7 +12,7 @@ A股 / 美股 / 港股量化监控系统。策略搜索优化器自动发现最�
 
 | 功能 | 说明 |
 |------|------|
-| **策略搜索优化器** | 注册策略统一执行 14 窗 Walk-Forward，11 窗排名、2 窗隔离、1 窗留出 |
+| **策略搜索优化器** | 按市场独立执行 22 窗 Walk-Forward，16 窗排名、2 窗隔离、4 窗留出 |
 | **信号扫描器** | 加载单一活动策略参数，直接读取统一 TradePlan 最后有效日事件 |
 | **回测分析** | 统一 Backtester、成交价策略与无风险/510300/同池等权三重基准比较 |
 | **标的画像审计** | 公司财务推导、利润增长、ETF 前十大穿透及 REIT/商品/债券类型化画像 |
@@ -26,14 +26,14 @@ A股 / 美股 / 港股量化监控系统。策略搜索优化器自动发现最�
 
 ## 运行与发布边界
 
-部署环境从外部活动指针加载一个已验证策略和三市场参数；public README 只记录
+部署环境从外部活动指针按市场加载已验证策略和参数；public README 只记录
 公开的运行合同，不记录生产运行号、当前活动策略、服务器地址或收件人。
 所有通知、今日扫描和参考持仓都从同一个活动指针读取，不在通知层重新计算收益或胜率。
 
 晋升比较使用统一的无风险、配置基准和同池等权基准；框架允许额外的
 `universe_equal_weight` 基准，因此门槛配置的是“至少 3 个基准”，而不是“只能有 3 个”。
-候选仍需通过完整性、留出和安全门槛后才可自动激活；人工切换使用
-`python main.py --activate-run RUN_ID`。
+候选仍需通过完整性、留出和安全门槛后才可激活；每个市场独立比较和切换，使用
+`python main.py --activate-run RUN_ID --group MARKET`。
 
 ## 日报预览
 
@@ -54,7 +54,7 @@ cp config/.env.example config/.env   # 填入邮箱和 API Key (DeepSeek)
 python main.py --once                # 单次收盘日报
 python main.py --brief               # 单次早盘简报
 python main.py --optimize            # 对配置活动策略执行统一搜参
-python main.py --activate-run RUN_ID # 人工激活完整且留出通过的候选
+python main.py --activate-run RUN_ID --group MARKET # 按市场人工激活留出通过的候选
 python main.py --audit-instruments   # 全量标的画像 JSON + HTML 审计
 python scripts/benchmark_technical_strategies.py --solver random --depth 1000 --market-workers 12 --evaluation-workers 1  # 五策略统一基准
 python scripts/benchmark_search_throughput.py --candidates 1000  # 标量/批量吞吐验收
@@ -97,8 +97,8 @@ src/
 | `python main.py` | 启动定时调度器 (cron) |
 | `python main.py --once` | 单次收盘日报 |
 | `python main.py --brief [id]` | 早盘/收盘简报 (`morning_snapshot` / `afternoon_snapshot`) |
-| `python main.py --optimize` | 对配置活动策略执行三市场统一 Walk-Forward 搜参 |
-| `python main.py --activate-run RUN_ID` | 原子激活三市场完整、留出与稳健性均通过的候选 |
+| `python main.py --optimize` | 按市场独立执行 Walk-Forward 搜参 |
+| `python main.py --activate-run RUN_ID --group MARKET` | 原子激活指定市场中留出与稳健性均通过的候选 |
 | `python main.py --audit-instruments` | 对全量配置标的生成类型化 JSON 与详细 HTML 审计 |
 | `python scripts/benchmark_technical_strategies.py --solver random --depth 1000 --market-workers 12 --evaluation-workers 1` | 冻结各市场行情快照，并行比较五个注册技术策略；可切换 GA/随机/退火，只写诊断产物 |
 | `python scripts/benchmark_search_throughput.py --candidates 1000` | 用完整 A 股冻结输入比较同一候选的标量与 CPU 批量评价吞吐、RSS 和一致性 |

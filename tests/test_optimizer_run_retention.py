@@ -22,17 +22,39 @@ def _write_run(
     artifact_dir = root / "runs" / artifact_owner
     artifact_dir.mkdir(parents=True, exist_ok=True)
     artifact = artifact_dir / "a_share_best_params.yaml"
+    config_hash = f"hash-{artifact_owner}"
     artifact.write_text(
-        "strategy_id: technical_ensemble\nparams: {}\n", encoding="utf-8"
+        yaml.safe_dump(
+            {
+                "schema_version": 2,
+                "group": "a_share",
+                "strategy_id": "technical_ensemble",
+                "solver_id": "local_genetic",
+                "gate_profile": "standard",
+                "market_config_hash": config_hash,
+                "params": {},
+                "execution": {"model": "cash_cap"},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
     )
     manifest = {
+        "schema_version": 4,
         "run_id": run_id,
-        "strategy": "technical_ensemble",
+        "market_group": "a_share",
         "timestamp": timestamp,
         "activated": activated,
+        "candidate": not activated,
         "groups": {
             "a_share": {
+                "group": "a_share",
+                "run_id": artifact_owner,
                 "artifact": f"runs/{artifact_owner}/{artifact.name}",
+                "strategy": "technical_ensemble",
+                "solver_id": "local_genetic",
+                "gate_profile": "standard",
+                "config_hash": config_hash,
             }
         },
     }
