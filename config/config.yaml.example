@@ -130,6 +130,31 @@ optimizer:
   drawdown_limit: -30
   output_dir: ./data/optimizer
 
+  # Every market must declare its complete optimizer contract explicitly.
+  # Legacy global engine/strategy_by_group fallbacks are not supported.
+  markets:
+    a_share:
+      strategy: technical_ensemble
+      solver_id: local_genetic
+      gate_profile: standard
+      walk_forward_profile: a_share_84m
+      execution_profile: a_share_cny
+      benchmark_profile: a_share
+    hk:
+      strategy: regime_pullback
+      solver_id: simulated_annealing
+      gate_profile: standard
+      walk_forward_profile: hk_84m
+      execution_profile: hk_hkd
+      benchmark_profile: hk
+    us:
+      strategy: percentile
+      solver_id: random
+      gate_profile: exploratory
+      walk_forward_profile: us_84m
+      execution_profile: us_usd
+      benchmark_profile: us
+
   # Optional manual candidate only.  Every selected market requires its own
   # dated statements, raw-price benchmark, risk-free curve and passed frozen
   # broad-universe policy.  Missing evidence closes that market rather than

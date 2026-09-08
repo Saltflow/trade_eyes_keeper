@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import os
 import argparse
+import os
 import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-
 
 OPTIMIZER_GROUPS = ("a_share", "hk", "us")
 CHILD_MARKER = "OPTIMIZER_GUARD_CHILD"
@@ -34,9 +33,7 @@ def _discover_run(
     if created:
         return max(created, key=lambda item: item.stat().st_mtime)
     recent = [
-        item
-        for item in directories
-        if item.stat().st_mtime >= started_epoch - 1.0
+        item for item in directories if item.stat().st_mtime >= started_epoch - 1.0
     ]
     return max(recent, key=lambda item: item.stat().st_mtime) if recent else None
 
@@ -57,11 +54,7 @@ def _discover_runs(
     ]
     result: dict[str, Path] = {}
     for group in OPTIMIZER_GROUPS:
-        matching = [
-            item
-            for item in candidates
-            if item.name.endswith(f"_{group}")
-        ]
+        matching = [item for item in candidates if item.name.endswith(f"_{group}")]
         if matching:
             result[group] = max(matching, key=lambda item: item.stat().st_mtime)
     return result
@@ -91,9 +84,9 @@ def _group_summary(application, run_dir: Path | None, group: str):
     artifact = run_dir / f"{group}_best_params.yaml"
     if artifact.exists():
         try:
-            payload = application.yaml.safe_load(
-                artifact.read_text(encoding="utf-8")
-            ) or {}
+            payload = (
+                application.yaml.safe_load(artifact.read_text(encoding="utf-8")) or {}
+            )
             search = payload.get("search", {}) or {}
             sensitivity = payload.get("sensitivity", {}) or {}
             activation = payload.get("activation", {}) or {}
@@ -106,18 +99,14 @@ def _group_summary(application, run_dir: Path | None, group: str):
                 wf_score=float(payload.get("wf_score", 0.0) or 0.0),
                 params=dict(payload.get("params", {}) or {}),
                 execution=dict(payload.get("execution", {}) or {}),
-                ranking_window_count=int(
-                    search.get("ranking_window_count", 0) or 0
-                ),
+                ranking_window_count=int(search.get("ranking_window_count", 0) or 0),
                 validation_window_count=int(
                     search.get("validation_window_count", 0) or 0
                 ),
                 purged_window_count=int(
                     search.get("purged_overlap_window_count", 0) or 0
                 ),
-                ranking_diagnostics=dict(
-                    search.get("ranking_diagnostics", {}) or {}
-                ),
+                ranking_diagnostics=dict(search.get("ranking_diagnostics", {}) or {}),
                 sensitivity=dict(sensitivity),
                 activation=dict(activation),
                 status="completed",
@@ -126,12 +115,14 @@ def _group_summary(application, run_dir: Path | None, group: str):
         except Exception as exc:
             # Best-effort parse of a partial artifact; fall back to the
             # search archive line count below.
-            print(f"optimizer guard: could not parse {artifact}: {exc}", file=sys.stderr)
+            print(
+                f"optimizer guard: could not parse {artifact}: {exc}", file=sys.stderr
+            )
     evaluated = _line_count(run_dir / f"{group}_search_archive.jsonl")
     return summary_type(
         group=group,
         evaluated_count=evaluated,
-        status="interrupted" if evaluated else "not_run",
+        status="interrupted" if evaluated else "failed",
     )
 
 
@@ -140,10 +131,14 @@ def _write_failure_state(
     run_dir: Path | None,
     report,
     returncode: int,
+    *,
+    groups: tuple[str, ...],
 ) -> None:
     if run_dir is None:
         return
     payload = {
+        "schema_version": 1,
+        "run_id": run_dir.name,
         "status": report.status,
         "failure_reason": report.failure_reason,
         "returncode": int(returncode),
@@ -156,6 +151,7 @@ def _write_failure_state(
                 "artifact": summary.artifact,
             }
             for group, summary in report.groups.items()
+            if group in groups
         },
     }
     path = run_dir / "optimizer_failure.yaml"
@@ -172,27 +168,44 @@ def _notify_failure(
     started_epoch: float,
     elapsed_seconds: float,
     returncode: int,
+    *,
+    target_groups: tuple[str, ...] = OPTIMIZER_GROUPS,
 ) -> None:
     sys.path.insert(0, str(repository))
     import main as application
 
-    config = application.load_config()
     runs_root = repository / "data" / "optimizer" / "runs"
     run_dirs = _discover_runs(runs_root, previous_runs, started_epoch)
+    config = {}
+    configuration_error = ""
     try:
-        market_configs = application.get_market_optimizer_configs(config)
-    except Exception as exc:
+        config = application.load_config()
+        market_configs = application.get_market_optimizer_configs(
+            config, groups=target_groups
+        )
+    except (Exception, SystemExit) as exc:
+        # The application's config loader exits on unreadable/malformed YAML.
+        # The parent must still persist a diagnostic when that happens.
+        detail = (
+            f"unable to load config/config.yaml (loader exited with code {exc.code})"
+            if isinstance(exc, SystemExit)
+            else str(exc)
+        )
+        configuration_error = f"invalid market configuration: {detail}"
         print(
-            f"optimizer guard: invalid market configuration: {exc}",
+            f"optimizer guard: {configuration_error}",
             file=sys.stderr,
         )
         market_configs = {}
     summaries = {}
     strategy_by_group = {}
     run_ids_by_group = {}
-    for group in OPTIMIZER_GROUPS:
+    for group in target_groups:
         run_dir = run_dirs.get(group)
         summary = _group_summary(application, run_dir, group)
+        if configuration_error and run_dir is None:
+            summary.status = "failed"
+            summary.ranking_diagnostics = {"configuration_error": configuration_error}
         market_config = market_configs.get(group)
         if market_config is not None:
             strategy = market_config.strategy
@@ -219,12 +232,30 @@ def _notify_failure(
         run_id="",
         candidate=False,
         status="failed",
-        failure_reason=_failure_reason(returncode),
+        failure_reason="; ".join(
+            reason
+            for reason in (_failure_reason(returncode), configuration_error)
+            if reason
+        ),
         strategy_by_group=strategy_by_group,
         run_ids_by_group=run_ids_by_group,
     )
-    for run_dir in run_dirs.values():
-        _write_failure_state(application, run_dir, report, returncode)
+    for group in target_groups:
+        failure_dir = run_dirs.get(group)
+        if failure_dir is None:
+            # Startup failures have no run. Keep a per-market diagnostic receipt
+            # outside runs/ rather than inventing a candidate or mixed manifest.
+            failure_dir = (
+                repository
+                / "data"
+                / "optimizer"
+                / "failures"
+                / f"{started_at.strftime('%Y%m%dT%H%M%S%f')}_{group}"
+            )
+            failure_dir.mkdir(parents=True, exist_ok=True)
+        _write_failure_state(
+            application, failure_dir, report, returncode, groups=(group,)
+        )
     application._notify_optimizer_run(config, report)
     if market_configs:
         keep_completed = max(
@@ -255,7 +286,7 @@ def main(argv: list[str] | None = None) -> int:
         if runs_root.exists()
         else set()
     )
-    started_at = datetime.now()
+    started_at = datetime.now().astimezone()
     started_epoch = time.time()
     started = time.monotonic()
     environment = dict(os.environ)
@@ -279,6 +310,7 @@ def main(argv: list[str] | None = None) -> int:
             started_epoch,
             time.monotonic() - started,
             completed.returncode,
+            target_groups=(args.group,) if args.group else OPTIMIZER_GROUPS,
         )
     except Exception as exc:
         print(f"optimizer guard could not send failure summary: {exc}", file=sys.stderr)

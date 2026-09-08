@@ -56,6 +56,7 @@ from src.search.artifacts import (
     publish_complete_run,
 )
 from src.search.contracts import stable_hash
+from src.search.run_diagnostics import persist_run_summary, summarize_ranking_archive
 from src.search.promotion import (
     PromotionDecision,
     PromotionPolicy,
@@ -576,6 +577,7 @@ def _run_optimization_group(
     }
 
     def emit_report(report: OptimizerRunSummary) -> None:
+        persist_run_summary(report, run_dir)
         if report_sink is not None:
             report_sink.append(report)
         else:
@@ -584,6 +586,7 @@ def _run_optimization_group(
     configured_stocks = config.get("stocks", []) or []
     if not configured_stocks:
         logger.error("No stocks are configured for optimization")
+        summaries[group].status = "no_symbols"
         emit_report(
             OptimizerRunSummary(
                 run_strategy_name,
@@ -651,6 +654,7 @@ def _run_optimization_group(
                 config, codes, lookback_days
             )
             if errors:
+                summaries[group].ranking_diagnostics["data_exclusions"] = list(errors)
                 logger.warning(
                     "%s optimizer excludes these symbols from search only: %s",
                     group,
@@ -772,9 +776,12 @@ def _run_optimization_group(
                 market_bundles=market_bundles,
                 context_enricher=context_enricher,
             )
-        except Exception:
+        except Exception as exc:
             logger.exception("%s optimization failed", group)
             summaries[group].status = "failed"
+            summaries[group].ranking_diagnostics["error"] = (
+                f"{type(exc).__name__}: {exc}"
+            )
             continue
 
         completed[group] = len(results)
@@ -798,9 +805,10 @@ def _run_optimization_group(
                 purged_window_count=int(
                     getattr(results[0], "purged_window_count", 0)
                 ),
-                ranking_diagnostics=dict(
-                    getattr(results[0], "ranking_metrics", {}) or {}
-                ),
+                ranking_diagnostics={
+                    **summaries[group].ranking_diagnostics,
+                    **dict(getattr(results[0], "ranking_metrics", {}) or {}),
+                },
                 sensitivity=dict(getattr(results[0], "sensitivity", {}) or {}),
                 status="completed",
                 artifact=f"{group}_best_params.yaml",
@@ -907,6 +915,18 @@ def _run_optimization_group(
         else:
             logger.warning("%s optimization completed without valid candidates", group)
             summaries[group].status = "no_candidates"
+            diagnostics_path = run_dir / f"{group}_search_diagnostics.yaml"
+            diagnostics = (
+                yaml.safe_load(diagnostics_path.read_text(encoding="utf-8"))
+                if diagnostics_path.is_file()
+                else summarize_ranking_archive(
+                    run_dir / f"{group}_search_archive.jsonl", group
+                )
+            )
+            summaries[group].evaluated_count = int(
+                diagnostics.get("evaluated_count", 0)
+            )
+            summaries[group].ranking_diagnostics.update(diagnostics)
 
     publication_groups = required_groups
     promotion_decision = PromotionDecision(False, ("incumbent_unavailable",))
@@ -962,10 +982,11 @@ def _run_optimization_group(
     elif published:
         logger.info(
             "Saved candidate optimizer run %s (%s); activate explicitly with "
-            "python main.py --activate-run %s",
+            "python main.py --activate-run %s --group %s",
             run_id,
             run_strategy_name,
             run_id,
+            group,
         )
     else:
         logger.warning(
@@ -990,7 +1011,10 @@ def _run_optimization_group(
             candidate=bool(published and not activated),
             status="failed" if failed_groups else "completed",
             failure_reason=(
-                "市场搜参失败: " + ", ".join(failed_groups)
+                "市场搜参失败: " + "; ".join(
+                    f"{market}: {summaries[market].ranking_diagnostics.get('error', 'unknown')}"
+                    for market in failed_groups
+                )
                 if failed_groups
                 else ""
             ),

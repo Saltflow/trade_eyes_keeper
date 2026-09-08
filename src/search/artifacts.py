@@ -141,6 +141,7 @@ class RunRetentionResult:
     removed: tuple[str, ...] = ()
     failed: tuple[str, ...] = ()
     reclaimed_bytes: int = 0
+    kept_diagnostics: tuple[str, ...] = ()
 
 
 def _root(root: Path | str | None = None) -> Path:
@@ -180,10 +181,13 @@ def _complete_run_manifest(base: Path, run_dir: Path) -> dict | None:
     manifest = _load_yaml(manifest_path)
     if not manifest or str(manifest.get("run_id", "")) != run_dir.name:
         return None
-    if int(manifest.get("schema_version", 0) or 0) != ACTIVE_SCHEMA_VERSION:
+    if manifest.get("schema_version") != ACTIVE_SCHEMA_VERSION:
         return None
     groups = manifest.get("groups")
-    if not isinstance(groups, dict) or not groups:
+    if not isinstance(groups, dict) or len(groups) != 1:
+        return None
+    group = next(iter(groups))
+    if group not in MARKET_GROUPS or manifest.get("market_group") != group:
         return None
     for group in groups:
         entry = _manifest_entry(manifest, group)
@@ -198,6 +202,87 @@ def _complete_run_manifest(base: Path, run_dir: Path) -> dict | None:
         if not _artifact_matches_entry(_load_yaml(path) or {}, entry, group):
             return None
     return manifest
+
+
+def _retention_timestamp(value: object) -> float | None:
+    """Parse receipt timestamps without accepting missing or arbitrary values."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _terminal_run_receipt(run_dir: Path) -> tuple[str, float] | None:
+    """Validate audit receipts for retention only; they never grant activation."""
+    terminal_groups = {
+        "completed",
+        "failed",
+        "no_candidates",
+        "no_symbols",
+        "no_data",
+        "interrupted",
+    }
+    receipts: list[tuple[str, float]] = []
+    for name in ("run_summary.yaml", "optimizer_failure.yaml"):
+        path = run_dir / name
+        if not path.exists() and not path.is_symlink():
+            continue
+        if path.is_symlink() or not path.is_file():
+            return None
+        try:
+            receipt = _load_yaml(path)
+        except UnicodeError:
+            return None
+        if not receipt:
+            return None
+        if (
+            type(receipt.get("schema_version")) is not int
+            or receipt["schema_version"] != 1
+            or receipt.get("run_id") != run_dir.name
+        ):
+            return None
+        status = receipt.get("status")
+        allowed_statuses = (
+            ("completed", "failed", "no_symbols")
+            if name == "run_summary.yaml"
+            else ("failed",)
+        )
+        if status not in allowed_statuses:
+            return None
+        # Guard receipts need not repeat these flags, but must not claim them.
+        default_flag = None if name == "run_summary.yaml" else False
+        if (
+            receipt.get("activated", default_flag) is not False
+            or receipt.get("candidate", default_flag) is not False
+        ):
+            return None
+        timestamp = _retention_timestamp(receipt.get("timestamp"))
+        groups = receipt.get("groups")
+        if timestamp is None or not isinstance(groups, dict) or len(groups) != 1:
+            return None
+        group = next(iter(groups))
+        summary = groups[group]
+        if group not in MARKET_GROUPS or not isinstance(summary, dict):
+            return None
+        group_status = summary.get("status")
+        if not isinstance(group_status, str) or group_status not in terminal_groups:
+            return None
+        if (
+            summary.get("group", group) != group
+            or summary.get("run_id", run_dir.name) not in ("", run_dir.name)
+            or receipt.get("market_group", group) != group
+        ):
+            return None
+        if status == "no_symbols" and group_status != "no_symbols":
+            return None
+        if status == "completed" and group_status in ("failed", "interrupted"):
+            return None
+        receipts.append((group, timestamp))
+    if not receipts or len({group for group, _timestamp in receipts}) != 1:
+        return None
+    return max(receipts, key=lambda item: item[1])
 
 
 def _directory_bytes(path: Path) -> int:
@@ -217,9 +302,11 @@ def prune_optimizer_runs(
     protected_run_ids: Iterable[str] = (),
     root: Path | str | None = None,
 ) -> RunRetentionResult:
-    """Keep recent complete searches and remove stale or partial run directories.
+    """Keep recent candidates and terminal audits independently for each market.
 
-    The newest configured number of valid manifests are retained. The active
+    The newest configured number of valid manifests or terminal receipts are
+    retained per market, sharing that market's limit. Receipts only preserve
+    diagnostics; they are never candidates or active strategy artifacts. The active
     pointer and every run directory referenced by it are protected in addition
     to that limit, so a historical active strategy remains usable until a new
     candidate is explicitly activated. Callers may also protect the ID of an
@@ -252,7 +339,10 @@ def prune_optimizer_runs(
         return RunRetentionResult()
     protected.update(_manifest_artifact_run_ids(base, active_manifest))
 
-    completed: list[tuple[str, float, str, Path]] = []
+    runs_by_market: dict[str, list[tuple[float, float, str]]] = {
+        group: [] for group in MARKET_GROUPS
+    }
+    complete_ids: set[str] = set()
     directories: list[Path] = []
     for item in runs_root.iterdir():
         if not item.is_dir() or item.is_symlink():
@@ -263,14 +353,32 @@ def prune_optimizer_runs(
         except (OSError, ValueError):
             continue
         directories.append(item)
-        manifest = _complete_run_manifest(base, item)
+        try:
+            manifest = _complete_run_manifest(base, item)
+        except (TypeError, ValueError):
+            manifest = None
         if manifest is not None:
-            completed.append(
-                (str(manifest.get("timestamp", "")), modified, item.name, item)
-            )
+            group = next(iter(manifest["groups"]))
+            timestamp = _retention_timestamp(manifest.get("timestamp"))
+            if timestamp is None:
+                timestamp = modified
+            complete_ids.add(item.name)
+        else:
+            receipt = _terminal_run_receipt(item)
+            if receipt is None:
+                continue
+            group, timestamp = receipt
+        runs_by_market[group].append((timestamp, modified, item.name))
 
-    completed.sort(key=lambda value: (value[0], value[1], value[2]), reverse=True)
-    recent = {item.name for *_metadata, item in completed[:keep_completed]}
+    recent_runs = sorted(
+        (
+            run
+            for market_runs in runs_by_market.values()
+            for run in sorted(market_runs, reverse=True)[:keep_completed]
+        ),
+        reverse=True,
+    )
+    recent = {run_id for _timestamp, _modified, run_id in recent_runs}
     keep = recent | protected
     removed: list[str] = []
     failed: list[str] = []
@@ -290,7 +398,10 @@ def prune_optimizer_runs(
 
     result = RunRetentionResult(
         kept_complete=tuple(
-            item.name for *_metadata, item in completed[:keep_completed]
+            run_id for *_metadata, run_id in recent_runs if run_id in complete_ids
+        ),
+        kept_diagnostics=tuple(
+            run_id for *_metadata, run_id in recent_runs if run_id not in complete_ids
         ),
         protected=tuple(sorted(protected)),
         removed=tuple(removed),
@@ -300,10 +411,11 @@ def prune_optimizer_runs(
     if removed:
         logger.info(
             "Pruned %d optimizer run directories and reclaimed %.2f GiB; "
-            "kept recent=%s protected=%s",
+            "kept candidates=%s diagnostics=%s protected=%s",
             len(removed),
             reclaimed / (1024 ** 3),
             result.kept_complete,
+            result.kept_diagnostics,
             result.protected,
         )
     return result

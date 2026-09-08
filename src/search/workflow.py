@@ -23,6 +23,7 @@ from .gates import majority_benchmark_excess
 from ..strategy import TradingStrategy, Params, StrategyMarketData
 from .artifacts import as_yaml_primitives
 from .contracts import ParameterSchema
+from .run_diagnostics import summarize_ranking_archive
 
 logger = logging.getLogger(__name__)
 
@@ -757,6 +758,24 @@ def run_optimizer(
     for item in validated:
         item.search_metadata = dict(search_metadata)
     results = validated
+    diagnostics = {
+        "schema_version": 1,
+        "market": group,
+        "strategy_id": strategy.name,
+        "status": "completed" if results else "no_candidates",
+        "search": search_metadata,
+        "ranking_finalist_count": len(searched),
+        "validated_candidate_count": len(results),
+    }
+    if not results:
+        diagnostics.update(summarize_ranking_archive(archive.path, group))
+    base_output.mkdir(parents=True, exist_ok=True)
+    (base_output / f"{group}_search_diagnostics.yaml").write_text(
+        yaml.safe_dump(
+            as_yaml_primitives(diagnostics), allow_unicode=True, sort_keys=False
+        ),
+        encoding="utf-8",
+    )
     if results:
         validation_period = {}
         if windows and validation_indexes:

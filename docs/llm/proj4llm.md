@@ -1621,3 +1621,16 @@ pytest tests/test_import_smoke.py         # 导入完整性
 - crash-month 稳健性不再删除月份，而是将排名靠前的相对优势月份设为
   `R_collar,t = R_spot,t`，保留所有月份并按月度相对增长因子复利；结果写入
   `cache/analysis/collar_nav_resized/{510300,510500}/`。
+
+### 云端三市场配置漂移与失败产物保留（2026-09-08）
+
+- 云端更新代码不会自动更新被 Git 忽略的 `config/config.yaml`。部署必须在恢复
+  云端配置、应用显式 `--sync-config` 后，使用严格运行时解析器校验三个市场；
+  配置不兼容或上传失败立即停止，不恢复 `optimizer.engine` 或全局 Solver 回退。
+- 搜参启动失败必须保存具体配置原因；无候选和失败运行同样保留独立市场的
+  `run_summary.yaml`、状态 HTML、archive/readiness 及 Gate 淘汰统计，不能因为
+  没有可激活 manifest 就被立即清理。保留数量按市场计算；诊断记录没有激活权限。
+- 搜索完成、保留候选、通过激活 Gate 是三个不同状态；不得把无候选称为进程崩溃，
+  也不得把 candidate 文件存在视为可生产激活。84 个月/PIT 数据合同不变。
+- 事故证据、云端备份、全量验证及剩余数据限制见
+  `docs/llm/optimizer_cloud_repair_20260908.md`。

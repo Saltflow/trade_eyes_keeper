@@ -250,6 +250,10 @@ python main.py --activate-run RUN_ID --group a_share
 
 active manifest 为 schema v4，只保存各市场独立 entry 的 run、artifact、strategy、Solver、配置指纹和激活时间；不保存可回退的全局策略。旧版单策略或混合 manifest 不会自动读取，必须重新搜参并按市场显式激活。缺少某市场 entry 时，该市场为“未激活”，日报、信号扫描、回测和参考组合均 fail closed，不会套用其他市场策略。
 
+无候选或失败也必须保存单市场 `run_summary.yaml` 和状态 HTML；已经执行搜索时，保留 archive、checkpoint、readiness 和 `*_search_diagnostics.yaml` 中的 Solver/Gate 合同、实际评估数及硬 Gate 淘汰次数。`search.run_retention_count` 按市场保留最近的终态运行，有候选和无候选共用该市场配额，活动指针及运行中的显式保护额外保留。诊断记录不是可激活 manifest，不能因为没有候选就立即删除，也不能将“搜索完成但未过 Gate”称为运行崩溃。
+
+部署必须校验云端最终生效的三市场配置，不能只确认代码可导入；云端配置漂移的修复记录见 `docs/llm/optimizer_cloud_repair_20260908.md`。
+
 机器人也支持改变下一次搜参范围和候选策略：
 
 ```text

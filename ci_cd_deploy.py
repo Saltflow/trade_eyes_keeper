@@ -13,12 +13,14 @@ CI/CD Deployment Script for Stock Quantitative System
   3. 检查cron、邮件、健康服务器
 """
 
+import argparse
+import os
+import shlex
 import subprocess
 import sys
-import os
 import time
-import argparse
 from datetime import datetime
+
 from dotenv import load_dotenv
 
 # 加载 .env 配置
@@ -483,7 +485,32 @@ def _pre_deploy_checks(dry_run):
     return True
 
 
-def _sync_config():
+def _build_optimizer_config_validation_command() -> str:
+    """Read the effective server config through the strict runtime validator."""
+    script = """import sys
+try:
+    from src.search.config import get_market_optimizer_configs
+    get_market_optimizer_configs(
+        application_config="config/config.yaml",
+        constraints_path="config/optimizer_constraints.yaml",
+    )
+except Exception as exc:
+    print(
+        "[OPTIMIZER_CONFIG_ERROR] config/config.yaml / "
+        f"config/optimizer_constraints.yaml: {exc}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+print("[OPTIMIZER_CONFIG_OK]")
+"""
+    # -B avoids bytecode writes; no main.py, data fetch, search or activation.
+    return (
+        f"cd {shlex.quote(REMOTE_DIR)} && timeout 30 python3 -B -c "
+        f"{shlex.quote(script)}"
+    )
+
+
+def _sync_config() -> bool:
     """将本地配置文件同步到服务器。默认只同步 alerts.yaml (无敏感信息)。
     使用 --sync-config 才同步 config.yaml，--sync-env 同步 .env。
     """
@@ -509,10 +536,16 @@ def _sync_config():
     for local_rel, remote_name in configs:
         local_path = os.path.join(PROJECT_DIR, local_rel)
         if not os.path.exists(local_path):
+            if remote_name in ("config.yaml", ".env"):
+                _info(f"FAIL: explicitly requested {local_rel} not found locally")
+                return False
             _info(f"SKIP: {local_rel} not found locally")
             continue
 
         remote_path = f"{REMOTE_DIR}/config/{remote_name}"
+        if _get_dry_run():
+            _info(f"[MOCK] Would sync: {local_rel} -> {remote_path}")
+            continue
         scp_cmd = [
             "scp",
             "-i", ssh_key,
@@ -531,10 +564,14 @@ def _sync_config():
                 _info(f"Synced: {local_rel} -> {remote_path}")
             else:
                 _info(f"FAIL to sync {local_rel}: {result.stderr[:100]}")
+                return False
         except subprocess.TimeoutExpired:
             _info(f"TIMEOUT syncing {local_rel}")
+            return False
         except Exception as e:
             _info(f"ERROR syncing {local_rel}: {e}")
+            return False
+    return True
 
 
 def deploy():
@@ -595,17 +632,23 @@ def deploy():
         _ssh_cmd("hostname -I", "Server IP")
         _ssh_cmd("uname -a", "System info")
 
-        # ── 2b. 同步配置文件到服务器 ──
-        _sync_config()
-
-        # ── 2c. 恢复服务器 config.yaml (保留 bot 修改) ──
-        _ssh_cmd(
+        # ── 2b. 先恢复服务器配置，再应用显式同步，避免覆盖 --sync-config ──
+        ok, out, err = _ssh_cmd(
             f"if [ -f /tmp/config.yaml.bot_backup ]; then"
-            f" cp /tmp/config.yaml.bot_backup {REMOTE_DIR}/config/config.yaml;"
+            f" cp /tmp/config.yaml.bot_backup "
+            f"{shlex.quote(REMOTE_DIR + '/config/config.yaml')} &&"
             " echo 'config_restored';"
             " else echo 'no_backup'; fi",
             "Restore server config.yaml",
         )
+        if not _step("config_restore", ok, (err or out).strip()):
+            _info("ERROR: Server config restore failed, aborting deployment")
+            return _print_summary(steps, cleaning_performed=False)
+
+        # ── 2c. 显式同步失败时中止，禁止继续使用旧配置 ──
+        if not _step("config_sync", _sync_config(), "see config sync output"):
+            _info("ERROR: Config sync failed, aborting deployment")
+            return _print_summary(steps, cleaning_performed=False)
 
         # ── 3. 清理旧日志 ──
         clean = os.getenv("CLEAN_BEFORE_DEPLOY", "true").strip().lower() in (
@@ -653,6 +696,33 @@ def deploy():
             timeout=300,
         )
         _step("deps", ok, "installed" if ok else "pip install failed")
+
+        # Validate the final config against the deployed code and profiles before
+        # running business logic, updating cron, restarting services or notifying.
+        ok, out, err = _ssh_cmd(
+            _build_optimizer_config_validation_command(),
+            "Validate remote optimizer configuration",
+            timeout=45,
+        )
+        config_ok = ok and (
+            dry_run or "[OPTIMIZER_CONFIG_OK]" in (out or "").splitlines()
+        )
+        config_message = (
+            "dry run; remote config not validated" if dry_run else "all markets valid"
+        )
+        if not config_ok:
+            config_message = (
+                (err or out or "remote validator failed without output").strip()
+                if not ok
+                else "missing [OPTIMIZER_CONFIG_OK] validation success marker"
+            )
+        _step("optimizer_config", config_ok, config_message)
+        if not config_ok:
+            _info(
+                "ERROR: Remote optimizer configuration validation failed; "
+                f"aborting deployment: {config_message}"
+            )
+            return _print_summary(steps, cleaning_performed)
 
         # ── 7. 系统测试 (真验证: 全量输出, grep 错误) ──
         # 部署验证只检查业务链路，不应依赖 SMTP/飞书/Telegram 外网。

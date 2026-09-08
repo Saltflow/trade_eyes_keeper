@@ -827,7 +827,7 @@ def _build_optimizer_run_summary(report) -> str:
     )
     failure_reason = str(getattr(report, "failure_reason", "") or "")
     if failure_reason:
-        lines.append(f"<b>\u5931\u8d25\u539f\u56e0:</b> {failure_reason}")
+        lines.append(f"<b>\u5931\u8d25\u539f\u56e0:</b> {_html_escape(failure_reason)}")
     if report.elapsed_seconds > 0:
         lines.append(f"开始时间: {report.timestamp} | 耗时: {report.elapsed_seconds:.0f}s")
     else:
@@ -894,9 +894,18 @@ def _build_optimizer_run_summary(report) -> str:
         if item.status != "completed":
             evaluated = int(getattr(item, "evaluated_count", 0) or 0)
             if evaluated:
-                lines.append(
-                    f"\u4e2d\u6b62\u524d\u5df2\u5b8c\u6210 {evaluated:,} "
-                    "\u6b21\u5019\u9009\u8bc4\u4f30\u3002"
+                prefix = "搜索已完成" if item.status == "no_candidates" else "中止前已完成"
+                lines.append(f"{prefix} {evaluated:,} 次候选评估。")
+            diagnostics = getattr(item, "ranking_diagnostics", {}) or {}
+            error = diagnostics.get("error") or diagnostics.get("configuration_error")
+            if error:
+                lines.append(f"原因: {_html_escape(error)}")
+            failures = diagnostics.get("hard_gate_failure_counts", {})
+            if failures:
+                lines.append("硬 Gate 淘汰次数（同一候选可触发多项）:")
+                lines.extend(
+                    f"{_html_escape(rule)}: {int(count):,}"
+                    for rule, count in failures.items()
                 )
             continue
         evaluated = getattr(item, "evaluated_count", 0)
