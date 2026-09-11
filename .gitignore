@@ -111,6 +111,10 @@ config/.env
 temp_test_cache/
 test_cache/
 .pytest_*/
+.pytest-*/
+
+# Holding area for reversible cleanups (nothing here is deleted outright)
+.trash/
 
 # Downloaded point-in-time source data and research datasets are regenerated
 # from the tracked backfill/import scripts.  They are too large and too
