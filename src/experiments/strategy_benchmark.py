@@ -1,10 +1,10 @@
-"""Parallel, publication-free benchmark for registered technical strategies.
+"""Parallel, publication-free benchmark for registered strategies.
 
-The benchmark intentionally mirrors the search-depth experiment: every
-strategy receives the same deterministic phase-one candidate budget and only
-the 11 ranking windows may select parameters.  The two overlapping windows and
-the final holdout are evaluated once after selection and never feed back into
-the search.
+The benchmark intentionally mirrors the current search contract: every
+strategy receives the same deterministic candidate budget and only the 16
+independent ranking windows may select parameters.  The two purged windows and
+the four overlapping holdout windows are evaluated once after selection and
+never feed back into the search.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
 from typing import Any, Iterable
@@ -23,14 +23,13 @@ import numpy as np
 import pandas as pd
 
 from ..backtest.engine import FastEvaluator, WalkForwardManager
+from ..markets import _detect_fine_group, get_skip_search
 from ..search.config import WindowStats, get_constraints
 from ..search.contracts import Candidate, CandidateBatch
 from ..search.gates import majority_benchmark_excess
-from ..markets import _detect_fine_group, get_skip_search
-from .benchmark_search import run_ranking_benchmark_search
 from ..search.workflow import _evaluate_params_wf, _partition_window_indexes
-from ..strategy import Params
-from ..strategy import get_strategy
+from ..strategy import Params, get_strategy
+from .benchmark_search import run_ranking_benchmark_search
 
 logger = logging.getLogger(__name__)
 
@@ -236,10 +235,32 @@ def aggregate_strategy_results(
     for strategy_id, markets in sorted(grouped.items()):
         ranking = [market["ranking_summary"] for market in markets]
         holdout = [market["holdout_summary"] for market in markets]
+
+        def mean_summary_metric(
+            summaries: list[dict[str, Any]], key: str
+        ) -> float | None:
+            values = [
+                float(item[key])
+                for item in summaries
+                if item.get(key) is not None
+            ]
+            return float(np.mean(values)) if values else None
+
+        def worst_summary_metric(
+            summaries: list[dict[str, Any]], key: str
+        ) -> float | None:
+            values = [
+                float(item[key])
+                for item in summaries
+                if item.get(key) is not None
+            ]
+            return float(np.min(values)) if values else None
+
         rows.append(
             {
                 "strategy_id": strategy_id,
                 "market_count": len(markets),
+                "markets": [str(market["market"]) for market in markets],
                 "search_depth_per_market": int(markets[0]["search_depth"]),
                 "mean_wf_score": float(
                     np.mean([float(market["wf_score"]) for market in markets])
@@ -252,6 +273,10 @@ def aggregate_strategy_results(
                 ),
                 "ranking_wins": sum(int(item["winning_windows"]) for item in ranking),
                 "ranking_windows": sum(int(item["window_count"]) for item in ranking),
+                "mean_ranking_drawdown_pct": mean_summary_metric(
+                    ranking, "worst_drawdown_pct"
+                ),
+                "mean_ranking_sharpe": mean_summary_metric(ranking, "mean_sharpe"),
                 "ranking_eligible_markets": sum(
                     bool(market["selected_candidate"]["ranking_eligible"])
                     for market in markets
@@ -264,6 +289,13 @@ def aggregate_strategy_results(
                 ),
                 "holdout_wins": sum(int(item["winning_windows"]) for item in holdout),
                 "holdout_windows": sum(int(item["window_count"]) for item in holdout),
+                "mean_holdout_drawdown_pct": mean_summary_metric(
+                    holdout, "worst_drawdown_pct"
+                ),
+                "worst_holdout_drawdown_pct": worst_summary_metric(
+                    holdout, "worst_drawdown_pct"
+                ),
+                "mean_holdout_sharpe": mean_summary_metric(holdout, "mean_sharpe"),
                 "elapsed_seconds_sum": sum(
                     float(market["elapsed_seconds"]) for market in markets
                 ),
@@ -317,8 +349,11 @@ def prepare_benchmark_data(
     """Fetch requested markets once and return immutable worker snapshots."""
 
     from main import (
+        _bundle_qfq_frame,
         _has_optimizer_history,
+        _load_optimizer_benchmark_bundles,
         _load_optimizer_benchmarks,
+        _load_optimizer_market_bundles_with_errors,
         _optimizer_lookback_days,
     )
     from src.data.data_source import DataSource
@@ -334,30 +369,56 @@ def prepare_benchmark_data(
     for group in requested_groups:
         constraints.set_group(group)
         lookback_days = _optimizer_lookback_days(constraints)
-        stocks_data = {}
-        missing = []
-        for code in configured[group]:
-            try:
-                data = data_source.fetch_stock_data(code, days=lookback_days)
-            except Exception as exc:
-                logger.warning("Unable to prefetch %s: %s", code, exc)
-                missing.append(code)
-                continue
-            if (
-                data is None
-                or data.empty
-                or not _has_optimizer_history(data, constraints)
-            ):
-                missing.append(code)
-            else:
-                stocks_data[code] = data.copy(deep=True)
-        benchmarks = _load_optimizer_benchmarks(
-            data_source, constraints, group, lookback_days
-        )
+        market_bundles: dict[str, object] = {}
+        benchmark_bundles: dict[str, object] = {}
+        data_readiness_errors: list[str] = []
+        if "point_in_time_data" in config:
+            market_bundles, data_readiness_errors = (
+                _load_optimizer_market_bundles_with_errors(
+                    config,
+                    configured[group],
+                    lookback_days,
+                )
+            )
+            stocks_data = {
+                code: _bundle_qfq_frame(bundle)
+                for code, bundle in market_bundles.items()
+            }
+            benchmark_bundles = _load_optimizer_benchmark_bundles(
+                config, constraints, group, lookback_days
+            )
+            benchmarks: dict[str, pd.DataFrame] = {}
+            missing = [
+                code for code in configured[group] if code not in market_bundles
+            ]
+        else:
+            stocks_data = {}
+            missing = []
+            for code in configured[group]:
+                try:
+                    data = data_source.fetch_stock_data(code, days=lookback_days)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Unable to prefetch %s: %s", code, exc)
+                    missing.append(code)
+                    continue
+                if (
+                    data is None
+                    or data.empty
+                    or not _has_optimizer_history(data, constraints)
+                ):
+                    missing.append(code)
+                else:
+                    stocks_data[code] = data.copy(deep=True)
+            benchmarks = _load_optimizer_benchmarks(
+                data_source, constraints, group, lookback_days
+            )
         result[group] = {
             "configured_codes": list(configured[group]),
             "stocks_data": stocks_data,
             "missing_or_short_history_codes": missing,
+            "data_readiness_errors": data_readiness_errors,
+            "market_bundles": market_bundles,
+            "benchmark_bundles": benchmark_bundles,
             "benchmarks": {
                 code: data.copy(deep=True) for code, data in benchmarks.items()
             },
@@ -376,7 +437,13 @@ def summarize_prepared_data(
             "missing_or_short_history_codes": list(
                 snapshot["missing_or_short_history_codes"]
             ),
-            "benchmark_codes": sorted(snapshot["benchmarks"]),
+            "data_readiness_errors": list(
+                snapshot.get("data_readiness_errors", [])
+            ),
+            "benchmark_codes": sorted(
+                set(snapshot.get("benchmarks", {}))
+                | set(snapshot.get("benchmark_bundles", {}))
+            ),
         }
         for group, snapshot in prepared.items()
     }
@@ -411,6 +478,7 @@ def _holding_rows(stat: WindowStats, codes: list[str]) -> list[dict[str, Any]]:
 def _serialize_window(
     index: int,
     partition: str,
+    role_index: int,
     stat: WindowStats,
     window: Any,
     codes: list[str],
@@ -419,6 +487,9 @@ def _serialize_window(
     return {
         "window": index + 1,
         "partition": partition,
+        "role": "purged" if partition == "isolated" else partition,
+        "role_index": role_index,
+        "global_index": index + 1,
         "period": {
             "train_start": window.train_start_date,
             "train_end": window.train_end_date,
@@ -463,6 +534,7 @@ def run_market_benchmark(
     search_depth: int = 1000,
     evaluation_workers: int = 1,
     prepared_market: dict[str, Any] | None = None,
+    context_enricher: object | None = None,
     solver_id: str = "random",
     solver_config: dict[str, object] | None = None,
     progress_checkpoints: Iterable[dict[str, object]] | None = None,
@@ -485,42 +557,71 @@ def run_market_benchmark(
     if seed is None:
         raise ValueError("benchmark requires a fixed random seed")
 
+    market_bundles: dict[str, object] = {}
+    benchmark_bundles: dict[str, object] = {}
+    data_readiness_errors: list[str] = []
     if prepared_market is None:
         from main import (
+            _bundle_qfq_frame,
             _has_optimizer_history,
+            _load_optimizer_benchmark_bundles,
             _load_optimizer_benchmarks,
+            _load_optimizer_market_bundles_with_errors,
             _optimizer_lookback_days,
         )
         from src.data.data_source import DataSource
 
         configured = _configured_codes(config)[group]
         lookback_days = _optimizer_lookback_days(constraints)
-        data_source = DataSource(config)
-        stocks_data = {}
-        missing_codes = []
-        for code in configured:
-            try:
-                data = data_source.fetch_stock_data(code, days=lookback_days)
-            except Exception as exc:
-                logger.warning("Unable to load %s for %s: %s", code, group, exc)
-                missing_codes.append(code)
-                continue
-            if (
-                data is None
-                or data.empty
-                or not _has_optimizer_history(data, constraints)
-            ):
-                missing_codes.append(code)
-                continue
-            stocks_data[code] = data
-        benchmarks = _load_optimizer_benchmarks(
-            data_source, constraints, group, lookback_days
-        )
+        if "point_in_time_data" in config:
+            market_bundles, data_readiness_errors = (
+                _load_optimizer_market_bundles_with_errors(
+                    config, configured, lookback_days
+                )
+            )
+            stocks_data = {
+                code: _bundle_qfq_frame(bundle)
+                for code, bundle in market_bundles.items()
+            }
+            benchmark_bundles = _load_optimizer_benchmark_bundles(
+                config, constraints, group, lookback_days
+            )
+            benchmarks = {}
+            missing_codes = [
+                code for code in configured if code not in market_bundles
+            ]
+        else:
+            data_source = DataSource(config)
+            stocks_data = {}
+            missing_codes = []
+            for code in configured:
+                try:
+                    data = data_source.fetch_stock_data(code, days=lookback_days)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Unable to load %s for %s: %s", code, group, exc)
+                    missing_codes.append(code)
+                    continue
+                if (
+                    data is None
+                    or data.empty
+                    or not _has_optimizer_history(data, constraints)
+                ):
+                    missing_codes.append(code)
+                    continue
+                stocks_data[code] = data
+            benchmarks = _load_optimizer_benchmarks(
+                data_source, constraints, group, lookback_days
+            )
     else:
         configured = list(prepared_market["configured_codes"])
         stocks_data = dict(prepared_market["stocks_data"])
         missing_codes = list(prepared_market["missing_or_short_history_codes"])
         benchmarks = dict(prepared_market["benchmarks"])
+        market_bundles = dict(prepared_market.get("market_bundles", {}))
+        benchmark_bundles = dict(prepared_market.get("benchmark_bundles", {}))
+        data_readiness_errors = list(
+            prepared_market.get("data_readiness_errors", [])
+        )
     if not stocks_data:
         raise RuntimeError(f"no full-horizon market data for {group}")
 
@@ -535,20 +636,35 @@ def run_market_benchmark(
         constraints,
         list(stocks_data),
         benchmark_data=benchmarks,
+        benchmark_bundles=benchmark_bundles,
+        market_bundles=market_bundles,
     )
     manager.market_group = group
+    if context_enricher is not None:
+        # Fundamental/value strategies must receive the same historical
+        # context for every candidate evaluation.  The benchmark path is a
+        # publication-free sibling of run_optimizer, so install the explicit
+        # enricher on the worker-local manager instead of silently falling
+        # back to current or empty fundamentals.
+        manager.market_data_enricher = context_enricher
     windows = manager.iter_windows()
     ranking_indexes, purged_indexes, validation_indexes = _partition_window_indexes(
         windows, constraints
     )
+    expected_total = constraints.walk_forward.num_windows
+    expected_ranking = constraints.walk_forward.independent_ranking_window_count
+    expected_purged = constraints.walk_forward.purge_overlap_window_count
+    expected_holdout = constraints.walk_forward.held_out_window_count
     if (
-        len(windows) != 14
-        or len(ranking_indexes) != 11
-        or len(purged_indexes) != 2
-        or len(validation_indexes) != 1
+        len(windows) != expected_total
+        or len(ranking_indexes) != expected_ranking
+        or len(purged_indexes) != expected_purged
+        or len(validation_indexes) != expected_holdout
     ):
         raise RuntimeError(
-            "benchmark requires the authoritative 11+2+1 window partition"
+            "benchmark requires the authoritative "
+            f"{expected_total}/{expected_ranking}/{expected_purged}/"
+            f"{expected_holdout} window partition"
         )
     ranking_windows = [windows[index] for index in ranking_indexes]
     evaluator = FastEvaluator(constraints.execution, group)
@@ -572,6 +688,15 @@ def run_market_benchmark(
         input_fingerprints={
             "stocks": stock_fingerprints,
             "benchmarks": benchmark_fingerprints,
+            "context": (
+                {
+                    "contract_hash": str(
+                        getattr(context_enricher, "contract_hash", "")
+                    )
+                }
+                if context_enricher is not None
+                else None
+            ),
         },
         solver_id=solver_id,
         solver_config=solver_config,
@@ -681,17 +806,22 @@ def run_market_benchmark(
         **{index: "isolated" for index in purged_indexes},
         **{index: "holdout" for index in validation_indexes},
     }
-    records = [
-        _serialize_window(
-            index,
-            partition_by_index[index],
-            stat,
-            windows[index],
-            list(manager.stock_codes),
-            constraints.benchmark_codes,
+    role_indexes: dict[str, int] = {"ranking": 0, "isolated": 0, "holdout": 0}
+    records = []
+    for index, stat in enumerate(all_stats):
+        partition = partition_by_index[index]
+        role_indexes[partition] += 1
+        records.append(
+            _serialize_window(
+                index,
+                partition,
+                role_indexes[partition],
+                stat,
+                windows[index],
+                list(manager.stock_codes),
+                constraints.benchmark_codes,
+            )
         )
-        for index, stat in enumerate(all_stats)
-    ]
     ranking_records = [record for record in records if record["partition"] == "ranking"]
     isolated_records = [
         record for record in records if record["partition"] == "isolated"
@@ -724,6 +854,22 @@ def run_market_benchmark(
         "configured_codes": configured,
         "evaluated_codes": list(manager.stock_codes),
         "missing_or_short_history_codes": missing_codes,
+        "data_readiness_errors": data_readiness_errors,
+        "data_contract": (
+            "point-in-time-raw-qfq-corporate-actions"
+            if market_bundles
+            else "legacy-adjusted-compatibility"
+        ),
+        "walk_forward_contract": {
+            "state_lookback_months": constraints.walk_forward.state_lookback_months,
+            "test_months": constraints.walk_forward.test_months,
+            "step_months": constraints.walk_forward.step_months,
+            "total_months": constraints.walk_forward.total_months_needed,
+            "num_windows": constraints.walk_forward.num_windows,
+            "ranking_windows": expected_ranking,
+            "purged_windows": expected_purged,
+            "holdout_windows": expected_holdout,
+        },
         "input_fingerprints": {
             "stocks": stock_fingerprints,
             "benchmarks": benchmark_fingerprints,
@@ -774,6 +920,7 @@ def run_market_benchmark(
             "total": len(all_stats),
             "ranking": len(final_ranking_stats),
             "isolated": len(isolated_records),
+            "purged": len(isolated_records),
             "holdout": len(validation_stats),
         },
         "elapsed_seconds": monotonic() - started,
@@ -814,6 +961,7 @@ def run_market_benchmark_from_snapshot(
     solver_id: str = "random",
     solver_config: dict[str, object] | None = None,
     progress_checkpoints: Iterable[dict[str, object]] | None = None,
+    context_enricher: object | None = None,
 ) -> dict[str, Any]:
     """Pickle-safe worker that cannot call or mutate the data-source cache."""
 
@@ -824,6 +972,7 @@ def run_market_benchmark_from_snapshot(
         search_depth=search_depth,
         evaluation_workers=evaluation_workers,
         prepared_market=prepared_market,
+        context_enricher=context_enricher,
         solver_id=solver_id,
         solver_config=solver_config,
         progress_checkpoints=progress_checkpoints,
@@ -839,19 +988,42 @@ def write_benchmark_artifacts(
     evaluation_workers: int,
     wall_seconds: float,
     prefetch_summary: dict[str, Any] | None = None,
+    failures: list[dict[str, str]] | None = None,
+    artifact_stem: str = "technical_strategy_benchmark",
 ) -> dict[str, str]:
     """Write canonical JSON and two compact CSV views."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
     strategy_summary = aggregate_strategy_results(market_results)
     payload = {
-        "created_at": datetime.now().isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "contract": {
-            "technical_only": True,
+            "technical_only": False,
             "search_depth_per_strategy_market": int(search_depth),
-            "selection_windows": 11,
-            "isolated_windows": 2,
-            "holdout_windows": 1,
+            "total_months": max(
+                int(item.get("walk_forward_contract", {}).get("total_months", 0))
+                for item in market_results
+            )
+            if market_results
+            else None,
+            "selection_windows": max(
+                int(item.get("walk_forward_contract", {}).get("ranking_windows", 0))
+                for item in market_results
+            )
+            if market_results
+            else None,
+            "purged_windows": max(
+                int(item.get("walk_forward_contract", {}).get("purged_windows", 0))
+                for item in market_results
+            )
+            if market_results
+            else None,
+            "holdout_windows": max(
+                int(item.get("walk_forward_contract", {}).get("holdout_windows", 0))
+                for item in market_results
+            )
+            if market_results
+            else None,
             "benchmarks_by_market": {
                 str(item["market"]): list(item.get("control_benchmarks", []))
                 for item in market_results
@@ -865,6 +1037,7 @@ def write_benchmark_artifacts(
             "evaluation_workers_per_job": int(evaluation_workers),
         },
         "prefetch_summary": prefetch_summary or {},
+        "failures": list(failures or []),
         "wall_seconds": float(wall_seconds),
         "strategy_summary": strategy_summary,
         "market_results": sorted(
@@ -872,7 +1045,9 @@ def write_benchmark_artifacts(
             key=lambda item: (item["strategy_id"], item["market"]),
         ),
     }
-    json_path = output_dir / "technical_strategy_benchmark.json"
+    if not artifact_stem or Path(artifact_stem).name != artifact_stem:
+        raise ValueError("artifact_stem must be a plain filename stem")
+    json_path = output_dir / f"{artifact_stem}.json"
     strategy_csv = output_dir / "strategy_summary.csv"
     market_csv = output_dir / "market_summary.csv"
     json_path.write_text(
@@ -905,6 +1080,10 @@ def write_benchmark_artifacts(
                 "ranking_mean_majority_excess_pct": result["ranking_summary"][
                     "mean_majority_excess_pct"
                 ],
+                "ranking_worst_drawdown_pct": result["ranking_summary"][
+                    "worst_drawdown_pct"
+                ],
+                "ranking_mean_sharpe": result["ranking_summary"]["mean_sharpe"],
                 "ranking_majority_wins": result["ranking_summary"][
                     "majority_winning_windows"
                 ],
@@ -917,6 +1096,10 @@ def write_benchmark_artifacts(
                 "holdout_majority_wins": result["holdout_summary"][
                     "majority_winning_windows"
                 ],
+                "holdout_worst_drawdown_pct": result["holdout_summary"][
+                    "worst_drawdown_pct"
+                ],
+                "holdout_mean_sharpe": result["holdout_summary"]["mean_sharpe"],
                 "elapsed_seconds": result["elapsed_seconds"],
             }
         )

@@ -7,7 +7,7 @@ import argparse
 import logging
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
 
@@ -15,30 +15,39 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.search.resources import ResourcePlanner  # noqa: E402
-from main import load_config  # noqa: E402
-from src.strategy import list_strategy_ids  # noqa: E402
-from src.search import list_solvers  # noqa: E402
-from src.experiments.strategy_benchmark import (  # noqa: E402
+from main import load_config
+from src.experiments.strategy_benchmark import (
     BENCHMARK_GROUPS,
     prepare_benchmark_data,
     run_market_benchmark_from_snapshot,
     summarize_prepared_data,
     write_benchmark_artifacts,
 )
+from src.search import list_solvers
+from src.search.resources import ResourcePlanner
+from src.strategy import list_strategy_ids
+
+logger = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Compare registered technical strategies under one ranking-only "
-            "candidate budget and the authoritative 11+2+1 window contract."
+            "Compare registered strategies under one ranking-only candidate "
+            "budget and the authoritative 22/16/2/4 window contract."
         )
     )
     parser.add_argument(
         "--strategies",
         nargs="+",
         default=list(list_strategy_ids()),
+    )
+    parser.add_argument(
+        "--markets",
+        nargs="+",
+        choices=BENCHMARK_GROUPS,
+        default=list(BENCHMARK_GROUPS),
+        help="market groups to benchmark independently (default: all)",
     )
     parser.add_argument("--depth", type=int, default=1000)
     parser.add_argument(
@@ -81,9 +90,14 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    output_dir = args.output_root / datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = args.output_root / datetime.now(timezone.utc).astimezone().strftime(
+        "%Y%m%d_%H%M%S"
+    )
+    selected_markets = tuple(args.markets)
     jobs = [
-        (strategy, group) for strategy in args.strategies for group in BENCHMARK_GROUPS
+        (strategy, group)
+        for strategy in args.strategies
+        for group in selected_markets
     ]
     planner = ResourcePlanner()
     if args.market_workers is None and args.evaluation_workers is None:
@@ -108,7 +122,7 @@ def main() -> int:
     workers = min(resource_plan.outer_workers, len(jobs))
 
     print("preparing immutable market snapshots before parallel evaluation")
-    prepared = prepare_benchmark_data(load_config())
+    prepared = prepare_benchmark_data(load_config(), groups=selected_markets)
     prefetch_summary = summarize_prepared_data(prepared)
     for group, summary in prefetch_summary.items():
         print(
@@ -146,7 +160,7 @@ def main() -> int:
                     None,
                 )
                 record_success(strategy, group, result)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 failures.append((strategy, group, str(exc)))
                 print(f"failed {strategy}/{group}: {exc}", file=sys.stderr)
     else:
@@ -168,14 +182,10 @@ def main() -> int:
                 strategy, group = futures[future]
                 try:
                     record_success(strategy, group, future.result())
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     failures.append((strategy, group, str(exc)))
                     print(f"failed {strategy}/{group}: {exc}", file=sys.stderr)
 
-    if failures:
-        for strategy, group, reason in failures:
-            logging.error("%s/%s failed: %s", strategy, group, reason)
-        return 1
     artifacts = write_benchmark_artifacts(
         output_dir=output_dir,
         market_results=results,
@@ -184,9 +194,17 @@ def main() -> int:
         evaluation_workers=evaluation_workers,
         wall_seconds=monotonic() - started,
         prefetch_summary=prefetch_summary,
+        failures=[
+            {"strategy_id": strategy, "market": group, "reason": reason}
+            for strategy, group, reason in failures
+        ],
     )
     for name, path in artifacts.items():
         print(f"{name}={path}")
+    if failures:
+        for strategy, group, reason in failures:
+            logger.error("%s/%s failed: %s", strategy, group, reason)
+        return 1
     return 0
 
 

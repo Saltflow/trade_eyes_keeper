@@ -272,6 +272,30 @@
   切换既有参考持仓。绑定同时记录策略、参数哈希和完整执行合同哈希（本金、手续费、
   最短持有期、市场手数、汇率及策略执行参数）；任一合同无法恢复或变化时必须
   停单并提示再次手动重置。旧 YAML 没有绑定信息时可继续只读展示，但禁止交易。
+- v4 活动索引不自动迁移旧 schema v2 指针；升级后若活动指针为
+  v2（latest_strategy.yaml schema_version=2），load_strategy_run/load_latest_strategy_run
+  均返回 None，参考持仓会统一停单、策略扫描退化为 0 信号。恢复方式为显式运行
+  scripts/migrate_legacy_optimizer_pointer.py --apply（备份 + 原子迁移 + 绑定校验），
+  不会重新评估 Gate、不修改参考持仓文件；新候选仍需通过验证后明确激活。
+- 新增固定规则价值策略 `justified_pb_value`（仅注册与评估，未激活、未改配置）：
+  PIT 季度财报面板（roe_ttm 百分比、book_yield=1/PB，季度锚点披露日可用+前向填充）→
+  HistoricalDatasetEnricher → StrategyMarketData.fundamental_features → 同一
+  TradePlan(target_weight) 执行引擎。买入条件 PB < (ROE%−2)/8（Ke=10%, g=2%），
+  卖出条件 PB > (ROE%−2)/4（Ke=6%, g=2%），中间持有；每只≤20%、总暴露 100%、
+  源变更/价格下穿买入带时一次性入场（引擎做槽位等比缩放）。A 股专用；入口：
+  src/strategy/plugins/justified_pb_value.py +
+  src/strategy/justified_pb_value_context.py；
+  评估脚本 scripts/backtest_justified_pb_value.py（整段 84 个月 + 22 窗口 walk-forward，
+  输出 data/analysis/justified_pb_value/<ts>/report.json、windows.csv）；
+  测试 tests/test_justified_pb_value.py。数据源为本地 data/point_in_time（服务器
+  fundamentals 仅 000958，A 股补数后可在服务器重跑）。
+- 指数池筛选分析脚本 scripts/screen_csi300_500_justified_pb.py（沪深300+中证500
+  全部成分，2026-08-18 指数成分表 + reference_universe PIT 数据集）：g 取
+  min(前16窗中位窗口收益年化/2, 0%)，Ke=10% 筛选（PB<(ROE−g)/(10%−g)），剔除
+  银行/证券/保险（J66/J67/J68）后按 justified/PB 取 top20，Ke=5% 作为卖出阈值，
+  在最后4个窗口做样本外评估。注意：reference PIT 只有2020-08起72个月数据且公司行动
+  仅存原始调整因子，几何改为20窗口(9m测试/3m步长/6m边界)，样本外评估用前复权价格
+  口径（qfq，无佣金、无再投资）。产出 data/analysis/justified_pb_csi300500/<ts>/。
 - 简报参考持仓不得消费逐标的 scan_today 告警或自定义 20%/25% 仓位规则。
   它按固定 run 的全市场数据调用公开
   build_trade_plan -> TradingStrategy.make_signals，只执行计划最后有效交易日，
@@ -374,8 +398,9 @@
 - `EvaluationReport` 是 HTML、PDF、邮件、飞书和 Telegram 的唯一数据源，
   显式包含测试期指标、各参考标的结果、初始/期末资产与现金、期末持仓、
   日 NAV、周 NAV OHLC、季末模拟持仓和胜率明细。
-- 注册策略包括 `percentile`、`builder`、`simplified`、
-  `regime_pullback`、`technical_ensemble` 和实验性 `ma60_band`。前三者保持历史决策并声明 `cash_cap`；
+- 注册策略包括 `percentile`、`simplified`、`regime_pullback`、
+  `technical_ensemble`、`capm_dcf_value`、`valuation_aware_ensemble` 和实验性 `ma60_band`。
+  `percentile`、`simplified` 和 `capm_dcf_value` 声明 `cash_cap`；
   `regime_pullback` 声明 `target_weight`，实现 MA200 上升趋势中的
   回撤准备、三日恢复单次确认、30 日正常退出和固定 3ATR 灾难退出。
   `technical_ensemble` 是 22 技术列、批量评价和跨 Solver 比较实现；
@@ -507,6 +532,34 @@
   是明显的样本内选择偏差。`regime_pullback` 三市场均无排名合格候选，且
   排名/留出均为负；结合 1,000→10,000 搜索深度边际实验，本问题应优先
   修改策略状态机或参数空间，而不是增加搜索预算。
+
+## 2026-09-05：84 个月注册策略统一基准
+
+- benchmark 入口已切换到当前 84 个月合同：22 个窗口，其中 16 个 ranking、
+  2 个 purged、4 个 holdout；holdout 指标按 4 个重叠窗口等权平均收益、超额和
+  Sharpe，最大回撤取最差窗口。窗口产物同时记录 `role`、`role_index` 和
+  `global_index`。
+- 预取优先使用点时 raw/qfq/company-actions bundle：qfq 只用于指标和信号，raw
+  用于成交、估值和基准；A/HK/US 基准均经过同一公司行为可解释性校验。
+  A 股历史不足的配置标的只在 benchmark 输入阶段标记，不修改监控池。
+- 最新离线运行命令为
+  `python scripts/benchmark_technical_strategies.py --depth 1000
+  --market-workers 12 --evaluation-workers 1`，产物位于
+  `data/analysis/strategy_benchmark/20260905_093953/`。6 个纯技术策略的
+  18 个市场任务完成；`capm_dcf_value` 与 `valuation_aware_ensemble` 因应用配置
+  未提供历史基本面 context enricher 而 fail closed，未用 adjusted-only 或模拟
+  数据替代，也未修改生产激活指针。
+- benchmark CLI 现支持 `--markets` 独立运行市场。2026-09-05 对 A 股的
+  `percentile`、`simplified`、`regime_pullback`、`technical_ensemble` 各运行
+  60,000 个候选，仍使用 84 个月和 `22/16/2/4` 窗口；8 个标的通过完整历史校验，
+  5 个标的因覆盖不足只记录在数据就绪报告中。独立产物位于
+  `data/analysis/strategy_benchmark/20260905_124813/`。A 股 holdout 汇总为：
+  `technical_ensemble +8.893% / -5.768% / -7.030% / 0.762`，
+  `percentile +6.108% / -8.553% / -10.230% / 0.928`，
+  `regime_pullback -3.383% / -18.043% / -7.580% / -1.335`，
+  `simplified 0.000% / -14.660% / 0.000% / 0.000`，依次为收益/最强基准超额/
+  最差回撤/Sharpe。`technical_ensemble` 相对当前活动指针 `percentile` 在收益、
+  超额和回撤上改善，但 4 个 holdout 中只有 1 个跑赢最强基准，暂不自动激活。
 
 ---
 
@@ -1610,6 +1663,16 @@ pytest tests/test_import_smoke.py         # 导入完整性
 - Bot 频次使用 `/report_frequency daily|weekly|off`（兼容 `/daily_frequency`）：
   普通无告警日报按配置发送，告警即时发送，手动 `/daily` 强制发送。
 
+### A 股估值策略独立 benchmark（2026-09-05）
+
+- `scripts/benchmark_value_strategies.py` 专门为 `capm_dcf_value` 与
+  `valuation_aware_ensemble` 组装历史上下文，不再把基本面/估值策略误当成
+  无上下文的技术策略运行。benchmark 入口显式安装 `context_enricher`，并把
+  上下文合同哈希纳入搜索输入指纹。
+- `valuation_aware_ensemble` 的 A 股实验使用 60,000 个 Random 候选、84 个月
+  的 `22/16/2/4` 窗口；`capm_dcf_value` 只有在当前 v2 冻结政策通过自身留出门槛
+  后才允许进入搜参，旧 v1 政策不得静默复用。
+
 ### ETF Collar 严格 1x 与 crash-month neutralize（2026-09-03）
 
 - 新增 `scripts/backtest_collar_nav_sizing.py`：510300/510500 的 100% Put、
@@ -1634,3 +1697,10 @@ pytest tests/test_import_smoke.py         # 导入完整性
   也不得把 candidate 文件存在视为可生产激活。84 个月/PIT 数据合同不变。
 - 事故证据、云端备份、全量验证及剩余数据限制见
   `docs/llm/optimizer_cloud_repair_20260908.md`。
+
+- v3 冻结后的两项廉价 falsification（scripts/justified_pb_ablation.py → data/analysis/justified_pb_ablation/<ts>/）：
+  尾部过滤消融（w11 弱市 / w17 牛市）：低波动过滤是双向主因（弱市保护、牛市削顶），剔除最热动量近似中性；
+  m/2 校准：P(m/2 > 实际 BVPS CAGR) 随分桶单调 12%→72%，>8% 桶把 BVPS 增速 p25 从 1.35% 抬到 3.02%，
+  但 corr≈0.05、中段平坦、12 个重叠 cohort（1–6 年视界），只能算弱的 quality-persistence 证据；
+  g_fund 已从总归母权益 CAGR 改为 BVPS CAGR；选股集中度：12 窗 229 个持仓位仅 52 只不同标的、相邻窗重叠 10–16 只，
+  即约 2–3 个独立组合，7/12 胜率不具统计显著性。

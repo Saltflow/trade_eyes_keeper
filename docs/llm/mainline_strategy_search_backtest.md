@@ -46,7 +46,6 @@ ValidationController
 | `valuation_aware_ensemble` | 技术集成 + 历史可用估值/DCF 特征 | 27 | target weight |
 | `regime_pullback` | MA200 上升趋势、回撤和恢复确认 | 16 | target weight |
 | `percentile` | 每只标的自身 252 日指标分位评分 | 14 | cash cap |
-| `builder` | 5 个买入规则 + 3 个卖出规则，支持 lock/reset/confirmation | 18 | cash cap |
 | `simplified` | 简化条件信号 + 现金档位 | 18 | cash cap |
 | `ma60_band` | MA60 上下 5%，四个固定 25% 仓位槽 | 0 | target weight |
 | `capm_dcf_value` | CAPM-DCF 公允价值与入场价策略 | 2 | cash cap |
@@ -55,7 +54,7 @@ ValidationController
 
 ### 2.1 Cash-cap 策略
 
-`builder`、`simplified`、`percentile` 和 `capm_dcf_value` 使用统一现金上限。买入和卖出上限分别从以下档位中搜参：
+`simplified`、`percentile` 和 `capm_dcf_value` 使用统一现金上限。买入和卖出上限分别从以下档位中搜参：
 
 ```text
 10,000 / 20,000 / 30,000 / 40,000 / 50,000

@@ -5,9 +5,10 @@ it returns the security ID, contract code, side and strike for a chosen date.
 Sina then supplies the historical daily option closes for those IDs.
 
 This is intentionally a small research runner rather than a trading engine. It
-uses closing marks, configurable transaction costs/slippage, no ETF distributions, and
-normalizes the portfolio to one ETF share. Those assumptions are printed with
-the result so the number is not mistaken for an executable performance series.
+uses closing marks, ask/bid-or-high/low trade execution, configurable transaction
+costs/slippage, no ETF distributions, and normalizes the portfolio to one ETF share.
+Those assumptions are printed with the result so the number is not mistaken for an
+executable performance series.
 """
 
 import argparse
@@ -258,15 +259,25 @@ def _first_trading_dates(underlying: pd.DataFrame) -> List[pd.Timestamp]:
     return [pd.Timestamp(item).normalize() for item in first_dates.tolist()]
 
 
-def _load_underlying(path: Path, start: str, end: str) -> pd.DataFrame:
+def _load_underlying(
+    path: Path, start: str, end: str, underlying_code: str = "510300"
+) -> pd.DataFrame:
     frame = pd.read_csv(path, parse_dates=["date"])
-    frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
+    for column in ("open", "high", "low", "close"):
+        if column in frame:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
     frame = frame.dropna(subset=["date", "close"])
+    for column in ("open", "high", "low"):
+        if column not in frame:
+            frame[column] = frame["close"]
+    frame = frame.dropna(subset=["high", "low"])
     frame = frame[(frame["date"] >= start) & (frame["date"] <= end)]
     frame = frame.sort_values("date").drop_duplicates("date")
     if len(frame) < 20:
-        raise RuntimeError("510300 underlying history is too short")
-    return frame[["date", "close"]].reset_index(drop=True)
+        raise RuntimeError(f"{underlying_code} underlying history is too short")
+    return frame[["date", "open", "high", "low", "close"]].reset_index(
+        drop=True
+    )
 
 
 def _select_contracts(
@@ -306,13 +317,43 @@ def _select_contracts(
     return put, call
 
 
+def _normalise_daily_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    frame["date"] = pd.to_datetime(frame["date"]).dt.normalize()
+    for column in ("open", "high", "low", "close"):
+        if column in frame:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    for column in ("ask", "bid"):
+        if column in frame:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame.dropna(subset=["date", "close"])
+    required = {"date", "high", "low", "close"}
+    if not required.issubset(frame.columns):
+        missing = sorted(required.difference(frame.columns))
+        raise RuntimeError(f"Option daily data missing columns: {missing}")
+    columns = ["date"]
+    columns.extend(
+        column
+        for column in ("open", "high", "low", "close", "ask", "bid")
+        if column in frame.columns
+    )
+    return frame[columns].drop_duplicates("date").sort_values("date")
+
+
 def _fetch_daily(security_id: str) -> pd.DataFrame:
     source = SinaOptionDataSource()
     frame = source.fetch_etf_option_daily(security_id)
-    frame["date"] = pd.to_datetime(frame["date"]).dt.normalize()
-    frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
-    frame = frame.dropna(subset=["date", "close"])
-    return frame[["date", "close"]].drop_duplicates("date").sort_values("date")
+    return _normalise_daily_frame(frame)
+
+
+def _latest_option_row(
+    daily: pd.DataFrame, date: pd.Timestamp, security_id: str
+) -> pd.Series:
+    available = daily[daily["date"] <= date]
+    if available.empty:
+        raise RuntimeError(
+            f"No Sina option data before {date.date()} for {security_id}"
+        )
+    return available.iloc[-1]
 
 
 def _option_price(
@@ -331,12 +372,49 @@ def _option_price(
             else max(contract.strike - underlying_close, 0.0)
         )
         return float(intrinsic)
-    available = daily[daily["date"] <= date]
-    if available.empty:
+    row = _latest_option_row(daily, date, contract.security_id)
+    return float(row["close"])
+
+
+def _row_execution_price(
+    row: pd.Series, side: str, instrument_id: str
+) -> float:
+    if side not in {"buy", "sell"}:
+        raise ValueError("execution side must be buy or sell")
+    quote_column = "ask" if side == "buy" else "bid"
+    fallback_column = "high" if side == "buy" else "low"
+    quote = pd.to_numeric(row.get(quote_column), errors="coerce")
+    if pd.notna(quote) and float(quote) > 0:
+        return float(quote)
+    fallback = pd.to_numeric(row.get(fallback_column), errors="coerce")
+    if pd.isna(fallback) or float(fallback) <= 0:
         raise RuntimeError(
-            f"No Sina close before {date.date()} for {contract.security_id}"
+            f"No {quote_column} or {fallback_column} for {instrument_id}"
         )
-    return float(available.iloc[-1]["close"])
+    return float(fallback)
+
+
+def _option_execution_price(
+    daily: pd.DataFrame,
+    date: pd.Timestamp,
+    expiry: pd.Timestamp,
+    underlying_close: float,
+    contract: Contract,
+    side: str,
+) -> float:
+    """Return an executable option price for buying or selling."""
+    if side not in {"buy", "sell"}:
+        raise ValueError("option execution side must be buy or sell")
+    if date > expiry:
+        return 0.0
+    if date == expiry:
+        return _option_price(daily, date, expiry, underlying_close, contract)
+    row = _latest_option_row(daily, date, contract.security_id)
+    return _row_execution_price(row, side, contract.security_id)
+
+
+def _underlying_execution_price(row: pd.Series, side: str) -> float:
+    return _row_execution_price(row, side, "underlying")
 
 
 def _catalog_dates(underlying: pd.DataFrame) -> List[pd.Timestamp]:
@@ -394,19 +472,21 @@ def _with_entry_prices(
     for roll in rolls:
         roll_date = pd.Timestamp(roll.roll_date)
         expiry = pd.Timestamp(roll.expiry_date)
-        put_entry = _option_price(
+        put_entry = _option_execution_price(
             daily[roll.put.security_id],
             roll_date,
             expiry,
             roll.underlying_close,
             roll.put,
+            "buy",
         )
-        call_entry = _option_price(
+        call_entry = _option_execution_price(
             daily[roll.call.security_id],
             roll_date,
             expiry,
             roll.underlying_close,
             roll.call,
+            "sell",
         )
         if put_entry <= 0 or call_entry <= 0:
             raise RuntimeError(
@@ -438,6 +518,7 @@ def _simulate(
     underlying_units: Optional[float] = None
     previous_roll_index = -1
     settled_rolls = set()
+    closed_rolls = set()
     underlying_by_date = underlying.set_index("date")["close"]
     records = []
     for _, row in underlying.iterrows():
@@ -447,7 +528,11 @@ def _simulate(
         for expired_index in range(roll_index + 1):
             expired = rolls[expired_index]
             expiry = pd.Timestamp(expired.expiry_date)
-            if date <= expiry or expired_index in settled_rolls:
+            if (
+                date <= expiry
+                or expired_index in settled_rolls
+                or expired_index in closed_rolls
+            ):
                 continue
             if expiry not in underlying_by_date.index:
                 raise RuntimeError(
@@ -471,18 +556,19 @@ def _simulate(
         )
         if cash is None:
             underlying_units = roll.call.contract_unit
+            underlying_entry_price = _underlying_execution_price(row, "buy")
             initial_cost = transaction_cost_rate * (
-                roll.underlying_close * underlying_units
+                underlying_entry_price * underlying_units
                 + roll.put_entry * roll.put.contract_unit
                 + roll.call_entry * roll.call.contract_unit
             )
-            cash = (
-                -roll.put_entry * roll.put.contract_unit
-                + roll.call_entry * roll.call.contract_unit
-                - initial_cost
-            )
+            # The initial capital covers the underlying purchase, the net
+            # option premium, and entry costs.  After those trades settle,
+            # the cash account is therefore zero; putting the premium and
+            # cost here would count the entry cash flow a second time.
+            cash = 0.0
             initial_capital = (
-                roll.underlying_close * underlying_units
+                underlying_entry_price * underlying_units
                 + roll.put_entry * roll.put.contract_unit
                 - roll.call_entry * roll.call.contract_unit
                 + initial_cost
@@ -490,39 +576,48 @@ def _simulate(
         elif roll_index != previous_roll_index:
             previous = rolls[previous_roll_index]
             previous_expiry = pd.Timestamp(previous.expiry_date)
-            old_put = _option_price(
+            old_put = _option_execution_price(
                 daily[previous.put.security_id],
                 date,
                 previous_expiry,
                 float(row["close"]),
                 previous.put,
+                "sell",
             )
-            old_call = _option_price(
+            old_call = _option_execution_price(
                 daily[previous.call.security_id],
                 date,
                 previous_expiry,
                 float(row["close"]),
                 previous.call,
+                "buy",
             )
             new_underlying_units = roll.call.contract_unit
+            old_underlying_units = underlying_units or 0.0
+            unit_delta = old_underlying_units - new_underlying_units
+            if unit_delta > 0:
+                underlying_trade_price = _underlying_execution_price(row, "sell")
+            elif unit_delta < 0:
+                underlying_trade_price = _underlying_execution_price(row, "buy")
+            else:
+                underlying_trade_price = 0.0
             transaction_value = (
                 old_put * previous.put.contract_unit
                 + old_call * previous.call.contract_unit
                 + roll.put_entry * roll.put.contract_unit
                 + roll.call_entry * roll.call.contract_unit
-                + abs((underlying_units or 0.0) - new_underlying_units)
-                * float(row["close"])
+                + abs(unit_delta) * underlying_trade_price
             )
             cash += (
                 old_put * previous.put.contract_unit
                 - old_call * previous.call.contract_unit
                 - roll.put_entry * roll.put.contract_unit
                 + roll.call_entry * roll.call.contract_unit
-                + ((underlying_units or 0.0) - new_underlying_units)
-                * float(row["close"])
+                + unit_delta * underlying_trade_price
                 - transaction_cost_rate * transaction_value
             )
             underlying_units = new_underlying_units
+            closed_rolls.add(previous_roll_index)
         nav = (
             (underlying_units or 0.0) * float(row["close"])
             + (cash or 0.0)
@@ -581,6 +676,20 @@ def _metrics(
     }
 
 
+def _spot_benchmark(
+    underlying: pd.DataFrame, transaction_cost_rate: float = 0.0
+) -> pd.DataFrame:
+    """Build a buy-and-hold spot benchmark on the same underlying series."""
+    entry_price = _underlying_execution_price(underlying.iloc[0], "buy")
+    units = 1.0 / (entry_price * (1.0 + transaction_cost_rate))
+    frame = underlying[["date"]].copy()
+    frame["nav"] = underlying["close"].astype(float) * units
+    frame["roll_index"] = 0
+    frame["return"] = frame["nav"].pct_change()
+    frame.attrs["initial_capital"] = 1.0
+    return frame
+
+
 def _split_metrics(
     frame: pd.DataFrame, test_days: int
 ) -> Tuple[pd.Timestamp, Dict[str, object], Dict[str, object]]:
@@ -634,7 +743,11 @@ def _load_daily(
     for security_id in security_ids:
         daily_path = daily_dir / f"{security_id}.csv"
         if daily_path.exists():
-            daily[security_id] = pd.read_csv(daily_path, parse_dates=["date"])
+            cached = pd.read_csv(daily_path, parse_dates=["date"])
+            if {"date", "high", "low", "close"}.issubset(cached.columns):
+                daily[security_id] = _normalise_daily_frame(cached)
+            else:
+                missing_ids.append(security_id)
         else:
             missing_ids.append(security_id)
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -687,7 +800,9 @@ def main() -> None:
         raise ValueError("--cost-rate must be non-negative")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    underlying = _load_underlying(Path(args.underlying_file), args.start, args.end)
+    underlying = _load_underlying(
+        Path(args.underlying_file), args.start, args.end, args.underlying_code
+    )
 
     catalog = _load_catalog(
         underlying, output_dir / "sse_catalog.json", args.underlying_code
@@ -775,6 +890,23 @@ def main() -> None:
                 "failed_candidates": len(result_rows) - len(successful),
             },
         }
+        spot_frame = _spot_benchmark(underlying, args.cost_rate)
+        _, spot_train, spot_test = _split_metrics(spot_frame, args.test_days)
+        summary["benchmark"] = {
+            "name": "spot buy-and-hold",
+            "full": _metrics(
+                spot_frame, initial_capital=spot_frame.attrs["initial_capital"]
+            ),
+            "train": spot_train,
+            "test": spot_test,
+            "cost_rate": args.cost_rate,
+        }
+        summary["execution"] = {
+            "buy": "ask when available, otherwise daily high",
+            "sell": "bid when available, otherwise daily low",
+            "mark": "daily close; intrinsic settlement at expiry",
+            "sina_historical_bid_ask": False,
+        }
         pd.DataFrame(result_rows).to_csv(
             output_dir / "optimization_results.csv", index=False
         )
@@ -782,6 +914,7 @@ def main() -> None:
             json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         best_frame.to_csv(output_dir / "nav_best.csv", index=False)
+        spot_frame.to_csv(output_dir / "nav_spot.csv", index=False)
         _save_rolls(best_rolls, output_dir / "rolls_best.json")
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return
@@ -794,6 +927,24 @@ def main() -> None:
         transaction_cost_rate=args.cost_rate,
     )
     metrics = _metrics(frame, initial_capital=frame.attrs["initial_capital"])
+    spot_frame = _spot_benchmark(underlying, args.cost_rate)
+    metrics["benchmark"] = _metrics(
+        spot_frame, initial_capital=spot_frame.attrs["initial_capital"]
+    )
+    split_date, train_metrics, test_metrics = _split_metrics(
+        frame, args.test_days
+    )
+    _, spot_train_metrics, spot_test_metrics = _split_metrics(
+        spot_frame, args.test_days
+    )
+    metrics["split"] = {
+        "split_date": split_date.strftime("%Y-%m-%d"),
+        "test_days": args.test_days,
+        "train": train_metrics,
+        "test": test_metrics,
+        "benchmark_train": spot_train_metrics,
+        "benchmark_test": spot_test_metrics,
+    }
     metrics["assumptions"] = {
         "target_put": args.target_put,
         "target_call": args.target_call,
@@ -802,7 +953,12 @@ def main() -> None:
             "nearest available "
             "option expiring earliest after roll"
         ),
-        "mark": "Sina daily close; intrinsic at fourth-Wednesday expiry; no bid/ask",
+        "mark": "Sina daily close; intrinsic at fourth-Wednesday expiry",
+        "execution": {
+            "buy": "ask when available, otherwise daily high",
+            "sell": "bid when available, otherwise daily low",
+            "sina_historical_bid_ask": False,
+        },
         "costs": "cost rate applied to ETF/option turnover at each transaction",
         "cost_rate": args.cost_rate,
         "dividends": "not included; underlying series is price-return basis",
@@ -814,6 +970,7 @@ def main() -> None:
     }
     _save_rolls(rolls, output_dir / "rolls.json")
     frame.to_csv(output_dir / "nav.csv", index=False)
+    spot_frame.to_csv(output_dir / "nav_spot.csv", index=False)
     (output_dir / "metrics.json").write_text(
         json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
     )

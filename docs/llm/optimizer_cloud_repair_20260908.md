@@ -147,3 +147,50 @@ HK 复核使用 `python3 main.py --optimize --group hk`、完整 5 个配置标�
 US 搜索清理。三个配置指纹不变，所有新运行 `activated=false`，活动指针 SHA-256
 仍与部署前一致。健康服务为 `active`，飞书完成通知已送达；邮件 HTML 副本已归档。
 这验证了真实定时入口，不仅是手动命令或本地单元测试。
+
+## 补充：旧 v2 活动指针迁移（2026-09-08 20:45）
+
+### 现象
+
+9 月 5 日部署 v4 独立市场激活代码（72965cb + 当日热修）后，早盘/收盘简报中的
+三个参考持仓全部显示「停单」，日志反复出现：
+
+    ERROR - 参考持仓A股 固定运行或合同不可恢复；跳过交易，需手动 /ref_date 重置
+
+### 根因
+
+加载器自 72965cb 起只接受 schema_version: 4 的活动指针与运行 manifest，并
+要求每个市场条目含 run_id/artifact/strategy/solver_id/gate_profile/config_hash，
+且 artifact 自带与条目一致的 market_config_hash。生产环境的活动指针与
+20260823T020002534795_technical_ensemble 运行仍然是 schema v2：
+load_strategy_run() 直接返回 None → 绑定校验失败；同时
+load_latest_strategy_run() 也为 None，日报/简报策略扫描从「活动策略」退化为
+0 信号。9 月 6-8 日的新 run 均 activated=false（A 股 holdout/universe 未过、
+港股无候选、美股 exploratory Gate 不可用于生产激活），不能替代旧指针。
+
+### 迁移方式
+
+新增显式运维脚本 scripts/migrate_legacy_optimizer_pointer.py（任何调度器都
+不会自动调用）：
+
+1. 校验当前市场配置可解析；按「旧策略/求解器今天重新求解」的同一契约计算各
+   市场 v4 config_hash（沿用当前 walk_forward/execution/benchmark profile 与约束）。
+2. 备份到 data/optimizer/migrations/<时间戳>_legacy_v2_to_v4/
+   （latest_strategy.yaml、运行 manifest、三个 artifact）。
+3. 三个 artifact 注入 market_config_hash（与条目 config_hash 一致）；运行
+   manifest 与活动指针原地升级为 v4（保留 activated: true、原 run_id、
+   三个市场条目）。
+4. 迁移后验证：load_latest_strategy_run() 恢复三市场；参考持仓绑定条件
+   （strategy / params_hash / exec_hash）全部为 True；不修改任何参考持仓文件，
+   不重新评估 Gate。
+
+### 结果
+
+- 活动指针已从 v2 升级为 v4；原文件备份于
+  data/optimizer/migrations/20260908T204505_legacy_v2_to_v4/。
+- 三个资金池的绑定校验全部通过，下一次简报将恢复调仓；日报/简报策略扫描
+  恢复使用活动策略（不再恒为 0 信号）。
+- 新候选（9 月 7-8 日各市场 run）仍保持 activated=false：候选不等于允许
+  生产使用，后续验证通过并经用户明确激活后才能替代本迁移指针。
+- 迁移刻意保留了「同一 run 服务三个市场」的历史形态；后续若按市场分别激活
+  新 run，activate_run 会逐市场替换活动索引条目，与本次迁移不冲突。
