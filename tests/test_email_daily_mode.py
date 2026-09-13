@@ -236,7 +236,16 @@ class TestDailyModeEmail:
         )
         assert "股票日报" in html or "股票提醒" in html or "<html" in html.lower()
 
-    def test_daily_mode_keeps_price_anchor_fundamental_and_technical_data(self):
+    def test_daily_mode_drops_bulk_price_anchor_card_list(self):
+        """2026-09: the per-stock card lists were removed from the daily mail.
+
+        This test used to require the daily mail to carry price/anchor/
+        fundamental/technical data for every monitored stock (the
+        "监控标的 · 全部（价格 / 锚点）" list, 22.5% of the email, and
+        "今日需关注", 9.0%). That requirement was dropped on purpose, so the
+        test now locks the removal in and checks the retained sections still
+        render.
+        """
         notifier = _make_notifier()
         stock_data = pd.DataFrame(
             [{
@@ -263,12 +272,16 @@ class TestDailyModeEmail:
 
         html = notifier._build_email_body([], stock_data, daily_mode=True)
 
-        assert "价格 / 锚点" in html
-        assert "锚值" in html
-        assert "基本面" in html
-        assert "技术面" in html
-        assert "MACD柱" in html
-        assert "601728" in html
+        assert "价格 / 锚点" not in html
+        assert "锚值" not in html
+        assert "基本面" not in html
+        assert "技术面" not in html
+        assert "MACD柱" not in html
+        # retained sections must still be there
+        assert "今日摘要" in html
+        assert "策略信号与组合表现" in html
+        assert "未解禁定增" in html
+        assert "近期公告" in html
 
     def test_daily_weekly_nav_uses_boxplot_and_hides_holdings(self):
         notifier = _make_notifier()

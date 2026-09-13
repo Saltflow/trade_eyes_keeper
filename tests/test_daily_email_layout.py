@@ -109,7 +109,11 @@ def test_daily_alert_and_empty_paths_share_one_mobile_document(monkeypatch):
         assert "daily-node-01" in body
         assert "203.0.113.8" in body
         assert "监控标的" in body
-        assert "价格 / 锚点" in body
+        # 2026-09: the two bulk card lists ("今日需关注" and
+        # "监控标的 · 全部(价格 / 锚点)") were removed from the daily mail, so
+        # assert they stay gone instead of asserting their headings exist.
+        assert "价格 / 锚点" not in body
+        assert "今日需关注" not in body
 
     assert alert_body.count("<html") == empty_body.count("<html") == 1
     assert alert_body.find("策略信号与组合表现") >= 0
@@ -144,7 +148,10 @@ def test_daily_data_is_escaped_and_reference_portfolio_stays_inside_document(mon
     soup = BeautifulSoup(body, "html.parser")
 
     assert soup.find("script") is None
-    assert "&lt;script&gt;" in body
+    # The escaping guarantee is unchanged, but its carrier moved: the stock
+    # cards that used to render stock_name were removed from the daily mail,
+    # so assert on the announcement title, which still carries provider text.
+    assert "&lt;b&gt;恶意公告&lt;/b&gt;" in body
     assert "javascript:" not in body
     assert 'href="https://example.com/notice"' in body
     assert body.find("参考持仓") < body.find("</html>")
