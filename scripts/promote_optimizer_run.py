@@ -25,6 +25,7 @@ from src.search.artifacts import (
     OptimizerGroupSummary,
     ACTIVE_SCHEMA_VERSION,
     _artifact_matches_entry,
+    _artifact_path,
     _manifest_entry,
     load_latest_strategy_run,
     publish_complete_run,
@@ -78,7 +79,9 @@ def promote_optimizer_run(run_id: str, group: str) -> dict[str, object]:
     entry = _manifest_entry(manifest, group)
     if entry is None:
         raise ValueError("candidate market entry is incomplete")
-    artifact_path = ROOT / str(entry["artifact"])
+    artifact_path = _artifact_path(OPTIMIZER_ROOT, str(entry["artifact"]))
+    if artifact_path is None:
+        raise ValueError("candidate artifact path is invalid")
     artifact = _load_yaml(artifact_path)
     if not _artifact_matches_entry(artifact, entry, group):
         raise ValueError("candidate artifact does not match its market contract")

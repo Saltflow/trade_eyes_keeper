@@ -237,7 +237,7 @@ def test_evaluation_honors_requested_backtest_dates():
 
 
 def test_optimizer_command_rejects_strategy_and_preset_arguments():
-    command = parse_command("/optimize builder fast")
+    command = parse_command("/optimize percentile fast")
 
     assert isinstance(command, ErrorCommand)
     assert "不接受参数" in command.message
@@ -304,11 +304,11 @@ def test_latest_complete_manifest_selects_newest_timestamp(tmp_path):
         )
 
     make_run("old", "2026-07-26T01:00:00", "percentile")
-    make_run("new", "2026-07-26T02:00:00", "builder")
+    make_run("new", "2026-07-26T02:00:00", "simplified")
 
     active = load_latest_strategy_run(groups=groups, root=tmp_path)
     assert active is not None
-    assert active.strategy_name == "builder"
+    assert active.strategy_name == "simplified"
     assert active.run_id == "new"
     assert active.params_by_group["hk"].values == {"signal": 1}
     assert active.selection_by_group["a_share"] == {
@@ -418,6 +418,12 @@ def test_interactive_backtest_uses_unified_evaluator(monkeypatch):
         handlers,
         "_load_config",
         lambda: {"optimizer": {"markets": {}}},
+    )
+    # This case is about an unactivated market, so it must not depend on
+    # whatever optimizer pointer happens to exist on the machine.
+    monkeypatch.setattr(
+        "src.search.artifacts.load_latest_strategy_run",
+        lambda *args, **kwargs: None,
     )
     result = handlers.handle_backtest("600000", "2024-01-01", "2024-04-30")
     assert result.startswith("❌")

@@ -86,6 +86,46 @@ def _candidate(
     )
 
 
+def _legacy_market(root, run_id, group, strategy="percentile"):
+    """Write one pre-v4 market artifact and return its index-relative path."""
+    run_dir = root / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    artifact = run_dir / f"{group}_best_params.yaml"
+    artifact.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 2,
+                "group": group,
+                "strategy_id": strategy,
+                "params": {"adx_min": 1},
+                "execution": {"model": "cash_cap"},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return f"runs/{run_id}/{artifact.name}"
+
+
+def _legacy_pointer(root, run_id, artifacts, strategy="percentile"):
+    """Write one pre-v4 pointer that names an artifact per market."""
+    pointers = {group: {"artifact": path} for group, path in artifacts.items()}
+    (root / "latest_strategy.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 2,
+                "activated": True,
+                "run_id": run_id,
+                "strategy": strategy,
+                "timestamp": "2026-07-30T04:11:38.145386",
+                "groups": pointers,
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_market_activation_is_independent_and_preserves_other_pointers(tmp_path):
     for group in GROUPS:
         assert _candidate(tmp_path, f"baseline_{group}", group)
@@ -157,3 +197,92 @@ def test_activate_run_cli_requires_market_group():
     args = parser.parse_args(["--activate-run", "candidate"])
     assert args.activate_run == "candidate"
     assert args.market_group is None
+
+
+def test_legacy_pointer_still_resolves_every_market(tmp_path):
+    artifacts = {
+        group: _legacy_market(tmp_path, "legacy_run", group) for group in GROUPS
+    }
+    _legacy_pointer(tmp_path, "legacy_run", artifacts)
+
+    active = load_latest_strategy_run(groups=GROUPS, root=tmp_path)
+
+    assert active is not None
+    assert active.run_id == "legacy_run"
+    for group in GROUPS:
+        assert active.strategy_for(group).name == "percentile"
+        assert active.run_id_for(group) == "legacy_run"
+        assert active.params_by_group[group].values == {"adx_min": 1}
+        assert active.solver_by_group[group] == ""
+        assert active.config_hash_by_group[group] == ""
+
+
+def test_activation_carries_legacy_markets_forward(tmp_path):
+    artifacts = {
+        group: _legacy_market(tmp_path, "legacy_run", group) for group in GROUPS
+    }
+    _legacy_pointer(tmp_path, "legacy_run", artifacts)
+
+    assert _candidate(tmp_path, "candidate_a", "a_share", "technical_ensemble")
+    assert activate_run("candidate_a", group="a_share", root=tmp_path)
+
+    index = yaml.safe_load(
+        (tmp_path / "latest_strategy.yaml").read_text(encoding="utf-8")
+    )
+    assert index["schema_version"] == 4
+    assert index["groups"]["a_share"]["run_id"] == "candidate_a"
+    assert index["groups"]["hk"]["artifact"] == artifacts["hk"]
+    assert index["groups"]["hk"]["legacy"] is True
+
+    active = load_latest_strategy_run(groups=GROUPS, root=tmp_path)
+    assert active is not None
+    assert active.strategy_for("a_share").name == "technical_ensemble"
+    assert active.strategy_for("hk").name == "percentile"
+    assert active.strategy_for("us").name == "percentile"
+
+
+def _annotate_activation(root, run_id, group, **fields):
+    """Rewrite one candidate's activation block the way promotion does."""
+    artifact = root / "runs" / run_id / f"{group}_best_params.yaml"
+    data = yaml.safe_load(artifact.read_text(encoding="utf-8"))
+    data["activation"].update(fields)
+    artifact.write_text(
+        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def test_relative_promotion_overrides_a_failing_holdout(tmp_path):
+    assert _candidate(
+        tmp_path,
+        "relative_passed",
+        "a_share",
+        holdout_excesses=[-1.0, -2.0, -0.5, -3.0],
+    )
+    _annotate_activation(
+        tmp_path,
+        "relative_passed",
+        "a_share",
+        eligible=True,
+        relative_promotion_passed=True,
+    )
+
+    assert activate_run("relative_passed", group="a_share", root=tmp_path)
+    assert load_latest_strategy_run(groups=("a_share",), root=tmp_path) is not None
+
+
+def test_failing_holdout_without_relative_evidence_cannot_activate(tmp_path):
+    assert _candidate(
+        tmp_path,
+        "no_relative_evidence",
+        "a_share",
+        holdout_excesses=[-1.0, -2.0, -0.5, -3.0],
+    )
+    _annotate_activation(
+        tmp_path,
+        "no_relative_evidence",
+        "a_share",
+        eligible=True,
+    )
+
+    assert not activate_run("no_relative_evidence", group="a_share", root=tmp_path)

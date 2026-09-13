@@ -27,6 +27,11 @@ OPTIMIZER_ROOT = Path("data/optimizer")
 RUNS_DIRNAME = "runs"
 LATEST_MANIFEST = "latest_strategy.yaml"
 ACTIVE_SCHEMA_VERSION = 4
+# Pre-v4 pointers name one artifact per market and declare no solver, Gate
+# Profile, or market-config hash.  They stay readable so an installation whose
+# last search predates that contract is not silently left without a strategy.
+LEGACY_SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSIONS = (LEGACY_SCHEMA_VERSION, ACTIVE_SCHEMA_VERSION)
 MARKET_GROUPS = ("a_share", "hk", "us")
 
 
@@ -516,10 +521,23 @@ def _load_yaml(path: Path) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
+def _manifest_schema_version(manifest: dict) -> int:
+    """Return one pointer's declared schema version, never raising on junk."""
+    try:
+        return int(manifest.get("schema_version", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _load_active_manifest(
     root: Path,
     run_id: str | None = None,
 ) -> tuple[Path, dict] | None:
+    """Return an activated pointer that this build knows how to read.
+
+    A v4 index is the current contract.  A legacy pointer is still accepted so
+    its markets resolve as legacy entries instead of disappearing.
+    """
     if run_id is not None:
         path = root / RUNS_DIRNAME / run_id / "manifest.yaml"
         manifest = _load_yaml(path)
@@ -527,7 +545,7 @@ def _load_active_manifest(
             not manifest
             or not manifest.get("activated")
             or str(manifest.get("run_id", "")) != run_id
-            or int(manifest.get("schema_version", 0) or 0) != ACTIVE_SCHEMA_VERSION
+            or _manifest_schema_version(manifest) not in SUPPORTED_SCHEMA_VERSIONS
         ):
             return None
         return path, manifest
@@ -536,7 +554,7 @@ def _load_active_manifest(
     if (
         not manifest
         or not manifest.get("activated")
-        or int(manifest.get("schema_version", 0) or 0) != ACTIVE_SCHEMA_VERSION
+        or _manifest_schema_version(manifest) not in SUPPORTED_SCHEMA_VERSIONS
     ):
         return None
     return path, manifest
@@ -607,6 +625,57 @@ def _artifact_matches_entry(data: dict, entry: dict, group: str) -> bool:
     )
 
 
+def _legacy_manifest_entry(manifest: dict, group: str) -> dict | None:
+    """Return a market entry that declares no market contract.
+
+    Legacy pointers name one artifact per market under a run-wide strategy, and
+    legacy entries carried into a v4 index keep that shape.  Such an entry is
+    still tied to an existing run and artifact, so it can be read and carried
+    forward without inventing a solver, Gate Profile, or config hash.
+    """
+    entries = manifest.get("groups")
+    if not isinstance(entries, dict):
+        return None
+    entry = entries.get(group)
+    if not isinstance(entry, dict):
+        return None
+    artifact = str(entry.get("artifact", "")).strip()
+    strategy = str(entry.get("strategy") or manifest.get("strategy") or "").strip()
+    run_id = str(entry.get("run_id") or manifest.get("run_id") or "").strip()
+    if not artifact or not strategy or not run_id:
+        return None
+    if str(entry.get("group", group)) != group:
+        return None
+    if Path(run_id).name != run_id:
+        return None
+    if get_strategy(strategy) is None or strategy == "mixed":
+        return None
+    parts = Path(artifact).parts
+    if len(parts) < 3 or Path(*parts[:2]) != Path(RUNS_DIRNAME) / run_id:
+        return None
+    return {
+        "group": group,
+        "run_id": run_id,
+        "artifact": artifact,
+        "strategy": strategy,
+        "solver_id": str(entry.get("solver_id", "")),
+        "gate_profile": str(entry.get("gate_profile", "")),
+        "config_hash": str(entry.get("config_hash", "")),
+        "legacy": True,
+    }
+
+
+def _artifact_matches_legacy_entry(data: dict, entry: dict, group: str) -> bool:
+    """Require a legacy artifact to agree on the market and the strategy only."""
+    if not isinstance(data, dict) or int(data.get("schema_version", 0) or 0) != 2:
+        return False
+    if str(data.get("group", "")) != group:
+        return False
+    if str(data.get("strategy_id", "")) != str(entry.get("strategy", "")):
+        return False
+    return isinstance(data.get("execution"), dict)
+
+
 def load_latest_strategy_run(
     groups: tuple[str, ...] = MARKET_GROUPS,
     root: Path | str | None = None,
@@ -623,9 +692,6 @@ def load_latest_strategy_run(
     if not found:
         return None
     _manifest_path, manifest = found
-    if int(manifest.get("schema_version", 0) or 0) != ACTIVE_SCHEMA_VERSION:
-        logger.warning("Ignoring unsupported optimizer manifest schema")
-        return None
     requested = tuple(dict.fromkeys(groups))
     if not requested or any(group not in MARKET_GROUPS for group in requested):
         return None
@@ -638,6 +704,9 @@ def load_latest_strategy_run(
     selection_by_group: dict[str, dict[str, object]] = {}
     for group in requested:
         entry = _manifest_entry(manifest, group)
+        legacy_entry = entry is None
+        if legacy_entry:
+            entry = _legacy_manifest_entry(manifest, group)
         if entry is None:
             logger.info("No active optimizer artifact for market %s", group)
             return None
@@ -645,7 +714,11 @@ def load_latest_strategy_run(
         if path is None:
             return None
         data = _load_yaml(path)
-        if not _artifact_matches_entry(data or {}, entry, group):
+        if legacy_entry:
+            matched = _artifact_matches_legacy_entry(data or {}, entry, group)
+        else:
+            matched = _artifact_matches_entry(data or {}, entry, group)
+        if not matched:
             logger.warning(
                 "Ignoring artifact whose market contract does not match %s",
                 group,
@@ -655,8 +728,8 @@ def load_latest_strategy_run(
         if params is None:
             return None
         strategy_by_group[group] = str(entry["strategy"])
-        solver_by_group[group] = str(entry["solver_id"])
-        config_hash_by_group[group] = str(entry["config_hash"])
+        solver_by_group[group] = str(entry.get("solver_id", ""))
+        config_hash_by_group[group] = str(entry.get("config_hash", ""))
         run_ids_by_group[group] = str(entry["run_id"])
         params_by_group[group] = params
         period = (data or {}).get("validation_period", {})
@@ -849,10 +922,15 @@ def activate_run(
                 holdout_excesses = []
                 break
             holdout_excesses.append(excess)
-    if (
-        not isinstance(activation, dict)
-        or not activation.get("eligible")
-        or not activation.get("holdout_passed")
+    if not isinstance(activation, dict) or not activation.get("eligible"):
+        logger.warning("%s candidate artifact is not eligible", group)
+        return False
+    # A recorded relative promotion already compared this candidate with the
+    # active incumbent on one frozen slice, so the absolute holdout requirement
+    # is not additionally imposed on it.
+    relative_promotion = bool(activation.get("relative_promotion_passed"))
+    if not relative_promotion and (
+        not activation.get("holdout_passed")
         or not holdout_excesses
         or not all(excess > 0.0 for excess in holdout_excesses)
     ):
@@ -864,21 +942,25 @@ def activate_run(
         return False
 
     current = _load_active_manifest(base)
+    activated_entries: dict[str, dict] = {}
     if current is not None:
         _, current_manifest = current
-        if int(current_manifest.get("schema_version", 0) or 0) != ACTIVE_SCHEMA_VERSION:
-            logger.warning("Existing active manifest is not a v4 market index")
-            return False
         current_entries = current_manifest.get("groups", {})
         if not isinstance(current_entries, dict):
             return False
-        activated_entries = {
-            key: dict(value)
-            for key, value in current_entries.items()
-            if isinstance(value, dict)
-        }
-    else:
-        activated_entries = {}
+        for key, value in current_entries.items():
+            if not isinstance(value, dict):
+                logger.warning("Active index entry %s is not a mapping", key)
+                return False
+            carried = _manifest_entry(current_manifest, key)
+            if carried is None:
+                carried = _legacy_manifest_entry(current_manifest, key)
+            if carried is None:
+                logger.warning(
+                    "Active index entry %s cannot be carried forward", key
+                )
+                return False
+            activated_entries[key] = carried
     activated_entry = dict(entry)
     activated_entry["activated_at"] = datetime.now().isoformat()
     activated_entries[group] = activated_entry

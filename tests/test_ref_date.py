@@ -50,9 +50,15 @@ class TestRefDateHandler:
         r = handle_ref_date()
         assert "未设置" in r
 
-    def test_set_and_show(self):
+    def test_set_and_show(self, monkeypatch):
         from src.interactive.commands.handlers import handle_ref_date
 
+        # This case is about having nothing to bind, so it must not depend on
+        # whatever optimizer pointer happens to exist on the machine.
+        monkeypatch.setattr(
+            "src.search.artifacts.load_latest_strategy_run",
+            lambda *args, **kwargs: None,
+        )
         r = handle_ref_date("2026-07-14")
         assert "没有可绑定" in r
         assert "2026-07-14" not in handle_ref_date()
