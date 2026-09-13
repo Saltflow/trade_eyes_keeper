@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from src.backtest.engine import IDX_CLOSE
-from src.strategy.plugins.builder import _build_absolute_discount
+from src.strategy.plugins.condition_builders import _build_absolute_discount
 
 
 def _indicators(close: list[float]) -> np.ndarray:

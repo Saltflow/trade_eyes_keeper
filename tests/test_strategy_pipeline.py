@@ -51,7 +51,7 @@ class TestAllStrategiesPlugIntoPipeline:
     def real_stocks_data(self):
         return _load_real_data()
 
-    @pytest.mark.parametrize("strategy_name", ["percentile", "builder", "simplified"])
+    @pytest.mark.parametrize("strategy_name", ["percentile", "simplified"])
     def test_produces_valid_report(self, real_stocks_data, strategy_name):
         strategy = get_strategy(strategy_name)
         if strategy is None:

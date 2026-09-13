@@ -8,7 +8,6 @@ from src.backtest.engine import FastEvaluator
 from src.strategy.features import TECHNICAL_FEATURES
 from src.strategy import Params, StrategyMarketData, TradePlan
 from src.strategy import get_strategy
-from src.strategy.plugins.builder import SELL_BUILDER_NAMES
 
 
 def _indicators(rows=300, columns=2):
@@ -95,11 +94,6 @@ def test_technical_ensemble_batch_plan_equals_scalar_and_ignores_fundamentals():
     np.testing.assert_array_equal(scalar.sell_signals, batched.sell_signals)
     np.testing.assert_allclose(scalar.buy_priority, batched.buy_priority)
     np.testing.assert_allclose(scalar.sell_priority, batched.sell_priority)
-
-
-def test_builder_sell_pool_is_explicit_and_contains_profit_taking():
-    assert "deep_value" not in SELL_BUILDER_NAMES
-    assert "sell_profit_taking" in SELL_BUILDER_NAMES
 
 
 def _plan(buy_day: int, sell_day: int, rows: int = 40) -> TradePlan:

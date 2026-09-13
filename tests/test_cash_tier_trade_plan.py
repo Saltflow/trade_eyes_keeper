@@ -100,7 +100,7 @@ def test_buy_and_sell_use_independent_cash_caps_and_holding_period():
 
 
 def test_registered_strategies_have_only_shared_cash_tier_execution_dims():
-    for name in ("percentile", "builder", "simplified"):
+    for name in ("percentile", "simplified"):
         strategy = get_strategy(name)
         names = [dim.name for dim in strategy.param_space.dims]
         assert "buy_cash_tier" in names

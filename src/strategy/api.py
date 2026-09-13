@@ -221,7 +221,7 @@ class EvaluationReport:
     """单组策略评估完整报告 — 邮件/IM 渲染段的唯一数据源"""
 
     group: str  # "a_share" / "hk" / "us"
-    engine_name: str  # "percentile" / "builder" / "simplified"
+    engine_name: str  # Registered strategy ID
     strategy_label: str  # "分位评分"
     timestamp: str  # "2026-07-25T19:00:00"
 

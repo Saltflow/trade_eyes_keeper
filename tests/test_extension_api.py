@@ -32,8 +32,8 @@ def test_public_strategy_api_and_automatic_discovery():
         "to_human_readable",
     }
     assert list_strategy_ids() == (
-        "builder",
         "capm_dcf_value",
+        "justified_pb_value",
         "ma60_band",
         "percentile",
         "regime_pullback",

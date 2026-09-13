@@ -33,7 +33,7 @@ def _params(strategy) -> Params:
     )
 
 
-@pytest.mark.parametrize("strategy_id", ["builder", "percentile", "simplified"])
+@pytest.mark.parametrize("strategy_id", ["percentile", "simplified"])
 def test_registered_strategy_returns_canonical_trade_plan(strategy_id: str):
     strategy = get_strategy(strategy_id)
     market_data = _market_data()

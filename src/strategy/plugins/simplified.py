@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..api import ArraySignalStrategy, ParamDim, Params, ParamSpace
 from ..registry import register_strategy
-from ..api import ArraySignalStrategy, ParamDim, ParamSpace, Params
 
 THRESHOLD_LEVELS_SIMP = 10
 NUM_BUY_RULES = 5
@@ -58,16 +58,17 @@ class SimplifiedStrategy(ArraySignalStrategy):
         return np.zeros((T, N, 2), dtype=np.float32)
 
     def signal_arrays(self, params: Params, indicator_matrix: np.ndarray):
-        """Params → builder名/阈值 → CONDITION_BUILDERS_FAST → lock/reset/confirm → bool信号。
-        与 builder 策略共用相同的信号生成管道，区别仅在于限额 vs 比例。
+        """Params → 条件名/阈值 → CONDITION_BUILDERS_FAST → lock/reset/confirm → bool信号。
+        使用共享的信号生成管道，区别仅在于限额 vs 比例。
         """
         import numpy as np
-        from .builder import CONDITION_BUILDERS_FAST
+
         from ...backtest.engine import (
             _apply_confirmation,
             _apply_lock_reset,
             _apply_lock_reset_numba,
         )
+        from .condition_builders import CONDITION_BUILDERS_FAST
 
         try:
             import numba  # noqa: F401

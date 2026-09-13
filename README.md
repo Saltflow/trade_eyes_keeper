@@ -69,7 +69,7 @@ src/
 ├── strategy/          # TradingStrategy API、自动注册表和具体投资策略插件
 │   ├── api.py         # StrategyMarketData / TradePlan / TradingStrategy
 │   ├── registry.py    # 自动发现 plugins/，无需中央策略字典
-│   └── plugins/       # builder / percentile / regime_pullback / ...
+│   └── plugins/       # percentile / regime_pullback / ...
 ├── search/            # Solver API、搜索编排、Gate、验证和产物
 │   ├── api.py         # Candidate / SearchProblem / Solver 稳定公共合同
 │   ├── controller.py  # Solver 无关的 ask/tell 编排

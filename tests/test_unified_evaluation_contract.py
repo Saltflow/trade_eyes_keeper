@@ -31,7 +31,6 @@ def test_every_registered_strategy_returns_trade_plan():
     )
     for strategy_id in (
         "percentile",
-        "builder",
         "simplified",
         "regime_pullback",
     ):
