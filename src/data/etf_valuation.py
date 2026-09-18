@@ -33,6 +33,8 @@ VANGUARD_HOLDINGS_URL = (
 )
 YAHOO_QUOTE_URL = "https://finance.yahoo.com/quote/{ticker}/"
 NIKKEI_DATA_URL = "https://indexes.nikkei.co.jp/nkave/archives/data?list={metric}"
+NASDAQ100_FALLBACK_URL = "https://chartrow.com/nasdaq-100/pe-ratio"
+NIKKEI_FALLBACK_URL = "https://nikkeiyosoku.com/nikkeiper/"
 
 MIN_COVERAGE = 0.80
 QQ_BATCH_SIZE = 200
@@ -179,45 +181,91 @@ class ETFValuationResolver:
     def _resolve_yahoo_fund(
         self, reference: ETFValuationReference
     ) -> Optional[Dict[str, Optional[float]]]:
-        response = self._get(YAHOO_QUOTE_URL.format(ticker=reference.yahoo_ticker))
-        soup = BeautifulSoup(response.text, "html.parser")
-        result = None
-        for tag in soup.find_all("script", type="application/json"):
-            text = tag.string or ""
-            if "topHoldings" not in text:
-                continue
-            outer = json.loads(text)
-            body = outer.get("body")
-            if not isinstance(body, str):
-                continue
-            candidate = json.loads(body).get("quoteSummary", {}).get("result", [])
-            if candidate:
-                result = candidate[0]
-                break
-        if not isinstance(result, dict):
-            raise ValueError("Yahoo 未返回 ETF 成分估值")
+        try:
+            response = self._get(
+                YAHOO_QUOTE_URL.format(ticker=reference.yahoo_ticker)
+            )
+            soup = BeautifulSoup(response.text, "html.parser")
+            result = None
+            for tag in soup.find_all("script", type="application/json"):
+                text = tag.string or ""
+                if "topHoldings" not in text:
+                    continue
+                outer = json.loads(text)
+                body = outer.get("body")
+                if not isinstance(body, str):
+                    continue
+                candidate = json.loads(body).get("quoteSummary", {}).get("result", [])
+                if candidate:
+                    result = candidate[0]
+                    break
+            if not isinstance(result, dict):
+                raise ValueError("Yahoo 未返回 ETF 成分估值")
 
-        holdings = result.get("topHoldings", {}).get("equityHoldings", {})
-        earnings_yield = _positive_ratio(
-            (holdings.get("priceToEarnings") or {}).get("raw"), 1.0
-        )
-        book_yield = _positive_ratio(
-            (holdings.get("priceToBook") or {}).get("raw"), 1.0
-        )
-        trailing_pe = _positive_ratio(
-            (result.get("summaryDetail", {}).get("trailingPE") or {}).get("raw"),
-            1000.0,
-        )
-        pe = trailing_pe or (1.0 / earnings_yield if earnings_yield else None)
-        pb = 1.0 / book_yield if book_yield else None
-        return self._result(pe, pb, f"公开基金成分股聚合 · {reference.label}")
+            holdings = result.get("topHoldings", {}).get("equityHoldings", {})
+            earnings_yield = _positive_ratio(
+                (holdings.get("priceToEarnings") or {}).get("raw"), 1.0
+            )
+            book_yield = _positive_ratio(
+                (holdings.get("priceToBook") or {}).get("raw"), 1.0
+            )
+            trailing_pe = _positive_ratio(
+                (result.get("summaryDetail", {}).get("trailingPE") or {}).get(
+                    "raw"
+                ),
+                1000.0,
+            )
+            pe = trailing_pe or (1.0 / earnings_yield if earnings_yield else None)
+            pb = 1.0 / book_yield if book_yield else None
+            return self._result(pe, pb, f"公开基金成分股聚合 · {reference.label}")
+        except Exception as exc:
+            logger.info("Yahoo QQQ 估值不可用，改用Nasdaq-100公开汇总: %s", exc)
+            return self._resolve_nasdaq100_fallback(reference)
+
+    def _resolve_nasdaq100_fallback(
+        self, reference: ETFValuationReference
+    ) -> Optional[Dict[str, Optional[float]]]:
+        response = self._get(NASDAQ100_FALLBACK_URL)
+        text = BeautifulSoup(response.text, "html.parser").get_text(" ", strip=True)
+        pe_match = re.search(r"Nasdaq-100 P/E ratio:\s*(\d+(?:\.\d+)?)", text)
+        pb_match = re.search(r"Price/Book\s*(\d+(?:\.\d+)?)", text)
+        pe = _positive_ratio(pe_match.group(1) if pe_match else None, 1000.0)
+        pb = _positive_ratio(pb_match.group(1) if pb_match else None, 100.0)
+        return self._result(pe, pb, f"Nasdaq-100公开汇总 · {reference.label}")
 
     def _resolve_nikkei(
         self, reference: ETFValuationReference
     ) -> Optional[Dict[str, Optional[float]]]:
-        pe = self._nikkei_latest("per")
-        pb = self._nikkei_latest("pbr")
-        return self._result(pe, pb, f"日经官方指数统计 · {reference.label}")
+        try:
+            pe = self._nikkei_latest("per")
+            pb = self._nikkei_latest("pbr")
+            return self._result(pe, pb, f"日经官方指数统计 · {reference.label}")
+        except Exception as exc:
+            logger.info("日经官方指数统计不可用，改用公开日度表: %s", exc)
+            return self._resolve_nikkei_fallback(reference)
+
+    def _resolve_nikkei_fallback(
+        self, reference: ETFValuationReference
+    ) -> Optional[Dict[str, Optional[float]]]:
+        response = self._get(NIKKEI_FALLBACK_URL)
+        # The provider's historical rows use malformed ``<trclass>`` opening
+        # tags and normal ``</tr>`` closers.  Parse those source fragments
+        # explicitly instead of relying on an HTML parser to repair them.
+        fragments = re.findall(
+            r"<trclass[^>]*>(.*?)(?:</tr>|</trclass>)",
+            response.text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        for fragment in fragments:
+            row = BeautifulSoup(fragment, "html.parser")
+            cells = [cell.get_text(" ", strip=True) for cell in row.select("td")]
+            if len(cells) < 5:
+                continue
+            pe = _positive_ratio(cells[3], 1000.0)
+            pb = _positive_ratio(cells[4], 100.0)
+            if pe is not None and pb is not None:
+                return self._result(pe, pb, f"日经公开日度表 · {reference.label}")
+        raise ValueError("日经公开日度表没有可用 PER/PBR 行")
 
     def _nikkei_latest(self, metric: str) -> Optional[float]:
         response = self._get(NIKKEI_DATA_URL.format(metric=metric))
@@ -318,7 +366,9 @@ class ETFValuationResolver:
     def _result(
         pe: Optional[float], pb: Optional[float], source: str
     ) -> Optional[Dict[str, Optional[float]]]:
-        if pe is None and pb is None:
+        # ETF display is a paired valuation contract: presenting PE without
+        # its matching PB is less interpretable than an explicit no-data row.
+        if pe is None or pb is None:
             return None
         return {
             "pe_ratio": pe,
