@@ -234,7 +234,7 @@ class TestDailyModeEmail:
         )
         assert "股票日报" in html or "股票提醒" in html or "<html" in html.lower()
 
-    def test_daily_mode_uses_compact_price_anchor_matrix(self):
+    def test_daily_mode_uses_compact_valuation_matrix(self):
         notifier = _make_notifier()
         stock_data = pd.DataFrame(
             [{
@@ -263,16 +263,23 @@ class TestDailyModeEmail:
         html = notifier._build_email_body([], stock_data, daily_mode=True)
 
         assert "完整行情矩阵" in html
-        assert "锚值" in html
+        assert "PE" in html
+        assert "PB" in html
+        assert "隐含 Ke" in html
+        assert "1 ÷ PE + 2%" in html
         assert "601728" in html
         assert "6.20" in html
+        assert "15.0" in html
+        assert "1.10" in html
+        assert "8.7%" in html
+        assert "锚值" not in html
         assert "基本面" not in html
         assert "技术面" not in html
         assert "MACD柱" not in html
         assert "三市场决策板" in html
         assert "参考持仓" not in html
 
-    def test_daily_weekly_nav_uses_boxplot_and_hides_holdings(self):
+    def test_daily_email_omits_weekly_nav_and_hides_holdings(self):
         notifier = _make_notifier()
         position = {
             "code": "601728", "shares": 1000, "cost": 10.0,
@@ -289,14 +296,16 @@ class TestDailyModeEmail:
             },
             final_holdings=[position],
         )
-        section = notifier._build_daily_nav_boxplot_section({"a_share": report})
+        html = notifier._build_email_body(
+            [], pd.DataFrame(), daily_mode=True, evaluation_reports={"a_share": report}
+        )
 
-        assert "周 NAV 箱线图" in section
-        assert "nav-boxplot" in section
-        assert "2026-W01" not in section
-        assert "2026-W01 100500" not in section
-        assert "期末持仓" not in section
-        assert "1000股" not in section
+        assert "周 NAV 箱线图" not in html
+        assert "nav-boxplot" not in html
+        assert "2026-W01" not in html
+        assert "2026-W01 100500" not in html
+        assert "期末持仓" not in html
+        assert "1000股" not in html
 
     def test_daily_reference_portfolio_hides_holding_details(self):
         notifier = _make_notifier()

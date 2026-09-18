@@ -938,6 +938,13 @@ class EmailNotifier(BaseNotifier):
             return None
         return number if np.isfinite(number) else None
 
+    def _daily_implied_ke(self, pe_ratio):
+        """Return implied Ke in percentage points from TTM EPS yield and g=2%."""
+        pe = self._daily_number(pe_ratio)
+        if pe is None or pe <= 0:
+            return None
+        return 100.0 * (0.02 + 1.0 / pe)
+
     def _daily_alert_code_sets(self, alert_stocks, signal_scan=None):
         alert_codes = set()
         for alert in alert_stocks or []:
@@ -981,6 +988,8 @@ class EmailNotifier(BaseNotifier):
                     "name": name,
                     "group": group,
                     "entry": entry,
+                    "pe_ratio": source_row.get("pe_ratio"),
+                    "pb_ratio": source_row.get("pb_ratio"),
                     "status": "策略" if has_signal else "预警" if has_alert else "",
                     "priority": priority,
                     "sort_key": entry.get("sort_key", float("inf"))
@@ -1114,21 +1123,22 @@ class EmailNotifier(BaseNotifier):
                 f'<div class="group-heading">{_html_escape(labels[group])} · {len(rows)}只</div>'
                 '<table role="presentation" class="watchlist-table">'
                 '<thead><tr><th>标的</th><th class="mobile-hide">开盘</th><th>收盘</th>'
-                '<th class="mobile-hide">锚点</th><th class="mobile-hide">锚值</th>'
-                '<th>偏离</th></tr></thead><tbody>'
+                '<th>PE</th><th class="mobile-hide">PB</th><th>隐含 Ke</th></tr></thead><tbody>'
             )
             for row in rows:
                 entry = row["entry"]
                 if entry is None:
-                    open_text = close_text = anchor_name = anchor_value = deviation = "—"
+                    open_text = close_text = pe_text = pb_text = implied_ke_text = "—"
                     row_class = " watch-row-stale"
                     status = '<span class="status-badge status-stale">未就绪</span>'
                 else:
                     open_text = self._daily_metric(entry.get("open"), "", 2)
                     close_text = self._daily_metric(entry.get("close"), "", 2)
-                    anchor_name = str(entry.get("anchor_name", "—"))
-                    anchor_value = self._daily_metric(entry.get("anchor_val"), "", 2)
-                    deviation = str(entry.get("dev_str", "—"))
+                    pe_text = self._daily_metric(row.get("pe_ratio"), "", 1)
+                    pb_text = self._daily_metric(row.get("pb_ratio"), "", 2)
+                    implied_ke_text = self._daily_metric(
+                        self._daily_implied_ke(row.get("pe_ratio")), "%", 1
+                    )
                     row_class = " watch-row-action" if row["status"] else ""
                     status = (
                         f'<span class="status-badge status-signal">策略</span>'
@@ -1137,24 +1147,21 @@ class EmailNotifier(BaseNotifier):
                         if row["status"] == "预警"
                         else ""
                     )
-                deviation_color = (
-                    "metric-negative"
-                    if deviation.startswith("-")
-                    else "metric-positive"
-                    if deviation.startswith("+")
-                    else ""
-                )
                 sections.append(
                     f'<tr class="{row_class.strip()}"><td class="watch-instrument">'
                     f'<strong>{_html_escape(row["code"])}</strong><span>'
                     f'{_html_escape(row["name"])}</span>{status}</td>'
                     f'<td class="mobile-hide">{_html_escape(open_text)}</td>'
                     f'<td>{_html_escape(close_text)}</td>'
-                    f'<td class="mobile-hide">{_html_escape(anchor_name)}</td>'
-                    f'<td class="mobile-hide">{_html_escape(anchor_value)}</td>'
-                    f'<td class="{deviation_color}">{_html_escape(deviation)}</td></tr>'
+                    f'<td>{_html_escape(pe_text)}</td>'
+                    f'<td class="mobile-hide">{_html_escape(pb_text)}</td>'
+                    f'<td>{_html_escape(implied_ke_text)}</td></tr>'
                 )
             sections.append("</tbody></table>")
+        sections.append(
+            '<div class="muted-note">隐含 Ke = TTM 每股收益 ÷ 收盘价 + 2% '
+            '（即 1 ÷ PE + 2%；PE≤0 或缺失时不显示）。</div>'
+        )
         sections.append("</section>")
         return "".join(sections)
 
@@ -1195,118 +1202,6 @@ class EmailNotifier(BaseNotifier):
         ):
             return None
         return {"summary": summary, "windows": windows}
-
-    def _build_daily_nav_boxplot(self, report, max_weeks: int = 6) -> str:
-        """Render a compact, email-safe weekly NAV boxplot.
-
-        The preferred source is the daily NAV series carried by
-        ``EvaluationReport``.  Older cached reports may only contain weekly
-        OHLC, so they get a deterministic OHLC-derived fallback instead of
-        expanding into a long text listing.
-        """
-        nav_dates = self._daily_get(report, "nav_dates", []) or []
-        nav_series = self._daily_get(report, "nav_series", []) or []
-        boxes = []
-
-        if len(nav_dates) == len(nav_series) and nav_dates:
-            frame = pd.DataFrame(
-                {
-                    "date": pd.to_datetime(nav_dates, errors="coerce"),
-                    "nav": pd.to_numeric(nav_series, errors="coerce"),
-                }
-            ).dropna()
-            frame = frame[np.isfinite(frame["nav"])]
-            if not frame.empty:
-                frame["week"] = frame["date"].dt.to_period("W-SUN")
-                for period, group in frame.groupby("week", sort=True):
-                    values = group["nav"].to_numpy(dtype=float)
-                    if not len(values):
-                        continue
-                    q1, median, q3 = np.percentile(values, [25, 50, 75])
-                    boxes.append(
-                        {
-                            "label": str(period),
-                            "low": float(np.min(values)),
-                            "q1": float(q1),
-                            "median": float(median),
-                            "q3": float(q3),
-                            "high": float(np.max(values)),
-                        }
-                    )
-
-        if not boxes:
-            weekly = self._daily_get(report, "weekly_nav_ohlc", {}) or {}
-            labels = weekly.get("labels", []) or []
-            opens = weekly.get("open", []) or []
-            highs = weekly.get("high", []) or []
-            lows = weekly.get("low", []) or []
-            closes = weekly.get("close", []) or []
-            count = min(len(labels), len(opens), len(highs), len(lows), len(closes))
-            for index in range(count):
-                try:
-                    opening = float(opens[index])
-                    closing = float(closes[index])
-                    low = float(lows[index])
-                    high = float(highs[index])
-                    values = [low, high, opening, closing]
-                    if not all(np.isfinite(value) for value in values):
-                        continue
-                    boxes.append(
-                        {
-                            "label": str(labels[index]),
-                            "low": min(values),
-                            "q1": min(opening, closing),
-                            "median": (opening + closing) / 2.0,
-                            "q3": max(opening, closing),
-                            "high": max(values),
-                        }
-                    )
-                except (TypeError, ValueError):
-                    continue
-
-        if not boxes:
-            return ""
-        boxes = boxes[-max_weeks:]
-        plot_low = min(item["low"] for item in boxes)
-        plot_high = max(item["high"] for item in boxes)
-        span = plot_high - plot_low
-        if not np.isfinite(span) or span <= 0:
-            span = 1.0
-            plot_low -= 0.5
-
-        def _top(value: float) -> str:
-            position = (plot_high - value) / span * 100.0
-            return f"{max(0.0, min(100.0, position)):.2f}%"
-
-        items = []
-        for item in boxes:
-            box_top = _top(item["q3"])
-            box_bottom = _top(item["q1"])
-            box_height = max(4.0, float(box_bottom[:-1]) - float(box_top[:-1]))
-            whisker_top = _top(item["high"])
-            whisker_height = max(
-                2.0,
-                float(_top(item["low"])[:-1]) - float(whisker_top[:-1]),
-            )
-            items.append(
-                '<div class="nav-boxplot-item">'
-                '<div class="nav-boxplot-plot">'
-                f'<span class="nav-boxplot-whisker" style="top:{whisker_top};height:{whisker_height:.2f}%"></span>'
-                f'<span class="nav-boxplot-cap nav-boxplot-cap-top" style="top:{whisker_top}"></span>'
-                f'<span class="nav-boxplot-cap nav-boxplot-cap-bottom" style="top:{_top(item["low"])}"></span>'
-                f'<span class="nav-boxplot-box" style="top:{box_top};height:{box_height:.2f}%"></span>'
-                f'<span class="nav-boxplot-median" style="top:{_top(item["median"])}"></span>'
-                '</div>'
-                '</div>'
-            )
-        return (
-            '<div class="nav-boxplot-card">'
-            '<div class="nav-boxplot" role="img" aria-label="最近六周 NAV 箱线图">'
-            + "".join(items)
-            + "</div>"
-            '</div>'
-        )
-
 
     def _build_daily_announcements_section(self, announcements):
         if not announcements:
@@ -1487,29 +1382,6 @@ class EmailNotifier(BaseNotifier):
             parts.append("</div>")
         parts.append("</section>")
         return "".join(parts)
-
-    def _build_daily_nav_boxplot_section(self, evaluation_reports) -> str:
-        reports = evaluation_reports if isinstance(evaluation_reports, dict) else {}
-        labels = {"a_share": "A股", "hk": "港股", "us": "美股"}
-        cards = []
-        for group, label in labels.items():
-            report = reports.get(group)
-            if report is None:
-                continue
-            boxplot = self._build_daily_nav_boxplot(report, max_weeks=6)
-            if boxplot:
-                cards.append(
-                    '<div class="nav-market-card"><div class="nav-market-title">'
-                    f'{_html_escape(label)} · 最近6周</div>{boxplot}</div>'
-                )
-        if not cards:
-            return ""
-        return (
-            '<section class="daily-section nav-section">'
-            '<div class="section-heading">周 NAV 箱线图</div>'
-            + "".join(cards)
-            + "</section>"
-        )
 
     def _build_daily_events_section(self, announcements, placements, stock_data) -> str:
         """Keep the email event feed short; detailed content remains in the PDF."""
@@ -1723,7 +1595,6 @@ class EmailNotifier(BaseNotifier):
             watchlist_section=self._build_daily_watchlist_section(watchlist_rows),
             chart_section=self._daily_chart_section(chart_png_bytes, portfolio_chart_dict),
             portfolio_chart_section=self._daily_portfolio_chart_section(portfolio_chart_dict),
-            nav_boxplot_section=self._build_daily_nav_boxplot_section(reports),
             events_section=self._build_daily_events_section(
                 announcements, placements, stock_data
             ),

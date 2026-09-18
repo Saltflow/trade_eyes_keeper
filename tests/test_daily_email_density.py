@@ -58,6 +58,8 @@ def _stock_data():
                 "open": 6.1,
                 "close": 6.2,
                 "ma60": 6.0,
+                "pe_ratio": 10.0,
+                "pb_ratio": 1.2,
             },
             {
                 "stock_code": "00700",
@@ -66,6 +68,8 @@ def _stock_data():
                 "open": 420.0,
                 "close": 419.0,
                 "ma60": 430.0,
+                "pe_ratio": 20.0,
+                "pb_ratio": 3.0,
             },
             {
                 "stock_code": "VOO",
@@ -74,6 +78,8 @@ def _stock_data():
                 "open": 700.0,
                 "close": 701.0,
                 "ma60": 680.0,
+                "pe_ratio": 25.0,
+                "pb_ratio": 4.0,
             },
             {
                 "stock_code": "000001",
@@ -132,6 +138,10 @@ def test_daily_matrix_keeps_all_markets_marks_actions_and_stale_data(monkeypatch
     assert "&lt;script&gt;" in body
     assert "<script>" not in body
     assert "mobile-hide" in body
+    assert "隐含 Ke" in body
+    assert "1 ÷ PE + 2%" in body
+    assert "锚值" not in body
+    assert "周 NAV 箱线图" not in body
     assert "参考持仓" not in body
 
 
