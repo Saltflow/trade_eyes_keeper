@@ -498,3 +498,75 @@ def generate_portfolio_chart(
             plt.close(fig)
 
     return output if output else None
+
+
+def generate_portfolio_overview_chart(evaluation_reports: dict) -> bytes | None:
+    """Render one normalized A/HK/US NAV overview for the daily email.
+
+    The legacy renderer deliberately produces one detailed chart per market.
+    That remains available to callers that need it, while the daily email uses
+    this compact overview to preserve its reading density on a phone.
+    """
+    if not MATPLOTLIB_AVAILABLE or not isinstance(evaluation_reports, dict):
+        return None
+
+    group_labels = {"a_share": "A股", "hk": "港股", "us": "美股"}
+    colors = {"a_share": "#1769aa", "hk": "#7b4db5", "us": "#c45508"}
+    series: list[tuple[str, pd.DatetimeIndex, np.ndarray]] = []
+
+    for group_key in ("a_share", "hk", "us"):
+        report = evaluation_reports.get(group_key)
+        if report is None:
+            continue
+        navs = getattr(report, "nav_series", None) or []
+        dates = getattr(report, "nav_dates", None) or []
+        if len(navs) < 2 or len(navs) != len(dates):
+            continue
+        frame = pd.DataFrame(
+            {
+                "date": pd.to_datetime(dates, errors="coerce"),
+                "nav": pd.to_numeric(navs, errors="coerce"),
+            }
+        ).dropna()
+        frame = frame[np.isfinite(frame["nav"]) & (frame["nav"] > 0)]
+        if len(frame) < 2:
+            continue
+        frame = frame.sort_values("date").drop_duplicates("date", keep="last")
+        if len(frame) < 2:
+            continue
+        normalized = frame["nav"].to_numpy(dtype=float)
+        normalized = normalized / normalized[0] * 100.0
+        series.append((group_key, pd.DatetimeIndex(frame["date"]), normalized))
+
+    if not series:
+        return None
+
+    fig, ax = plt.subplots(figsize=(9.4, 3.15))
+    for group_key, dates, values in series:
+        ax.plot(
+            dates,
+            values,
+            color=colors[group_key],
+            linewidth=2.0,
+            label=group_labels[group_key],
+        )
+    ax.axhline(100.0, color="#8a98a7", linewidth=0.8, linestyle="--")
+    ax.set_title("三市场组合净值总览（起点=100）", fontsize=12, fontweight="bold")
+    ax.set_ylabel("归一化净值", fontsize=9)
+    ax.grid(axis="y", alpha=0.2, linestyle="--")
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    ax.tick_params(axis="x", labelsize=8, rotation=20)
+    ax.tick_params(axis="y", labelsize=8)
+    ax.legend(loc="best", ncol=3, fontsize=8, framealpha=0.9)
+    fig.tight_layout()
+
+    try:
+        buf = BytesIO()
+        fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+        buf.seek(0)
+        return buf.read()
+    except Exception as exc:
+        logger.error("三市场组合总览图生成失败: %s", exc)
+        return None
+    finally:
+        plt.close(fig)

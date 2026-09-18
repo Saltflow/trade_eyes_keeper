@@ -4,8 +4,6 @@
 
 import sys
 import os
-import unittest.mock
-from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -99,7 +97,7 @@ class TestDailyModeEmail:
         assert "搜参策略结果" in section
         assert "分位评分" in section
 
-    def test_monitoring_targets_precede_backtest_results(self):
+    def test_daily_decision_board_precedes_full_watchlist(self):
         notifier = _make_notifier()
         html = notifier._build_email_body(
             [],
@@ -108,7 +106,7 @@ class TestDailyModeEmail:
             evaluation_reports={"a_share": _make_report()},
         )
 
-        assert html.index("监控标的") < html.index("搜参策略结果")
+        assert html.index("三市场决策板") < html.index("完整行情矩阵")
 
     def test_daily_strategy_section_keeps_ranking_selection_diagnostics(self):
         notifier = _make_notifier()
@@ -236,21 +234,13 @@ class TestDailyModeEmail:
         )
         assert "股票日报" in html or "股票提醒" in html or "<html" in html.lower()
 
-    def test_daily_mode_drops_bulk_price_anchor_card_list(self):
-        """2026-09: the per-stock card lists were removed from the daily mail.
-
-        This test used to require the daily mail to carry price/anchor/
-        fundamental/technical data for every monitored stock (the
-        "监控标的 · 全部（价格 / 锚点）" list, 22.5% of the email, and
-        "今日需关注", 9.0%). That requirement was dropped on purpose, so the
-        test now locks the removal in and checks the retained sections still
-        render.
-        """
+    def test_daily_mode_uses_compact_price_anchor_matrix(self):
         notifier = _make_notifier()
         stock_data = pd.DataFrame(
             [{
                 "stock_code": "601728",
                 "stock_name": "中国电信",
+                "date": pd.Timestamp.now().strftime("%Y-%m-%d"),
                 "open": 6.1,
                 "close": 6.2,
                 "high": 6.3,
@@ -272,16 +262,15 @@ class TestDailyModeEmail:
 
         html = notifier._build_email_body([], stock_data, daily_mode=True)
 
-        assert "价格 / 锚点" not in html
-        assert "锚值" not in html
+        assert "完整行情矩阵" in html
+        assert "锚值" in html
+        assert "601728" in html
+        assert "6.20" in html
         assert "基本面" not in html
         assert "技术面" not in html
         assert "MACD柱" not in html
-        # retained sections must still be there
-        assert "今日摘要" in html
-        assert "策略信号与组合表现" in html
-        assert "未解禁定增" in html
-        assert "近期公告" in html
+        assert "三市场决策板" in html
+        assert "参考持仓" not in html
 
     def test_daily_weekly_nav_uses_boxplot_and_hides_holdings(self):
         notifier = _make_notifier()
@@ -300,11 +289,11 @@ class TestDailyModeEmail:
             },
             final_holdings=[position],
         )
-        section = notifier._build_daily_strategy_section({"a_share": report})
+        section = notifier._build_daily_nav_boxplot_section({"a_share": report})
 
         assert "周 NAV 箱线图" in section
         assert "nav-boxplot" in section
-        assert "2026-W01" in section
+        assert "2026-W01" not in section
         assert "2026-W01 100500" not in section
         assert "期末持仓" not in section
         assert "1000股" not in section

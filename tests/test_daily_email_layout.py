@@ -36,6 +36,7 @@ def _stock_data():
             {
                 "stock_code": "601728",
                 "stock_name": "<script>alert(1)</script>" + "很长名称" * 20,
+                "date": pd.Timestamp.now().strftime("%Y-%m-%d"),
                 "close": 10.2,
                 "open": 10.0,
                 "high": 10.5,
@@ -108,19 +109,17 @@ def test_daily_alert_and_empty_paths_share_one_mobile_document(monkeypatch):
         assert body.strip().endswith("</html>")
         assert "daily-node-01" in body
         assert "203.0.113.8" in body
-        assert "监控标的" in body
-        # 2026-09: the two bulk card lists ("今日需关注" and
-        # "监控标的 · 全部(价格 / 锚点)") were removed from the daily mail, so
-        # assert they stay gone instead of asserting their headings exist.
-        assert "价格 / 锚点" not in body
+        assert "完整行情矩阵" in body
+        assert "三市场决策板" in body
+        assert "参考持仓" not in body
         assert "今日需关注" not in body
 
     assert alert_body.count("<html") == empty_body.count("<html") == 1
-    assert alert_body.find("策略信号与组合表现") >= 0
-    assert empty_body.find("策略信号与组合表现") >= 0
+    assert alert_body.find("三市场决策板") >= 0
+    assert empty_body.find("三市场决策板") >= 0
 
 
-def test_daily_data_is_escaped_and_reference_portfolio_stays_inside_document(monkeypatch):
+def test_daily_data_is_escaped_and_reference_portfolio_is_not_in_body(monkeypatch):
     notifier = _notifier(monkeypatch)
     session = SimpleNamespace(
         ref_portfolio_status={
@@ -154,9 +153,10 @@ def test_daily_data_is_escaped_and_reference_portfolio_stays_inside_document(mon
     assert "&lt;b&gt;恶意公告&lt;/b&gt;" in body
     assert "javascript:" not in body
     assert 'href="https://example.com/notice"' in body
-    assert body.find("参考持仓") < body.find("</html>")
+    assert "参考持仓" not in body
+    assert "601728" in body
     assert body[body.find("</html>") + len("</html>") :].strip() == ""
-    assert len(soup.find_all("table")) <= 3
+    assert len(soup.find_all("table")) >= 3
 
 
 def test_daily_missing_values_and_long_text_do_not_break_html(monkeypatch):
