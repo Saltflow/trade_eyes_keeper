@@ -1160,7 +1160,8 @@ class EmailNotifier(BaseNotifier):
             sections.append("</tbody></table>")
         sections.append(
             '<div class="muted-note">隐含 Ke = TTM 每股收益 ÷ 收盘价 + 2% '
-            '（即 1 ÷ PE + 2%；PE≤0 或缺失时不显示）。</div>'
+            '（即 1 ÷ PE + 2%；PE≤0 或缺失时不显示）。ETF 的 PE/PB 按跟踪指数或'
+            '公开成分股权重聚合；黄金、REIT 等非企业资产不展示企业 PE/PB。</div>'
         )
         sections.append("</section>")
         return "".join(sections)

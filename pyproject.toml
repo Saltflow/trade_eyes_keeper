@@ -11,6 +11,7 @@ authors = [
 repository = "https://github.com/Saltflow/trade_eyes_keeper"
 dependencies = [
     "pandas>=2.0.0",
+    "xlrd>=2.0.1",
     "numpy>=1.24.0",
     "baostock>=0.9.1",
     "yagmail>=0.15.0",

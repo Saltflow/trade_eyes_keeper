@@ -11,6 +11,8 @@ import re
 import json
 from bs4 import BeautifulSoup
 
+from .etf_valuation import ETFValuationResolver
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +42,10 @@ class StockWebCrawler:
         self.retry_delay = 2
         # 记录最后一次成功的数据源名称（供 DataSource 交叉验证使用）
         self._last_source_name = None
+        # ETF PE/PB 必须基于跟踪指数或成分股，而不是把基金交易价格误作企业估值。
+        self._etf_valuation_resolver = ETFValuationResolver(
+            timeout=self.timeout, user_agent=self.user_agent
+        )
 
     def _detect_market(self, stock_code):
         """
@@ -1411,11 +1417,17 @@ class StockWebCrawler:
                         items = data_str.split("~")
                         if len(items) > 46:
                             pe = _safe_float(items[39])
-                            # QQ field 46 is PB for A shares.  HK/US payloads
-                            # use this position for the English company name.
+                            # QQ valuation positions differ by market.  Field
+                            # 46 is A-share PB, while HK and US expose PB at
+                            # 58 and 51 respectively.
+                            pb_index = {
+                                "a_share": 46,
+                                "hk": 58,
+                                "us": 51,
+                            }.get(market)
                             pb = (
-                                _safe_float(items[46])
-                                if market == "a_share"
+                                _safe_float(items[pb_index])
+                                if pb_index is not None and len(items) > pb_index
                                 else None
                             )
                             if pe is not None and (pe <= 0 or pe > 1000):
@@ -1445,7 +1457,14 @@ class StockWebCrawler:
         except Exception as e:
             logger.warning(f"估值: fetch_from_qq {stock_code} 失败: {e}")
             valuation_data = None
-        if valuation_data:
+        # Known equity ETFs resolve through their tracked index constituents.
+        # This happens after the cheap direct lookup so an unexpected direct
+        # exchange field can never be mistaken for an ETF company multiple.
+        if self._etf_valuation_resolver.supports(stock_code):
+            resolved = self._etf_valuation_resolver.resolve(stock_code)
+            if resolved:
+                return resolved
+        if valuation_data and any(valuation_data.values()):
             return {
                 "pe_ratio": valuation_data.get("pe_ratio"),
                 "pb_ratio": valuation_data.get("pb_ratio"),
