@@ -420,23 +420,32 @@ def add_adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
 
     up_move = high - prev_high
     down_move = prev_low - low
-    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+    plus_dm = pd.Series(
+        np.where((up_move > down_move) & (up_move > 0), up_move, 0.0),
+        index=df.index,
+    )
+    minus_dm = pd.Series(
+        np.where((down_move > up_move) & (down_move > 0), down_move, 0.0),
+        index=df.index,
+    )
 
     atr_sm = _wilder_smooth(tr, period)
     plus_di = (
-        100.0 * _wilder_smooth(pd.Series(plus_dm), period) / atr_sm.replace(0, np.nan)
+        100.0 * _wilder_smooth(plus_dm, period) / atr_sm.replace(0, np.nan)
     )
     minus_di = (
-        100.0 * _wilder_smooth(pd.Series(minus_dm), period) / atr_sm.replace(0, np.nan)
+        100.0 * _wilder_smooth(minus_dm, period) / atr_sm.replace(0, np.nan)
     )
 
     di_sum = plus_di + minus_di
-    dx = np.where(di_sum > 0, 100.0 * np.abs(plus_di - minus_di) / di_sum, 0.0)
+    dx = pd.Series(
+        np.where(di_sum > 0, 100.0 * np.abs(plus_di - minus_di) / di_sum, 0.0),
+        index=df.index,
+    )
     df["plus_di"] = np.asarray(plus_di, dtype=float)
     df["minus_di"] = np.asarray(minus_di, dtype=float)
     df[COL_ADX] = np.asarray(
-        _wilder_smooth(pd.Series(dx), period), dtype=float
+        _wilder_smooth(dx, period), dtype=float
     )
     return df
 

@@ -333,6 +333,7 @@ class SessionContext(BaseModel):
     opt_data_hk: Optional[dict] = None  # 港股最新优化器 YAML
     opt_data_us: Optional[dict] = None  # 美股最新优化器 YAML
     placements: dict[str, dict] = Field(default_factory=dict)  # {code: 定增数据}
+    dividend_events: list[dict] = Field(default_factory=list)  # 日报待处理分红/分派
 
     def get_all_dataframe(self):
         """获取所有股票合并DataFrame（ALL列，无丢失）"""

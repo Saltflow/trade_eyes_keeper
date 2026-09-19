@@ -115,7 +115,7 @@ def _complete_holdout():
     }
 
 
-def test_daily_matrix_keeps_all_markets_marks_actions_and_stale_data(monkeypatch):
+def test_daily_matrix_keeps_all_markets_marks_status_and_stale_data(monkeypatch):
     notifier = _notifier(monkeypatch)
     scan = SimpleNamespace(
         alerts=[{"stock_code": "VOO", "rule_label": "<b>买入</b>"}]
@@ -133,7 +133,8 @@ def test_daily_matrix_keeps_all_markets_marks_actions_and_stale_data(monkeypatch
     assert "港股 · 1只" in body
     assert "美股 · 1只" in body
     assert all(code in body for code in ("601728", "00700", "VOO", "000001"))
-    assert "行动清单" in body
+    assert "行动清单" not in body
+    assert "ma60 区间" not in body
     assert "未就绪" in body
     assert "&lt;script&gt;" in body
     assert "<script>" not in body
@@ -143,6 +144,36 @@ def test_daily_matrix_keeps_all_markets_marks_actions_and_stale_data(monkeypatch
     assert "锚值" not in body
     assert "周 NAV 箱线图" not in body
     assert "参考持仓" not in body
+
+
+def test_daily_matrix_uses_configured_pool_and_keeps_missing_data(monkeypatch):
+    notifier = _notifier(monkeypatch)
+    notifier.config["stocks"] = ["601728", "01339"]
+    source_data = pd.concat(
+        [
+            _stock_data(),
+            pd.DataFrame(
+                [
+                    {
+                        "stock_code": "GOOG",
+                        "stock_name": "Google",
+                        "date": pd.Timestamp.now().strftime("%Y-%m-%d"),
+                        "open": 100.0,
+                        "close": 101.0,
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+
+    body = notifier._build_email_body([], source_data, daily_mode=True)
+
+    assert "完整行情矩阵<span class=\"section-count\">2只" in body
+    assert "601728" in body
+    assert "01339" in body
+    assert "GOOG" not in body
+    assert body.count("未就绪") == 1
 
 
 def test_daily_holdout_renders_only_when_all_four_windows_are_valid(monkeypatch):
@@ -167,7 +198,7 @@ def test_daily_holdout_renders_only_when_all_four_windows_are_valid(monkeypatch)
     assert "H—" not in incomplete
 
 
-def test_daily_events_are_capped_and_urls_are_sanitized(monkeypatch):
+def test_daily_events_are_complete_and_urls_are_sanitized(monkeypatch):
     notifier = _notifier(monkeypatch)
     announcements = {
         "601728": [
@@ -187,10 +218,80 @@ def test_daily_events_are_capped_and_urls_are_sanitized(monkeypatch):
         daily_mode=True,
     )
 
-    assert body.count('class="event-row"') == 6
+    assert body.count('class="event-row"') == 9
     assert "javascript:" not in body
     assert "<script>" not in body
     assert "PDF 附件" in body
+
+
+def test_daily_events_render_pending_stock_and_etf_dividends(monkeypatch):
+    notifier = _notifier(monkeypatch)
+    body = notifier._build_email_body(
+        [],
+        _stock_data(),
+        dividend_events=[
+            {
+                "code": "601728",
+                "status": "未除权",
+                "ex_date": "2026-09-24",
+                "payment_date": "2026-09-30",
+                "cash_per_share": 0.2,
+            },
+            {
+                "code": "VOO",
+                "status": "已除权未派息",
+                "ex_date": "2026-09-18",
+                "payment_date": "2026-09-22",
+                "cash_per_share": 1.5,
+                "currency": "USD",
+            },
+        ],
+        daily_mode=True,
+    )
+
+    assert "行动清单" not in body
+    assert "未除权" in body
+    assert "已除权未派息" in body
+    assert "每股/份现金 0.2000" in body
+    assert "每股/份现金 USD 1.5000" in body
+
+
+def test_daily_events_keep_all_event_types_without_truncation(monkeypatch):
+    notifier = _notifier(monkeypatch)
+    body = notifier._build_email_body(
+        [],
+        _stock_data(),
+        announcements={
+            "601728": [
+                {
+                    "date": f"2026-09-{day:02d}",
+                    "title": f"公告 {day}",
+                    "url": "https://example.com/notice",
+                }
+                for day in range(1, 5)
+            ]
+        },
+        placements={
+            f"00000{index}": {"unlock_date": f"2026-10-{index:02d}"}
+            for index in range(1, 4)
+        },
+        dividend_events=[
+            {
+                "code": f"51030{index}",
+                "status": "未除权",
+                "ex_date": f"2026-09-{20 + index:02d}",
+                "payment_date": "2026-10-01",
+                "cash_per_share": 0.1,
+            }
+            for index in range(1, 4)
+        ],
+        daily_mode=True,
+    )
+
+    assert body.count('class="event-row"') == 10
+    assert "未除权" in body
+    assert "未解禁定增" in body
+    assert "公告 4" in body
 
 
 def test_daily_portfolio_overview_is_one_normalized_chart(monkeypatch):

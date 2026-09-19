@@ -108,6 +108,23 @@ class StockDataFetcher:
         except Exception as e:
             logger.error(f"保存股票 {stock_code} 数据到CSV失败: {e}")
 
+    @staticmethod
+    def _add_extended_indicators(stock_data: pd.DataFrame) -> pd.DataFrame:
+        """Add momentum, volatility, and volume indicators to fetched history."""
+        from ..data.technical_indicators import (
+            add_adx,
+            add_bollinger,
+            add_macd,
+            add_rsi,
+            add_volume_ratio,
+        )
+
+        stock_data = add_rsi(stock_data)
+        stock_data = add_macd(stock_data)
+        stock_data = add_adx(stock_data)
+        stock_data = add_bollinger(stock_data)
+        return add_volume_ratio(stock_data)
+
     def _fetch_from_web_crawler(self, stock_code, start_date, end_date):
         """
         使用网页爬虫获取股票真实数据
@@ -298,19 +315,7 @@ class StockDataFetcher:
 
                     # 计算动量/波动率/成交量指标 (RSI/MACD/ADX/布林/量比)
                     try:
-                        from ...data.technical_indicators import (
-                            add_rsi,
-                            add_macd,
-                            add_adx,
-                            add_bollinger,
-                            add_volume_ratio,
-                        )
-
-                        stock_data = add_rsi(stock_data)
-                        stock_data = add_macd(stock_data)
-                        stock_data = add_adx(stock_data)
-                        stock_data = add_bollinger(stock_data)
-                        stock_data = add_volume_ratio(stock_data)
+                        stock_data = self._add_extended_indicators(stock_data)
                         logger.debug(f"股票 {stock_code} 技术指标计算完成")
                     except Exception as e:
                         logger.warning(f"股票 {stock_code} 技术指标计算跳过: {e}")

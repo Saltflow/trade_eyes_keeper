@@ -184,6 +184,7 @@ class EmailNotifier(BaseNotifier):
                 evaluation_reports=evaluation_reports,
                 daily_mode=True,
                 placements=getattr(session, "placements", None),
+                dividend_events=getattr(session, "dividend_events", None),
                 instrument_audit=getattr(session, "instrument_audit", None),
             )
 
@@ -267,6 +268,7 @@ class EmailNotifier(BaseNotifier):
                 evaluation_reports=evaluation_reports,
                 daily_mode=True,
                 placements=getattr(session, "placements", None),
+                dividend_events=getattr(session, "dividend_events", None),
                 instrument_audit=getattr(session, "instrument_audit", None),
             )
 
@@ -958,25 +960,59 @@ class EmailNotifier(BaseNotifier):
                 signal_codes.add(code)
         return alert_codes, signal_codes
 
+    def _daily_configured_symbols(self) -> list[tuple[str, str]]:
+        """Return the deduplicated daily universe declared in configuration."""
+        symbols = []
+        seen = set()
+        for configured in self.config.get("stocks", []) or []:
+            if isinstance(configured, dict):
+                raw_code = configured.get("stock_code", configured.get("code", ""))
+                raw_name = configured.get("stock_name", configured.get("name", ""))
+            else:
+                raw_code = configured
+                raw_name = ""
+            code = str(raw_code or "").strip()
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            symbols.append((code, str(raw_name or "").strip()))
+        return symbols
+
     def _daily_watchlist_rows(self, stock_data, alert_stocks, signal_scan=None):
         """Build one compact, market-aware row for every configured symbol."""
-        if stock_data is None or not hasattr(stock_data, "iterrows"):
+        source_rows = {}
+        if stock_data is not None and hasattr(stock_data, "iterrows"):
+            for _, source_row in stock_data.iterrows():
+                code = str(source_row.get("stock_code", "") or "").strip()
+                if code:
+                    source_rows[code] = source_row
+        configured_symbols = self._daily_configured_symbols()
+        symbols = configured_symbols or [
+            (code, "") for code in source_rows
+        ]
+        if not symbols:
             return []
-        fresh_entries = {
-            str(entry["code"]): entry
-            for entry in build_brief_entries(stock_data, datetime.now())
-        }
+        fresh_entries = (
+            {
+                str(entry["code"]): entry
+                for entry in build_brief_entries(stock_data, datetime.now())
+            }
+            if stock_data is not None and hasattr(stock_data, "iterrows")
+            else {}
+        )
         alert_codes, signal_codes = self._daily_alert_code_sets(
             alert_stocks, signal_scan
         )
         group_order = {"a_share": 0, "hk": 1, "us": 2}
         rows = []
-        for _, source_row in stock_data.iterrows():
-            code = str(source_row.get("stock_code", "") or "").strip()
-            if not code:
-                continue
+        for code, configured_name in symbols:
+            source_row = source_rows.get(code)
             entry = fresh_entries.get(code)
-            raw_name = source_row.get("stock_name", code)
+            raw_name = (
+                source_row.get("stock_name", configured_name or code)
+                if source_row is not None
+                else configured_name or code
+            )
             name = code if raw_name is None or pd.isna(raw_name) else str(raw_name)
             group = _detect_fine_group(code)
             has_signal = code in signal_codes
@@ -988,8 +1024,12 @@ class EmailNotifier(BaseNotifier):
                     "name": name,
                     "group": group,
                     "entry": entry,
-                    "pe_ratio": source_row.get("pe_ratio"),
-                    "pb_ratio": source_row.get("pb_ratio"),
+                    "pe_ratio": source_row.get("pe_ratio")
+                    if source_row is not None
+                    else None,
+                    "pb_ratio": source_row.get("pb_ratio")
+                    if source_row is not None
+                    else None,
                     "status": "策略" if has_signal else "预警" if has_alert else "",
                     "priority": priority,
                     "sort_key": entry.get("sort_key", float("inf"))
@@ -1033,76 +1073,6 @@ class EmailNotifier(BaseNotifier):
             )
         html.append("</tr></table></section>")
         return "".join(html)
-
-    def _build_daily_action_section(
-        self, alert_stocks, signal_scan, watchlist_rows
-    ) -> str:
-        """Render a deduplicated, action-first queue before the full matrix."""
-        names = {item["code"]: item["name"] for item in watchlist_rows}
-        prices = {
-            item["code"]: item["entry"].get("close")
-            for item in watchlist_rows
-            if item["entry"] is not None
-        }
-        actions = {}
-
-        for alert in alert_stocks or []:
-            code = str(_alert_value(alert, "stock_code", "") or "").strip()
-            if not code:
-                continue
-            item = actions.setdefault(code, {"signal": [], "alert": []})
-            rule = _alert_value(alert, "condition", None) or _alert_value(
-                alert, "rule_label", "价格预警"
-            )
-            if rule:
-                item["alert"].append(str(rule))
-
-        for alert in (getattr(signal_scan, "alerts", None) or []) if signal_scan else []:
-            code = str(_alert_value(alert, "stock_code", "") or "").strip()
-            if not code:
-                continue
-            item = actions.setdefault(code, {"signal": [], "alert": []})
-            rule = _alert_value(alert, "rule_label", "策略信号")
-            if rule:
-                item["signal"].append(str(rule))
-
-        if not actions:
-            return ""
-
-        ordered = sorted(
-            actions.items(),
-            key=lambda pair: (
-                0 if pair[1]["signal"] else 1,
-                str(pair[0]),
-            ),
-        )
-        total = len(ordered)
-        lines = [
-            '<section class="daily-section action-section">'
-            '<div class="section-heading">行动清单'
-            f'<span class="section-count">{min(total, 8)}/{total}</span></div>'
-        ]
-        for code, item in ordered[:8]:
-            badges = []
-            if item["signal"]:
-                badges.append('<span class="status-badge status-signal">策略</span>')
-            if item["alert"]:
-                badges.append('<span class="status-badge status-alert">预警</span>')
-            rules = list(dict.fromkeys(item["signal"] + item["alert"]))[:2]
-            price = self._daily_metric(prices.get(code), "", 2)
-            lines.append(
-                '<div class="action-row"><div class="action-main"><strong>'
-                f'{_html_escape(code)} · {_html_escape(names.get(code, code))}'
-                f'</strong>{"".join(badges)}</div>'
-                f'<div class="action-detail">现价 {_html_escape(price)} · '
-                f'{_html_escape("；".join(rules))}</div></div>'
-            )
-        if total > 8:
-            lines.append(
-                '<div class="muted-note">其余触发标的已在下方完整行情矩阵中标注。</div>'
-            )
-        lines.append("</section>")
-        return "".join(lines)
 
     def _build_daily_watchlist_section(self, watchlist_rows) -> str:
         labels = {"a_share": "A股", "hk": "港股", "us": "美股"}
@@ -1384,9 +1354,42 @@ class EmailNotifier(BaseNotifier):
         parts.append("</section>")
         return "".join(parts)
 
-    def _build_daily_events_section(self, announcements, placements, stock_data) -> str:
+    def _build_daily_events_section(
+        self, announcements, placements, stock_data, dividend_events=None
+    ) -> str:
         """Keep the email event feed short; detailed content remains in the PDF."""
         events = []
+        row_map = self._daily_row_map(stock_data)
+        for item in dividend_events or []:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status", "") or "")
+            if status not in {"未除权", "已除权未派息"}:
+                continue
+            code = str(item.get("code", "") or "").strip()
+            ex_date = str(item.get("ex_date", "") or "")
+            payment_date = str(item.get("payment_date", "") or "")
+            cash_per_share = self._daily_number(item.get("cash_per_share"))
+            currency = str(item.get("currency", "") or "").strip().upper()
+            name = row_map.get(code, {}).get("stock_name", "")
+            amount = (
+                f"每股/份现金 {currency + ' ' if currency else ''}{cash_per_share:.4f}"
+                if cash_per_share is not None
+                else "金额待公告"
+            )
+            schedule = f"除权 {ex_date or '待确认'}"
+            if payment_date:
+                schedule += f" · 派息 {payment_date}"
+            events.append(
+                {
+                    "date": ex_date,
+                    "code": code,
+                    "kind": status,
+                    "title": f"{name} · {amount} · {schedule}",
+                    "url": "",
+                    "priority": 0 if status == "已除权未派息" else 1,
+                }
+            )
         for code, items in (announcements or {}).items():
             for item in items or []:
                 if isinstance(item, dict):
@@ -1402,9 +1405,9 @@ class EmailNotifier(BaseNotifier):
                         "kind": "公告",
                         "title": title,
                         "url": url,
+                        "priority": 3,
                     }
                 )
-        row_map = self._daily_row_map(stock_data)
         for code, item in (placements or {}).items():
             if not isinstance(item, dict):
                 continue
@@ -1430,12 +1433,31 @@ class EmailNotifier(BaseNotifier):
                         f"解禁 {unlock_date or '待确认'}"
                     ),
                     "url": "",
+                    "priority": 2,
                 }
             )
         if not events:
             return ""
-        events.sort(key=lambda item: (item["date"], item["code"]), reverse=True)
-        selected = events[:6]
+        dividend = sorted(
+            (item for item in events if int(item.get("priority", 9)) < 2),
+            key=lambda item: (int(item["priority"]), item["date"], item["code"]),
+        )
+        placements = sorted(
+            (item for item in events if int(item.get("priority", 9)) == 2),
+            key=lambda item: (item["date"], item["code"]),
+            reverse=True,
+        )
+        announcements = sorted(
+            (item for item in events if int(item.get("priority", 9)) >= 3),
+            key=lambda item: (item["date"], item["code"]),
+            reverse=True,
+        )
+        events = dividend + placements + announcements
+        # Preserve the decision-first ordering, but keep every collected row.
+        # The daily report is the complete event record for the configured
+        # universe, so no pending dividend, locked placement, or announcement
+        # may be silently dropped here.
+        selected = events
         lines = [
             '<section class="daily-section events-section">'
             '<div class="section-heading">事件速览'
@@ -1455,7 +1477,7 @@ class EmailNotifier(BaseNotifier):
                 f"{title}</div>"
             )
         lines.append(
-            '<div class="muted-note">完整公告、定增、技术面和持仓明细请查看 PDF 附件及完整报告。</div>'
+            '<div class="muted-note">分红仅展示除权与派息日期均明确的待处理事项；完整公告、定增、技术面和持仓明细请查看 PDF 附件及完整报告。</div>'
             "</section>"
         )
         return "".join(lines)
@@ -1556,6 +1578,7 @@ class EmailNotifier(BaseNotifier):
         backtest=None,
         evaluation_reports=None,
         placements=None,
+        dividend_events=None,
         instrument_audit=None,
         ref_portfolio_html="",
     ):
@@ -1590,14 +1613,11 @@ class EmailNotifier(BaseNotifier):
                 alert_codes=alert_codes,
                 signal_codes=signal_codes,
             ),
-            action_section=self._build_daily_action_section(
-                alert_stocks, signal_scan, watchlist_rows
-            ),
             watchlist_section=self._build_daily_watchlist_section(watchlist_rows),
             chart_section=self._daily_chart_section(chart_png_bytes, portfolio_chart_dict),
             portfolio_chart_section=self._daily_portfolio_chart_section(portfolio_chart_dict),
             events_section=self._build_daily_events_section(
-                announcements, placements, stock_data
+                announcements, placements, stock_data, dividend_events
             ),
             report_links=self._build_daily_report_links(),
         )
@@ -1615,6 +1635,7 @@ class EmailNotifier(BaseNotifier):
         evaluation_reports=None,
         daily_mode=False,
         placements=None,
+        dividend_events=None,
         instrument_audit=None,
         ref_portfolio_html="",
     ):
@@ -1642,6 +1663,7 @@ class EmailNotifier(BaseNotifier):
                 backtest=backtest,
                 evaluation_reports=evaluation_reports,
                 placements=placements,
+                dividend_events=dividend_events,
                 instrument_audit=instrument_audit,
                 ref_portfolio_html=ref_portfolio_html,
             )

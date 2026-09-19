@@ -1312,6 +1312,18 @@ def run_daily_task(force: bool = False):
             return
         logger.info(f"股票数据获取完成: {len(session.stocks_data)}只股票")
 
+        # 日报事件层只读取明确的除权/派息日期，不改变回测或交易数据合同。
+        try:
+            from src.data.dividend_events import DailyDividendEventResolver
+
+            session.dividend_events = DailyDividendEventResolver(config).resolve(
+                session.announcements,
+                session.get_all_dataframe(),
+            )
+            logger.info("日报待处理分红/分派: %s 条", len(session.dividend_events))
+        except Exception as exc:
+            logger.warning("日报分红/分派事件准备失败（非致命）: %s", exc)
+
         # Current instrument profiles are reporting-only. Loading the latest
         # completed audit avoids injecting current statements or current ETF
         # constituents into historical optimization.
