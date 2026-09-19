@@ -47,7 +47,7 @@ def _check_prerequisites():
         print("=" * 60)
         for i, (mark, msg) in enumerate(items, 1):
             print(f"\n  [{i}] {mark} {msg}")
-        print(f"\n  修复后重新运行: python ci_cd_deploy.py\n")
+        print("\n  修复后重新运行: python ci_cd_deploy.py\n")
         sys.exit(1)
 
     issues = []
@@ -491,7 +491,7 @@ def _pre_deploy_checks(dry_run):
         timeout=120,
     )
     if not ok2:
-        _info(f"WARN: data source health checks have failures (non-blocking)")
+        _info("WARN: data source health checks have failures (non-blocking)")
         # 打印最后 20 行供诊断
         failures = (smoke_out or "").split("\n")
         for line in failures[-15:]:
@@ -620,7 +620,12 @@ def deploy():
 
     try:
         # ── -1. 前置自检 (配置文件 + SSH 密钥 + 连通性) ──
-        _check_prerequisites()
+        # A dry run must stay local.  In particular, it must not turn a
+        # documentation/preflight command into a live SSH probe.
+        if dry_run:
+            _info("DRY RUN: Skipping remote connectivity preflight")
+        else:
+            _check_prerequisites()
 
         # ── 0. 部署前检查 ──
         if not _pre_deploy_checks(dry_run):
@@ -702,7 +707,7 @@ def deploy():
         # ── 5. 安装系统依赖 ──
         _info("Installing system dependencies (texlive for PDF)...")
         _ssh_cmd(
-            f"apt install -y -qq texlive-xetex texlive-latex-recommended texlive-latex-extra 2>/dev/null || echo 'texlive install skipped'",
+            "apt install -y -qq texlive-xetex texlive-latex-recommended texlive-latex-extra 2>/dev/null || echo 'texlive install skipped'",
             "Install texlive",
             timeout=300,
         )
@@ -783,11 +788,11 @@ def deploy():
             # 打印错误上下文供诊断
             if error_count > 0:
                 _ssh_cmd(
-                    f"grep -n -E 'ERROR|CRITICAL|Traceback' /tmp/system_test.log | head -20",
+                    "grep -n -E 'ERROR|CRITICAL|Traceback' /tmp/system_test.log | head -20",
                     "Error lines from system test", timeout=30,
                 )
         else:
-            _step("system_test", True, f"exit=0 errors=0")
+            _step("system_test", True, "exit=0 errors=0")
 
         # ── 8. 例行搜参 cron（每日 19:00 任务与简报由 systemd scheduler 覆盖，
         #   优化器因内存隔离需独立进程，仍由 cron 驱动 main.py --optimize）──
@@ -810,16 +815,19 @@ def deploy():
             "Add optimizer cron if missing",
         )
 
-        # 确认例行搜参 cron 已注册
-        ok, out, _ = _ssh_cmd("crontab -l", "Verify cron")
-        has_optimize = "main.py --optimize" in (out or "")
-        has_legacy = (
-            "main.py --once" in (out or "")
-            or "main.py --brief" in (out or "")
-        )
-        _step("cron", has_optimize and not has_legacy,
-              "optimizer 02:00 registered" if has_optimize and not has_legacy
-              else "MISSING optimizer cron or legacy entries remain!")
+        # 确认例行搜参 cron 已注册。Mock output cannot establish cron state.
+        if dry_run:
+            _step("cron", None, "dry run; cron unchanged")
+        else:
+            ok, out, _ = _ssh_cmd("crontab -l", "Verify cron")
+            has_optimize = "main.py --optimize" in (out or "")
+            has_legacy = (
+                "main.py --once" in (out or "")
+                or "main.py --brief" in (out or "")
+            )
+            _step("cron", has_optimize and not has_legacy,
+                  "optimizer 02:00 registered" if has_optimize and not has_legacy
+                  else "MISSING optimizer cron or legacy entries remain!")
 
         # ── 9c. 检查统一优化器数据；候选搜索和激活必须显式执行 ──
         _info("Checking optimizer data...")
@@ -827,17 +835,32 @@ def deploy():
             f"find {REMOTE_DIR}/data/optimizer/runs -name manifest.yaml "
             "-type f 2>/dev/null | wc -l"
         )
-        _, opt_count_out, _ = _ssh_cmd(opt_check, "Count optimizer run manifests")
-        opt_count = int(opt_count_out.strip() or "0")
-        if opt_count == 0:
-            _info(
-                "No unified optimizer run found; leaving the current strategy "
-                "unchanged until an explicit --optimize and --activate-run"
-            )
-            _step("optimizer_data", None, "no unified run; explicit search required")
+        if dry_run:
+            _ssh_cmd(opt_check, "Count optimizer run manifests")
+            _step("optimizer_data", None, "dry run; optimizer data not inspected")
         else:
-            _info(f"Optimizer data exists ({opt_count} run manifests)")
-            _step("optimizer_data", True, f"{opt_count} unified runs")
+            _, opt_count_out, _ = _ssh_cmd(
+                opt_check, "Count optimizer run manifests"
+            )
+            try:
+                opt_count = int(opt_count_out.strip() or "0")
+            except ValueError:
+                _info("Optimizer manifest count was not numeric; reporting warning")
+                _step("optimizer_data", None, "unreadable manifest count")
+            else:
+                if opt_count == 0:
+                    _info(
+                        "No unified optimizer run found; leaving the current strategy "
+                        "unchanged until an explicit --optimize and --activate-run"
+                    )
+                    _step(
+                        "optimizer_data",
+                        None,
+                        "no unified run; explicit search required",
+                    )
+                else:
+                    _info(f"Optimizer data exists ({opt_count} run manifests)")
+                    _step("optimizer_data", True, f"{opt_count} unified runs")
         check_archive = f"""timeout 10 bash -c '
 latest=$(ls -t {REMOTE_DIR}/data/email_archive/*.html 2>/dev/null | head -1)
 if [ -n "$latest" ]; then
@@ -894,7 +917,7 @@ else:
         notify_ok = "[NOTIFY_OK]" in (out or "")
         _step("deploy_notify",
               True if notify_ok else None,  # None = WARN, SMTP is non-critical
-              "SMTP OK" if notify_ok else f"SMTP auth failed — check EMAIL_PASSWORD in server config/.env")
+              "SMTP OK" if notify_ok else "SMTP auth failed — check EMAIL_PASSWORD in server config/.env")
 
         # ── 12. 健康服务器检查 ──
         _info("Verifying health server configuration...")
@@ -971,8 +994,13 @@ for attempt in range(6):
 " 2>&1"""
         ok, out, _ = _ssh_cmd(verify_cmd, "Verify health server HTTP response", timeout=30)
         hs_ok = "[HS_HTTP_OK]" in (out or "")
-        _step("health_server", hs_ok,
-              "HTTP 200" if hs_ok else f"fail: {(out or '')[:80]}")
+        _step(
+            "health_server",
+            None if dry_run else hs_ok,
+            "dry run; health endpoint not probed"
+            if dry_run
+            else ("HTTP 200" if hs_ok else f"fail: {(out or '')[:80]}"),
+        )
 
         # ── 15. 最终验证 ──
         _info("Final system verification...")
@@ -1033,7 +1061,7 @@ def investigate_server():
     print("=" * 70)
 
     if dry_run:
-        print(f"  [MOCK] No actual SSH connections will be made")
+        print("  [MOCK] No actual SSH connections will be made")
         return True
 
     try:
