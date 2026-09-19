@@ -257,6 +257,7 @@ execution_params:
     a_share: 100
     hk: 100
     us: 1
+  withholding_rates: {a_share: 0.0, hk: 0.20, us: 0.0}
   fx_rates:
     a_share: 1.0
     hk: 0.9
@@ -303,18 +304,21 @@ execution_profiles:
     min_holding_days: 30
     lot_sizes: {a_share: 100, hk: 100, us: 1}
     fx_rates: {a_share: 1.0, hk: 0.9, us: 7.0}
+    withholding_rates: {a_share: 0.0, hk: 0.20, us: 0.0}
   hk_hkd:
     initial_capital: 100000
     commission_rate: 0.005
     min_holding_days: 30
     lot_sizes: {a_share: 100, hk: 100, us: 1}
     fx_rates: {a_share: 1.0, hk: 0.9, us: 7.0}
+    withholding_rates: {a_share: 0.0, hk: 0.20, us: 0.0}
   us_usd:
     initial_capital: 100000
     commission_rate: 0.005
     min_holding_days: 30
     lot_sizes: {a_share: 100, hk: 100, us: 1}
     fx_rates: {a_share: 1.0, hk: 0.9, us: 7.0}
+    withholding_rates: {a_share: 0.0, hk: 0.20, us: 0.0}
 
 benchmark_profiles:
   a_share:

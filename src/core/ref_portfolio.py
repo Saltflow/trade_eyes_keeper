@@ -33,6 +33,15 @@ DATA_DIR = Path("data")
 PORTFOLIO_FILE = DATA_DIR / "ref_portfolio.yaml"
 
 
+def _parse_date(value: object) -> date | None:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
 def reference_execution_contract(
     strategy_execution: dict,
     execution_config,
@@ -46,6 +55,9 @@ def reference_execution_contract(
         "min_holding_days": int(execution_config.min_holding_days),
         "lot_size": int(execution_config.lot_sizes.get(market_group, 100)),
         "fx_rate": float(execution_config.fx_rates.get(market_group, 1.0)),
+        "withholding_rate": float(
+            execution_config.withholding_rates.get(market_group, 0.0)
+        ),
     }
 
 
@@ -57,7 +69,7 @@ class Holding:
     """单笔持仓"""
 
     code: str
-    shares: int
+    shares: float
     avg_cost: float  # 每股平均成交价；手续费单独计入现金和 Trade
     last_buy_date: str = ""
 
@@ -69,7 +81,7 @@ class Trade:
     date: str  # YYYY-MM-DD
     code: str
     action: str  # "buy" / "sell"
-    shares: int
+    shares: float
     price: float  # 成交单价
     cost: float  # 总金额（买入为正，卖出为负）
     reason: str  # 触发信号 rule_id
@@ -98,6 +110,9 @@ class RefPortfolio:
     strategy_timestamp: str = ""
     params_hash: str = ""
     execution_hash: str = ""
+    gross_dividend_cash: float = 0.0
+    dividend_tax_cost: float = 0.0
+    net_dividend_cash: float = 0.0
 
     @property
     def is_bound(self) -> bool:
@@ -141,6 +156,9 @@ class RefPortfolio:
             "strategy_timestamp": self.strategy_timestamp,
             "params_hash": self.params_hash,
             "execution_hash": self.execution_hash,
+            "gross_dividend_cash": round(self.gross_dividend_cash, 2),
+            "dividend_tax_cost": round(self.dividend_tax_cost, 2),
+            "net_dividend_cash": round(self.net_dividend_cash, 2),
             "processed_events": list(dict.fromkeys(self.processed_events)),
             "holdings": {
                 code: {
@@ -185,6 +203,9 @@ class RefPortfolio:
             strategy_timestamp=str(d.get("strategy_timestamp", "")),
             params_hash=str(d.get("params_hash", "")),
             execution_hash=str(d.get("execution_hash", "")),
+            gross_dividend_cash=float(d.get("gross_dividend_cash", 0.0) or 0.0),
+            dividend_tax_cost=float(d.get("dividend_tax_cost", 0.0) or 0.0),
+            net_dividend_cash=float(d.get("net_dividend_cash", 0.0) or 0.0),
         )
         for code, hd in (d.get("holdings") or {}).items():
             pf.holdings[code] = Holding(
@@ -445,6 +466,9 @@ class RefPortfolioManager:
             strategy_timestamp=pf.strategy_timestamp,
             params_hash=pf.params_hash,
             execution_hash=pf.execution_hash,
+            gross_dividend_cash=pf.gross_dividend_cash,
+            dividend_tax_cost=pf.dividend_tax_cost,
+            net_dividend_cash=pf.net_dividend_cash,
             holdings={
                 k: Holding(v.code, v.shares, v.avg_cost, v.last_buy_date)
                 for k, v in pf.holdings.items()
@@ -630,7 +654,137 @@ class RefPortfolioManager:
             strategy_timestamp=pf.strategy_timestamp,
             params_hash=pf.params_hash,
             execution_hash=pf.execution_hash,
+            gross_dividend_cash=pf.gross_dividend_cash,
+            dividend_tax_cost=pf.dividend_tax_cost,
+            net_dividend_cash=pf.net_dividend_cash,
         )
+
+    def apply_corporate_actions(
+        self,
+        pf: RefPortfolio,
+        actions: list[object],
+        as_of_date: str | date,
+        *,
+        withholding_rate: float,
+        fx_rate: float = 1.0,
+    ) -> tuple[RefPortfolio, list[Trade]]:
+        """Accrue causally-known dividends and share actions before trading.
+
+        Reference portfolios use the same raw-price, explicit-cash contract as
+        the backtester.  A cash dividend that was not public by its ex-date is
+        rejected rather than credited with hindsight.
+        """
+        try:
+            cutoff = (
+                as_of_date
+                if isinstance(as_of_date, date)
+                else datetime.strptime(str(as_of_date)[:10], "%Y-%m-%d").date()
+            )
+        except ValueError as exc:
+            raise ValueError(f"invalid corporate-action cutoff: {as_of_date}") from exc
+        rate = float(withholding_rate)
+        if not 0.0 <= rate < 1.0:
+            raise ValueError("withholding rate must be in [0, 1)")
+        scale = float(fx_rate)
+        if not np.isfinite(scale) or scale <= 0.0:
+            raise ValueError("corporate-action FX rate must be positive")
+        inception = _parse_date(pf.inception_date)
+        new_pf = self._copy_portfolio(pf)
+        processed = set(new_pf.processed_events)
+        trades: list[Trade] = []
+        ordered = sorted(
+            actions,
+            key=lambda item: (
+                getattr(item, "ex_date", date.max),
+                str(getattr(item, "code", "")),
+                str(getattr(item, "action_type", "")),
+            ),
+        )
+        for action in ordered:
+            code = str(getattr(action, "code", ""))
+            ex_date = getattr(action, "ex_date", None)
+            if not isinstance(ex_date, date) or ex_date > cutoff:
+                continue
+            holding = new_pf.holdings.get(code)
+            if holding is None or holding.shares <= 0.0:
+                continue
+            published_at = getattr(action, "published_at", None)
+            cash_per_share = getattr(action, "cash_per_share", None)
+            multiplier = getattr(action, "share_multiplier", None)
+            rights_price = getattr(action, "rights_price", None)
+            if rights_price is not None:
+                raise ValueError(f"unsupported reference rights issue: {code} {ex_date}")
+            if cash_per_share is None and multiplier is None:
+                raise ValueError(
+                    f"unresolved reference corporate action: {code} {ex_date}"
+                )
+            event_id = (
+                f"corp:{code}:{ex_date.isoformat()}:"
+                f"{getattr(action, 'action_type', '')}:{cash_per_share}:"
+                f"{multiplier}:{published_at}"
+            )
+            if event_id in processed:
+                continue
+            if inception is not None and ex_date < inception:
+                processed.add(event_id)
+                continue
+            if cash_per_share is not None:
+                if not isinstance(published_at, date) or published_at > ex_date:
+                    raise ValueError(
+                        f"cash dividend lacks causal publication date: {code} {ex_date}"
+                    )
+                per_share = float(cash_per_share) * scale
+                if not np.isfinite(per_share) or per_share < 0.0:
+                    raise ValueError(f"invalid reference cash dividend: {code} {ex_date}")
+                gross = holding.shares * per_share
+                tax = gross * rate
+                net = gross - tax
+                new_pf.cash += net
+                new_pf.gross_dividend_cash += gross
+                new_pf.dividend_tax_cost += tax
+                new_pf.net_dividend_cash += net
+                trade = Trade(
+                    date=ex_date.isoformat(),
+                    code=code,
+                    action="dividend",
+                    shares=holding.shares,
+                    price=round(per_share, 6),
+                    cost=-gross,
+                    reason="corporate_action_dividend",
+                    commission=tax,
+                    event_id=event_id,
+                    run_id=new_pf.strategy_run_id,
+                    strategy_id=new_pf.strategy_id,
+                )
+                trades.append(trade)
+                new_pf.trade_log.append(trade)
+            if multiplier is not None:
+                share_multiplier = float(multiplier)
+                if not np.isfinite(share_multiplier) or share_multiplier <= 0.0:
+                    raise ValueError(
+                        f"invalid reference share multiplier: {code} {ex_date}"
+                    )
+                previous_shares = holding.shares
+                holding.shares *= share_multiplier
+                holding.avg_cost /= share_multiplier
+                if not np.isclose(share_multiplier, 1.0):
+                    trade = Trade(
+                        date=ex_date.isoformat(),
+                        code=code,
+                        action="share_action",
+                        shares=holding.shares - previous_shares,
+                        price=0.0,
+                        cost=0.0,
+                        reason="corporate_action_share_multiplier",
+                        event_id=event_id,
+                        run_id=new_pf.strategy_run_id,
+                        strategy_id=new_pf.strategy_id,
+                    )
+                    trades.append(trade)
+                    new_pf.trade_log.append(trade)
+            processed.add(event_id)
+        new_pf.processed_events = sorted(processed)
+        return new_pf, trades
 
     @staticmethod
     def _rebalance_target_plan(
@@ -1352,6 +1506,9 @@ class RefPortfolioManager:
             "strategy_timestamp": pf.strategy_timestamp,
             "params_hash": pf.params_hash,
             "execution_hash": pf.execution_hash,
+            "gross_dividend_cash": round(pf.gross_dividend_cash, 2),
+            "dividend_tax_cost": round(pf.dividend_tax_cost, 2),
+            "net_dividend_cash": round(pf.net_dividend_cash, 2),
             "requires_manual_reset": bool(pf.inception_date and not pf.is_bound),
         }
 

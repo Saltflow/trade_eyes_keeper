@@ -17,7 +17,7 @@ from .config import (
     WindowStats,
     get_constraints,
 )
-from ..backtest.execution import DEFAULT_FILL_PRICE_POLICY
+from ..backtest.execution import DEFAULT_FILL_PRICE_POLICY, ExecutionPriceSlice
 from ..markets import _detect_fine_group
 from .gates import majority_benchmark_excess
 from ..strategy import TradingStrategy, Params, StrategyMarketData
@@ -206,6 +206,7 @@ def _prepare_wf_evaluation_contexts(
         tuple(constraints.benchmark_codes),
         tuple(sorted(constraints.execution.lot_sizes.items())),
         tuple(sorted(constraints.execution.fx_rates.items())),
+        tuple(sorted(constraints.execution.withholding_rates.items())),
         context_hash,
     )
     cache = getattr(wf_manager, "_evaluation_context_cache", None)
@@ -327,6 +328,20 @@ def _prepare_wf_evaluation_contexts(
                 constraints.execution.lot_sizes.get(benchmark_market, 1)
             )
             resolved_benchmark = benchmark_execution.scaled(benchmark_fx)
+            if resolved_benchmark.corporate_actions is not None:
+                resolved_benchmark = ExecutionPriceSlice(
+                    valuation_prices=resolved_benchmark.valuation_prices,
+                    buy_prices=resolved_benchmark.buy_prices,
+                    sell_prices=resolved_benchmark.sell_prices,
+                    tradable=resolved_benchmark.tradable,
+                    corporate_actions=resolved_benchmark.corporate_actions.with_withholding(
+                        float(
+                            constraints.execution.withholding_rates.get(
+                                benchmark_market, 0.0
+                            )
+                        )
+                    ),
+                )
             benchmark_close = resolved_benchmark.valuation_prices[:, 0]
             benchmark_buy = resolved_benchmark.buy_prices[:, 0]
             if (
@@ -883,6 +898,13 @@ def _save_optimizer_result(
                 getattr(stat, "cash_rejected_order_count", 0)
             ),
             "concentration_hhi": float(getattr(stat, "concentration_hhi", 0.0)),
+            "gross_dividend_cash": float(
+                getattr(stat, "gross_dividend_cash", 0.0)
+            ),
+            "dividend_tax_cost": float(getattr(stat, "dividend_tax_cost", 0.0)),
+            "net_dividend_cash": float(
+                getattr(stat, "net_dividend_cash", 0.0)
+            ),
             "selected_basket_hold_return": getattr(
                 stat, "selected_basket_hold_return", None
             ),

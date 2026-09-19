@@ -275,7 +275,13 @@ class StockDataFetcher:
             logger.warning(f"股票 {stock_code} 未获取到估值指标数据")
             return None
 
-    def fetch_to_session(self, session, session_manager=None, realtime_mode=False):
+    def fetch_to_session(
+        self,
+        session,
+        session_manager=None,
+        realtime_mode=False,
+        history_days: Optional[int] = None,
+    ):
         """
         获取股票数据并存入Session（新数据流）
 
@@ -283,6 +289,8 @@ class StockDataFetcher:
             session: SessionContext对象
             session_manager: SessionManager对象（可选）
             realtime_mode: True=简报/盘中模式，用实时行情补充当日缺失数据
+            history_days: 完整历史数据的日历日窗口；日报组合图传入 36 个月
+                加缓冲的窗口，简报和旧调用维持 730 天。
         """
         if session_manager is None:
             from ..session.session_manager import SessionManager
@@ -297,13 +305,18 @@ class StockDataFetcher:
         # 初始化历史数据暂存区（供图表模块使用，不触 Pydantic 模型）
         if not hasattr(session, "_historical"):
             object.__setattr__(session, "_historical", {})
+        requested_history_days = max(
+            1, int(history_days) if history_days is not None else 730
+        )
 
         for stock_code in self.stocks:
             stock_code = str(stock_code)
 
             try:
                 # 从 DataSource 获取历史数据（含缓存管理 + 复权交叉验证）
-                stock_data = self.data_source.fetch_stock_data(stock_code, days=730)
+                stock_data = self.data_source.fetch_stock_data(
+                    stock_code, days=requested_history_days
+                )
 
                 if stock_data is not None and not stock_data.empty:
                     stock_data["stock_code"] = stock_code

@@ -309,6 +309,9 @@ def generate_daily_pdf(
                     f"交易数 & {int(report.trade_count)} & "
                     f"期末资产 & {report.final_asset:,.2f} & "
                     f"仓位 & {report.final_position_pct:.1f}\\% \\",
+                    f"分红税前 & {report.gross_dividend_cash:,.2f} & "
+                    f"预扣税额 & {report.dividend_tax_cost:,.2f} & "
+                    f"分红税后 & {report.net_dividend_cash:,.2f} \\",
                     "\\bottomrule",
                     "\\end{tabular}",
                 ])

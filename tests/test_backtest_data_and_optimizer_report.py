@@ -39,6 +39,7 @@ def _bundle(code="600000"):
                 code=code,
                 action_type="cash_dividend",
                 ex_date=date(2020, 1, 2),
+                published_at=date(2019, 12, 30),
                 cash_per_share=0.2,
                 source="fake-yahoo",
             )
@@ -195,6 +196,9 @@ def test_optimizer_report_exposes_all_roles_and_holdout_aggregate():
                     "max_drawdown": -3.0,
                     "sharpe_ratio": 0.4,
                     "trade_count": 2,
+                    "gross_dividend_cash": 100.0,
+                    "dividend_tax_cost": 20.0,
+                    "net_dividend_cash": 80.0,
                 }
             ],
             "purged_windows": [
@@ -214,5 +218,7 @@ def test_optimizer_report_exposes_all_roles_and_holdout_aggregate():
     assert "2019-01-01" in report
     assert "4.00%" in report
     assert "1.50%" in report
+    assert "分红税前" in report
+    assert "100.00" in report
     assert "12-24月" not in report
     assert "2 年历史" not in report

@@ -11,6 +11,26 @@
   `resample_option_bars(daily, "W-FRI")` 和 `resample_option_bars(daily, "M")`
   从日线聚合；`contract_month` 保留新浪的 YYMM 合约月份。
 
+## 当前执行合同更新（2026-09-19）
+
+- 港股现金分红采用账户层保守 `20%` 预扣假设；qfq 仅生成信号，raw 成交价和
+  显式税后现金流共同计算 NAV。标量、Numba、批量、目标权重、静态/外部基准和
+  三个参考持仓共享该合同，报告持久化税前分红、税额和税后分红。
+- 现金分红必须有 `published_at <= ex_date` 的可审计公告时间。缺少此证据的
+  Yahoo 事后 action 不进入历史回测或搜参，数据就绪报告会明确给出原因。
+- `python main.py --universe-robustness [--group MARKET]` 是独立的 84 个月标的池
+  诊断：每市场复用当前策略、Solver、预算与 `22/16/2/4` 合同，输出基线、
+  leave-one-out、确定性比例删减及横截面输入排序不变性结果。它不会修改监控配置、
+  创建候选、激活策略或改写生产 pointer。
+- P4 基本面 embedding/DCF 和 P5 周粒度降载仍暂缓，未在本轮实现或启用。
+- 日报的“三市场组合净值总览”独立读取最近 36 个日历月，不能复用搜参单个
+  9 个月 Holdout。图表会裁掉三市场共同的、净值仍为 100 的指标预热/未建仓前缀，
+  并标注“有效期自 YYYY-MM-DD”；这不改变上游 36 个月数据范围或任何回测指标。
+  日报抓取为该视图增加 35 天日历缓冲；简报仍使用轻量历史窗口，避免为盘中快照
+  放大数据请求。
+- 完整行情矩阵保留告警/策略优先排序，但不在每只标的名称下重复展示“预警”或
+  “策略”徽标；行动层只在上方决策板和行动清单中呈现。数据未就绪仍明确标识。
+
 ## Authoritative time and ranking contract (2026-08-02)
 
 > This section supersedes every historical description below that calls the
@@ -1459,7 +1479,11 @@ pytest tests/test_import_smoke.py         # 导入完整性
 
 ---
 
-## 📋 TODO / Roadmap (v1.18-beta)
+## 📋 历史 TODO / Roadmap (v1.18-beta)
+
+> 本节保留为历史快照。当前可执行路线图以 `README.md` 与
+> `docs/development/todo_backlog.md` 为准；其中 14 窗口、日报周 NAV 箱线图与持仓正文等
+> 描述已被 84 个月 `22/16/2/4` 合同及当前移动端日报设计取代。
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
@@ -1717,8 +1741,8 @@ pytest tests/test_import_smoke.py         # 导入完整性
 - 策略仅按 A/HK/US 独立市场展示收益、主基准超额、回撤、Sharpe 和交易数。只有完整
   `22/16/2/4` 产物（4 个有序 Holdout 窗口及所有数值）才显示 Holdout 汇总和 H1–H4；
   不完整产物只显示未就绪状态，禁止渲染 `H—` 或指标占位符。
-- 邮件只嵌入一张归一化三市场组合曲线；每个市场保留最近 6 周、无逐周文字的 NAV
-  箱线图。事件速览完整展示已收集的待处理分红、未解禁定增和公告；深度资料仍可通过
+- 邮件只嵌入一张归一化三市场组合曲线；周 NAV 箱线图已从日报正文移除。事件速览完整
+  展示已收集的待处理分红、未解禁定增和公告；深度资料仍可通过
   PDF 和时效 token 报告链接查看。
 - 上线前必须对账生产工作树。先保留可恢复的差异/未跟踪文件清单，再以命名 stash 使
   工作树满足部署脚本的 fail-closed 检查；不得 reset、覆盖或提交 `.repair-*`、证书/密钥

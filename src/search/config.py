@@ -71,6 +71,9 @@ class ExecutionConfig:
     fx_rates: dict[str, float] = field(
         default_factory=lambda: {"a_share": 1.0, "hk": 0.9, "us": 7.0}
     )
+    withholding_rates: dict[str, float] = field(
+        default_factory=lambda: {"a_share": 0.0, "hk": 0.20, "us": 0.0}
+    )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -513,6 +516,7 @@ class StrategyConstraints:
             min_holding_days=int(ep.get("min_holding_days", 30)),
             lot_sizes=dict(ep.get("lot_sizes", {}) or {}),
             fx_rates=dict(ep.get("fx_rates", {}) or {}),
+            withholding_rates=dict(ep.get("withholding_rates", {}) or {}),
         )
 
     def check_hard_constraints(
@@ -625,6 +629,9 @@ class WindowStats:
         signal_event_count: int = 0,
         cash_rejected_order_count: int = 0,
         concentration_hhi: float = 0.0,
+        gross_dividend_cash: float = 0.0,
+        dividend_tax_cost: float = 0.0,
+        net_dividend_cash: float = 0.0,
         selected_basket_hold_return: float | None = None,
         timing_value_add: float | None = None,
         strongest_benchmark: str = "",
@@ -654,6 +661,9 @@ class WindowStats:
         self.signal_event_count = signal_event_count
         self.cash_rejected_order_count = cash_rejected_order_count
         self.concentration_hhi = concentration_hhi
+        self.gross_dividend_cash = gross_dividend_cash
+        self.dividend_tax_cost = dividend_tax_cost
+        self.net_dividend_cash = net_dividend_cash
         self.selected_basket_hold_return = selected_basket_hold_return
         self.timing_value_add = timing_value_add
         self.strongest_benchmark = strongest_benchmark
@@ -925,6 +935,7 @@ def _resolved_market_raw(
         "min_holding_days",
         "lot_sizes",
         "fx_rates",
+        "withholding_rates",
     )
     missing_execution_fields = [
         key for key in required_execution_fields if key not in execution_profile_raw
@@ -936,6 +947,7 @@ def _resolved_market_raw(
         )
     lot_sizes = execution_profile_raw["lot_sizes"]
     fx_rates = execution_profile_raw["fx_rates"]
+    withholding_rates = execution_profile_raw["withholding_rates"]
     if not isinstance(lot_sizes, dict) or group not in lot_sizes:
         raise ValueError(
             f"{group}: execution profile must declare lot_sizes.{group}"
@@ -943,6 +955,10 @@ def _resolved_market_raw(
     if not isinstance(fx_rates, dict) or group not in fx_rates:
         raise ValueError(
             f"{group}: execution profile must declare fx_rates.{group}"
+        )
+    if not isinstance(withholding_rates, dict) or group not in withholding_rates:
+        raise ValueError(
+            f"{group}: execution profile must declare withholding_rates.{group}"
         )
     try:
         if float(execution_profile_raw["initial_capital"]) <= 0:
@@ -953,6 +969,9 @@ def _resolved_market_raw(
             raise ValueError("min_holding_days cannot be negative")
         if int(lot_sizes[group]) <= 0 or float(fx_rates[group]) <= 0:
             raise ValueError("market lot size and FX rate must be positive")
+        withholding_rate = float(withholding_rates[group])
+        if not 0.0 <= withholding_rate < 1.0:
+            raise ValueError("market withholding rate must be in [0, 1)")
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{group}: invalid execution profile") from exc
     benchmark_profile_value = _profile_value(

@@ -16,6 +16,7 @@ from src.data.market_history import (
     PriceHistoryBundle,
     YahooMarketHistoryProvider,
     _event_date,
+    corporate_action_issues,
 )
 from src.data.point_in_time_backfill import PointInTimeBackfillService
 from src.instruments.models import FinancialStatementSnapshot
@@ -275,7 +276,7 @@ def test_a_share_complete_primary_history_skips_fallback():
     assert fallback.calls == []
 
 
-def test_a_share_prefers_full_yahoo_actions_over_unresolved_primary_factor():
+def test_a_share_rejects_yahoo_dividend_without_causal_publication_date():
     primary = _StaticMarketProvider(
         _bundle(
             "601398",
@@ -320,12 +321,11 @@ def test_a_share_prefers_full_yahoo_actions_over_unresolved_primary_factor():
 
     selected = provider.fetch("601398", date(2020, 1, 1), date(2026, 1, 1))
 
-    assert selected is fallback.bundle
+    assert selected is primary.bundle
     assert len(primary.calls) == 1
     assert len(fallback.calls) == 1
-    assert any(
-        item.startswith("corporate_action_selected:yahoo_chart")
-        for item in selected.diagnostics
+    assert corporate_action_issues(fallback.bundle.actions) == (
+        "cash dividend lacks causal publication date: 601398 2020-01-02",
     )
 
 

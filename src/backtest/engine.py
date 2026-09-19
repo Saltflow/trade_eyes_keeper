@@ -278,6 +278,8 @@ if HAS_NUMBA:
         sell_prices,
         tradable,
         cash_dividends,
+        gross_cash_dividends,
+        dividend_tax_costs,
         share_multipliers,
         initial_cash,
         buy_cash_limit,
@@ -300,6 +302,9 @@ if HAS_NUMBA:
         position_fraction_days = 0
         concentration_hhi_sum = 0.0
         concentration_hhi_days = 0
+        gross_dividend_cash = 0.0
+        dividend_tax_cost = 0.0
+        net_dividend_cash = 0.0
 
         n_snapshots = 0
         for t in range(T):
@@ -319,6 +324,9 @@ if HAS_NUMBA:
             # manufacturing a price return in the raw-price NAV path.
             for n in range(N):
                 if shares[n] > 0.0:
+                    gross_dividend_cash += shares[n] * gross_cash_dividends[t, n]
+                    dividend_tax_cost += shares[n] * dividend_tax_costs[t, n]
+                    net_dividend_cash += shares[n] * cash_dividends[t, n]
                     cash += shares[n] * cash_dividends[t, n]
                     multiplier = share_multipliers[t, n]
                     if multiplier != 1.0:
@@ -456,6 +464,7 @@ if HAS_NUMBA:
             shares.copy(), cash, cost_basis.copy(),
             q_shares, q_cost_basis, q_cash, q_nav, q_prices,
             pending_order_count, cash_rejected_order_count, concentration_hhi,
+            gross_dividend_cash, dividend_tax_cost, net_dividend_cash,
         )
 
 else:
@@ -478,6 +487,8 @@ if HAS_NUMBA:
         sell_prices,
         tradable,
         cash_dividends,
+        gross_cash_dividends,
+        dividend_tax_costs,
         share_multipliers,
         date_ordinals,
         initial_cash,
@@ -504,6 +515,9 @@ if HAS_NUMBA:
         position_fraction_days = 0
         concentration_hhi_sum = 0.0
         concentration_hhi_days = 0
+        gross_dividend_cash = 0.0
+        dividend_tax_cost = 0.0
+        net_dividend_cash = 0.0
 
         n_snapshots = 0
         for row in range(rows):
@@ -521,6 +535,15 @@ if HAS_NUMBA:
         for row in range(rows):
             for column in range(columns):
                 if shares[column] > 0.0:
+                    gross_dividend_cash += (
+                        shares[column] * gross_cash_dividends[row, column]
+                    )
+                    dividend_tax_cost += (
+                        shares[column] * dividend_tax_costs[row, column]
+                    )
+                    net_dividend_cash += (
+                        shares[column] * cash_dividends[row, column]
+                    )
                     cash += shares[column] * cash_dividends[row, column]
                     multiplier = share_multipliers[row, column]
                     if multiplier != 1.0:
@@ -780,6 +803,9 @@ if HAS_NUMBA:
             pending_orders,
             cash_rejected_order_count,
             concentration_hhi,
+            gross_dividend_cash,
+            dividend_tax_cost,
+            net_dividend_cash,
         )
 
 else:
@@ -805,6 +831,11 @@ class FastEvaluator:
         self.commission_rate = exec_cfg.commission_rate
         self.min_holding_days = exec_cfg.min_holding_days
         self.fx_rate = float(exec_cfg.fx_rates.get(group, 1.0))
+        # Runtime callers outside the strict optimizer-config path may supply
+        # a lightweight execution namespace.  Preserve the historical zero-tax
+        # default there; resolved production profiles still require this field.
+        withholding_rates = getattr(exec_cfg, "withholding_rates", {}) or {}
+        self.withholding_rate = float(withholding_rates.get(group, 0.0))
         self.buy_confirmation_days = 3
         self.sell_confirmation_days = 1
 
@@ -863,6 +894,7 @@ class FastEvaluator:
         action_schedule = resolved_prices.corporate_actions
         if action_schedule is None:
             action_schedule = CorporateActionSlice.empty(T, N)
+        action_schedule = action_schedule.with_withholding(self.withholding_rate)
         for n in range(N):
             last = 0.0
             for t in range(T):
@@ -925,6 +957,7 @@ class FastEvaluator:
                 quarter_shares, quarter_cost_basis, quarter_cash,
                 quarter_nav, quarter_prices, pending_order_count,
                 cash_rejected_order_count, concentration_hhi,
+                gross_dividend_cash, dividend_tax_cost, net_dividend_cash,
             ) = _simulate_target_plan_numba(
                 np.ascontiguousarray(entry_events, dtype=np.bool_),
                 np.ascontiguousarray(exit_events, dtype=np.bool_),
@@ -938,6 +971,12 @@ class FastEvaluator:
                 np.ascontiguousarray(tradable, dtype=np.bool_),
                 np.ascontiguousarray(
                     action_schedule.cash_dividends, dtype=np.float32
+                ),
+                np.ascontiguousarray(
+                    action_schedule.gross_cash_dividends, dtype=np.float32
+                ),
+                np.ascontiguousarray(
+                    action_schedule.dividend_tax_costs, dtype=np.float32
                 ),
                 np.ascontiguousarray(
                     action_schedule.share_multipliers, dtype=np.float32
@@ -962,6 +1001,7 @@ class FastEvaluator:
                 quarter_shares, quarter_cost_basis, quarter_cash,
                 quarter_nav, quarter_prices, pending_order_count,
                 cash_rejected_order_count, concentration_hhi,
+                gross_dividend_cash, dividend_tax_cost, net_dividend_cash,
             ) = _simulate_cash_plan_numba(
                 np.ascontiguousarray(buy_signals, dtype=np.bool_),
                 np.ascontiguousarray(sell_signals, dtype=np.bool_),
@@ -973,6 +1013,12 @@ class FastEvaluator:
                 np.ascontiguousarray(tradable, dtype=np.bool_),
                 np.ascontiguousarray(
                     action_schedule.cash_dividends, dtype=np.float32
+                ),
+                np.ascontiguousarray(
+                    action_schedule.gross_cash_dividends, dtype=np.float32
+                ),
+                np.ascontiguousarray(
+                    action_schedule.dividend_tax_costs, dtype=np.float32
                 ),
                 np.ascontiguousarray(
                     action_schedule.share_multipliers, dtype=np.float32
@@ -1002,6 +1048,9 @@ class FastEvaluator:
             cash_rejected_order_count=cash_rejected_order_count,
             concentration_hhi=concentration_hhi,
             corporate_actions=action_schedule,
+            gross_dividend_cash=gross_dividend_cash,
+            dividend_tax_cost=dividend_tax_cost,
+            net_dividend_cash=net_dividend_cash,
         )
 
     def evaluate_batch(
@@ -1224,6 +1273,9 @@ def _compute_stats(
     pending_order_count=0,
     cash_rejected_order_count=0,
     concentration_hhi=0.0,
+    gross_dividend_cash=0.0,
+    dividend_tax_cost=0.0,
+    net_dividend_cash=0.0,
     corporate_actions=None,
     selected_basket_hold_return=None,
     timing_value_add=None,
@@ -1313,6 +1365,9 @@ def _compute_stats(
         signal_event_count=int(signal_count),
         cash_rejected_order_count=int(cash_rejected_order_count),
         concentration_hhi=round(float(concentration_hhi), 6),
+        gross_dividend_cash=round(float(gross_dividend_cash), 2),
+        dividend_tax_cost=round(float(dividend_tax_cost), 2),
+        net_dividend_cash=round(float(net_dividend_cash), 2),
         selected_basket_hold_return=selected_basket_hold_return,
         timing_value_add=timing_value_add,
         strongest_benchmark=strongest_benchmark,
@@ -1332,6 +1387,7 @@ def simulate_portfolio(
     commission_rate: float,
     min_holding_days: int = 0,
     execution_price_scale: float = 1.0,
+    dividend_withholding_rate: float = 0.0,
     execution_prices: ExecutionPriceSlice | None = None,
 ) -> PortfolioTrace:
     """Execute the canonical strategy decision plan."""
@@ -1374,6 +1430,7 @@ def simulate_portfolio(
     action_schedule = resolved_prices.corporate_actions
     if action_schedule is None:
         action_schedule = CorporateActionSlice.empty(T, N)
+    action_schedule = action_schedule.with_withholding(dividend_withholding_rate)
     for n in range(N):
         last = 0.0
         for t in range(T):
@@ -1451,6 +1508,7 @@ def simulate_portfolio(
             final_shares, final_cash, cost_basis,
             q_shares, q_cost_basis, q_cash, q_nav, q_prices,
             pending_order_count, cash_rejected_order_count, concentration_hhi,
+            gross_dividend_cash, dividend_tax_cost, net_dividend_cash,
         ) = _simulate_target_plan_numba(
             np.ascontiguousarray(entry_events, dtype=np.bool_),
             np.ascontiguousarray(exit_events, dtype=np.bool_),
@@ -1464,6 +1522,12 @@ def simulate_portfolio(
             np.ascontiguousarray(tradable, dtype=np.bool_),
             np.ascontiguousarray(
                 action_schedule.cash_dividends, dtype=np.float32
+            ),
+            np.ascontiguousarray(
+                action_schedule.gross_cash_dividends, dtype=np.float32
+            ),
+            np.ascontiguousarray(
+                action_schedule.dividend_tax_costs, dtype=np.float32
             ),
             np.ascontiguousarray(
                 action_schedule.share_multipliers, dtype=np.float32
@@ -1487,6 +1551,7 @@ def simulate_portfolio(
             final_shares, final_cash, cost_basis,
             q_shares, q_cost_basis, q_cash, q_nav, q_prices,
             pending_order_count, cash_rejected_order_count, concentration_hhi,
+            gross_dividend_cash, dividend_tax_cost, net_dividend_cash,
         ) = _simulate_cash_plan_numba(
             np.ascontiguousarray(buy_signals, dtype=np.bool_),
             np.ascontiguousarray(sell_signals, dtype=np.bool_),
@@ -1498,6 +1563,12 @@ def simulate_portfolio(
             np.ascontiguousarray(tradable, dtype=np.bool_),
             np.ascontiguousarray(
                 action_schedule.cash_dividends, dtype=np.float32
+            ),
+            np.ascontiguousarray(
+                action_schedule.gross_cash_dividends, dtype=np.float32
+            ),
+            np.ascontiguousarray(
+                action_schedule.dividend_tax_costs, dtype=np.float32
             ),
             np.ascontiguousarray(
                 action_schedule.share_multipliers, dtype=np.float32
@@ -1598,6 +1669,9 @@ def simulate_portfolio(
         signal_event_count=count_signal_events(trade_plan),
         cash_rejected_order_count=int(cash_rejected_order_count),
         concentration_hhi=round(float(concentration_hhi), 6),
+        gross_dividend_cash=round(float(gross_dividend_cash), 2),
+        dividend_tax_cost=round(float(dividend_tax_cost), 2),
+        net_dividend_cash=round(float(net_dividend_cash), 2),
         selected_basket_hold_return=basket_return,
         timing_value_add=round(total_return - basket_return, 2),
     )
@@ -1998,6 +2072,9 @@ class Backtester:
             commission_rate=float(self.execution.commission_rate),
             min_holding_days=int(self.execution.min_holding_days),
             execution_price_scale=fx_rate,
+            dividend_withholding_rate=float(
+                self.execution.withholding_rates.get(self.group, 0.0)
+            ),
             execution_prices=execution_prices,
         )
 
@@ -2069,6 +2146,8 @@ class Backtester:
             if benchmark_corporate_actions is not None:
                 benchmark_corporate_actions = benchmark_corporate_actions.scaled(
                     benchmark_fx
+                ).with_withholding(
+                    float(self.execution.withholding_rates.get(benchmark_group, 0.0))
                 )
             detail = _tradable_benchmark_detail(
                 np.asarray(trace.nav_series, dtype=float),
@@ -2099,6 +2178,16 @@ class Backtester:
         # for asset selection; only timing should earn excess return.
         fx_rate = float(self.execution.fx_rates.get(self.group, 1.0))
         resolved_execution = execution_prices.scaled(fx_rate)
+        if resolved_execution.corporate_actions is not None:
+            resolved_execution = ExecutionPriceSlice(
+                valuation_prices=resolved_execution.valuation_prices,
+                buy_prices=resolved_execution.buy_prices,
+                sell_prices=resolved_execution.sell_prices,
+                tradable=resolved_execution.tradable,
+                corporate_actions=resolved_execution.corporate_actions.with_withholding(
+                    float(self.execution.withholding_rates.get(self.group, 0.0))
+                ),
+            )
         universe_close = resolved_execution.valuation_prices
         if len(universe_close) > 1 and universe_close.shape[1] > 0:
             detail = _tradable_benchmark_detail(
@@ -2194,6 +2283,9 @@ class Backtester:
             signal_event_count=int(trace.signal_event_count),
             cash_rejected_order_count=int(trace.cash_rejected_order_count),
             concentration_hhi=round(float(trace.concentration_hhi), 6),
+            gross_dividend_cash=round(float(trace.gross_dividend_cash), 2),
+            dividend_tax_cost=round(float(trace.dividend_tax_cost), 2),
+            net_dividend_cash=round(float(trace.net_dividend_cash), 2),
             selected_basket_hold_return=trace.selected_basket_hold_return,
             timing_value_add=trace.timing_value_add,
             initial_asset=round(float(self.execution.initial_capital), 2),
@@ -2967,6 +3059,7 @@ def evaluate_all_groups(
             min_holding_days=int(exec_cfg.min_holding_days),
             lot_sizes=dict(exec_cfg.lot_sizes),
             fx_rates=dict(exec_cfg.fx_rates),
+            withholding_rates=dict(exec_cfg.withholding_rates),
         )
         report = Backtester(execution, group_name).run(
             trade_plan,

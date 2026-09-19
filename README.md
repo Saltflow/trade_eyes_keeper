@@ -135,17 +135,20 @@ pytest tests/test_import_smoke.py       # 模块导入完整性
 pytest tests/test_security.py           # 安全测试
 ```
 
-## Roadmap
+## Roadmap（当前，2026-09-19）
 
 | 方向 | 状态 | 内容 |
 |------|------|------|
-| **统一策略评估** | ✅ 已完成 | 单一 `--optimize` 入口；14 个 12/9/3 自然月窗口；统一 TradePlan、Backtester 与 EvaluationReport |
+| **发布安全门禁** | ✅ 已完成 | 部署前执行 Ruff `F/E/S110`、导入烟测、核心路径测试、远端严格配置校验与 HTTP 健康检查；不因无关的历史格式债务阻塞发布 |
+| **统一策略评估** | ✅ 已完成 | 单一 `--optimize` 入口；84 个月 `12/9/3/22` 滚动窗口（16 ranking、2 purge、4 holdout）；统一 TradePlan、Backtester 与 EvaluationReport |
 | **Solver 解耦** | ✅ 已完成 | `SearchController` 与 Genetic / Random / Simulated Annealing / Local Genetic 插件分离；新增算法不改策略和评价层 |
-| **报告与通知** | ✅ 已完成 | HTML、PDF、邮件、飞书和 Telegram 共享同一报告对象；周 NAV 以图形展示，季末持仓和期末持仓统一来源 |
+| **报告与通知** | ✅ 已完成 | HTML、PDF、邮件、飞书和 Telegram 共享报告合同；移动端日报展示决策板、完整行情矩阵、估值/待派息事件及报告链接，正文不再堆叠持仓或周 NAV 箱线图 |
+| **可配置回测区间** | ✅ 已完成 | `/backtest 代码 起 止` 自动准备指标预热、raw/qfq、公司行为与基准，缺失时补数后执行严格校验 |
 | **标的画像与审计** | 🔄 进行中 | 公司财务推导、ETF/REIT/商品/债券类型化画像，以及带发布日期和防前视约束的 point-in-time 数据回填 |
-| **基本面 embedding / DCF** | 🧪 研究中 | 分离公司画像与市场定价逻辑；CAPM-DCF 已具备 A/HK/US 独立点时数据合同，但须各市场完成广域训练、留出验证与统一 benchmark 后才可人工激活 |
-| **股票池稳健性** | 📋 下一步 | 将标的池扰动、删减变体和横截面排序纳入统一 benchmark，结果需人工确认后才可激活 |
-| **可配置回测区间** | 📋 下一步 | 支持自定义起止日期、基准对比和训练/测试分离，同时复用统一成交与评价合同 |
+| **港股税后现金分红** | ✅ 已完成（P1） | `hk: 20%` 账户层保守预扣率进入 raw 成交/qfq 信号/显式现金流合同；策略、静态基准、外部基准与参考持仓均记录税前、税额与税后现金，缺少因果公告日的分红 fail closed |
+| **股票池稳健性** | ✅ 已实现（P3，待全量运行） | `--universe-robustness` 逐市场以当前 Solver/预算跑基线、leave-one-out、确定性比例删减和排序不变性变体，写入 JSON/CSV/HTML；诊断绝不变更监控池或 active pointer |
+| **基本面 embedding / DCF** | ⏸ 暂缓（P4） | 保持研究状态；CAPM-DCF 不进入生产策略，等待广域逐时点训练与三市场 Holdout 基准 |
+| **周粒度降载** | ⏸ 暂缓（P5） | 默认日粒度；只在压测证明服务器超出负载阈值后评估周聚合、周高买入/周低卖出方案 |
 
 研究性功能默认不改变活动策略；只有通过统一门槛、完整性和留出验证的候选，才允许人工激活。
 

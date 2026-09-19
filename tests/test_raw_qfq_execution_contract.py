@@ -89,6 +89,114 @@ def test_cash_dividend_split_updates_cash_shares_cost_and_nav():
     assert stats.final_position_pct == 0.0
 
 
+def test_hk_withholding_is_netted_and_reported_for_scalar_and_batch_paths():
+    cfg = ExecutionConfig(
+        initial_capital=1_000.0,
+        commission_rate=0.0,
+        min_holding_days=0,
+        lot_sizes={"hk": 1},
+        fx_rates={"hk": 1.0},
+        withholding_rates={"hk": 0.20},
+    )
+    evaluator = FastEvaluator(cfg, "hk")
+    inputs = {
+        "indicator_matrix": np.zeros((3, 1, 1), dtype=np.float32),
+        "price_matrix": np.full((3, 1), 10.0, dtype=np.float32),
+        "cash_baseline": np.full(3, 1_000.0),
+        "execution_prices": _execution(),
+    }
+    scalar = evaluator.evaluate(trade_plan=_plan(), **inputs)
+    target_weight = evaluator.evaluate(trade_plan=_plan("target_weight"), **inputs)
+    batch = evaluator.evaluate_batch([_plan()], workers=1, **inputs)[0]
+
+    for result in (scalar, target_weight, batch):
+        assert result.gross_dividend_cash == pytest.approx(100.0)
+        assert result.dividend_tax_cost == pytest.approx(20.0)
+        assert result.net_dividend_cash == pytest.approx(80.0)
+        assert result.final_asset == pytest.approx(1_080.0)
+
+
+def test_schedule_rejects_dividend_without_causal_publication_date():
+    action = CorporateAction(
+        code="000001",
+        action_type="cash_dividend",
+        ex_date=pd.Timestamp("2026-01-02").date(),
+        cash_per_share=0.1,
+        source="test",
+    )
+    with pytest.raises(ValueError, match="causal publication"):
+        build_corporate_action_schedule(
+            [action], pd.date_range("2026-01-01", periods=2), ["000001"]
+        )
+
+
+def test_hk_tax_contract_applies_to_external_and_static_benchmarks():
+    cfg = ExecutionConfig(
+        initial_capital=1_000.0,
+        commission_rate=0.0,
+        min_holding_days=0,
+        lot_sizes={"hk": 1},
+        fx_rates={"hk": 1.0},
+        withholding_rates={"hk": 0.20},
+    )
+    dates = pd.date_range("2026-01-01", periods=3, freq="D")
+    prices = pd.DataFrame(
+        {
+            "date": dates,
+            "raw_open": [10.0] * 3,
+            "raw_high": [10.0] * 3,
+            "raw_low": [10.0] * 3,
+            "raw_close": [10.0] * 3,
+            "qfq_open": [10.0] * 3,
+            "qfq_high": [10.0] * 3,
+            "qfq_low": [10.0] * 3,
+            "qfq_close": [10.0] * 3,
+            "qfq_factor": [1.0] * 3,
+            "volume": [1_000] * 3,
+            "tradable": [True] * 3,
+        }
+    )
+    bundle = PriceHistoryBundle(
+        code="00883",
+        prices=prices,
+        actions=[
+            CorporateAction(
+                code="00883",
+                action_type="cash_dividend",
+                ex_date=dates[1].date(),
+                published_at=dates[0].date(),
+                cash_per_share=1.0,
+                source="test",
+                currency="HKD",
+            )
+        ],
+        source="test",
+        currency="HKD",
+    ).validate()
+    market_data = StrategyMarketData(
+        indicator_matrix=np.zeros((3, 1, 1), dtype=np.float32),
+        dates=[item.date().isoformat() for item in dates],
+        symbols=["00883"],
+        prices=np.full((3, 1), 10.0),
+        highs=np.full((3, 1), 10.0),
+        lows=np.full((3, 1), 10.0),
+    )
+
+    report = Backtester(cfg, "hk").run(
+        _plan(),
+        market_data,
+        execution_prices=_execution(),
+        benchmark_bundles={"00883": bundle},
+        benchmark_codes=["00883"],
+        risk_free_rate=0.0,
+    )
+
+    assert report.net_dividend_cash == pytest.approx(80.0)
+    assert report.dividend_tax_cost == pytest.approx(20.0)
+    assert report.benchmark_returns["00883"] == pytest.approx(8.0)
+    assert report.benchmark_returns["universe_equal_weight"] == pytest.approx(8.0)
+
+
 def test_target_weight_and_cash_cap_share_the_same_action_contract():
     cfg = ExecutionConfig(
         initial_capital=1_000.0,
@@ -178,6 +286,7 @@ def test_backtester_scales_benchmark_dividend_cash_with_fx():
                 code="GOOG",
                 action_type="cash_dividend",
                 ex_date=dates[1].date(),
+                published_at=dates[0].date(),
                 cash_per_share=1.0,
                 source="test",
                 currency="USD",

@@ -21,24 +21,46 @@ class CorporateActionSlice:
 
     cash_dividends: np.ndarray
     share_multipliers: np.ndarray
+    gross_cash_dividends: np.ndarray | None = None
+    dividend_tax_costs: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         cash = np.asarray(self.cash_dividends, dtype=np.float64)
         multipliers = np.asarray(self.share_multipliers, dtype=np.float64)
+        gross = (
+            cash.copy()
+            if self.gross_cash_dividends is None
+            else np.asarray(self.gross_cash_dividends, dtype=np.float64)
+        )
+        taxes = (
+            np.zeros_like(cash)
+            if self.dividend_tax_costs is None
+            else np.asarray(self.dividend_tax_costs, dtype=np.float64)
+        )
         if cash.ndim == 1:
             cash = cash.reshape(-1, 1)
         if multipliers.ndim == 1:
             multipliers = multipliers.reshape(-1, 1)
+        if gross.ndim == 1:
+            gross = gross.reshape(-1, 1)
+        if taxes.ndim == 1:
+            taxes = taxes.reshape(-1, 1)
         if cash.ndim != 2 or multipliers.ndim != 2:
             raise ValueError("corporate action arrays must be two-dimensional")
-        if cash.shape != multipliers.shape:
+        if cash.shape != multipliers.shape or cash.shape != gross.shape or cash.shape != taxes.shape:
             raise ValueError("corporate action arrays must have the same shape")
         if np.any(~np.isfinite(cash)) or np.any(cash < 0.0):
             raise ValueError("cash dividends must be finite and non-negative")
+        if np.any(~np.isfinite(gross)) or np.any(~np.isfinite(taxes)):
+            raise ValueError("gross dividends and tax costs must be finite")
+        if np.any(gross < cash) or np.any(taxes < 0.0) or not np.allclose(gross - taxes, cash):
+            raise ValueError("gross dividend, tax cost and net cash must reconcile")
         if np.any(~np.isfinite(multipliers)) or np.any(multipliers <= 0.0):
             raise ValueError("share multipliers must be finite and positive")
         object.__setattr__(self, "cash_dividends", cash)
         object.__setattr__(self, "share_multipliers", multipliers)
+        object.__setattr__(self, "gross_cash_dividends", gross)
+        object.__setattr__(self, "dividend_tax_costs", taxes)
 
     @classmethod
     def empty(cls, rows: int, columns: int) -> "CorporateActionSlice":
@@ -46,12 +68,16 @@ class CorporateActionSlice:
         return cls(
             cash_dividends=np.zeros(shape, dtype=np.float64),
             share_multipliers=np.ones(shape, dtype=np.float64),
+            gross_cash_dividends=np.zeros(shape, dtype=np.float64),
+            dividend_tax_costs=np.zeros(shape, dtype=np.float64),
         )
 
     def sliced(self, start: int, end: int) -> "CorporateActionSlice":
         return CorporateActionSlice(
             cash_dividends=self.cash_dividends[start:end].copy(),
             share_multipliers=self.share_multipliers[start:end].copy(),
+            gross_cash_dividends=self.gross_cash_dividends[start:end].copy(),
+            dividend_tax_costs=self.dividend_tax_costs[start:end].copy(),
         )
 
     def scaled(self, factor: float) -> "CorporateActionSlice":
@@ -59,6 +85,22 @@ class CorporateActionSlice:
         return CorporateActionSlice(
             cash_dividends=self.cash_dividends * float(factor),
             share_multipliers=self.share_multipliers.copy(),
+            gross_cash_dividends=self.gross_cash_dividends * float(factor),
+            dividend_tax_costs=self.dividend_tax_costs * float(factor),
+        )
+
+    def with_withholding(self, rate: float) -> "CorporateActionSlice":
+        """Apply one account-level withholding rate exactly once to gross cash."""
+        value = float(rate)
+        if not 0.0 <= value < 1.0:
+            raise ValueError("withholding rate must be in [0, 1)")
+        gross = self.gross_cash_dividends.copy()
+        taxes = gross * value
+        return CorporateActionSlice(
+            cash_dividends=gross - taxes,
+            share_multipliers=self.share_multipliers.copy(),
+            gross_cash_dividends=gross,
+            dividend_tax_costs=taxes,
         )
 
 
@@ -66,6 +108,8 @@ def build_corporate_action_schedule(
     actions: Iterable[object] | None,
     dates: Iterable[object],
     symbols: Iterable[str],
+    *,
+    require_published_at: bool = True,
 ) -> CorporateActionSlice:
     """Convert dated ``CorporateAction`` objects into a strict matrix.
 
@@ -80,6 +124,7 @@ def build_corporate_action_schedule(
     symbol_values = [str(value) for value in symbols]
     result = CorporateActionSlice.empty(len(date_values), len(symbol_values))
     cash = result.cash_dividends.copy()
+    gross_cash = result.gross_cash_dividends.copy()
     multipliers = result.share_multipliers.copy()
     if not actions:
         return result
@@ -113,16 +158,28 @@ def build_corporate_action_schedule(
                 f"corporate action has no cash or share effect: {code} {ex_date}"
             )
         if cash_value is not None:
+            published_at = getattr(action, "published_at", None)
+            if require_published_at and (
+                published_at is None or published_at > ex_date
+            ):
+                raise ValueError(
+                    f"cash dividend lacks causal publication date: {code} {ex_date}"
+                )
             cash_value = float(cash_value)
             if not np.isfinite(cash_value) or cash_value < 0.0:
                 raise ValueError(f"invalid cash dividend for {code} {ex_date}")
             cash[row, symbol_index[code]] += cash_value
+            gross_cash[row, symbol_index[code]] += cash_value
         if multiplier_value is not None:
             multiplier_value = float(multiplier_value)
             if not np.isfinite(multiplier_value) or multiplier_value <= 0.0:
                 raise ValueError(f"invalid share multiplier for {code} {ex_date}")
             multipliers[row, symbol_index[code]] *= multiplier_value
-    return CorporateActionSlice(cash, multipliers)
+    return CorporateActionSlice(
+        cash,
+        multipliers,
+        gross_cash_dividends=gross_cash,
+    )
 
 
 def _price_matrix(

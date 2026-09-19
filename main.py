@@ -71,6 +71,25 @@ from src.data.backtest_data import prepare_backtest_data
 OPTIMIZER_GROUPS = ("a_share", "hk", "us")
 DEFAULT_OPTIMIZER_GROUPS = OPTIMIZER_GROUPS
 DAILY_REPORT_FREQUENCIES = {"daily", "weekly", "off"}
+# The daily email's normalized NAV chart is a decision-history view, not one
+# nine-month optimizer holdout.  Keep a full three-year window available for
+# every market while leaving the intraday/brief-report fetch path lightweight.
+DAILY_PORTFOLIO_HISTORY_MONTHS = 36
+DAILY_PORTFOLIO_HISTORY_BUFFER_DAYS = 35
+
+
+def _daily_portfolio_history_days() -> int:
+    """Return the fetch horizon needed for an exact 36-calendar-month chart."""
+    return int(DAILY_PORTFOLIO_HISTORY_MONTHS * 30.4375) + (
+        DAILY_PORTFOLIO_HISTORY_BUFFER_DAYS
+    )
+
+
+def _daily_portfolio_evaluation_start(end_date: pd.Timestamp) -> pd.Timestamp:
+    """Anchor the daily NAV overview to a calendar, rather than a 9m holdout."""
+    return pd.Timestamp(end_date).normalize() - pd.DateOffset(
+        months=DAILY_PORTFOLIO_HISTORY_MONTHS
+    )
 
 
 def _stock_code(stock: object) -> str:
@@ -195,6 +214,9 @@ def _optimizer_validation_snapshot(report) -> dict[str, object]:
             getattr(report, "pending_order_count", 0)
         ),
         "avg_cash_pct": float(report.avg_cash_pct),
+        "gross_dividend_cash": float(getattr(report, "gross_dividend_cash", 0.0)),
+        "dividend_tax_cost": float(getattr(report, "dividend_tax_cost", 0.0)),
+        "net_dividend_cash": float(getattr(report, "net_dividend_cash", 0.0)),
         "initial_asset": float(report.initial_asset),
         "final_asset": float(report.final_asset),
         "final_cash": float(report.final_cash),
@@ -349,6 +371,30 @@ def _load_optimizer_benchmark_bundles(
         days,
         label=f"{group} benchmark",
     )
+
+
+def _reference_portfolio_actions(config: dict, portfolio) -> list[object]:
+    """Load the exact stored corporate actions for every live holding.
+
+    A reference account may not estimate a dividend from adjusted prices.  It
+    either has a point-in-time action record for every holding or its next
+    rebalance is blocked with an explicit reason.
+    """
+    from src.data.market_history import PointInTimeMarketStore
+
+    settings = config.get("point_in_time_data", {}) or {}
+    store = PointInTimeMarketStore(settings.get("output_dir", "data/point_in_time"))
+    actions: list[object] = []
+    missing: list[str] = []
+    for code in sorted(portfolio.holdings):
+        bundle = store.read(code)
+        if bundle is None:
+            missing.append(code)
+            continue
+        actions.extend(bundle.actions)
+    if missing:
+        raise ValueError("missing point-in-time corporate-action bundle: " + ", ".join(missing))
+    return actions
 
 
 def rebuild_active_optimizer_summary(config: dict) -> OptimizerRunSummary | None:
@@ -1306,7 +1352,11 @@ def run_daily_task(force: bool = False):
         # 2. 获取股票数据并存入Session
         logger.info("开始获取股票数据")
         fetcher = StockDataFetcher(config)
-        fetcher.fetch_to_session(session, session_manager)
+        fetcher.fetch_to_session(
+            session,
+            session_manager,
+            history_days=_daily_portfolio_history_days(),
+        )
         if not session.stocks_data:
             logger.warning("Session中无股票数据")
             return
@@ -1460,7 +1510,7 @@ def run_daily_task(force: bool = False):
                             group_last_dates.append(pd.Timestamp(parsed_dates.max()))
                     validation_end = max(group_last_dates) if group_last_dates else None
                     validation_start = (
-                        validation_end - pd.Timedelta(days=272)
+                        _daily_portfolio_evaluation_start(validation_end)
                         if validation_end is not None
                         else None
                     )
@@ -1535,6 +1585,23 @@ def run_daily_task(force: bool = False):
             pf = mgr.load()
             if not mgr.is_initialized(pf):
                 continue
+            try:
+                pf, _corporate_action_trades = mgr.apply_corporate_actions(
+                    pf,
+                    _reference_portfolio_actions(config, pf),
+                    today.strftime("%Y-%m-%d"),
+                    withholding_rate=market_config.execution.withholding_rates.get(
+                        group_key, 0.0
+                    ),
+                    fx_rate=market_config.execution.fx_rates.get(group_key, 1.0),
+                )
+                mgr.save(pf)
+            except Exception as exc:
+                logger.error(
+                    "参考持仓%s 公司行为未应用，日报仅展示原状态: %s",
+                    label,
+                    exc,
+                )
             fx = float(
                 market_config.execution.fx_rates.get(group_key, 1.0)
             )
@@ -1728,7 +1795,27 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
 
             new_pf = pf
             trading_blocked_reason = ""
-            if not pf.is_bound:
+            try:
+                new_pf, _corporate_action_trades = mgr.apply_corporate_actions(
+                    pf,
+                    _reference_portfolio_actions(config, pf),
+                    today.strftime("%Y-%m-%d"),
+                    withholding_rate=pool["execution"].withholding_rates.get(
+                        group_key, 0.0
+                    ),
+                    fx_rate=pool["fx"],
+                )
+                mgr.save(new_pf)
+            except Exception as exc:
+                trading_blocked_reason = "公司行为数据不就绪"
+                logger.error(
+                    "参考持仓%s 无法应用公司行为；跳过交易: %s",
+                    pool["label"],
+                    exc,
+                )
+            if trading_blocked_reason:
+                pass
+            elif not pf.is_bound:
                 trading_blocked_reason = "未绑定运行，需手动重置"
                 logger.warning(
                     "参考持仓%s 是旧格式且未绑定运行；跳过交易，等待手动 /ref_date 重置",
@@ -1804,7 +1891,7 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                             )
                             if trade_plan is not None and market_data is not None:
                                 new_pf, _ = mgr.rebalance_plan(
-                                    pf,
+                                    new_pf,
                                     trade_plan,
                                     market_data,
                                     today.strftime("%Y-%m-%d"),
@@ -2175,6 +2262,14 @@ def _build_argument_parser() -> argparse.ArgumentParser:
             "statements without changing the active strategy"
         ),
     )
+    mode.add_argument(
+        "--universe-robustness",
+        action="store_true",
+        help=(
+            "run the non-activating 84-month universe robustness benchmark "
+            "for configured market pools"
+        ),
+    )
     mode.add_argument("--health-server", action="store_true", help="start health server")
     mode.add_argument("--interactive", action="store_true", help="start Telegram bot")
     parser.add_argument(
@@ -2263,6 +2358,16 @@ def main(argv: list[str] | None = None):
             report["statement_success"],
             report["statement_applicable"],
             report.get("output_file", ""),
+        )
+    elif args.universe_robustness:
+        from src.experiments.universe_robustness import run_universe_robustness
+
+        groups = (args.market_group,) if args.market_group else OPTIMIZER_GROUPS
+        report = run_universe_robustness(config, groups=groups)
+        logger.info(
+            "Universe robustness complete: status=%s, report=%s",
+            [item.get("status") for item in report.get("markets", [])],
+            report.get("artifacts", {}).get("html", ""),
         )
     elif args.health_server:
         from src.health_server import start_health_server

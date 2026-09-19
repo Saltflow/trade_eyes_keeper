@@ -500,12 +500,19 @@ def generate_portfolio_chart(
     return output if output else None
 
 
-def generate_portfolio_overview_chart(evaluation_reports: dict) -> bytes | None:
+def generate_portfolio_overview_chart(
+    evaluation_reports: dict,
+    lookback_months: int = 36,
+) -> bytes | None:
     """Render one normalized A/HK/US NAV overview for the daily email.
 
     The legacy renderer deliberately produces one detailed chart per market.
     That remains available to callers that need it, while the daily email uses
-    this compact overview to preserve its reading density on a phone.
+    this compact overview to preserve its reading density on a phone.  The
+    daily caller supplies three calendar years of NAV, independent from the
+    optimizer's nine-month holdout windows.  A shared, all-cash warm-up prefix
+    is not strategy performance, so the rendered axis begins at the first
+    effective NAV movement while retaining the full source horizon upstream.
     """
     if not MATPLOTLIB_AVAILABLE or not isinstance(evaluation_reports, dict):
         return None
@@ -541,8 +548,16 @@ def generate_portfolio_overview_chart(evaluation_reports: dict) -> bytes | None:
     if not series:
         return None
 
+    chart_months = max(1, int(lookback_months))
+    effective_start = _portfolio_overview_effective_start(series)
     fig, ax = plt.subplots(figsize=(9.4, 3.15))
     for group_key, dates, values in series:
+        if effective_start is not None:
+            visible = dates >= effective_start
+            dates = dates[visible]
+            values = values[visible]
+        if len(dates) < 2:
+            continue
         ax.plot(
             dates,
             values,
@@ -551,7 +566,16 @@ def generate_portfolio_overview_chart(evaluation_reports: dict) -> bytes | None:
             label=group_labels[group_key],
         )
     ax.axhline(100.0, color="#8a98a7", linewidth=0.8, linestyle="--")
-    ax.set_title("三市场组合净值总览（起点=100）", fontsize=12, fontweight="bold")
+    if effective_start is not None:
+        ax.set_xlim(left=effective_start)
+        horizon_label = f"有效期自{effective_start:%Y-%m-%d}"
+    else:
+        horizon_label = f"近{chart_months}个月"
+    ax.set_title(
+        f"三市场组合净值总览（{horizon_label}，起点=100）",
+        fontsize=12,
+        fontweight="bold",
+    )
     ax.set_ylabel("归一化净值", fontsize=9)
     ax.grid(axis="y", alpha=0.2, linestyle="--")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
@@ -570,3 +594,27 @@ def generate_portfolio_overview_chart(evaluation_reports: dict) -> bytes | None:
         return None
     finally:
         plt.close(fig)
+
+
+def _portfolio_overview_effective_start(
+    series: list[tuple[str, pd.DatetimeIndex, np.ndarray]],
+) -> pd.Timestamp | None:
+    """Return the first visible date after a common all-cash warm-up prefix.
+
+    Each market NAV is rebased to 100 before it reaches the chart.  A leading
+    run that remains exactly at that baseline in every market is indicator
+    warm-up / no-signal time, rather than a meaningful portfolio observation.
+    Preserve one baseline observation immediately before the earliest movement
+    so readers can still see the normalized starting point.
+    """
+    first_effective_dates: list[pd.Timestamp] = []
+    for _group_key, dates, values in series:
+        if len(dates) < 2 or len(values) != len(dates):
+            continue
+        changed = ~np.isclose(values, values[0], rtol=1e-10, atol=1e-8)
+        changed_indices = np.flatnonzero(changed)
+        if len(changed_indices) == 0:
+            continue
+        baseline_index = max(0, int(changed_indices[0]) - 1)
+        first_effective_dates.append(pd.Timestamp(dates[baseline_index]))
+    return min(first_effective_dates) if first_effective_dates else None

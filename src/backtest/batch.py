@@ -50,6 +50,8 @@ if HAS_NUMBA_BATCH:
         sell_prices,
         tradable,
         cash_dividends,
+        gross_cash_dividends,
+        dividend_tax_costs,
         share_multipliers,
         initial_cash,
         buy_cash_limits,
@@ -69,6 +71,9 @@ if HAS_NUMBA_BATCH:
         pending_orders = np.zeros(candidate_count, dtype=np.int64)
         cash_rejected_orders = np.zeros(candidate_count, dtype=np.int64)
         concentration_hhi = np.zeros(candidate_count, dtype=np.float64)
+        gross_dividend_cash = np.zeros(candidate_count, dtype=np.float64)
+        dividend_tax_cost = np.zeros(candidate_count, dtype=np.float64)
+        net_dividend_cash = np.zeros(candidate_count, dtype=np.float64)
         snapshot_mask = np.zeros(row_count, dtype=np.bool_)
         for candidate_index in prange(candidate_count):
             result = _simulate_cash_plan_numba(
@@ -81,6 +86,8 @@ if HAS_NUMBA_BATCH:
                 sell_prices,
                 tradable,
                 cash_dividends,
+                gross_cash_dividends,
+                dividend_tax_costs,
                 share_multipliers,
                 initial_cash,
                 buy_cash_limits[candidate_index],
@@ -100,6 +107,9 @@ if HAS_NUMBA_BATCH:
             pending_orders[candidate_index] = result[12]
             cash_rejected_orders[candidate_index] = result[13]
             concentration_hhi[candidate_index] = result[14]
+            gross_dividend_cash[candidate_index] = result[15]
+            dividend_tax_cost[candidate_index] = result[16]
+            net_dividend_cash[candidate_index] = result[17]
         return (
             daily_values,
             trade_counts,
@@ -111,6 +121,9 @@ if HAS_NUMBA_BATCH:
             pending_orders,
             cash_rejected_orders,
             concentration_hhi,
+            gross_dividend_cash,
+            dividend_tax_cost,
+            net_dividend_cash,
         )
 
 
@@ -156,6 +169,7 @@ def evaluate_cash_batch(
         from .execution import CorporateActionSlice
 
         action_schedule = CorporateActionSlice.empty(row_count, symbol_count)
+    action_schedule = action_schedule.with_withholding(evaluator.withholding_rate)
     valuation_prices = np.asarray(
         resolved_prices.valuation_prices, dtype=np.float32
     ).copy()
@@ -189,6 +203,12 @@ def evaluate_cash_batch(
         np.ascontiguousarray(tradable, dtype=np.bool_),
         np.ascontiguousarray(
             action_schedule.cash_dividends, dtype=np.float32
+        ),
+        np.ascontiguousarray(
+            action_schedule.gross_cash_dividends, dtype=np.float32
+        ),
+        np.ascontiguousarray(
+            action_schedule.dividend_tax_costs, dtype=np.float32
         ),
         np.ascontiguousarray(
             action_schedule.share_multipliers, dtype=np.float32
@@ -226,6 +246,9 @@ def evaluate_cash_batch(
             pending_order_count=int(result[7][index]),
             cash_rejected_order_count=int(result[8][index]),
             concentration_hhi=float(result[9][index]),
+            gross_dividend_cash=float(result[10][index]),
+            dividend_tax_cost=float(result[11][index]),
+            net_dividend_cash=float(result[12][index]),
         )
         for index in range(len(trade_plans))
     ]

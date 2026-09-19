@@ -18,6 +18,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 
@@ -364,6 +365,27 @@ def _run_local(*args, timeout=120):
         return False, "", str(e)
 
 
+def _run_workspace_pytest(*args, timeout=120):
+    """Run pytest with an isolated, project-writable temporary directory.
+
+    Some Windows execution environments deny access to the account-level Temp
+    directory.  A pre-deployment test gate must fail on test failures, not on
+    an unrelated pytest fixture-directory permission error.
+    """
+    with tempfile.TemporaryDirectory(
+        prefix=".pytest_predeploy_", dir=PROJECT_DIR
+    ) as temp_root:
+        return _run_local(
+            sys.executable,
+            "-m",
+            "pytest",
+            *args,
+            "--basetemp",
+            os.path.join(temp_root, "pytest"),
+            timeout=timeout,
+        )
+
+
 def _pre_deploy_checks(dry_run):
     """部署前检查: ruff lint + 核心测试。任一步失败则中止。"""
     if dry_run:
@@ -432,8 +454,7 @@ def _pre_deploy_checks(dry_run):
 
     # 3. Core main-path and notification tests (no LLM).
     _info("Running core main-path and notification tests...")
-    ok, out, err = _run_local(
-        sys.executable, "-m", "pytest",
+    ok, out, err = _run_workspace_pytest(
         "tests/test_portfolio_strategy.py",
         "tests/test_import_smoke.py",
         "tests/test_cash_tier_trade_plan.py",
@@ -454,8 +475,7 @@ def _pre_deploy_checks(dry_run):
     # 3b. 数据源存活探针（真实 API 调用，验证数据可用性）
     # 失败不阻断部署但打出 WARN（外部依赖不可控）
     _info("Running data source health smoke tests...")
-    _run_local(
-        sys.executable, "-m", "pytest",
+    _run_workspace_pytest(
         "tests/test_data_source_health.py",
         "-m", "smoke",
         "-p", "no:capture", "-q",
@@ -463,8 +483,7 @@ def _pre_deploy_checks(dry_run):
         timeout=120,
     )
     # smoke 结果通过查看上一次 run 的退出码间接判断（非严格阻断）
-    ok2, smoke_out, smoke_err = _run_local(
-        sys.executable, "-m", "pytest",
+    ok2, smoke_out, smoke_err = _run_workspace_pytest(
         "tests/test_data_source_health.py",
         "-m", "smoke",
         "-p", "no:capture", "-q",

@@ -243,9 +243,6 @@ def build_strategy_suggestions(stock_data, today=None) -> dict | None:
             "text_rows": "纯文本行",
         }
     """
-    from pathlib import Path
-    from datetime import datetime
-
     today_date = (
         today.date() if hasattr(today, "date") else (today or datetime.now().date())
     )
@@ -1037,6 +1034,12 @@ def _build_optimizer_run_summary(report) -> str:
                 f"夏普 {validation.get('sharpe_ratio', 0.0):.2f} | "
                 f"交易 {validation.get('trade_count', 0)} 笔 | "
                 f"平均现金 {validation.get('avg_cash_pct', 0.0):.0f}%"
+            )
+            lines.append(
+                "现金分红（税前 / 税额 / 税后）: "
+                f"{validation.get('gross_dividend_cash', 0.0):,.2f} / "
+                f"{validation.get('dividend_tax_cost', 0.0):,.2f} / "
+                f"{validation.get('net_dividend_cash', 0.0):,.2f}"
             )
             benchmark_returns = validation.get("benchmark_returns", {}) or {}
             if benchmark_returns:

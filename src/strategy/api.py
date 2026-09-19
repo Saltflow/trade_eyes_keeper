@@ -212,6 +212,9 @@ class PortfolioTrace:
     signal_event_count: int = 0
     cash_rejected_order_count: int = 0
     concentration_hhi: float = 0.0
+    gross_dividend_cash: float = 0.0
+    dividend_tax_cost: float = 0.0
+    net_dividend_cash: float = 0.0
     selected_basket_hold_return: float | None = None
     timing_value_add: float | None = None
 
@@ -236,6 +239,9 @@ class EvaluationReport:
     signal_event_count: int = 0
     cash_rejected_order_count: int = 0
     concentration_hhi: float = 0.0
+    gross_dividend_cash: float = 0.0
+    dividend_tax_cost: float = 0.0
+    net_dividend_cash: float = 0.0
     selected_basket_hold_return: float | None = None
     timing_value_add: float | None = None
 
@@ -289,6 +295,9 @@ class EvaluationReport:
             "signal_event_count": self.signal_event_count,
             "cash_rejected_order_count": self.cash_rejected_order_count,
             "concentration_hhi": self.concentration_hhi,
+            "gross_dividend_cash": self.gross_dividend_cash,
+            "dividend_tax_cost": self.dividend_tax_cost,
+            "net_dividend_cash": self.net_dividend_cash,
             "selected_basket_hold_return": self.selected_basket_hold_return,
             "timing_value_add": self.timing_value_add,
             "initial_asset": self.initial_asset,

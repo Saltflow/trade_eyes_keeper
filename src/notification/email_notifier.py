@@ -3,7 +3,6 @@
 发送股票提醒邮件
 """
 
-import html as html_lib
 import logging
 import smtplib
 import ssl
@@ -24,17 +23,6 @@ from .chart_generator import (
     generate_portfolio_overview_chart,
 )
 from .base import BaseNotifier
-try:
-    from ..markets import _detect_fine_group
-except ImportError:  # pragma: no cover - legacy top-level ``notification`` imports
-    from markets import _detect_fine_group
-
-logger = logging.getLogger(__name__)
-
-
-# Report builders moved to their own module. Re-exported here so the existing
-# import sites (feishu_notifier, telegram_notifier, health_server, 13 test
-# files) keep working unchanged.
 from .daily_pdf import generate_daily_pdf
 from .report_builders import (  # noqa: F401
     SIGNAL_NAMES,
@@ -55,6 +43,13 @@ from .report_builders import (  # noqa: F401
     optimizer_notification_title,
     pick_best_anchor,
 )
+
+try:
+    from ..markets import _detect_fine_group
+except ImportError:  # pragma: no cover - legacy top-level ``notification`` imports
+    from markets import _detect_fine_group
+
+logger = logging.getLogger(__name__)
 
 
 class EmailNotifier(BaseNotifier):
@@ -1030,7 +1025,6 @@ class EmailNotifier(BaseNotifier):
                     "pb_ratio": source_row.get("pb_ratio")
                     if source_row is not None
                     else None,
-                    "status": "策略" if has_signal else "预警" if has_alert else "",
                     "priority": priority,
                     "sort_key": entry.get("sort_key", float("inf"))
                     if entry
@@ -1109,14 +1103,11 @@ class EmailNotifier(BaseNotifier):
                     implied_ke_text = self._daily_metric(
                         self._daily_implied_ke(row.get("pe_ratio")), "%", 1
                     )
-                    row_class = " watch-row-action" if row["status"] else ""
-                    status = (
-                        f'<span class="status-badge status-signal">策略</span>'
-                        if row["status"] == "策略"
-                        else '<span class="status-badge status-alert">预警</span>'
-                        if row["status"] == "预警"
-                        else ""
-                    )
+                    # Signals and price alerts stay prioritised in the action
+                    # list and sort order, but do not repeat as badges beside
+                    # every name in the full market matrix.
+                    row_class = ""
+                    status = ""
                 sections.append(
                     f'<tr class="{row_class.strip()}"><td class="watch-instrument">'
                     f'<strong>{_html_escape(row["code"])}</strong><span>'

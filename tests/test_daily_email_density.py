@@ -115,7 +115,7 @@ def _complete_holdout():
     }
 
 
-def test_daily_matrix_keeps_all_markets_marks_status_and_stale_data(monkeypatch):
+def test_daily_matrix_keeps_all_markets_prioritizes_actions_without_badges(monkeypatch):
     notifier = _notifier(monkeypatch)
     scan = SimpleNamespace(
         alerts=[{"stock_code": "VOO", "rule_label": "<b>买入</b>"}]
@@ -144,6 +144,9 @@ def test_daily_matrix_keeps_all_markets_marks_status_and_stale_data(monkeypatch)
     assert "锚值" not in body
     assert "周 NAV 箱线图" not in body
     assert "参考持仓" not in body
+    matrix = body[body.index("完整行情矩阵") :]
+    assert 'status-badge status-alert' not in matrix
+    assert 'status-badge status-signal' not in matrix
 
 
 def test_daily_matrix_uses_configured_pool_and_keeps_missing_data(monkeypatch):
@@ -312,3 +315,39 @@ def test_daily_portfolio_overview_is_one_normalized_chart(monkeypatch):
     assert 'src="cid:chart002"' in section
     assert "chart003" not in section
     assert "chart004" not in section
+
+
+def test_daily_portfolio_overview_crops_shared_flat_warmup(monkeypatch):
+    import matplotlib.axes
+
+    dates = pd.date_range("2023-09-18", periods=12, freq="B")
+    reports = {
+        group: SimpleNamespace(
+            nav_dates=dates.astype(str).tolist(),
+            nav_series=[100_000.0] * 6
+            + [100_000.0 + (index + offset) * 100.0 for index in range(6)],
+        )
+        for offset, group in enumerate(("a_share", "hk", "us"))
+    }
+    captured = {}
+    original_set_title = matplotlib.axes.Axes.set_title
+    original_set_xlim = matplotlib.axes.Axes.set_xlim
+
+    def capture_title(axis, label, *args, **kwargs):
+        captured["title"] = label
+        return original_set_title(axis, label, *args, **kwargs)
+
+    def capture_xlim(axis, *args, **kwargs):
+        left = kwargs.get("left")
+        if left is not None:
+            captured["left"] = pd.Timestamp(left)
+        return original_set_xlim(axis, *args, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "set_title", capture_title)
+    monkeypatch.setattr(matplotlib.axes.Axes, "set_xlim", capture_xlim)
+
+    png = generate_portfolio_overview_chart(reports)
+
+    assert png.startswith(b"\x89PNG")
+    assert captured["left"] == dates[5]
+    assert captured["title"] == "三市场组合净值总览（有效期自2023-09-25，起点=100）"

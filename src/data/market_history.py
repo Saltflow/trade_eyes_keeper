@@ -100,6 +100,10 @@ def corporate_action_issues(
             issues.append(f"unresolved corporate action factor: {label}")
             continue
         if cash is not None:
+            published_at = getattr(action, "published_at", None)
+            if published_at is None or published_at > ex_date:
+                issues.append(f"cash dividend lacks causal publication date: {label}")
+                continue
             try:
                 cash_value = float(cash)
             except (TypeError, ValueError):

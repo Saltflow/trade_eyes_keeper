@@ -518,6 +518,11 @@ def _serialize_window(
             getattr(stat, "cash_rejected_order_count", 0)
         ),
         "concentration_hhi": float(getattr(stat, "concentration_hhi", 0.0)),
+        "gross_dividend_cash": float(
+            getattr(stat, "gross_dividend_cash", 0.0)
+        ),
+        "dividend_tax_cost": float(getattr(stat, "dividend_tax_cost", 0.0)),
+        "net_dividend_cash": float(getattr(stat, "net_dividend_cash", 0.0)),
         "selected_basket_hold_return_pct": getattr(
             stat, "selected_basket_hold_return", None
         ),
