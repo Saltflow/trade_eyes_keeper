@@ -1,8 +1,9 @@
-"""飞书开放平台应用客户端测试。"""
+"""Feishu outbound messages and persistent access checks; no live API calls."""
 
 import time
 from unittest.mock import patch
 
+import pytest
 
 from src.interactive.feishu_app import FeishuApp
 
@@ -11,9 +12,9 @@ def _make_config(extra=None):
     return {
         "interactive": {
             "feishu": {
+                "enabled": True,
                 "app_id": "test-app-id",
                 "app_secret": "test-secret",
-                "verification_token": "test-verify-token",
                 "allowed_chat_ids": ["oc_test"],
                 "rate_limit_per_minute": 10,
                 **(extra or {}),
@@ -22,94 +23,102 @@ def _make_config(extra=None):
     }
 
 
+@pytest.fixture(autouse=True)
+def no_delivery_environment(monkeypatch):
+    for name in (
+        "SKIP_NOTIFICATIONS",
+        "SKIP_FEISHU",
+        "FEISHU_APP_ID",
+        "FEISHU_APP_SECRET",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 class TestFeishuAppToken:
-    def test_fetch_tenant_token(self):
+    def test_fetch_and_cache_tenant_token(self):
         app = FeishuApp(_make_config())
-        fake_resp = {
-            "code": 0,
-            "tenant_access_token": "tok-123",
-            "expire": 7200,
-        }
-        with patch("requests.post") as mock_post:
-            mock_post.return_value.status_code = 200
-            mock_post.return_value.json.return_value = fake_resp
-            token = app.get_tenant_token()
-            assert token == "tok-123"
-            mock_post.assert_called_once()
+        with patch("requests.post") as post:
+            post.return_value.json.return_value = {
+                "code": 0,
+                "tenant_access_token": "tok-first",
+                "expire": 7200,
+            }
+            assert app.get_tenant_token() == "tok-first"
+            assert app.get_tenant_token() == "tok-first"
+            assert post.call_count == 1
+            app._token_expires_at = time.time() - 10
+            post.return_value.json.return_value["tenant_access_token"] = "tok-new"
+            assert app.get_tenant_token() == "tok-new"
+            assert post.call_count == 2
 
-    def test_cache_token_within_ttl(self):
+
+class TestFeishuAppAccess:
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"enabled": False},
+            {"allowed_chat_ids": []},
+            {"allowed_chat_ids": "oc_test"},
+            {"app_id": ""},
+            {"app_secret": ""},
+        ],
+    )
+    def test_invalid_configuration_fails_before_network(self, extra):
+        app = FeishuApp(_make_config(extra))
+        with pytest.raises(ValueError), patch("requests.post") as post:
+            app.validate_config()
+        post.assert_not_called()
+        assert not app.enabled
+
+    def test_http_callback_authentication_api_was_removed(self):
         app = FeishuApp(_make_config())
-        fake_resp = {
-            "code": 0,
-            "tenant_access_token": "tok-first",
-            "expire": 7200,
-        }
-        with patch("requests.post") as mock_post:
-            mock_post.return_value.status_code = 200
-            mock_post.return_value.json.return_value = fake_resp
-            t1 = app.get_tenant_token()
-            t2 = app.get_tenant_token()
-            assert t1 == t2 == "tok-first"
-            assert mock_post.call_count == 1  # cached, no second call
+        assert not hasattr(app, "verify_event")
+        assert not hasattr(app, "verify_signature")
 
-    def test_refresh_on_token_expiry(self):
+    def test_explicit_wildcard_preserves_feishu_group_access(self):
+        app = FeishuApp(_make_config({"allowed_chat_ids": ["*"]}))
+        app.validate_config()
+        assert app.enabled
+        assert app.gate.is_allowed("another-feishu-chat")
+        assert not app.gate.is_allowed("")
+
+    @pytest.mark.parametrize("flag", ["SKIP_NOTIFICATIONS", "SKIP_FEISHU"])
+    def test_skip_flag_blocks_token_and_message_requests(self, monkeypatch, flag):
+        monkeypatch.setenv(flag, "1")
         app = FeishuApp(_make_config())
-        app._token_expires_at = time.time() - 10  # already expired
-        resp1 = {"code": 0, "tenant_access_token": "tok-new", "expire": 7200}
-        with patch("requests.post") as mock_post:
-            mock_post.return_value.status_code = 200
-            mock_post.return_value.json.return_value = resp1
-            token = app.get_tenant_token()
-            assert token == "tok-new"
-            mock_post.assert_called_once()
+        with patch("requests.post") as post:
+            assert app.get_tenant_token() == ""
+            assert app.send_message("oc_test", "hello")[0] is False
+        post.assert_not_called()
 
-
-class TestFeishuAppEvents:
-    def test_challenge_verification(self):
+    def test_unauthorized_chat_and_stop_block_send(self):
         app = FeishuApp(_make_config())
-        body = {
-            "challenge": "abc-challenge-123",
-            "token": "test-verify-token",
-            "type": "url_verification",
-        }
-        result = app.verify_event(body)
-        assert result == {"challenge": "abc-challenge-123"}
-
-    def test_signature_check_invalid(self):
-        app = FeishuApp(_make_config({"encrypt_key": "test-encrypt-key"}))
-        headers = {"X-Lark-Signature": "bad-sig"}
-        body = {"event_type": "im.message.receive_v1"}
-        assert app.verify_signature(headers, body) is False
-
-    def test_non_challenge_event(self):
-        app = FeishuApp(_make_config())
-        body = {"event_type": "im.message.receive_v1"}
-        result = app.verify_event(body)
-        assert result is True  # non-challenge events pass through
+        with patch("requests.post") as post:
+            assert app.send_message("other", "hello")[0] is False
+            app.stop()
+            app.stop()
+            assert app.send_message("oc_test", "hello")[0] is False
+        post.assert_not_called()
 
 
 class TestFeishuAppMessages:
-    def test_send_text_message(self):
+    def test_send_card_message(self):
         app = FeishuApp(_make_config())
-        with patch.object(app, "get_tenant_token", return_value="tok-abc"):
-            with patch("requests.post") as mock_post:
-                mock_post.return_value.status_code = 200
-                mock_post.return_value.json.return_value = {"code": 0}
-                ok, msg = app.send_message("oc_test", "hello")
-                assert ok
-                assert msg == "ok"
-                _, kwargs = mock_post.call_args
-                body = kwargs["json"]
-                assert body["receive_id"] == "oc_test"
-                assert body["msg_type"] == "interactive"
-                assert body["content"] is not None
+        with patch.object(app, "get_tenant_token", return_value="tok-abc"), patch(
+            "requests.post"
+        ) as post:
+            post.return_value.json.return_value = {"code": 0}
+            assert app.send_message("oc_test", "hello") == (True, "ok")
+            payload = post.call_args.kwargs["json"]
+            assert payload["receive_id"] == "oc_test"
+            assert payload["msg_type"] == "interactive"
 
     def test_send_message_failure(self):
         app = FeishuApp(_make_config())
-        with patch.object(app, "get_tenant_token", return_value="tok-abc"):
-            with patch("requests.post") as mock_post:
-                mock_post.return_value.status_code = 200
-                mock_post.return_value.json.return_value = {"code": 10001, "msg": "err"}
-                ok, msg = app.send_message("oc_test", "hello")
-                assert not ok
-                assert "10001" in msg
+        with patch.object(app, "get_tenant_token", return_value="tok-abc"), patch(
+            "requests.post"
+        ) as post:
+            post.return_value.json.return_value = {"code": 10001}
+            ok, message = app.send_message("oc_test", "hello")
+            assert not ok
+            assert "10001" in message

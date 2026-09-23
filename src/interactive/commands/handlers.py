@@ -1,9 +1,13 @@
 """命令处理器 — 每个命令接收解析后的对象，返回响应文本。"""
 
+from __future__ import annotations
+
 import logging
-import yaml
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+from typing import Callable
+
+from ...core.config_store import ConfigStore
 
 logger = logging.getLogger(__name__)
 
@@ -11,25 +15,13 @@ CONFIG_PATH = Path(__file__).parent.parent.parent.parent / "config" / "config.ya
 
 
 def _load_config() -> dict:
-    try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
-    except Exception:
-        logger.exception(f"读取配置失败: {CONFIG_PATH}")
-        return {}
+    return ConfigStore(CONFIG_PATH).load_runtime()
 
 
-def _save_config(config: dict) -> None:
-    tmp = CONFIG_PATH.with_suffix(".yaml.tmp")
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            yaml.dump(
-                config, f, allow_unicode=True, default_flow_style=False, sort_keys=False
-            )
-        tmp.replace(CONFIG_PATH)
-        logger.info(f"配置已保存: {CONFIG_PATH}")
-    except Exception:
-        logger.exception(f"保存配置失败: {tmp} -> {CONFIG_PATH}")
+def _update_config(mutate: Callable[[dict], None]) -> dict:
+    saved = ConfigStore(CONFIG_PATH).update(mutate)
+    logger.info("配置已保存: %s", CONFIG_PATH)
+    return saved
 
 
 def _git_info() -> str:
@@ -85,7 +77,7 @@ def handle_help() -> str:
                 ),
                 (
                     "/backtest 代码 起 止",
-                    "回测 例 <code>/backtest 601919 2024-01-01 2024-12-31</code>",
+                    "回测例 <code>/backtest 601919 2024-01-01 2024-12-31</code>",
                 ),
             ],
         ),
@@ -175,38 +167,37 @@ def handle_skip(kind: str, codes: list[str], remove: bool = False) -> str:
     """
     key = "skip_search" if kind == "search" else "skip_signals"
     label = "搜参" if kind == "search" else "信号"
-    config = _load_config()
-    cur = [str(c) for c in (config.get(key) or [])]
-    cur_set = {c.upper() for c in cur}
-    stocks_upper = {str(s).upper() for s in config.get("stocks", [])}
-
     changed = []
-    for code in codes:
-        cu = code.upper()
-        if remove:
-            match = next((c for c in cur if c.upper() == cu), None)
-            if match:
-                cur.remove(match)
-                cur_set.discard(cu)
-                changed.append(code)
-        else:
-            if cu not in stocks_upper:
-                continue  # 不在监控列表，忽略
-            if cu not in cur_set:
+
+    def mutate(config: dict) -> None:
+        cur = [str(c) for c in (config.get(key) or [])]
+        cur_set = {c.upper() for c in cur}
+        stocks_upper = {str(s).upper() for s in config.get("stocks", [])}
+        for code in codes:
+            cu = code.upper()
+            if remove:
+                match = next((c for c in cur if c.upper() == cu), None)
+                if match:
+                    cur.remove(match)
+                    cur_set.discard(cu)
+                    changed.append(code)
+            elif cu in stocks_upper and cu not in cur_set:
                 cur.append(code)
                 cur_set.add(cu)
                 changed.append(code)
+        if changed:
+            config[key] = cur
+
+    config = _update_config(mutate)
 
     if not changed:
         return f"无变更（{label}）。"
 
-    config[key] = cur
-    _save_config(config)
     action = "恢复" if remove else "关闭"
     codes_str = " ".join(f"<code>{c}</code>" for c in changed)
     return (
         f"✅ 已{action}{len(changed)} 只标的的{label}: {codes_str}\n"
-        f"当前不{label}: {len(cur)} 只"
+        f"当前不{label}: {len(config.get(key) or [])} 只"
     )
 
 
@@ -224,7 +215,7 @@ def handle_switch_optimizer(
     group: str | None = None,
 ) -> str:
     """View or change the next-search strategy for one required market."""
-    from ...strategy import list_strategies, get_strategy
+    from ...strategy import get_strategy, list_strategies
     strategies = list_strategies()
 
     if kind is None:
@@ -259,21 +250,24 @@ def handle_switch_optimizer(
         valid = [x["key"] for x in strategies]
         return f"❌ 未知引擎: {kind}。可用: {', '.join(valid)}"
 
-    config = _load_config()
-    optimizer = config.get("optimizer", {}) or {}
-    markets = optimizer.get("markets", {}) or {}
-    if not isinstance(markets, dict) or not isinstance(markets.get(group), dict):
-        return f"❌ {group} 市场配置缺失，未修改。"
-    old = markets[group].get("strategy", "缺失")
-    candidate = yaml.safe_load(yaml.safe_dump(config, allow_unicode=True))
-    candidate["optimizer"]["markets"][group]["strategy"] = kind
-    try:
+    old = "缺失"
+
+    def mutate(candidate: dict) -> None:
+        nonlocal old
+        optimizer = candidate.get("optimizer", {}) or {}
+        markets = optimizer.get("markets", {}) or {}
+        if not isinstance(markets, dict) or not isinstance(markets.get(group), dict):
+            raise TypeError(f"{group} 市场配置缺失")
+        old = markets[group].get("strategy", "缺失")
+        markets[group]["strategy"] = kind
         from ...search.config import get_market_optimizer_config
 
         get_market_optimizer_config(group, application_config=candidate)
-    except ValueError as exc:
+
+    try:
+        _update_config(mutate)
+    except (TypeError, ValueError) as exc:
         return f"❌ {group} 市场策略配置无效，未修改：{exc}"
-    _save_config(candidate)
     return (
         f"✅ {group} 市场下次搜参候选策略: <b>{old} → {kind}</b>\n\n"
         f"{s.label}: {s.description}\n\n"
@@ -282,26 +276,27 @@ def handle_switch_optimizer(
 
 
 def handle_add(codes: list[str]) -> str:
-    config = _load_config()
-    stocks: list[str] = config.get("stocks", [])
-    upper_stocks = {str(s).upper() for s in stocks}
-
     added = []
     skipped = []
-    for code in codes:
-        if code.upper() in upper_stocks:
-            skipped.append(code)
-        else:
-            stocks.append(code)
-            upper_stocks.add(code.upper())
-            added.append(code)
+
+    def mutate(config: dict) -> None:
+        stocks: list[str] = config.get("stocks", [])
+        upper_stocks = {str(s).upper() for s in stocks}
+        for code in codes:
+            if code.upper() in upper_stocks:
+                skipped.append(code)
+            else:
+                stocks.append(code)
+                upper_stocks.add(code.upper())
+                added.append(code)
+        if added:
+            config["stocks"] = stocks
+
+    config = _update_config(mutate)
+    stocks = config.get("stocks", [])
 
     if not added and not skipped:
         return "没有可添加的标的。"
-
-    if added:
-        config["stocks"] = stocks
-        _save_config(config)
 
     lines = []
     if added:
@@ -317,27 +312,28 @@ def handle_add(codes: list[str]) -> str:
 
 
 def handle_remove(codes: list[str]) -> str:
-    config = _load_config()
-    stocks: list[str] = config.get("stocks", [])
-    upper_stocks = {str(s).upper(): s for s in stocks}
-
     removed = []
     not_found = []
-    for code in codes:
-        matched = upper_stocks.get(code.upper())
-        if matched is not None:
-            stocks.remove(matched)
-            del upper_stocks[code.upper()]
-            removed.append(code)
-        else:
-            not_found.append(code)
+
+    def mutate(config: dict) -> None:
+        stocks: list[str] = config.get("stocks", [])
+        upper_stocks = {str(s).upper(): s for s in stocks}
+        for code in codes:
+            matched = upper_stocks.get(code.upper())
+            if matched is not None:
+                stocks.remove(matched)
+                del upper_stocks[code.upper()]
+                removed.append(code)
+            else:
+                not_found.append(code)
+        if removed:
+            config["stocks"] = stocks
+
+    config = _update_config(mutate)
+    stocks = config.get("stocks", [])
 
     if not removed and not not_found:
         return "没有可移除的标的。"
-
-    if removed:
-        config["stocks"] = stocks
-        _save_config(config)
 
     lines = []
     if removed:
@@ -559,9 +555,9 @@ def handle_save(config_path=None) -> str:
 
 def _run_main(command_args: list[str], env_extra: dict | None = None) -> str:
     """后台启动 main.py 子进程。返回提示消息。"""
+    import os
     import subprocess
     import sys
-    import os
     from pathlib import Path
 
     project_root = Path(__file__).parent.parent.parent.parent
@@ -638,20 +634,19 @@ def handle_daily_report_frequency(frequency: str | None = None) -> str:
     mode = str(frequency).strip().lower()
     if mode not in labels:
         return "❌ 频次只能是 daily、weekly 或 off。"
-    scheduler["daily_report_frequency"] = mode
-    config["scheduler"] = scheduler
-    _save_config(config)
+    def mutate(current_config: dict) -> None:
+        current_config.setdefault("scheduler", {})["daily_report_frequency"] = mode
+
+    _update_config(mutate)
     return f"✅ 日报频次已改为 {labels[mode]} (<code>{mode}</code>)。"
 
 
 def handle_schedule(action: str, task_id: str, time_str: str) -> str:
     """查看或修改调度时间。"""
-    # 从 health server 全局实例获取 ScheduleManager
-    try:
-        from ...health_server.core.global_instances import get_schedule_manager
+    from ...core.schedule_manager import get_schedule_manager
 
-        mgr = get_schedule_manager()
-    except Exception:
+    mgr = get_schedule_manager()
+    if mgr is None:
         return "❌ 调度管理器未启动"
 
     if action == "view" or not task_id:
@@ -660,11 +655,17 @@ def handle_schedule(action: str, task_id: str, time_str: str) -> str:
             return "当前无调度任务"
         lines = ["<b>当前调度</b>\n"]
         for s in items:
-            lines.append(f"<code>{s['name']}</code>: {s['time']}")
+            lines.append(
+                f"<code>{s['name']}</code>: {s['time']} ({s['timezone']})"
+            )
         return "\n".join(lines)
 
     # set
-    ok = mgr.reschedule(task_id, time_str)
+    try:
+        ok = mgr.reschedule(task_id, time_str)
+    except RuntimeError as exc:
+        logger.exception("刷新调度失败")
+        return f"❌ {exc}"
     if ok:
         label = {
             "daily": "日报",
@@ -755,39 +756,32 @@ OPT_CONSTRAINTS_PATH = (
 
 
 def _load_opt_config() -> dict:
-    try:
-        with open(OPT_CONSTRAINTS_PATH, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
-    except Exception:
-        logger.exception(f"读取优化器配置失败: {OPT_CONSTRAINTS_PATH}")
-        return {}
+    return ConfigStore(OPT_CONSTRAINTS_PATH).load_raw()
 
 
-def _save_opt_config(config: dict) -> None:
-    """Validate a temporary optimizer YAML before atomically replacing it."""
+def _validate_opt_config(path: Path) -> None:
+    """Validate the exact temporary YAML before the store replaces the file."""
+    from ...search.config import load_constraints
+
+    config = ConfigStore(path).load_raw()
     search = config.get("search", {}) or {}
     if any(key in search for key in ("solver_id", "gate_profile")):
         raise ValueError(
             "search.solver_id/search.gate_profile 已废弃；必须写入 config/config.yaml "
             "的 optimizer.markets.<market>"
         )
-    tmp = OPT_CONSTRAINTS_PATH.with_suffix(".yaml.tmp")
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            yaml.dump(
-                config, f, allow_unicode=True, default_flow_style=False, sort_keys=False
-            )
-        from ...search.config import load_constraints, reload_constraints
+    load_constraints(path)
 
-        load_constraints(tmp)
-        tmp.replace(OPT_CONSTRAINTS_PATH)
-        reload_constraints()
-        logger.info(f"优化器配置已保存: {OPT_CONSTRAINTS_PATH}")
-    except Exception as e:
-        logger.exception(f"保存优化器配置失败: {e}")
-        if tmp.exists():
-            tmp.unlink()
-        raise
+
+def _update_opt_config(mutate: Callable[[dict], None]) -> dict:
+    from ...search.config import reload_constraints
+
+    saved = ConfigStore(OPT_CONSTRAINTS_PATH).update(
+        mutate, validate=_validate_opt_config
+    )
+    reload_constraints(OPT_CONSTRAINTS_PATH)
+    logger.info("优化器配置已保存: %s", OPT_CONSTRAINTS_PATH)
+    return saved
 
 
 _MODE_LABELS = {
@@ -1030,8 +1024,9 @@ def handle_config(action: str, key: str, value: str) -> str:
                 f"可用: {', '.join(_CONFIG_HELP)}"
             )
         try:
-            _set_config_value(cfg, key, value)
-            _save_opt_config(cfg)
+            cfg = _update_opt_config(
+                lambda current: _set_config_value(current, key, value)
+            )
         except (TypeError, ValueError) as exc:
             return f"❌ 配置值无效，未保存: {exc}"
         except Exception as exc:
@@ -1312,9 +1307,12 @@ def handle_ref_date(date_str: str | None = None) -> str:
                 total_holdings += len(pf.holdings)
                 total_cash += pf.cash
         if total_holdings > 0:
-            opt["_ref_date_pending"] = date_str
-            config["optimizer"] = opt
-            _save_config(config)
+            def set_pending(current_config: dict) -> None:
+                current_config.setdefault("optimizer", {})[
+                    "_ref_date_pending"
+                ] = date_str
+
+            _update_config(set_pending)
             return (
                 f"⚠️ <b>确认重置参考持仓？</b>\n\n"
                 f"当前持仓: {total_holdings} 只标的，现金 {total_cash:,.2f}。\n\n"
@@ -1360,9 +1358,13 @@ def handle_ref_date(date_str: str | None = None) -> str:
                 )
             ),
         )
-    opt["reference_base_date"] = date_str
-    config["optimizer"] = opt
-    _save_config(config)
+    def set_base_date(current_config: dict) -> None:
+        current_optimizer = current_config.setdefault("optimizer", {})
+        current_optimizer["reference_base_date"] = date_str
+        if current_optimizer.get("_ref_date_pending") == pending_date:
+            current_optimizer.pop("_ref_date_pending", None)
+
+    _update_config(set_base_date)
     return (
         f"✅ 参考持仓已重置（A股/港股/美股 三分仓）\n"
         f"📅 基期: <b>{date_str}</b>\n"

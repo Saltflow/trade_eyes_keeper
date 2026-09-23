@@ -10,10 +10,9 @@ from typing import Iterator, TextIO
 
 
 def _try_lock(handle: TextIO) -> bool:
-    handle.seek(0, os.SEEK_END)
-    if handle.tell() == 0:
-        handle.write(" ")
-        handle.flush()
+    # Windows byte-range locks may extend beyond EOF. Do not initialize the
+    # file before locking: another owner can momentarily truncate its metadata,
+    # and an unlocked write then raises PermissionError (or corrupts that data).
     handle.seek(0)
     try:
         if os.name == "nt":

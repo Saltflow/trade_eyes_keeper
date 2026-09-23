@@ -10,7 +10,7 @@ CI/CD Deployment Script for Stock Quantitative System
 工作流:
   1. git push本地代码直推到远程服务器（不走GitHub）
   2. SSH到远程服务器验证代码、装依赖、跑测试
-  3. 检查cron、邮件、健康服务器
+  3. 迁移旧cron、启动统一调度与 Bot 服务并检查本地心跳
 """
 
 import argparse
@@ -19,7 +19,6 @@ import shlex
 import subprocess
 import sys
 import tempfile
-import time
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -154,40 +153,71 @@ def _get_ssh_key():
     return default.replace("\\", "/")  # 不存在也返回，让SSH报错
 
 
-def _build_health_systemd_command():
-    """Install the sole health/scheduler host and remove legacy schedulers."""
+def _build_runtime_systemd_command():
+    """Retire the web service and install the outbound scheduler/Bot host."""
+    migration_code = (
+        "from src.core.schedule_migration import migrate_legacy_cron; "
+        "print(migrate_legacy_cron('config/config.yaml', " + repr(REMOTE_DIR) + "))"
+    )
     unit = f"""[Unit]
-Description=Trade Eyes Keeper health server
+Description=Trade Eyes Keeper scheduler and outbound Bots
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory={REMOTE_DIR}
-ExecStart=/usr/bin/python3 {REMOTE_DIR}/main.py --health-server
-Restart=always
+ExecStart=/usr/bin/python3 {REMOTE_DIR}/main.py --service
+Restart=on-failure
 RestartSec=5
+KillMode=control-group
+TimeoutStopSec=30
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONUTF8=1
 
 [Install]
 WantedBy=multi-user.target"""
     return f"""set -e
-systemctl disable --now trade-eyes.service 2>/dev/null || true
+systemctl disable --now trade-eyes-health.service 2>/dev/null || true
+systemctl stop trade-eyes.service 2>/dev/null || true
 pkill -f '^bash -c while true; do .*main.py --health-server' 2>/dev/null || true
 pkill -f '^bash -c if ! kill -0 .*main.py --health-server' 2>/dev/null || true
 pkill -f '^python3 main.py --health-server$' 2>/dev/null || true
+pkill -f '^/usr/bin/python3 {REMOTE_DIR}/main.py --health-server$' 2>/dev/null || true
 pkill -f '^/usr/bin/python3 {REMOTE_DIR}/main.py$' 2>/dev/null || true
 pkill -f '^python3 {REMOTE_DIR}/main.py$' 2>/dev/null || true
-rm -f /tmp/hs.pid
-systemctl stop trade-eyes-health.service 2>/dev/null || true
-systemctl reset-failed trade-eyes-health.service 2>/dev/null || true
-printf '%s\n' '{unit}' > /etc/systemd/system/trade-eyes-health.service
+cd {shlex.quote(REMOTE_DIR)}
+python3 -c {shlex.quote(migration_code)}
+rm -f /etc/systemd/system/trade-eyes-health.service /tmp/hs.pid
+systemctl mask trade-eyes-health.service
+printf '%s\n' {shlex.quote(unit)} > /etc/systemd/system/trade-eyes.service
 systemctl daemon-reload
-systemctl enable trade-eyes-health.service
-systemctl restart trade-eyes-health.service
-systemctl is-active --quiet trade-eyes-health.service
-systemctl show trade-eyes-health.service -p MainPID -p ActiveState -p SubState"""
+systemctl enable trade-eyes.service
+systemctl restart trade-eyes.service
+systemctl is-active --quiet trade-eyes.service
+systemctl show trade-eyes.service -p MainPID -p ActiveState -p SubState"""
+
+
+def _build_runtime_verify_command():
+    """Verify both systemd and a fresh local heartbeat from its current PID."""
+    return f"""set -e
+cd {shlex.quote(REMOTE_DIR)}
+for attempt in 1 2 3 4 5 6; do
+    if systemctl is-active --quiet trade-eyes.service && python3 -c '
+import subprocess, sys
+from src.core.config_store import load_config
+from src.core.runtime_service import read_service_status
+status = read_service_status(load_config())
+pid = subprocess.check_output(["systemctl", "show", "trade-eyes.service", "--property=MainPID", "--value"], text=True).strip()
+ready = status.get("ready") and str(status.get("pid")) == pid
+print("[SERVICE_READY]" if ready else "[SERVICE_WAIT]")
+sys.exit(0 if ready else 1)
+'; then
+        exit 0
+    fi
+    sleep 2
+done
+exit 1"""
 
 
 # ── SSH 工具 ────────────────────────────────────────────
@@ -420,7 +450,7 @@ def _pre_deploy_checks(dry_run):
         "[importlib.import_module(m) for m in "
         "['src.search.workflow','src.search.artifacts',"
         "'src.backtest.engine','src.strategy.api',"
-        "'src.notification.manager','src.health_server.core.health_server']]; "
+        "'src.notification.manager','src.core.runtime_service']]; "
         "print('OK')",
         timeout=15,
     )
@@ -544,7 +574,7 @@ def _sync_config() -> bool:
         ("config/alerts.yaml", "alerts.yaml"),
     ]
 
-    # config.yaml: 含服务器特定配置 (ssl, public_ip 等)，需明确开启
+    # config.yaml: 含服务器特定的调度、标的和 Bot 配置，需明确开启
     if sync_config:
         configs.append(("config/config.yaml", "config.yaml"))
 
@@ -720,6 +750,8 @@ def deploy():
             timeout=300,
         )
         _step("deps", ok, "installed" if ok else "pip install failed")
+        if not ok:
+            return _print_summary(steps, cleaning_performed)
 
         # Validate the final config against the deployed code and profiles before
         # running business logic, updating cron, restarting services or notifying.
@@ -794,41 +826,6 @@ def deploy():
         else:
             _step("system_test", True, "exit=0 errors=0")
 
-        # ── 8. 例行搜参 cron（每日 19:00 任务与简报由 systemd scheduler 覆盖，
-        #   优化器因内存隔离需独立进程，仍由 cron 驱动 main.py --optimize）──
-        _info("Ensuring optimizer cron (02:00 daily)...")
-        del_cron = (
-            "crontab -l 2>/dev/null | "
-            "grep -v 'main.py --once' | "
-            "grep -v 'main.py --brief' | "
-            "crontab -"
-        )
-        _ssh_cmd(del_cron, "Clean up legacy daily/brief cron entries")
-
-        opt_cron_line = (
-            f"0 2 * * * cd {REMOTE_DIR} && python3 main.py --optimize "
-            f">> {REMOTE_DIR}/logs/cron_optimize.log 2>&1"
-        )
-        _ssh_cmd(
-            f"crontab -l 2>/dev/null | grep -q 'main.py --optimize' || "
-            f"(crontab -l 2>/dev/null; echo '{opt_cron_line}') | crontab -",
-            "Add optimizer cron if missing",
-        )
-
-        # 确认例行搜参 cron 已注册。Mock output cannot establish cron state.
-        if dry_run:
-            _step("cron", None, "dry run; cron unchanged")
-        else:
-            ok, out, _ = _ssh_cmd("crontab -l", "Verify cron")
-            has_optimize = "main.py --optimize" in (out or "")
-            has_legacy = (
-                "main.py --once" in (out or "")
-                or "main.py --brief" in (out or "")
-            )
-            _step("cron", has_optimize and not has_legacy,
-                  "optimizer 02:00 registered" if has_optimize and not has_legacy
-                  else "MISSING optimizer cron or legacy entries remain!")
-
         # ── 9c. 检查统一优化器数据；候选搜索和激活必须显式执行 ──
         _info("Checking optimizer data...")
         opt_check = (
@@ -882,125 +879,45 @@ fi
               True if archive_ok else None,  # None = WARN, don't block
               "ok" if archive_ok else "no server info (may be from SKIP_EMAIL run)")
 
-        # ── 11. 发送部署通知 (真验证: 检查 SMTP) ──
-        _info("Sending deployment notification email...")
-        version_cmd = f"cd {REMOTE_DIR} && git rev-parse --short HEAD 2>/dev/null || echo 'unknown'"
-        _, version_out, _ = _ssh_cmd(version_cmd, "Get git version")
-        version = version_out.strip() if version_out else "unknown"
-
-        deploy_notify_script = f"""cd {REMOTE_DIR} && timeout 30 python3 -c "
-import sys, os
-sys.path.insert(0, '.')
-from dotenv import load_dotenv
-load_dotenv('config/.env')
-import yaml
-with open('config/config.yaml', 'r', encoding='utf-8') as f:
-    config = yaml.safe_load(f)
-# 注入 .env 的邮件凭证 (复刻 main.py load_config)
-if os.getenv('EMAIL_SENDER'):
-    config.setdefault('email', {{}})['sender_email'] = os.getenv('EMAIL_SENDER')
-if os.getenv('EMAIL_PASSWORD'):
-    config.setdefault('email', {{}})['sender_password'] = os.getenv('EMAIL_PASSWORD')
-if os.getenv('EMAIL_RECEIVER'):
-    config.setdefault('email', {{}})['receiver_email'] = os.getenv('EMAIL_RECEIVER')
-from src.notification.manager import NotifierManager
-notifier = NotifierManager(config)
-ok, msg = notifier.email.send_deployment_notification('SUCCESS', version='{version}',
-                                     summary='CI/CD deployment completed successfully')
-if ok:
-    print('[NOTIFY_OK] Deployment notification sent')
-else:
-    print(f'[NOTIFY_FAIL] SMTP error: {{msg}}')
-"
-"""
-        ok, out, _ = _ssh_cmd(deploy_notify_script, "Send deployment notification", timeout=60)
-        notify_ok = "[NOTIFY_OK]" in (out or "")
-        _step("deploy_notify",
-              True if notify_ok else None,  # None = WARN, SMTP is non-critical
-              "SMTP OK" if notify_ok else "SMTP auth failed — check EMAIL_PASSWORD in server config/.env")
-
-        # ── 12. 健康服务器检查 ──
-        _info("Verifying health server configuration...")
-        health_check = f"""cd {REMOTE_DIR} && timeout 10 python3 -c "
-import sys
-sys.path.insert(0, '.')
-import yaml
-with open('config/config.yaml', 'r', encoding='utf-8') as f:
-    config = yaml.safe_load(f)
-
-health_config = config.get('health_server', {{}})
-enabled = health_config.get('enabled', True)
-host = health_config.get('host', '0.0.0.0')
-port = health_config.get('port', 1933)
-
-print(f'Health server config: enabled={{enabled}} host={{host}} port={{port}}')
-print('[HS_CONFIG_OK]')
-"
-"""
-        _ssh_cmd(health_check, "Health server config check")
-
-        # ── 13-14. 由 systemd 独占管理健康服务器 ──
-        # 旧版部署器同时启动 nohup 循环和 systemd 服务，会造成端口竞争。
-        # 部署时清理旧循环并安装唯一的持久化 unit，由 Restart=always 接管恢复。
-        _info("Installing health server systemd service...")
+        # Install the only long-running host; no HTTP/HTTPS listener remains.
+        _info("Installing scheduler/Bot systemd service...")
         ok, out, err = _ssh_cmd(
-            _build_health_systemd_command(),
-            "Install and restart health server service",
-            timeout=30,
+            _build_runtime_systemd_command(),
+            "Install and restart scheduler/Bot service",
+            timeout=90,
         )
+        _step("runtime_service", ok, "installed" if ok else (err or out or "")[:120])
         if not ok:
-            _step(
-                "health_service",
-                False,
-                f"systemd install failed: {(err or out or '')[:120]}",
-            )
-        time.sleep(3)
-
-        verify_cmd = f"""cd {REMOTE_DIR} && python3 -c "
-import sys
-sys.path.insert(0, '.')
-import yaml, urllib.request, urllib.error, time, ssl
-
-with open('config/config.yaml', 'r', encoding='utf-8') as f:
-    config = yaml.safe_load(f)
-
-hc = config.get('health_server', {{}})
-port = hc.get('port', 1933)
-use_ssl = hc.get('ssl', False)
-
-# 有 SSL 用 https, 否则用 http
-scheme = 'https' if use_ssl else 'http'
-ctx = ssl._create_unverified_context() if use_ssl else None
-
-for attempt in range(6):
-    time.sleep(1)
-    try:
-        url = scheme + '://localhost:' + str(port) + '/'
-        req = urllib.request.Request(url, headers={{'User-Agent': 'CI/CD Verification'}})
-        response = urllib.request.urlopen(req, timeout=5, context=ctx) if ctx else urllib.request.urlopen(req, timeout=5)
-        html = response.read().decode('utf-8', errors='replace')
-        if len(html) > 500:
-            print('[HS_HTTP_OK] Health server responded (' + scheme + ' ' + str(len(html)) + ' bytes)')
-        else:
-            print('[HS_HTTP_FAIL] Response too short: ' + str(len(html)) + ' bytes')
-        break
-    except urllib.error.URLError as e:
-        if attempt >= 5:
-            print(f'[HS_HTTP_FAIL] Connection failed after 6 retries: {{e}}')
-        continue
-    except Exception as e:
-        print(f'[HS_HTTP_FAIL] Error: {{e}}')
-        break
-" 2>&1"""
-        ok, out, _ = _ssh_cmd(verify_cmd, "Verify health server HTTP response", timeout=30)
-        hs_ok = "[HS_HTTP_OK]" in (out or "")
-        _step(
-            "health_server",
-            None if dry_run else hs_ok,
-            "dry run; health endpoint not probed"
-            if dry_run
-            else ("HTTP 200" if hs_ok else f"fail: {(out or '')[:80]}"),
+            return _print_summary(steps, cleaning_performed)
+        ok, out, err = _ssh_cmd(
+            _build_runtime_verify_command(), "Verify local service readiness", timeout=45
         )
+        ready = ok and "[SERVICE_READY]" in (out or "").splitlines()
+        _step(
+            "service_readiness", None if dry_run else ready,
+            "dry run; no service started" if dry_run else
+            ("systemd and local heartbeat ready" if ready else (err or out or "")[:120]),
+        )
+        if not dry_run and not ready:
+            return _print_summary(steps, cleaning_performed)
+
+        # Notify through the same channel switches after service acceptance.
+        notify_code = """
+from src.core.config_store import load_config
+from src.notification.manager import NotifierManager
+results = NotifierManager(load_config()).send_deployment_notification(
+    'SUCCESS', summary='Scheduler/Bot service is ready; HTTP management retired'
+)
+print('[NOTIFY_SKIPPED]' if not results else
+      '[NOTIFY_OK]' if any(results.values()) else '[NOTIFY_FAIL]')
+"""
+        ok, out, _ = _ssh_cmd(
+            f"cd {shlex.quote(REMOTE_DIR)} && timeout 60 python3 -c {shlex.quote(notify_code)}",
+            "Send deployment notification", timeout=70,
+        )
+        notify_ok = ok and "[NOTIFY_OK]" in (out or "")
+        _step("deploy_notify", True if notify_ok else None,
+              "delivered" if notify_ok else "disabled or delivery unavailable")
 
         # ── 15. 最终验证 ──
         _info("Final system verification...")
@@ -1157,17 +1074,15 @@ fi""",
             "Check for TEST data in emails",
         )
 
-        # 7. Health server
-        print(f"\n{'=' * 70}")
-        print("HEALTH SERVER")
-        print("=" * 70)
+        # 7. Outbound service status (no network health endpoint).
+        print("\nSCHEDULER / BOT SERVICE")
         _ssh_cmd(
-            "ss -tlnp 2>/dev/null | grep python || echo 'No python process listening (or ss not available)'",
-            "Health server port check",
+            "systemctl show trade-eyes.service -p MainPID -p ActiveState -p SubState",
+            "Runtime service state",
         )
         _ssh_cmd(
-            "ps aux | grep -i 'main.py.*--health-server' | grep -v grep || echo 'No health server process found'",
-            "Health server process",
+            f"cd {shlex.quote(REMOTE_DIR)} && python3 main.py --status",
+            "Local service heartbeat",
         )
 
         # 8. Cron jobs
@@ -1253,7 +1168,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--sync-config",
         action="store_true",
-        help="Also sync config/config.yaml to server (overwrites server-specific settings like ssl/ip)",
+        help="Also sync config/config.yaml to server (overwrites server-specific schedule and Bot settings)",
     )
 
     args = parser.parse_args()

@@ -101,7 +101,7 @@ class TestPlacementSection:
                 "archive_dir": tmpdir,
             }
         }
-        from notification.email_notifier import EmailNotifier
+        from src.notification.email_notifier import EmailNotifier
 
         n = EmailNotifier(config)
         n._get_server_info = MagicMock(

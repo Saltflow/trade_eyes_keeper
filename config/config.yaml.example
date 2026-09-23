@@ -60,7 +60,12 @@ logging:
 
 # ── 调度 ──
 scheduler:
+  daily_enabled: true
   run_time: '19:00'
+  run_on_startup: false
+  # 优化器定时执行需显式开启；手动 --optimize 不受此开关影响。
+  optimize_enabled: false
+  optimize_time: '02:00'
   # 普通日报频次：daily=每个交易日，weekly=每周五，off=关闭。
   # 有价格/策略告警时仍即时发送；/daily 手动触发不受影响。
   daily_report_frequency: daily
@@ -75,10 +80,44 @@ scheduler:
     - id: morning_snapshot
       run_time: '09:50'
       label: 早盘简报
+      enabled: true
+      skip_weekends: true
       stocks: []   # 填入你的股票代码列表
+    - id: afternoon_snapshot
+      run_time: '14:30'
+      label: 午后简报
+      enabled: true
+      skip_weekends: true
+      stocks: []
 
 # ── 监控标的 ──
-stocks: []           # 填入你的股票代码，例如 [601728, 000001, VOO]
+stocks: []           # 代码使用字符串，例如 ["601728", "000001", "VOO"]
+
+# ── 通知渠道（发送日报、告警、部署通知）──
+notification:
+  email:
+    enabled: true
+  feishu:
+    enabled: false
+    msg_type: interactive
+  telegram:
+    enabled: false
+    parse_mode: HTML
+
+# ── Bot 管理命令（飞书长连接 / Telegram 轮询，无需开放端口）──
+# 凭证放 config/.env；启用时必须填写非空聊天白名单。
+# 飞书可显式配置 ["*"] 沿用群成员范围；Telegram 需要明确聊天 ID。
+# 配置方法：docs/guide/feishu_telegram_setup.md
+interactive:
+  feishu:
+    enabled: false
+    allowed_chat_ids: []
+    rate_limit_per_minute: 10
+  telegram:
+    enabled: false
+    allowed_chat_ids: []
+    rate_limit_per_minute: 10
+    polling_interval: 2
 
 # ── 标的画像审计（不会进入策略搜参）──
 instrument_audit:
@@ -209,16 +248,6 @@ historical_cache:
   check_dividend_interval_days: 7
   historical_lookback_days: 730
   enable_historical_cache: true
-
-# ── 健康检查服务器 ──
-health_server:
-  enabled: true
-  host: 0.0.0.0
-  port: 1933
-  ssl: false                            # 是否启用 HTTPS (需自签名证书)
-  cert_file: cert.pem                   # SSL 证书路径 (ssl=true 时需提供)
-  key_file: key.pem                     # SSL 私钥路径 (ssl=true 时需提供)
-  ip_detect_url: https://ifconfig.me    # 公网 IP 检测服务 (报告链接用)
 
 # ── 多层警报系统 ──
 alerts:

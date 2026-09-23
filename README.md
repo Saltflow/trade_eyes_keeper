@@ -6,7 +6,7 @@
 
 > **English**: A cross-market quantitative monitoring system for A-shares, US stocks, and HK stocks. Features solver-neutral strategy optimization, a single unified backtester, intrinsic-value and instrument audits, daily xelatex PDF reports, and multi-channel notifications.
 
-A股 / 美股 / 港股量化监控系统。策略搜索优化器自动发现最优交易信号，每日 xelatex LaTeX PDF 日报含信号扫描 + 回测分析 + 公式方法论附录，支持 HTML 交互报告链接与 Telegram/飞书多渠道通知。
+A股 / 美股 / 港股量化监控系统。策略搜索优化器自动发现最优交易信号，每日 xelatex LaTeX PDF 日报含信号扫描 + 回测分析 + 公式方法论附录，支持 HTML 报告存档与 Telegram/飞书多渠道通知。
 
 ## 核心功能
 
@@ -19,8 +19,8 @@ A股 / 美股 / 港股量化监控系统。策略搜索优化器自动发现最�
 | **条件检测** | 多锚点阈值报警 (MA60/WMA20/WMA30/WMA50) + 优化策略信号报警 |
 | **早盘/收盘简报** | 轻量价格+锚点快照，每日 09:50 / 14:30 自动发送，按偏离率升序排列 |
 | **邮件提醒** | 日报含信号扫描+回测+公式附录，xelatex LaTeX PDF 附件 (港式财报风格) |
-| **健康监控** | HTTP 健康检查服务器 (OTP 认证 + 管理后台 + 在线编辑监控列表) |
-| **投资组合策略** | 共享资金池模拟，贪心前向选择，月度限额约束 |
+| **运行与管理** | 独立调度服务、本地状态、飞书长连接与 Telegram 轮询命令 |
+| **参考持仓** | 按市场维护示例账户，沿用统一 TradePlan、成交费用与公司行动合同 |
 | **规则引擎** | YAML 驱动，Python 表达式沙箱，23 个单元测试 |
 | **公式附录** | LaTeX 排版 13 节指标方法论（RSI/布林/MACD/ADX/回测约束），xelatex 编译 |
 
@@ -51,6 +51,7 @@ A股 / 美股 / 港股量化监控系统。策略搜索优化器自动发现最�
 ```bash
 pip install -r requirements.txt
 cp config/.env.example config/.env   # 填入邮箱和 API Key (DeepSeek)
+cp config/config.yaml.example config/config.yaml # 填入完整标的和运行设置
 python main.py --once                # 单次收盘日报
 python main.py --brief               # 单次早盘简报
 python main.py --optimize            # 对配置活动策略执行统一搜参
@@ -59,7 +60,8 @@ python main.py --audit-instruments   # 全量标的画像 JSON + HTML 审计
 python scripts/benchmark_technical_strategies.py --solver random --depth 1000 --market-workers 12 --evaluation-workers 1  # 五策略统一基准
 python scripts/benchmark_search_throughput.py --candidates 1000  # 标量/批量吞吐验收
 python scripts/analyze_search_depth.py  # 1000→10000 搜索边际效应
-python main.py                       # 定时运行 (cron/APScheduler)
+python main.py --service             # 唯一调度器 + 已启用的管理 Bot
+python main.py --status              # 本地服务状态
 ```
 
 ## 项目结构
@@ -85,7 +87,7 @@ src/
 ├── models/            # 当前日报 Pydantic 模型（待后续收敛命名）
 ├── instruments/       # 类型化标的、财务推导、基金穿透和审计报告
 ├── notification/      # 邮件通知 + 图表生成
-├── health_server/     # HTTP 健康检查 + 管理
+├── interactive/       # 飞书长连接 / Telegram 轮询，共享命令入口
 ├── utils/             # CJK 字体, ETF 检测
 └── templates/         # HTML/CSS 模板
 ```
@@ -94,7 +96,7 @@ src/
 
 | 命令 | 说明 |
 |------|------|
-| `python main.py` | 启动定时调度器 (cron) |
+| `python main.py` / `--service` | 启动统一调度与 Bot 服务 |
 | `python main.py --once` | 单次收盘日报 |
 | `python main.py --brief [id]` | 早盘/收盘简报 (`morning_snapshot` / `afternoon_snapshot`) |
 | `python main.py --optimize` | 按市场独立执行 Walk-Forward 搜参 |
@@ -103,10 +105,14 @@ src/
 | `python scripts/benchmark_technical_strategies.py --solver random --depth 1000 --market-workers 12 --evaluation-workers 1` | 冻结各市场行情快照，并行比较五个注册技术策略；可切换 GA/随机/退火，只写诊断产物 |
 | `python scripts/benchmark_search_throughput.py --candidates 1000` | 用完整 A 股冻结输入比较同一候选的标量与 CPU 批量评价吞吐、RSS 和一致性 |
 | `python scripts/analyze_search_depth.py` | 用同一 RandomSolver 候选流测量 1,000→10,000 搜索边际效果并绘图 |
-| `python main.py --health-server` | 仅启动健康服务器 |
+| `python main.py --interactive` | 仅启动已启用的管理 Bot |
+| `python main.py --status` | 读取本地服务心跳，退出码表示是否就绪 |
 
 `--optimize-v2` 不再是有效入口；增加 Solver 时只需实现并注册统一的
 `Solver`（`ask/tell/checkpoint`），`SearchController`、策略和通知层无需增加算法分支。
+
+HTTP/HTTPS health server、管理页面与报告临时链接已整体下线。使用飞书/TG Bot
+更灵活、更安全，无需开放管理端口。设置见 [Bot 指南](docs/guide/feishu_telegram_setup.md)。
 
 ## 配置
 
@@ -114,6 +120,7 @@ src/
 - `config/.env` — 邮箱密码、API Key (gitignored)
 - `config/optimizer_constraints.yaml` — Solver、Gate、窗口、成交和资源合同
 - `config/alerts.yaml` — 多锚点报警配置
+- `config/promotion_policy.yaml` — 候选晋升门槛
 
 ## 文档
 
@@ -139,10 +146,10 @@ pytest tests/test_security.py           # 安全测试
 
 | 方向 | 状态 | 内容 |
 |------|------|------|
-| **发布安全门禁** | ✅ 已完成 | 部署前执行 Ruff `F/E/S110`、导入烟测、核心路径测试、远端严格配置校验与 HTTP 健康检查；不因无关的历史格式债务阻塞发布 |
+| **发布安全门禁** | ✅ 已完成 | 部署前执行 Ruff `F/E/S110`、导入烟测、核心路径测试、远端严格配置校验与 systemd/本地心跳检查；不因无关的历史格式债务阻塞发布 |
 | **统一策略评估** | ✅ 已完成 | 单一 `--optimize` 入口；84 个月 `12/9/3/22` 滚动窗口（16 ranking、2 purge、4 holdout）；统一 TradePlan、Backtester 与 EvaluationReport |
 | **Solver 解耦** | ✅ 已完成 | `SearchController` 与 Genetic / Random / Simulated Annealing / Local Genetic 插件分离；新增算法不改策略和评价层 |
-| **报告与通知** | ✅ 已完成 | HTML、PDF、邮件、飞书和 Telegram 共享报告合同；移动端日报展示决策板、完整行情矩阵、估值/待派息事件及报告链接，正文不再堆叠持仓或周 NAV 箱线图 |
+| **报告与通知** | ✅ 已完成 | HTML、PDF、邮件、飞书和 Telegram 共享报告合同；移动端日报展示决策板、完整行情矩阵、估值/待派息事件，正文不再堆叠持仓或周 NAV 箱线图 |
 | **可配置回测区间** | ✅ 已完成 | `/backtest 代码 起 止` 自动准备指标预热、raw/qfq、公司行为与基准，缺失时补数后执行严格校验 |
 | **标的画像与审计** | 🔄 进行中 | 公司财务推导、ETF/REIT/商品/债券类型化画像，以及带发布日期和防前视约束的 point-in-time 数据回填 |
 | **港股税后现金分红** | ✅ 已完成（P1） | `hk: 20%` 账户层保守预扣率进入 raw 成交/qfq 信号/显式现金流合同；策略、静态基准、外部基准与参考持仓均记录税前、税额与税后现金，缺少因果公告日的分红 fail closed |

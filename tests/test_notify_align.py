@@ -76,12 +76,12 @@ def _make_session(**kw):
 
 class TestStrategyTextSummary:
     def test_empty_session_blank(self):
-        from notification.email_notifier import build_strategy_text_summary
+        from src.notification.email_notifier import build_strategy_text_summary
         s = _make_session()
         assert build_strategy_text_summary(s) == ""
 
     def test_three_groups_shown(self):
-        from notification.email_notifier import build_strategy_text_summary
+        from src.notification.email_notifier import build_strategy_text_summary
 
         reports = {
             "a_share": _make_report(group="a_share", total_return=15.0,
@@ -102,7 +102,7 @@ class TestStrategyTextSummary:
         assert "分位评分" in out
 
     def test_win_rate_shown(self):
-        from notification.email_notifier import build_strategy_text_summary
+        from src.notification.email_notifier import build_strategy_text_summary
 
         r = _make_report(
             group="a_share",
@@ -118,7 +118,7 @@ class TestStrategyTextSummary:
         assert "三基线收益 / 策略超额" in out
 
     def test_text_summary_omits_long_nav_and_holding_details(self):
-        from notification.email_notifier import build_strategy_text_summary
+        from src.notification.email_notifier import build_strategy_text_summary
 
         position = {
             "code": "601088", "shares": 200, "cost": 30.0,
@@ -148,7 +148,7 @@ class TestStrategyTextSummary:
         assert "持仓明细和周 NAV OHLC 已移至 HTML/PDF 详情" in out
 
     def test_signals_readable_names(self):
-        from notification.email_notifier import build_strategy_text_summary
+        from src.notification.email_notifier import build_strategy_text_summary
 
         alerts = [
             SimpleNamespace(
@@ -166,7 +166,7 @@ class TestStrategyTextSummary:
         assert "00883 放量异动" in out
 
     def test_no_signal_shows_none(self):
-        from notification.email_notifier import build_strategy_text_summary
+        from src.notification.email_notifier import build_strategy_text_summary
 
         scan = SimpleNamespace(alerts=[])
         r = _make_report()
@@ -175,7 +175,7 @@ class TestStrategyTextSummary:
         assert "今日信号: 无触发" in out
 
     def test_placements_shown(self):
-        from notification.email_notifier import build_strategy_text_summary
+        from src.notification.email_notifier import build_strategy_text_summary
 
         placements = {
             "601088": {
@@ -194,7 +194,7 @@ class TestStrategyTextSummary:
         assert "4.58亿股" in out
 
     def test_markdown_bold(self):
-        from notification.email_notifier import build_strategy_text_summary
+        from src.notification.email_notifier import build_strategy_text_summary
 
         scan = SimpleNamespace(alerts=[])
         r = _make_report()
@@ -209,32 +209,32 @@ class TestReadableSignalByGroup:
     """Bug2 + 三组拆分: A股/港股/美股信号名各用自己的 YAML 映射。"""
 
     def test_a_share_uses_a_map(self):
-        from notification.email_notifier import _readable_signal
+        from src.notification.email_notifier import _readable_signal
         map_a = {"buy_1": "偏离穿越"}
         map_hk = {"buy_1": "趋势跟踪"}
         map_us = {"buy_1": "放量异动"}
         assert _readable_signal("601728", "buy_1", map_a, map_hk, map_us) == "偏离穿越"
 
     def test_hk_uses_hk_map(self):
-        from notification.email_notifier import _readable_signal
+        from src.notification.email_notifier import _readable_signal
         map_a = {"buy_1": "偏离穿越"}
         map_hk = {"buy_1": "趋势跟踪"}
         map_us = {"buy_1": "放量异动"}
         assert _readable_signal("00883", "buy_1", map_a, map_hk, map_us) == "趋势跟踪"
 
     def test_us_uses_us_map(self):
-        from notification.email_notifier import _readable_signal
+        from src.notification.email_notifier import _readable_signal
         map_a = {"buy_4": "RSI超卖"}
         map_hk = {"buy_4": "深度价值"}
         map_us = {"buy_4": "布林低位"}
         assert _readable_signal("VOO", "buy_4", map_a, map_hk, map_us) == "布林低位"
 
     def test_us_falls_back_to_hk_when_no_us_map(self):
-        from notification.email_notifier import _readable_signal
+        from src.notification.email_notifier import _readable_signal
         map_a = {"buy_1": "偏离穿越"}
         map_hk = {"buy_1": "趋势跟踪"}
         assert _readable_signal("VOO", "buy_1", map_a, map_hk) == "趋势跟踪"
 
     def test_unknown_falls_back_to_raw(self):
-        from notification.email_notifier import _readable_signal
+        from src.notification.email_notifier import _readable_signal
         assert _readable_signal("601728", "buy_9", {}, {}, {}) == "buy_9"

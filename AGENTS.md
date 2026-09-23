@@ -35,8 +35,12 @@ python main.py --brief [report_id]
 # Scheduled run (default)
 python main.py
 
-# Strategy optimizer (Bayesian search)
+# Strategy optimizer (configured Solver and execution profiles)
 python main.py --optimize
+
+# Scheduler and outbound Bots (no HTTP management listener)
+python main.py --service
+python main.py --status
 
 # Using scripts (cross-platform)
 ./scripts/run.sh [--once]      # Linux/Mac
@@ -75,11 +79,8 @@ python ci_cd_deploy.py --dry-run
 # Deploy to production
 python ci_cd_deploy.py
 
-# Investigate server health
-python ci_cd_deploy.py --investigate
-
-# Use custom SSH port
-python ci_cd_deploy.py --ssh-port 2222
+# Investigate systemd and the local service heartbeat
+python ci_cd_deploy.py --mode investigate
 ```
 
 ### Code Quality
@@ -173,7 +174,7 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
   - `cycle_guard`: Detect repetitive error patterns, prevent circular coding
   - `todosaver`: Save pending todos to `docs/development/todo_backlog.md` and clear context
   - `mail_checker`: Run system and validate latest email archive for data readiness and format compliance
-  - `net-checker`: SSH to remote server, check health-server status and verify endpoint compliance
+  - `net-checker`: When remote checks are requested, inspect systemd, the local service heartbeat and outbound Bot connectivity
 
 ## Troubleshooting
 - **Import errors**: Ensure `src/` is in Python path (see `conftest.py`)
@@ -187,7 +188,7 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 
 | Issue | Fix Location | Status |
 |-------|-------------|--------|
-| Health Server Security | `src/health_server.py` | ✅ HTML escaping, rate limiting, HTTPS, IP validation |
+| Runtime / Bot Service | `src/core/runtime_service.py` + `src/interactive/` | ✅ HTTP/HTTPS health server retired; use Feishu/TG Bot for more flexible, safer management without a public port |
 | ROE Inconsistency | `src/web_crawler.py:563-578` | ✅ Added validation (5% threshold) |
 | Price Validation | `src/condition_checker.py:46-58` | ✅ Checks close≥low≤high, logs warnings |
 | Cache Oversharing | `src/data/data_source.py:96,121,130,133,149` | ✅ 5 return paths trimmed to requested days |

@@ -1,15 +1,23 @@
-"""调度管理器 — 内嵌 APScheduler，由 health server 常驻运行。
+"""The service's single APScheduler entry point, shared with Bot commands.
 
-替代外部 crontab，支持 /schedule 交互式修改。
+Task execution uses the same main.py commands as explicit command-line runs.
 """
 
-import logging
-from pathlib import Path
+from __future__ import annotations
 
-import yaml
+import logging
+import os
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+from threading import RLock
+
+import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-import pytz
+
+from .config_store import DEFAULT_CONFIG_PATH, ConfigStore, runtime_config
 
 logger = logging.getLogger(__name__)
 
@@ -25,20 +33,34 @@ _JOB_IDS = {
     "optimize": "optimize",
 }
 
+_schedule_manager: ScheduleManager | None = None
+
+
+def get_schedule_manager() -> ScheduleManager | None:
+    """Return this service process's live scheduler, if it has started."""
+    return _schedule_manager
+
+
+def set_schedule_manager(manager: ScheduleManager | None) -> None:
+    """Register a live scheduler without depending on an HTTP server."""
+    global _schedule_manager
+    _schedule_manager = manager
+
 
 class ScheduleManager:
-    """管理 APScheduler 调度，内嵌于 health server。"""
+    """Manage the service schedule and persist Bot edits to the raw config."""
 
     def __init__(self, config: dict, config_path: Path | None = None):
         self.config = config
-        self.config_path = (
-            Path(config_path) if config_path else Path("config/config.yaml")
-        )
+        self.config_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+        self._change_lock = RLock()
         tz_str = config.get("scheduler", {}).get("timezone", "Asia/Shanghai")
         try:
             timezone = pytz.timezone(tz_str)
         except pytz.exceptions.UnknownTimeZoneError:
             timezone = pytz.timezone("Asia/Shanghai")
+            logger.warning("未知时区 %s，使用 Asia/Shanghai", tz_str)
+        self.timezone = timezone
         self.scheduler = BackgroundScheduler(
             timezone=timezone,
             job_defaults={"coalesce": True, "max_instances": 1},
@@ -55,6 +77,8 @@ class ScheduleManager:
 
     def start(self):
         """注册所有 job 并启动调度器。"""
+        if self.scheduler.running:
+            return
         sched_cfg = self.config.get("scheduler", {})
 
         # 日报
@@ -70,6 +94,15 @@ class ScheduleManager:
                     DEFAULT_DAILY_MISFIRE_GRACE_SECONDS,
                 ),
             )
+            if sched_cfg.get("run_on_startup", False):
+                self.scheduler.add_job(
+                    func=self._job_runner("daily", ["--once"]),
+                    trigger="date",
+                    run_date=datetime.now(self.timezone),
+                    id="startup_task",
+                    name="启动时立即执行日报",
+                    replace_existing=True,
+                )
 
         # 简报
         for br in sched_cfg.get("brief_reports", []):
@@ -109,6 +142,7 @@ class ScheduleManager:
             )
 
         self.scheduler.start()
+        set_schedule_manager(self)
         logger.info(f"调度器已启动: {len(self.scheduler.get_jobs())} 个任务")
 
     def _add_job(
@@ -128,38 +162,9 @@ class ScheduleManager:
 
         job_id = job_id_override or _JOB_IDS.get(task_id, task_id)
 
-        def _run():
-            import subprocess
-            import sys
-            import os
-            from pathlib import Path
-
-            project_root = Path(__file__).parent.parent.parent
-            main_py = project_root / "main.py"
-            cmd = [sys.executable, str(main_py)] + cli_args
-            try:
-                log_file = project_root / "logs" / "quant_system.log"
-                log_file.parent.mkdir(parents=True, exist_ok=True)
-                with log_file.open("a", encoding="utf-8") as output:
-                    process = subprocess.Popen(
-                        cmd,
-                        cwd=str(project_root),
-                        env=os.environ.copy(),
-                        stdout=output,
-                        stderr=subprocess.STDOUT,
-                        start_new_session=True,
-                    )
-                logger.info(
-                    "调度任务已启动子进程 pid=%s: %s",
-                    process.pid,
-                    " ".join(cmd),
-                )
-            except Exception as e:
-                logger.exception(f"调度任务启动失败: {task_id}: {e}")
-
-        trigger = CronTrigger(hour=hour, minute=minute)
+        trigger = CronTrigger(hour=hour, minute=minute, timezone=self.timezone)
         self.scheduler.add_job(
-            func=_run,
+            func=self._job_runner(task_id, cli_args),
             trigger=trigger,
             id=job_id,
             name=name,
@@ -176,22 +181,52 @@ class ScheduleManager:
             misfire_grace_seconds,
         )
 
+    @staticmethod
+    def _job_runner(task_id: str, cli_args: list[str]):
+        def run():
+            project_root = Path(__file__).resolve().parents[2]
+            cmd = [sys.executable, str(project_root / "main.py"), *cli_args]
+            try:
+                log_file = project_root / "logs" / "quant_system.log"
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                with log_file.open("a", encoding="utf-8") as output:
+                    process = subprocess.Popen(
+                        cmd,
+                        cwd=str(project_root),
+                        env=os.environ.copy(),
+                        stdout=output,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
+                logger.info("调度任务已启动 pid=%s: %s", process.pid, task_id)
+            except Exception:
+                logger.exception("调度任务启动失败: %s", task_id)
+
+        return run
+
     def stop(self):
         """停止调度器。"""
         if self.scheduler.running:
             self.scheduler.shutdown(wait=False)
             logger.info("调度器已停止")
+        if get_schedule_manager() is self:
+            set_schedule_manager(None)
 
     def get_schedule(self) -> list[dict]:
         """返回当前所有任务的调度信息。"""
         result = []
         for job in self.scheduler.get_jobs():
+            next_run = getattr(job, "next_run_time", None)
+            if next_run is None or job.id == "startup_task":
+                continue
+            next_run = next_run.astimezone(self.timezone)
             result.append(
                 {
                     "id": job.id,
                     "name": job.name,
-                    "time": f"{job.next_run_time.hour:02d}:{job.next_run_time.minute:02d}",
-                    "next_run": str(job.next_run_time),
+                    "time": f"{next_run.hour:02d}:{next_run.minute:02d}",
+                    "next_run": str(next_run),
+                    "timezone": str(self.timezone),
                 }
             )
         return result
@@ -210,50 +245,53 @@ class ScheduleManager:
         if hour is None:
             return False
 
-        job_id = _JOB_IDS.get(task_id)
-        if job_id is None:
-            return False
-
-        job = self.scheduler.get_job(job_id)
-        if job is None:
-            return False
-
-        trigger = CronTrigger(hour=hour, minute=minute)
-        self.scheduler.reschedule_job(job_id, trigger=trigger)
-        logger.info(f"调度已修改: {task_id} → {time_str}")
-
-        # 写回 config.yaml
-        self._persist_schedule(task_id, time_str)
-        return True
+        with self._change_lock:
+            job_id = _JOB_IDS.get(task_id, f"brief_{task_id}")
+            if self.scheduler.get_job(job_id) is None:
+                return False
+            normalized_time = f"{hour:02d}:{minute:02d}"
+            try:
+                saved = self._persist_schedule(task_id, normalized_time)
+            except Exception:
+                logger.exception("调度配置保存失败，运行时间未修改: %s", task_id)
+                return False
+            trigger = CronTrigger(hour=hour, minute=minute, timezone=self.timezone)
+            try:
+                self.scheduler.reschedule_job(job_id, trigger=trigger)
+            except Exception as exc:
+                raise RuntimeError(
+                    "调度配置已保存，但运行时刷新失败，请重启服务"
+                ) from exc
+            self.config = runtime_config(saved)
+            logger.info("调度已修改: %s → %s", task_id, normalized_time)
+            return True
 
     def _persist_schedule(self, task_id: str, time_str: str):
         """将修改持久化到 config.yaml。"""
-        try:
-            with open(self.config_path, "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f)
 
+        def mutate(config: dict) -> None:
             if task_id == "daily":
+                if not config.get("scheduler", {}).get("daily_enabled", True):
+                    raise ValueError("daily schedule is disabled")
                 config.setdefault("scheduler", {})["run_time"] = time_str
             elif task_id == "optimize":
+                if not config.get("scheduler", {}).get("optimize_enabled", False):
+                    raise ValueError("optimizer schedule is disabled")
                 config.setdefault("scheduler", {})["optimize_time"] = time_str
             else:
                 # brief_reports 里找对应的 id
                 for br in config.get("scheduler", {}).get("brief_reports", []):
                     if br.get("id") == task_id:
+                        if not br.get("enabled", True):
+                            raise ValueError("brief schedule is disabled")
                         br["run_time"] = time_str
                         break
+                else:
+                    raise ValueError(f"unknown brief schedule: {task_id}")
 
-            with open(self.config_path, "w", encoding="utf-8") as f:
-                yaml.dump(
-                    config,
-                    f,
-                    allow_unicode=True,
-                    default_flow_style=False,
-                    sort_keys=False,
-                )
-            logger.info(f"调度配置已写入: {self.config_path}")
-        except Exception as e:
-            logger.error(f"写入调度配置失败: {e}")
+        saved = ConfigStore(self.config_path).update(mutate)
+        logger.info("调度配置已写入: %s", self.config_path)
+        return saved
 
     @staticmethod
     def _parse_time(time_str: str) -> tuple[int | None, int | None]:
@@ -269,5 +307,5 @@ class ScheduleManager:
             if not (0 <= hour <= 23 and 0 <= minute <= 59):
                 return None, None
             return hour, minute
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, TypeError):
             return None, None

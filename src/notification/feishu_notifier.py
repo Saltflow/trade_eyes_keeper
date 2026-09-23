@@ -11,6 +11,7 @@ import pandas as pd
 import requests
 
 from .base import BaseNotifier
+from .settings import channel_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ class FeishuNotifier(BaseNotifier):
     """飞书 Bot 通知器，通过 webhook 发送交互卡片消息"""
 
     def __init__(self, config: dict):
+        self.config = config
         fc = config.get("notification", {}).get("feishu", {})
         self.webhook_url = fc.get("webhook_url") or os.getenv("FEISHU_WEBHOOK_URL", "")
         self.msg_type = fc.get("msg_type", "interactive")
@@ -37,6 +39,8 @@ class FeishuNotifier(BaseNotifier):
         Returns:
             (bool, str): (是否成功, 消息)
         """
+        if not channel_enabled(self.config, "feishu"):
+            return False, "飞书通知已禁用"
         if not self.webhook_url:
             return False, "飞书 webhook_url 未配置"
 
@@ -177,6 +181,8 @@ class FeishuNotifier(BaseNotifier):
 
     def _send_card(self, payload: dict) -> tuple:
         """发送飞书卡片（不经过 _send 的 body 参数）"""
+        if not channel_enabled(self.config, "feishu"):
+            return False, "飞书通知已禁用"
         if not self.webhook_url:
             return False, "飞书 webhook_url 未配置"
         try:

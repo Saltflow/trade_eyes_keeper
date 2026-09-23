@@ -3,31 +3,22 @@
 """
 
 import logging
-import os
+from .settings import channel_enabled, env_flag
 
 
 logger = logging.getLogger(__name__)
-
-
-def _env_flag(name: str) -> bool:
-    return os.getenv(name, "").lower() in {"1", "true", "yes"}
 
 
 class NotifierManager:
     """统一通知管理器：按 config 创建 enabled channel 的 notifier，并行分发"""
 
     def __init__(self, config: dict):
-        if _env_flag("SKIP_NOTIFICATIONS"):
+        if env_flag("SKIP_NOTIFICATIONS"):
             self.email = None
             self.feishu = None
             self.telegram = None
             return
-        nc = config.get("notification", {})
-
-        # Email（默认启用，但如果完全没有 email 配置则跳过）
-        ec = nc.get("email", {})
-        email_enabled = ec.get("enabled", bool(ec))
-        if email_enabled:
+        if channel_enabled(config, "email"):
             from .email_notifier import EmailNotifier
 
             self.email = EmailNotifier(config)
@@ -35,8 +26,7 @@ class NotifierManager:
             self.email = None
 
         # Feishu
-        fc = nc.get("feishu", {})
-        if fc.get("enabled", False) and not _env_flag("SKIP_FEISHU"):
+        if channel_enabled(config, "feishu"):
             from .feishu_notifier import FeishuNotifier
 
             self.feishu = FeishuNotifier(config)
@@ -44,8 +34,7 @@ class NotifierManager:
             self.feishu = None
 
         # Telegram
-        tc = nc.get("telegram", {})
-        if tc.get("enabled", False) and not _env_flag("SKIP_TELEGRAM"):
+        if channel_enabled(config, "telegram"):
             from .telegram_notifier import TelegramNotifier
 
             self.telegram = TelegramNotifier(config)
@@ -89,14 +78,21 @@ class NotifierManager:
 
     def send_deployment_notification(
         self, status: str, version: str = "", summary: str = ""
-    ) -> None:
-        for ch in self._channels():
+    ) -> dict[str, bool]:
+        results = {}
+        for name in ("email", "feishu", "telegram"):
+            ch = getattr(self, name)
+            if ch is None:
+                continue
             try:
-                ch.send_deployment_notification(status, version, summary)
+                result = ch.send_deployment_notification(status, version, summary)
+                results[name] = bool(result and result[0])
             except Exception as e:
+                results[name] = False
                 logger.error(
                     f"频道 {ch.__class__.__name__} send_deployment_notification 失败: {e}"
                 )
+        return results
 
     def send_test_email(self) -> tuple:
         """发送测试邮件（仅 Email 频道）"""

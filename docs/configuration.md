@@ -1,283 +1,116 @@
-# 配置完整使用文档
+# 配置参考
 
-本文档详解 `config/` 目录下所有配置文件及其字段含义。
+主 CLI、运行服务和 Bot 的主配置由 `ConfigStore` 读取。所有 Bot 修改先在跨进程锁内重读原始 YAML，再按字段更新并原子替换；运行态的环境密钥不会写回文件。
 
----
+## 文件与职责
 
-## 文件总览
+| 文件 | 用途 |
+| --- | --- |
+| `config/config.yaml` | 标的、数据采集、调度、通知、Bot、各市场策略与 profile 选择；本地文件，不进入 Git |
+| `config/config.yaml.example` | 主配置模板 |
+| `config/.env` / `.env.example` | SMTP、LLM、Bot 和部署凭证；只提交模板 |
+| `config/alerts.yaml` | 指标锚点、阈值区间、重复告警规则 |
+| `config/optimizer_constraints.yaml` | Solver 预算、执行费用、窗口、基准、Gate、稳健性和研究 profile |
+| `config/promotion_policy.yaml` | 候选相对活动策略的晋升要求 |
+| `pyproject.toml` / `pytest.ini` | Python 包、Ruff、测试设置，不属于交易运行配置 |
 
-| 文件 | 用途 | 是否含敏感信息 |
-|------|------|--------------|
-| `config.yaml` | 主配置（股票、数据源、邮件、调度器） | 否 |
-| `alerts.yaml` | 技术指标锚点与警报规则 | 否 |
-| `.env` | 环境变量（API Key、邮箱密码） | **是** |
-| `.env.example` | `.env` 模板，不含真实密钥 | 否 |
+数据源按代码内的 provider 合同降级；本次服务迁移保留现有数据、行情和策略配置。PIT 行情使用 `point_in_time_data.market_history`。
 
-> `.env` 已加入 `.gitignore`，**切勿提交到仓库**。
+## 主配置
 
----
-
-## config.yaml
-
-### stocks
-
-监控的股票代码列表，支持 A 股、ETF、美股、港股、新加坡股。
+股票代码必须写成字符串，避免 YAML 吃掉前导零：
 
 ```yaml
-stocks:
-  - 601728   # A股：中国电信（上海6开头，深圳0/3开头）
-  - 512810   # ETF：华宝中证军工ETF
-  - GOOG     # 美股
-  - 00883    # 港股
-  - C38U.SI  # 新加坡股
-```
-
-### data_source
-
-```yaml
-data_source:
-  type: web_crawler           # 主数据源类型
-  primary: web_crawler        # 主数据源
-  secondary: baostock         # 备用数据源
-  etf_force_web_crawler: true # ETF 强制使用 web_crawler（除权支持更好）
-  fallback_to_web_crawler: true
-```
-
-### sina_options
-
-```yaml
-sina_options:
+stocks: ["601728", "000001", "00883", "VOO"]
+skip_search: []       # 保留监控，但不参加搜参
+skip_signals: []      # 保留监控，但不显示策略信号
+alerts:
+  config_path: ./config/alerts.yaml
   enabled: true
-  timeout_seconds: 20  # 新浪期权请求超时秒数
-  quote_batch_size: 50  # ETF 期权批量行情每次请求的合约数
 ```
 
-期权通过 `DataSource.option_data_source` 访问。当前支持中金所 IO/HO/MO
-指数期权，以及上交所 510050、510300、510500、588000、588080 ETF 期权。
-其中中证 500 对应上交所 510500 ETF 期权；中金所 MO 是中证 1000 期权。
-新浪提供的是月度到期合约，周/月数据需要将单合约日线通过
-`resample_option_bars(..., "W-FRI")` 或 `resample_option_bars(..., "M")`
-聚合得到。
+| 配置段 | 有效配置与作用 |
+| --- | --- |
+| `announcements` | `enable`、`days`、`dividend_days`、正文/PDF提取、LLM 调用额度；详见模板 |
+| `financial_reports` | `max_llm_calls_per_run` 供 LLM 额度使用；其他字段保持现有版本 |
+| `sina_options` | `enabled`、`timeout_seconds`、`quote_batch_size`，供新浪期权数据源使用 |
+| `point_in_time_data` | 原价/复权价、公司行动、披露日财报的目录、历史覆盖和 provider 设置 |
+| `instrument_audit` / `instrument_catalog` | 标的画像输出及按代码指定的官方发行人/持仓资料 |
+| `email` | SMTP 地址、端口和 SSL/TLS；敏感字段建议放 `.env` |
+| `llm` | API 类型、URL、模型及基本面分析开关 |
+| `storage` | 数据目录、缓存目录与保存设置；服务状态写入 `data_dir/runtime/` |
+| `logging` | `level`、`file`、`format`；原 `LOG_LEVEL` 环境模板项已删除 |
 
-### baostock
+### 统一调度
 
-回测与历史数据专用数据源配置。
-
-```yaml
-baostock:
-  enable: true
-  adjustflag: "2"           # 复权类型：2=前复权，3=后复权
-  login_retry_times: 3
-  timeout_seconds: 30
-```
-
-### historical_cache
-
-```yaml
-historical_cache:
-  enable: true
-  historical_cache_days: 30
-  force_update_interval_days: 30
-  check_dividend_interval_days: 7
-  historical_lookback_days: 730   # 默认回溯 2 年
-  enable_historical_cache: true
-```
-
-### announcements
-
-官方公告抓取配置。
-
-```yaml
-announcements:
-  enable: true                    # 总开关
-  include_in_email: true          # 邮件中显示公告
-  days: 7                         # 获取最近 N 天公告
-  dividend_days: 420              # 股息公告回溯天数
-  enable_content_fetching: true   # 抓取公告正文
-  enable_llm_extraction: true     # 使用 LLM 提取关键信息
-  max_llm_calls_per_run: 30       # 每轮 LLM 调用上限
-  max_pdf_size_mb: 10             # 公告 PDF 大小限制
-```
-
-### financial_reports
-
-财报分析配置。
-
-```yaml
-financial_reports:
-  enable: false                   # 总开关
-  auto_enable: true               # 条件满足时自动启用
-  conditional_enable: true
-  force_analyze: false            # 强制分析所有股票（忽略触发条件）
-  max_stocks_per_run: 2           # 常规模式每轮最多分析数
-  max_force_stocks: 2             # 强制模式上限（0 或缺省则不限）
-  max_llm_calls_per_run: 80       # 财报分析 LLM 调用上限（独立额度）
-  reports_per_stock: 3
-  conditional_days: 30
-```
-
-### backtest
-
-```yaml
-backtest:
-  enable: true
-  run_in_daily_task: true
-  cache_days: 7
-```
-
-### email
-
-SMTP 邮件发送配置。敏感字段（sender_email / sender_password / receiver_email）建议通过 `.env` 覆盖。
-
-```yaml
-email:
-  smtp_server: smtp.yeah.net
-  smtp_port: 465
-  enable_ssl: true
-  enable_tls: false
-```
-
-> yeah.net 使用 SSL 端口 465；QQ/163 可尝试 587 或 465，视服务商文档而定。
-
-### llm
-
-```yaml
-llm:
-  api_type: deepseek
-  base_url: https://api.deepseek.com/v1
-  model: deepseek-chat
-  enable_fundamental_analysis: false   # 是否启用基本面分析
-```
-
-### scheduler
+`python main.py` 与 `python main.py --service` 使用同一 `ScheduleManager`；任务调用现有 CLI 子进程。时间创建和在线修改都使用 `scheduler.timezone`。
 
 ```yaml
 scheduler:
-  run_time: "19:00"             # 每日完整日报运行时间（24小时制）
-  daily_report_frequency: daily  # daily / weekly（每周五）/ off
-  daily_report_weekday: 4         # weekly 使用，0=周一 … 4=周五
-  cache_bypass_cutoff: "15:55"  # 超过此时间且缓存非当日则强制刷新
   timezone: Asia/Shanghai
+  daily_enabled: true
+  run_time: '19:00'
+  run_on_startup: false
+  optimize_enabled: false
+  optimize_time: '02:00'
+  daily_report_frequency: daily   # daily / weekly / off
+  daily_report_weekday: 4         # 0=周一，4=周五
+  cache_bypass_cutoff: '15:55'
+  daily_misfire_grace_seconds: 3600
+  brief_misfire_grace_seconds: 900
+  optimize_misfire_grace_seconds: 7200
   brief_reports:
     - id: morning_snapshot
       run_time: '09:50'
-      label: '早盘简报'
       enabled: true
       skip_weekends: true
+      label: 早盘简报
     - id: afternoon_snapshot
       run_time: '14:30'
-      label: '收盘简报'
       enabled: true
       skip_weekends: true
+      label: 午后简报
 ```
 
-| 字段 | 说明 |
-|------|------|
-| `run_time` | 完整日报（含图表/基本面/公告/PDF）触发时间 |
-| `daily_report_frequency` | 普通日报频次；`daily` 每个交易日、`weekly` 每周五、`off` 关闭。告警日报仍即时发送 |
-| `daily_report_weekday` | `weekly` 模式的星期，0=周一至6=周日 |
-| `brief_reports` | 轻量简报列表，仅价格+锚点，每条独立配置时间和标签 |
-| `skip_weekends` | 周末是否跳过（A股/港股休市） |
+`daily_enabled` 控制日报任务是否注册；`daily_report_frequency` 控制普通日报的发送频次，告警和手动 `/daily` 的语义保持独立。定时优化缺省关闭，手动 `--optimize` 不受该开关影响。已有服务器的旧优化 cron 会在部署时迁移，见[部署指南](deployment.md)。
 
-### health_server
+### 通知与管理 Bot
 
 ```yaml
-health_server:
-  enabled: true
-  host: 0.0.0.0
-  port: 1933
+notification:
+  email: {enabled: true}
+  feishu: {enabled: false, msg_type: interactive}
+  telegram: {enabled: false, parse_mode: HTML}
+interactive:
+  feishu:
+    enabled: false
+    allowed_chat_ids: []
+    rate_limit_per_minute: 10
+  telegram:
+    enabled: false
+    allowed_chat_ids: []
+    rate_limit_per_minute: 10
+    polling_interval: 2
 ```
 
-### alerts（引用）
+`notification` 管理报告外发，`interactive` 管理命令接收，两者分别启用。飞书使用应用长连接，Telegram 使用轮询。飞书可显式设置 `["*"]` 沿用当前群成员范围；Telegram 需要明确聊天 ID。启用 Bot 时，空白名单或缺失凭证会阻止启动。
 
-```yaml
-alerts:
-  config_path: "./config/alerts.yaml"
-  enabled: true
-```
+HTTP/HTTPS health server、管理页面、OTP 和报告临时链接已整体下线。使用飞书/TG Bot 更灵活、更安全，无需开放管理端口。配置方法见[Bot 指南](guide/feishu_telegram_setup.md)。
 
-### storage
+### 策略与执行合同
 
-```yaml
-storage:
-  data_dir: ./data
-  cache_dir: ./cache
-  cache_days: 7
-  csv_format: true
-```
+每个 `optimizer.markets.<market>` 必须显式声明 `strategy`、`solver_id`、`gate_profile`、`walk_forward_profile`、`execution_profile` 和 `benchmark_profile`。默认值和 profile 定义统一放在 `optimizer_constraints.yaml`，不再支持全局策略兜底。
 
-### logging
+本次发布不改变搜索、执行和评估周期合同。
 
-```yaml
-logging:
-  level: DEBUG         # DEBUG / INFO / WARNING / ERROR
-  file: ./logs/quant_system.log
-  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-```
+主搜参资源配置使用 `search.workers`（可由 `SEARCH_WORKERS` 覆盖）和 `search.evaluation_backend`；`genetic_search.evaluation_workers` 保留给研究接口。
 
----
+## 环境变量和优先级
 
-## alerts.yaml
+- 进程环境优先于同目录 `.env`；加载 `.env` 使用 `override=False`。
+- `EMAIL_SENDER`、`EMAIL_PASSWORD`、`EMAIL_RECEIVER` 和 `DEEPSEEK_API_KEY` 的非空环境值覆盖相应 YAML 字段。无数据消费者的 `TUSHARE_TOKEN` 已从加载器和模板移除。
+- Bot 和推送凭证采用非空 YAML 值优先、对应环境变量兜底。建议只在 `.env` 保存凭证。
+- `SKIP_NOTIFICATIONS` 禁止所有通知及 Bot 回复；`SKIP_EMAIL`、`SKIP_FEISHU`、`SKIP_TELEGRAM` 禁止对应渠道外发。`true/1/yes/on` 均有效且忽略大小写。
+- 外发跳过开关不禁止已授权管理命令执行；停用管理入口应设置 `interactive.<channel>.enabled: false` 并重启服务。
 
-技术指标锚点与分层警报规则。
-
-```yaml
-version: 1.1
-anchors:
-  - name: ma60
-    type: daily_ma
-    window: 60
-  - name: wma20
-    type: weekly_ma
-    window: 20
-thresholds: [-10, -5, 0, 5, 10, 15]
-boundary_rules:
-  neg_right_closed: true
-  pos_left_closed: true
-  exclude_zero: true
-  skip_zero_five: true
-consecutive_days_threshold: 5   # 连续 N 天后不再重复发送相同区间警报
-auto_reset: true                # 股票移动到新区间时自动重置旧状态
-```
-
-| 字段 | 说明 |
-|------|------|
-| `anchors` | 技术指标锚点列表。新增指标只需添加配置，`technical_indicators.py` 自动计算 |
-| `type` | `daily_ma`（日线 MA）或 `weekly_ma`（周线 MA） |
-| `window` | 计算窗口 |
-| `thresholds` | 价格偏离锚点的百分比阈值，用于分层警报 |
-| `boundary_rules` | 区间边界开闭规则 |
-| `consecutive_days_threshold` | 抑制重复通知的连续天数 |
-
----
-
-## .env
-
-```bash
-# 邮箱配置（必需）
-EMAIL_SENDER=your_email@example.com
-EMAIL_PASSWORD=your_email_password_or_app_specific_password
-EMAIL_RECEIVER=receiver_email@example.com
-
-# DeepSeek API 配置（可选）
-DEEPSEEK_API_KEY=your_deepseek_api_key_here
-
-# Tushare Token（可选）
-TUSHARE_TOKEN=your_tushare_token_here
-
-# 日志级别
-LOG_LEVEL=INFO
-```
-
-### 配置优先级
-
-1. 环境变量（最高）
-2. `.env` 文件中的变量
-3. `config.yaml` 中的默认值
-
----
-
-**相关文档**：
-- [部署指南](deployment.md)
-- [架构说明](architecture.md)
-- [快速开始](guide/quickstart.md)
+`config/.env.example` 列出凭证名称。日常修改用 Bot 命令或编辑 YAML；Bot `/schedule` 修改会立即更新当前调度器，其余服务级开关、凭证和白名单需要重启服务。

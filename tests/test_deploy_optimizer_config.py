@@ -19,10 +19,8 @@ EXAMPLE_PATH = PROJECT_ROOT / "config" / "config.yaml.example"
 VALIDATION_STEP = "Validate remote optimizer configuration"
 PROGRESSION_STEPS = (
     "System test",
-    "Clean up legacy daily/brief cron entries",
-    "Add optimizer cron if missing",
     "Send deployment notification",
-    "Install and restart health server service",
+    "Install and restart scheduler/Bot service",
 )
 
 
@@ -87,6 +85,9 @@ def deployment(monkeypatch, tmp_path, server_config):
         sync_exception=None,
         restore_failure=False,
         validation_result=None,
+        readiness_result=None,
+        dependency_result=None,
+        service_result=None,
     )
     for variable in ("SYNC_CONFIG", "SYNC_ENV", "DRY_RUN"):
         monkeypatch.delenv(variable, raising=False)
@@ -98,7 +99,6 @@ def deployment(monkeypatch, tmp_path, server_config):
     monkeypatch.setattr(ci_cd_deploy, "_check_prerequisites", lambda: None)
     monkeypatch.setattr(ci_cd_deploy, "_pre_deploy_checks", lambda dry_run: True)
     monkeypatch.setattr(ci_cd_deploy, "_ensure_remote_repo", lambda: True)
-    monkeypatch.setattr(ci_cd_deploy.time, "sleep", lambda seconds: None)
     monkeypatch.chdir(server_config.root)
 
     def fake_push():
@@ -120,6 +120,12 @@ def deployment(monkeypatch, tmp_path, server_config):
 
     def fake_ssh(command, description="", timeout=60):
         state.events.append(description)
+        if description == "Verify local service readiness" and state.readiness_result:
+            return state.readiness_result
+        if description == "Install dependencies" and state.dependency_result:
+            return state.dependency_result
+        if description == "Install and restart scheduler/Bot service" and state.service_result:
+            return state.service_result
         if description == "Backup server config.yaml":
             state.backup = (
                 server_config.app.read_bytes() if server_config.app.exists() else None
@@ -147,12 +153,11 @@ def deployment(monkeypatch, tmp_path, server_config):
             return result
         responses = {
             "System test": "---EXIT: 0 ---\n---ERRORS---\n0\n---TAIL---\n",
-            "Verify cron": "0 2 * * * python3 main.py --optimize\n",
             "Count optimizer run manifests": "0\n",
             "Check email archives": "[ARCHIVE_NA]\n",
             "Get git version": "test-version\n",
             "Send deployment notification": "[NOTIFY_OK]\n",
-            "Verify health server HTTP response": "[HS_HTTP_OK]\n",
+            "Verify local service readiness": "[SERVICE_READY]\n",
         }
         return True, responses.get(description, ""), ""
 
@@ -262,7 +267,7 @@ def test_invalid_effective_server_config_blocks_deployment(
 
 def test_code_only_deploy_validates_restored_server_config(deployment):
     config = yaml.safe_load(deployment.server.app.read_text(encoding="utf-8"))
-    config["health_server"]["ssl"] = True
+    config["scheduler"]["timezone"] = "UTC"
     config["optimizer"]["markets"]["hk"]["solver_id"] = "random"
     _write_config(deployment.server.app, config)
     original = deployment.server.app.read_bytes()
@@ -372,3 +377,31 @@ def test_dry_run_config_sync_does_not_upload(deployment, monkeypatch):
 
     assert deployment.server.app.read_bytes() == original
     assert deployment.events == []
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        (True, "[SERVICE_WAIT]\n", ""),
+        (True, "echo '[SERVICE_READY]'\n", ""),
+        (False, "[SERVICE_READY]\n", "remote failure"),
+    ],
+)
+def test_failed_readiness_never_sends_success_notification(deployment, result):
+    deployment.readiness_result = result
+    assert ci_cd_deploy.deploy() is False
+    assert "Send deployment notification" not in deployment.events
+
+
+def test_dependency_install_failure_stops_before_service_migration(deployment):
+    deployment.dependency_result = (False, "", "pip failed")
+    assert ci_cd_deploy.deploy() is False
+    assert "Install and restart scheduler/Bot service" not in deployment.events
+    assert "Send deployment notification" not in deployment.events
+
+
+def test_service_migration_failure_stops_acceptance_and_notification(deployment):
+    deployment.service_result = (False, "", "migration failed")
+    assert ci_cd_deploy.deploy() is False
+    assert "Verify local service readiness" not in deployment.events
+    assert "Send deployment notification" not in deployment.events

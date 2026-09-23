@@ -44,10 +44,9 @@ from .report_builders import (  # noqa: F401
     pick_best_anchor,
 )
 
-try:
-    from ..markets import _detect_fine_group
-except ImportError:  # pragma: no cover - legacy top-level ``notification`` imports
-    from markets import _detect_fine_group
+from ..markets import _detect_fine_group
+
+from .settings import channel_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -87,17 +86,6 @@ class EmailNotifier(BaseNotifier):
 
         if not self.sender_email or not self.sender_password or not self.receiver_email:
             logger.warning("邮件配置不完整，邮件通知功能可能无法正常工作")
-
-        # 报告 token 超时配置
-        try:
-            timeout = config.get("health_server", {}).get(
-                "report_token_timeout_minutes", 30
-            )
-            from ..health_server.core.global_instances import set_report_token_timeout
-
-            set_report_token_timeout(timeout)
-        except Exception as e:
-            logger.debug(f"设置 token 超时失败: {e}")
 
     def send_from_session(self, session):
         """
@@ -1521,43 +1509,6 @@ class EmailNotifier(BaseNotifier):
             return '<section class="daily-section"><div class="section-heading">示例账户</div><div class="empty-card">暂无示例账户数据。</div></section>'
         return '<section class="daily-section"><div class="section-heading">参考持仓 · 示例账户</div>' + "".join(sections) + '</section>'
 
-    def _build_daily_report_links(self):
-        optimizer_dir = Path("data/optimizer")
-        if not optimizer_dir.exists():
-            return ""
-        report_files = {
-            "A股": sorted(optimizer_dir.glob("*_a_share_report.html"), key=lambda p: p.stat().st_mtime, reverse=True),
-            "港股": sorted(optimizer_dir.glob("*_hk_report.html"), key=lambda p: p.stat().st_mtime, reverse=True),
-            "美股": sorted(optimizer_dir.glob("*_us_report.html"), key=lambda p: p.stat().st_mtime, reverse=True),
-            # Keep links to installations that generated the old combined
-            # report until their next optimizer run.
-            "境外": sorted(optimizer_dir.glob("*_non_a_share_report.html"), key=lambda p: p.stat().st_mtime, reverse=True),
-        }
-        if not any(report_files.values()):
-            return ""
-        try:
-            from ..health_server.core.global_instances import register_report_token
-        except ImportError:
-            from health_server.core.global_instances import register_report_token
-        health = self.config.get("health_server", {}) or {}
-        server_ip = health.get("public_ip") or self._get_server_info().get("ip_address", "")
-        server_ip = str(server_ip).split(",")[0].split("(")[0].strip()
-        if not server_ip or any(ch in server_ip for ch in '<>"\r\n\t'):
-            return ""
-        proto = "https" if health.get("ssl", False) else "http"
-        port = health.get("port", 1933)
-        links = []
-        for label, paths in report_files.items():
-            if not paths:
-                continue
-            token = register_report_token(str(paths[0]))
-            url = _safe_html_url(f"{proto}://{server_ip}:{port}/report/{token}")
-            if url:
-                links.append(f'<a href="{url}" target="_blank" rel="noopener">{_html_escape(label)}报告</a>')
-        if not links:
-            return ""
-        return '<div class="link-card">优化报告：' + " · ".join(links) + '（链接短期有效）</div>'
-
     def _build_mobile_daily_email_body(
         self,
         alert_stocks,
@@ -1578,7 +1529,7 @@ class EmailNotifier(BaseNotifier):
         server_info = self._get_server_info()
         deployment_status = (
             '<div class="deployment-strip"><strong>部署状态</strong> · 节点 '
-            f'{_html_escape(server_info.get("hostname"))} · 公网 IP '
+            f'{_html_escape(server_info.get("hostname"))} · IP '
             f'{_html_escape(server_info.get("ip_address"))}'
             f'<span> · {_html_escape(server_info.get("system"))} '
             f'{_html_escape(server_info.get("machine"))} '
@@ -1610,7 +1561,6 @@ class EmailNotifier(BaseNotifier):
             events_section=self._build_daily_events_section(
                 announcements, placements, stock_data, dividend_events
             ),
-            report_links=self._build_daily_report_links(),
         )
 
     def _build_email_body(
@@ -2265,80 +2215,6 @@ class EmailNotifier(BaseNotifier):
                 "系统检测到以下股票满足条件：<strong>当天最低价 &lt; MA60（前复权）</strong>",
             )
 
-        # 8.5. 报告链接（A股 + 境外各一份，30 分钟后过期）
-        report_link = ""
-        try:
-            optimizer_dir = Path("data/optimizer")
-            if optimizer_dir.exists():
-                a_r = sorted(
-                    optimizer_dir.glob("*_a_share_report.html"),
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True,
-                )
-                nona_r = sorted(
-                    optimizer_dir.glob("*_non_a_share_report.html"),
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True,
-                )
-                if a_r or nona_r:
-                    from ..health_server.core.global_instances import (
-                        register_report_token,
-                    )
-
-                    hc = self.config.get("health_server", {})
-                    server_ip = hc.get("public_ip", "")
-                    port = hc.get("port", 1933)
-                    use_ssl = hc.get("ssl", False)
-
-                    if not server_ip:
-                        try:
-                            import urllib.request
-
-                            ip_url = hc.get("ip_detect_url", "https://ifconfig.me")
-                            server_ip = (
-                                urllib.request.urlopen(ip_url, timeout=5)
-                                .read()
-                                .decode("utf-8")
-                                .strip()
-                            )
-                        except Exception as e:
-                            logger.debug(f"IP检测服务失败: {e}")
-                            fi = self._get_server_info().get("ip_address", "localhost")
-                            for p in (
-                                fi.replace("(优先)", "")
-                                .replace("(", "")
-                                .replace(")", "")
-                                .split(",")
-                            ):
-                                s = p.strip().split()[0] if p.strip() else ""
-                                if s and not s.startswith(
-                                    ("172.", "10.", "192.168.", "127.")
-                                ):
-                                    server_ip = s
-                                    break
-                            if server_ip == "localhost":
-                                server_ip = fi.split(",")[0].strip().split()[0]
-
-                    proto = "https" if use_ssl else "http"
-                    links_html = ""
-                    for label, report_list in [("A股", a_r), ("境外", nona_r)]:
-                        if not report_list:
-                            continue
-                        token = register_report_token(str(report_list[0]))
-                        links_html += (
-                            f'<a href="{proto}://{server_ip}:{port}/report/{token}" '
-                            f'style="color:#2980b9;text-decoration:none">'
-                            f"{label}</a> &nbsp;"
-                        )
-                    if links_html:
-                        report_link = (
-                            f'<tr><td style="padding:8px 16px;color:#7f8c8d;font-size:13px">'
-                            f"交互报告: {links_html}"
-                            f'<span style="font-size:11px">(30分钟)</span></td></tr>'
-                        )
-        except Exception as e:
-            logger.debug(f"交互报告链接生成失败: {e}")
-
         # 9. 替换主模板变量
         placement_section = self._build_placement_section(placements, stock_data)
         try:
@@ -2363,7 +2239,6 @@ class EmailNotifier(BaseNotifier):
             portfolio_chart_section=portfolio_chart_section,
             strategy_alert_section=strategy_alert_section,
             backtest_section=backtest_section,
-            report_link=report_link,
             portfolio_section=portfolio_section,
             strategy_results_section=strategy_results_section,
             server_hostname=server_info["hostname"],
@@ -2525,24 +2400,6 @@ class EmailNotifier(BaseNotifier):
                     ip_list.extend(ips)
             except Exception as e:
                 logger.debug(f"hostname -I 失败: {e}")
-
-            # 方法3: 获取公网IP（可选）
-            try:
-                import urllib.request
-
-                ip_url = self.config.get("health_server", {}).get(
-                    "ip_detect_url", "https://ifconfig.me"
-                )
-                public_ip = (
-                    urllib.request.urlopen(ip_url, timeout=10)
-                    .read()
-                    .decode("utf-8")
-                    .strip()
-                )
-                if public_ip and public_ip not in ip_list:
-                    ip_list.append(f"{public_ip} (公网)")
-            except Exception as e:
-                logger.debug(f"公网IP检测失败: {e}")
 
             # 去重并过滤回环地址
             ip_list = list(set(ip_list))
@@ -2763,7 +2620,6 @@ class EmailNotifier(BaseNotifier):
             pdf_bytes: 日报 PDF 附件 bytes（可选）
             candlestick_png: 周K蜡烛图 bytes（可选），CID=candlestick
         """
-        import os
 
         # 保存邮件副本（无论是否跳过发送）
         copy_path = self._save_email_copy(subject, body)
@@ -2772,7 +2628,7 @@ class EmailNotifier(BaseNotifier):
         else:
             logger.error("邮件副本未保存，目标目录: %s", self.email_archive_dir)
 
-        if os.environ.get("SKIP_EMAIL") == "true":
+        if not channel_enabled(self.config, "email"):
             logger.info(f"跳过邮件发送（测试模式）: 主题={subject}")
             return
 

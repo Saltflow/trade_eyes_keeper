@@ -3,26 +3,41 @@ from pathlib import Path
 import ci_cd_deploy
 
 
-def test_health_server_is_managed_only_by_persistent_systemd_unit():
-    command = ci_cd_deploy._build_health_systemd_command()
+def test_runtime_service_migrates_after_stop_and_before_start():
+    command = ci_cd_deploy._build_runtime_systemd_command()
 
-    assert "/etc/systemd/system/trade-eyes-health.service" in command
-    assert "systemctl enable trade-eyes-health.service" in command
-    assert "systemctl restart trade-eyes-health.service" in command
-    assert "Restart=always" in command
+    assert "systemctl disable --now trade-eyes-health.service" in command
+    assert "rm -f /etc/systemd/system/trade-eyes-health.service" in command
     assert "ExecStart=/usr/bin/python3" in command
-    assert "nohup python3 main.py --health-server" not in command
-    assert "while true" in command  # legacy loop cleanup only
-    assert "pkill -f '^/usr/bin/python3 /root/trade_eyes_keeper/main.py$'" in command
+    assert "/main.py --service" in command
+    assert "KillMode=control-group" in command
+    assert "Restart=on-failure" in command
+    assert command.index("systemctl stop trade-eyes.service") < command.index(
+        "migrate_legacy_cron"
+    ) < command.index("systemctl restart trade-eyes.service")
+    assert "systemctl enable trade-eyes.service" in command
 
 
-def test_deploy_flow_does_not_start_a_health_server_nohup_loop():
+def test_deploy_requires_current_pid_and_fresh_local_heartbeat():
+    command = ci_cd_deploy._build_runtime_verify_command()
+    assert "read_service_status(load_config())" in command
+    assert 'str(status.get("pid")) == pid' in command
+    assert 'status.get("ready")' in command
+    assert "[SERVICE_READY]" in command
+    assert "curl" not in command
+    assert "http://" not in command
+
+
+def test_deploy_uses_one_runtime_and_notifies_after_readiness():
     source = Path(ci_cd_deploy.__file__).read_text(encoding="utf-8")
-
     deploy_source = source[source.index("def deploy()") :]
     assert "nohup python3 main.py --health-server" not in deploy_source
-    assert "_build_health_systemd_command()" in deploy_source
+    assert "_build_runtime_systemd_command()" in deploy_source
+    assert "opt_cron_line" not in deploy_source
     assert "SKIP_NOTIFICATIONS=true timeout 180 python3 main.py --once" in deploy_source
+    assert deploy_source.index("Verify local service readiness") < deploy_source.index(
+        "Send deployment notification"
+    )
 
 
 def test_deploy_prefers_user_scoped_key_when_legacy_relative_key_is_absent(
@@ -89,3 +104,11 @@ def test_ssh_command_is_noninteractive_and_uses_keepalives(monkeypatch):
     assert "BatchMode=yes" in captured["command"]
     assert captured["stdin"] is ci_cd_deploy.subprocess.DEVNULL
     assert captured["timeout"] == 47
+
+
+def test_retired_web_unit_is_masked_before_new_service_starts():
+    command = ci_cd_deploy._build_runtime_systemd_command()
+    assert command.index("systemctl mask trade-eyes-health.service") < command.index(
+        "systemctl restart trade-eyes.service"
+    )
+    assert "--notify-start" not in command

@@ -1805,3 +1805,13 @@ pytest tests/test_import_smoke.py         # 导入完整性
 - 本机未安装 XeLaTeX，因此本地验收只覆盖 HTML 正文及嵌入图；生产报告环境已具备
   `xelatex`。部署后仍须在该环境复核 PDF 附件，但本次不因此改变部署、策略指针或交易
   行为。
+
+
+## 2026-09-23 HTTP/HTTPS 管理服务退休发布
+
+- 删除健康 HTTP/HTTPS server、Web 管理页、OTP、临时报告 token 和所有入口，邮件不再生成这些链接。
+- `main.py --service` 统一运行 ScheduleManager、飞书官方 SDK 出站长连接与 Telegram 轮询；`--status` 读取本地心跳。
+- Bot 配置修改经 ConfigStore 跨进程锁、字段更新与原子写回，保留原有业务调度和授权群范围。
+- 部署迁移项目 legacy cron，停用并 mask 旧 health systemd 单元；1933 端口关闭属于发布验收条件。
+- 上线通知通过 `--notify-start` 显式选择，默认启动不额外发消息。
+- 本发布从 ce7c177 独立提取服务相关改动，未包含工作区量化研究、评估周期与数据提供方改动。

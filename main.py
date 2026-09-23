@@ -12,13 +12,11 @@
 import argparse
 import os
 import sys
-import threading
-import traceback
 import yaml
 import logging
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from time import monotonic
 from dotenv import load_dotenv
@@ -26,14 +24,14 @@ from dotenv import load_dotenv
 # 加载环境变量
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "config", ".env"))
 # 添加src目录到Python路径
+logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 from src.core.data_fetcher import StockDataFetcher
 from src.core.condition_checker import ConditionChecker
 from src.notification.manager import NotifierManager
-from src.core.scheduler_manager import SchedulerManager
+from src.core.config_store import load_config as load_runtime_config
 from src.data.announcement_fetcher import AnnouncementFetcher
 from src.session.session_manager import SessionManager
-from src.strategy import get_strategy
 from src.backtest import build_trade_plan, evaluate_all_groups
 from src.search import get_market_optimizer_config, get_market_optimizer_configs
 from src.markets import _detect_fine_group, get_skip_search, get_skip_signals
@@ -71,11 +69,11 @@ from src.data.backtest_data import prepare_backtest_data
 OPTIMIZER_GROUPS = ("a_share", "hk", "us")
 DEFAULT_OPTIMIZER_GROUPS = OPTIMIZER_GROUPS
 DAILY_REPORT_FREQUENCIES = {"daily", "weekly", "off"}
-# The daily email's normalized NAV chart is a decision-history view, not one
-# nine-month optimizer holdout.  Keep a full three-year window available for
-# every market while leaving the intraday/brief-report fetch path lightweight.
+# Keep the existing three-year daily decision-history chart.
 DAILY_PORTFOLIO_HISTORY_MONTHS = 36
 DAILY_PORTFOLIO_HISTORY_BUFFER_DAYS = 35
+
+
 
 
 def _daily_portfolio_history_days() -> int:
@@ -1215,36 +1213,12 @@ def setup_logging(config):
 
 
 def load_config(config_path=None):
-    """加载配置文件"""
+    """Load runtime configuration through the shared raw/environment boundary."""
     try:
-        if config_path is None:
-            # 默认配置文件路径，基于当前文件位置
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            config_path = os.path.join(current_dir, "config", "config.yaml")
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-        # 用环境变量覆盖配置
-        if os.getenv("EMAIL_SENDER"):
-            config.setdefault("email", {})["sender_email"] = os.getenv("EMAIL_SENDER")
-        if os.getenv("EMAIL_PASSWORD"):
-            config.setdefault("email", {})["sender_password"] = os.getenv(
-                "EMAIL_PASSWORD"
-            )
-        if os.getenv("EMAIL_RECEIVER"):
-            config.setdefault("email", {})["receiver_email"] = os.getenv(
-                "EMAIL_RECEIVER"
-            )
-        deepseek_key = os.getenv("DEEPSEEK_API_KEY")
-        if deepseek_key and deepseek_key.strip():
-            config.setdefault("llm", {})["api_key"] = deepseek_key.strip()
-        if os.getenv("TUSHARE_TOKEN"):
-            config.setdefault("data_source", {})["tushare_token"] = os.getenv(
-                "TUSHARE_TOKEN"
-            )
-        return config
-    except Exception as e:
-        print(f"加载配置文件失败: {e}")
-        sys.exit(1)
+        return load_runtime_config(config_path)
+    except Exception as exc:
+        logger.error("Unable to load configuration: %s", exc)
+        raise SystemExit(1) from exc
 
 
 def should_send_daily_report(
@@ -2126,107 +2100,14 @@ def _eval_opt_lookback() -> int:
         return 274
 
 
-def _start_heartbeat(config, stop_event, state: dict):
-    """搜参过程每5分钟飞书心跳通知，含相位/组合/耗时的实时进度。"""
-    import logging as _logging
-    _hb_logger = _logging.getLogger(__name__)
-
-    def _beat():
-        import time as _time
-        start = _time.time()
-        count = 0
-        phase_emoji = {"starting": "⏳", "Phase1": "🔍", "Phase2": "🧬", "done": "✅"}
-        while not stop_event.is_set():
-            _time.sleep(300)
-            if stop_event.is_set():
-                break
-            count += 1
-            elapsed = int(_time.time() - start)
-            mins = elapsed // 60
-            sec = elapsed % 60
-            group = state.get("group", "—")
-            phase = state.get("phase", "—")
-            g_n = state.get("group_n", 0)
-            g_tot = state.get("total_groups", 3)
-            emoji = phase_emoji.get(phase, "⚙️")
-
-            progress = f"第 {g_n}/{g_tot} 组 · {emoji} {phase}"
-            title = f"Trade Eyes · 搜参运行中 ({mins}m{sec}s)"
-            body_lines = [
-                f"**{title}**",
-                f"当前: **{group}** · {progress}",
-                f"已连续运行 {mins} 分 {sec} 秒",
-                "完成后自动推送完整报告",
-            ]
-            card = {
-                "schema": "2.0",
-                "header": {"title": {"tag": "plain_text", "content": title}, "template": "blue"},
-                "body": {"elements": [
-                    {"tag": "markdown", "content": "\n".join(body_lines)},
-                ]},
-            }
-            try:
-                import os as _os
-                import requests as _requests
-                webhook = _os.getenv("FEISHU_WEBHOOK_URL", "")
-                if not webhook:
-                    webhook = config.get("notification", {}).get("feishu", {}).get("webhook_url", "")
-                if webhook:
-                    _requests.post(webhook, json={
-                        "msg_type": "interactive", "card": card,
-                    }, timeout=10)
-            except Exception as _e:
-                _hb_logger.warning(f"heartbeat send failed: {_e}")
-
-    threading.Thread(target=_beat, daemon=True, name="heartbeat").start()
-
-
-def _send_restart_notification(config: dict):
-    """服务重启后飞书通知。"""
-    try:
-        import os
-        from datetime import datetime
-        from pathlib import Path
-        import json
-        import requests
-
-        webhook = os.getenv("FEISHU_WEBHOOK_URL", "")
-        if not webhook:
-            fc = config.get("notification", {}).get("feishu", {})
-            webhook = fc.get("webhook_url", "")
-        if not webhook:
-            return
-
-        now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        title = "Trade Eyes · 已上线"
-        lines = [
-            f"**{title}**",
-            f"重启时间: {now}",
-            f"状态: 定时任务已注册 (日报 19:00 / 简报 09:50 14:30 / 搜参 02:00)",
-        ]
-        try:
-            root = Path(__file__).parent
-            import subprocess
-            commits = subprocess.run(
-                ["git", "-C", str(root), "log", "-1", "--pretty=format:%h %s"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if commits.returncode == 0 and commits.stdout.strip():
-                lines.append(f"版本: `{commits.stdout.strip()[:80]}`")
-        except Exception:
-            pass
-
-        card = {
-            "schema": "2.0",
-            "header": {"title": {"tag": "plain_text", "content": title}, "template": "green"},
-            "body": {"elements": [
-                {"tag": "markdown", "content": "\n".join(lines)},
-            ]},
-        }
-        payload = {"msg_type": "interactive", "card": card}
-        requests.post(webhook, json=payload, timeout=10)
-    except Exception:
-        pass
+def _send_restart_notification(config: dict, service):
+    """Announce a started service through the common notification policy."""
+    jobs = service.scheduler.scheduler.get_jobs() if service.scheduler else []
+    summary = "服务已启动；" + (
+        "任务：" + "; ".join(f"{job.name}: {job.trigger}" for job in jobs)
+        if jobs else "交互 Bot 模式"
+    )
+    NotifierManager(config).send_deployment_notification("SUCCESS", summary=summary)
 
 
 def _build_argument_parser() -> argparse.ArgumentParser:
@@ -2270,8 +2151,13 @@ def _build_argument_parser() -> argparse.ArgumentParser:
             "for configured market pools"
         ),
     )
-    mode.add_argument("--health-server", action="store_true", help="start health server")
-    mode.add_argument("--interactive", action="store_true", help="start Telegram bot")
+    mode.add_argument("--service", action="store_true", help="run scheduler and outbound Bots")
+    mode.add_argument("--status", action="store_true", help="read local service status")
+    mode.add_argument("--interactive", action="store_true", help="run configured outbound Bots")
+    parser.add_argument(
+        "--notify-start", action="store_true",
+        help="explicitly send a notification after the service starts",
+    )
     parser.add_argument(
         "--group",
         dest="market_group",
@@ -2300,6 +2186,13 @@ def main(argv: list[str] | None = None):
             environment,
         )
     config = load_config()
+    if args.status:
+        import json
+        from src.core.runtime_service import read_service_status
+
+        status = read_service_status(config)
+        print(json.dumps(status, ensure_ascii=False))
+        return 0 if status["ready"] else 1
     logger = setup_logging(config)
     if args.once:
         logger.info("Single daily run")
@@ -2369,22 +2262,17 @@ def main(argv: list[str] | None = None):
             [item.get("status") for item in report.get("markets", [])],
             report.get("artifacts", {}).get("html", ""),
         )
-    elif args.health_server:
-        from src.health_server import start_health_server
-
-        start_health_server()
-    elif args.interactive:
-        from src.interactive.telegram_bot import TelegramBot
-
-        TelegramBot(config).run()
     else:
-        logger.info("Starting scheduler")
-        scheduler = SchedulerManager(
-            config, task_function=run_daily_task, brief_function=run_brief_report
-        )
-        scheduler.start()
-        _send_restart_notification(config)
+        from src.core.runtime_service import RuntimeService
+
+        service = RuntimeService(config, scheduling=not args.interactive)
+        logger.info("Starting scheduler/Bot service with no HTTP listener")
+        on_started = (
+            lambda: _send_restart_notification(config, service)
+        ) if args.notify_start else None
+        service.run(on_started=on_started)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

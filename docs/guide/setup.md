@@ -82,8 +82,8 @@ python ci_cd_deploy.py
 2. 📦 **代码推送** — git push 到服务器
 3. 🔧 **安装依赖** — 服务器自动 pip install
 4. ✅ **系统测试** — 跑一次 `--once` 验证
-5. 🕐 **配置 cron** — 注册日报 (19:00) + 简报 (09:50 + 14:30) + 策略优化 (02:00)
-6. 🏥 **启动健康服务器** — 端口 1933
+5. 🕐 **迁移调度** — 清理当前项目旧 cron，按 YAML 注册日报、简报和显式启用的优化任务
+6. ✅ **启动服务** — `trade-eyes.service` 管理调度与 Bot，并检查当前进程的本地心跳
 
 ---
 
@@ -93,15 +93,13 @@ python ci_cd_deploy.py
 # 检查服务器状态
 python ci_cd_deploy.py --mode investigate
 
-# 手动触发一次日报
-python ci_cd_deploy.py
-# 部署完成后会发送一封测试邮件
-
-# 浏览器访问健康面板
-http://你的服务器IP:1933
+# 在服务器项目目录查看服务状态
+python main.py --status
+systemctl status trade-eyes.service
 ```
 
-收到邮件 → **部署完成**。
+服务就绪后按通知开关发送部署通知；禁用通知不会阻止部署。HTTP/HTTPS 管理服务已下线，
+使用飞书/TG Bot 更灵活、更安全，无需开放管理端口，详见 [Bot 指南](feishu_telegram_setup.md)。
 
 ---
 

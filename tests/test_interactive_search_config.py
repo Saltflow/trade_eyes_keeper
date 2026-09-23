@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import shutil
+from pathlib import Path
 
 import yaml
 
@@ -9,10 +9,13 @@ from src.interactive.commands import handlers
 
 
 def _isolated_constraints(tmp_path: Path, monkeypatch) -> Path:
+    from src.search import config as search_config
+
     source = Path("config/optimizer_constraints.yaml")
     target = tmp_path / "optimizer_constraints.yaml"
     shutil.copy2(source, target)
     monkeypatch.setattr(handlers, "OPT_CONSTRAINTS_PATH", target)
+    monkeypatch.setattr(search_config, "_global_constraints", None)
     return target
 
 

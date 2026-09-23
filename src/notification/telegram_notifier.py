@@ -12,6 +12,7 @@ import pandas as pd
 from datetime import datetime
 
 from .base import BaseNotifier
+from .settings import channel_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class TelegramNotifier(BaseNotifier):
     """Telegram Bot 通知器，通过 sendMessage API 推送 HTML 格式消息"""
 
     def __init__(self, config: dict):
+        self.config = config
         tc = config.get("notification", {}).get("telegram", {})
         self.bot_token = tc.get("bot_token") or os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.chat_id = tc.get("chat_id") or os.getenv("TELEGRAM_CHAT_ID", "")
@@ -44,6 +46,8 @@ class TelegramNotifier(BaseNotifier):
     # ── 传输层 ──────────────────────────────────
 
     def _send(self, title: str, body: str) -> tuple:
+        if not channel_enabled(self.config, "telegram"):
+            return False, "Telegram 通知已禁用"
         if not self.bot_token or not self.chat_id:
             return False, "Telegram bot_token 或 chat_id 未配置"
 
