@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import numpy as np
 import pandas as pd
@@ -669,6 +669,119 @@ class CninfoAnnualReportProvider:
             if str(row.get("code", "")) == code and row.get("orgId"):
                 return str(row["orgId"])
         raise ValueError(f"CNINFO orgId not found for {code}")
+
+    def discover_report(
+        self, code: str, report_type: str, year: int | None = None
+    ) -> dict[str, Any]:
+        """Find one complete annual or half-year report on official CNINFO."""
+        normalized = str(code).strip()
+        if not re.fullmatch(r"\d{6}", normalized) or not normalized.startswith(
+            ("0", "2", "3", "4", "5", "6", "8", "9")
+        ):
+            raise ValueError("只支持 CNINFO 可识别的六位 A 股代码")
+        if report_type not in {"annual", "half_year"}:
+            raise ValueError("report_type must be annual or half_year")
+        today = datetime.now(timezone(timedelta(hours=8))).date()
+        if year is not None and (
+            isinstance(year, bool)
+            or not isinstance(year, int)
+            or not 2000 <= year <= today.year
+        ):
+            raise ValueError("报告年份必须在 2000 至当前年份之间")
+        org_id = self._org_id(normalized)
+        if year is None:
+            start = date(today.year - 5, 1, 1)
+            end = today
+        else:
+            start = date(year, 1, 1)
+            end = min(today, date(year + 1, 12, 31))
+        is_sse = normalized.startswith(("5", "6", "9"))
+        rows: list[dict[str, Any]] = []
+        for page in range(1, 11):
+            response = self.http.post(
+                self.ANNOUNCEMENT_URL,
+                data={
+                    "pageNum": page,
+                    "pageSize": 50,
+                    "column": "sse" if is_sse else "szse",
+                    "tabName": "fulltext",
+                    "plate": "sh" if is_sse else "sz",
+                    "stock": f"{normalized},{org_id}",
+                    "searchkey": "",
+                    "secid": "",
+                    "category": "category_ndbg_szsh;" if report_type == "annual" else "",
+                    "trade": "",
+                    "seDate": f"{start.isoformat()}~{end.isoformat()}",
+                    "sortName": "",
+                    "sortType": "",
+                    "isHLtitle": "true",
+                },
+                headers=self._headers,
+                timeout=max(self.timeout, 45),
+            )
+            response.raise_for_status()
+            page_rows = response.json().get("announcements", []) or []
+            if not page_rows:
+                break
+            rows.extend(page_rows)
+            total_pages = int(response.json().get("totalpages", page))
+            if page >= min(total_pages, 10):
+                break
+
+        pattern = (
+            r"(20\d{2})年?年度报告"
+            if report_type == "annual"
+            else r"(20\d{2})年?半年度报告"
+        )
+        selected: dict[str, Any] | None = None
+        for row in rows:
+            title = re.sub(r"<[^>]+>", "", str(row.get("announcementTitle", "")))
+            compact = re.sub(r"\s+", "", title)
+            match = re.search(pattern, compact)
+            adjunct = str(row.get("adjunctUrl", "")).strip()
+            if not match or "摘要" in compact or not adjunct:
+                continue
+            report_year = int(match.group(1))
+            if year is not None and report_year != year:
+                continue
+            timestamp = _float(row.get("announcementTime"))
+            if timestamp is None or timestamp <= 0:
+                continue
+            published = datetime.fromtimestamp(
+                timestamp / 1000.0,
+                tz=timezone(timedelta(hours=8)),
+            ).date()
+            if published < start or published > end:
+                continue
+            current_year = int(re.search(pattern, selected["title"]).group(1)) if selected else -1
+            current_time = _float(selected.get("announcementTime")) if selected else 0
+            if (report_year, timestamp) > (current_year, current_time or 0):
+                selected = {
+                    **row,
+                    "title": title,
+                    "report_year": report_year,
+                    "publication_date": published.isoformat(),
+                    "source_url": urljoin(self.STATIC_ROOT, adjunct.lstrip("/")),
+                    "report_type": report_type,
+                }
+        if selected is None:
+            raise LookupError(
+                f"未找到 {normalized} 的"
+                f"{year or '最新'}年{'年度' if report_type == 'annual' else '半年度'}报告"
+            )
+        source = urlsplit(selected["source_url"])
+        if (
+            source.scheme != "https"
+            or source.hostname != "static.cninfo.com.cn"
+            or not source.path.lower().endswith(".pdf")
+        ):
+            raise ValueError("CNINFO 公告附件地址无效")
+        selected["code"] = normalized
+        selected["announcement_id"] = str(
+            selected.get("announcementId")
+            or hashlib.sha256(str(selected["adjunctUrl"]).encode()).hexdigest()
+        )
+        return selected
 
     def _annual_announcements(
         self,
