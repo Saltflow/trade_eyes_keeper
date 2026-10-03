@@ -455,20 +455,17 @@ class HkexDividendEvidenceProvider:
 
     def _notice_text(self, content: bytes) -> str:
         """Retain later implementation clauses in small official notices."""
-        try:
-            from pypdf import PdfReader
-        except ImportError:
-            from PyPDF2 import PdfReader
+        import pdfplumber
 
         if len(content) > 16 * 1024 * 1024:
             raise ValueError("HKEX cash notice exceeds the document size limit")
-        reader = PdfReader(io.BytesIO(content))
-        if len(reader.pages) > 32:
-            raise ValueError("HKEX cash notice exceeds the 32-page evidence limit")
-        opening, _ = self.provider._extract_pdf_text(content)
-        # The statement extractor intentionally keeps the opening eight pages.
-        # AGM notices can put final cash/FX terms on later pages, so retain them.
-        remainder = [page.extract_text() or "" for page in reader.pages[8:]]
+        with pdfplumber.open(io.BytesIO(content)) as reader:
+            if len(reader.pages) > 32:
+                raise ValueError("HKEX cash notice exceeds the 32-page evidence limit")
+            opening, _ = self.provider._extract_pdf_text(content)
+            # The statement extractor intentionally keeps the opening eight
+            # pages. AGM notices can put final cash/FX terms on later pages.
+            remainder = [page.extract_text() or "" for page in reader.pages[8:]]
         return "\f".join([opening, *remainder])
 
     def _announcements(

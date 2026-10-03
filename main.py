@@ -1271,14 +1271,23 @@ def setup_logging(config):
     log_format = log_config.get(
         "format", "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
+
+    def suppress_pdfminer_debug(record: logging.LogRecord) -> bool:
+        return not (
+            record.levelno == logging.DEBUG
+            and record.name.startswith("pdfminer")
+        )
+
     # 配置文件处理器
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setLevel(logging_level)
+    file_handler.addFilter(suppress_pdfminer_debug)
     file_formatter = logging.Formatter(log_format)
     file_handler.setFormatter(file_formatter)
     # 配置控制台处理器
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging_level)
+    console_handler.addFilter(suppress_pdfminer_debug)
     console_formatter = logging.Formatter(log_format)
     console_handler.setFormatter(console_formatter)
     # 获取根日志器并配置

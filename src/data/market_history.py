@@ -102,7 +102,10 @@ def corporate_action_issues(
         cash = getattr(action, "cash_per_share", None)
         multiplier = getattr(action, "share_multiplier", None)
         if cash is None and multiplier is None:
-            issues.append(f"unresolved corporate action factor: {label}")
+            if action.action_type == "in_kind_distribution":
+                issues.append(f"in-kind distribution is not supported: {label}")
+            else:
+                issues.append(f"unresolved corporate action factor: {label}")
             continue
         if cash is not None:
             published_at = getattr(action, "published_at", None)

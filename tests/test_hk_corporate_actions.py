@@ -131,7 +131,9 @@ def test_tencent_actual_in_kind_distributions_remain_unresolved(
     assert action.cash_per_share is None
     assert action.share_multiplier is None
     assert action.published_at.isoformat() == announcement.replace("/", "-")
-    assert corporate_action_issues([action])
+    assert corporate_action_issues([action]) == (
+        f"in-kind distribution is not supported: 00700 {action.ex_date}",
+    )
 
 
 def test_later_hkd_conversion_is_not_backdated_to_rmb_earnings_announcement():
@@ -551,15 +553,17 @@ def test_cash_cannot_be_inferred_from_wrong_terms_date_or_unspecified_fx(changed
 
 
 def test_late_implementation_pages_are_kept_in_official_notice_evidence(monkeypatch):
-    import sys
-
     pages = [SimpleNamespace(extract_text=lambda: "opening") for _ in range(8)]
     pages.append(SimpleNamespace(extract_text=lambda: "HK$0.08302 per Share"))
-    monkeypatch.setitem(
-        sys.modules,
-        "pypdf",
-        SimpleNamespace(PdfReader=lambda stream: SimpleNamespace(pages=pages)),
-    )
+
+    class PdfDocument:
+        def __enter__(self):
+            return SimpleNamespace(pages=pages)
+
+        def __exit__(self, *_):
+            return False
+
+    monkeypatch.setattr("pdfplumber.open", lambda stream: PdfDocument())
     provider = HkexDividendEvidenceProvider()
     provider.provider._extract_pdf_text = lambda content: ("first eight pages", "test")
     assert "HK$0.08302 per Share" in provider._notice_text(b"pdf")

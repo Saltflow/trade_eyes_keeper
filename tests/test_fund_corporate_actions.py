@@ -273,6 +273,21 @@ def test_non_cash_action_is_not_silently_omitted(title, monkeypatch):
         provider.fetch_actions("510300", date(2018, 3, 28), date(2026, 9, 23))
 
 
+def test_project_company_merger_is_not_a_fund_unit_action():
+    title = (
+        "华夏凯德商业资产封闭式基础设施证券投资基金"
+        "关于不动产项目公司完成吸收合并的公告"
+    )
+
+    def http_get(url, **kwargs):
+        if "params" in kwargs:
+            return Response(index([row(TITLE=title, SSEDATE="2026-02-11")]))
+        raise AssertionError("Asset-level merger PDF must not be classified as a fund action")
+
+    provider = SseFundCorporateActionProvider(http_get=http_get)
+    assert provider.fetch_actions("510300", date(2018, 3, 28), date(2026, 9, 23)) == []
+
+
 @pytest.mark.parametrize(
     "effective_text",
     [

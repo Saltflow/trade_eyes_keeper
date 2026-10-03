@@ -410,6 +410,17 @@ class SseFundCorporateActionProvider:
         for row in index_rows:
             title = re.sub(r"\s+", "", str(row.get("TITLE", "")))
             non_cash = any(word in title for word in ("拆分", "折算", "合并"))
+            # An asset-level SPV merger changes neither the listed fund's
+            # unit count nor its raw-price adjustment basis. SSE also files
+            # these notices under the fund code, so the broad word "合并"
+            # must not be mistaken for a merger of fund units.
+            if (
+                non_cash
+                and "项目公司" in title
+                and "吸收合并" in title
+                and "基金份额" not in title
+            ):
+                continue
             if not non_cash and "分红公告" not in title and "收益分配公告" not in title:
                 continue
             try:
