@@ -16,6 +16,10 @@
 
 数据源按代码内的 provider 合同降级；本次服务迁移保留现有数据、行情和策略配置。PIT 行情使用 `point_in_time_data.market_history`。
 
+优化启动时，`prepare_backtest_data(purpose="optimizer")` 先复用经原价、复权价、公司行动和覆盖区间校验的本地数据包，再按市场调用已核验的披露来源。优化专用路由会自动启用披露数据源，不要求在主配置中手动打开；普通回测继续使用原有路由。短历史标的需要官方上市日证据，上市前无价格也不可交易；无法核实上市日或公司行动时仍标为未就绪，不会缩短窗口或删掉配置标的。
+
+`point_in_time_data.market_history.optimizer_auto_backfill.max_attempts` 默认 2，最多 2 次；只对可恢复错误重试，403 不在同一来源重试。`market_budget_seconds` 默认且最多 3600 秒，限制每个市场本轮补数总时长。每次优化的 `data/optimizer/runs/<run_id>/data_readiness.json` 记录 `ready_codes`、`reused_codes`、`fetched_codes`、`fetch_attempts`、`listing_dates` 和分类后的 `issues`。完整字段见[配置模板](../config/config.yaml.example)。
+
 ## 主配置
 
 股票代码必须写成字符串，避免 YAML 吃掉前导零：

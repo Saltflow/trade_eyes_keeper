@@ -6,13 +6,14 @@
 
 > **English**: A cross-market quantitative monitoring system for A-shares, US stocks, and HK stocks. Features solver-neutral strategy optimization, a single unified backtester, intrinsic-value and instrument audits, daily xelatex PDF reports, and multi-channel notifications.
 
-A股 / 美股 / 港股量化监控系统。策略搜索优化器自动发现最优交易信号，每日 xelatex LaTeX PDF 日报含信号扫描 + 回测分析 + 公式方法论附录，支持 HTML 报告存档与 Telegram/飞书多渠道通知。
+A股 / 美股 / 港股量化监控系统。策略搜索优化器生成待验证候选，只有通过门槛并人工激活后才用于交易信号；每日 xelatex LaTeX PDF 日报含信号扫描 + 回测分析 + 公式方法论附录，支持 HTML 报告存档与 Telegram/飞书多渠道通知。
 
 ## 核心功能
 
 | 功能 | 说明 |
 |------|------|
 | **策略搜索优化器** | 按市场独立执行 22 窗 Walk-Forward，16 窗排名、2 窗隔离、4 窗留出 |
+| **优化数据就绪** | 启动时复用有效行情包，缺口按市场有界补齐并记录来源、上市日证据与阻断原因 |
 | **信号扫描器** | 加载单一活动策略参数，直接读取统一 TradePlan 最后有效日事件 |
 | **回测分析** | 统一 Backtester、成交价策略与无风险/510300/同池等权三重基准比较 |
 | **标的画像审计** | 公司财务推导、利润增长、ETF 前十大穿透及 REIT/商品/债券类型化画像 |
@@ -34,6 +35,8 @@ A股 / 美股 / 港股量化监控系统。策略搜索优化器自动发现最�
 `universe_equal_weight` 基准，因此门槛配置的是“至少 3 个基准”，而不是“只能有 3 个”。
 候选仍需通过完整性、留出和安全门槛后才可激活；每个市场独立比较和切换，使用
 `python main.py --activate-run RUN_ID --group MARKET`。
+补数无法核实的标的或基准仍会阻断对应市场；港股 00700 的跨股票实物分派
+目前不在统一回测账本支持范围内，不能折算为普通现金分红。
 
 ## 日报预览
 
@@ -142,12 +145,13 @@ pytest tests/test_import_smoke.py       # 模块导入完整性
 pytest tests/test_security.py           # 安全测试
 ```
 
-## Roadmap（当前，2026-09-19）
+## Roadmap（当前，2026-10-03）
 
 | 方向 | 状态 | 内容 |
 |------|------|------|
 | **发布安全门禁** | ✅ 已完成 | 部署前执行 Ruff `F/E/S110`、导入烟测、核心路径测试、远端严格配置校验与 systemd/本地心跳检查；不因无关的历史格式债务阻塞发布 |
 | **统一策略评估** | ✅ 已完成 | 单一 `--optimize` 入口；84 个月 `12/9/3/22` 滚动窗口（16 ranking、2 purge、4 holdout）；统一 TradePlan、Backtester 与 EvaluationReport |
+| **优化启动补数** | ✅ 已上线，港股有阻断项 | 有效缓存优先、披露来源切换、有界重试和官方上市日证据；全池港股仍因 00700 实物分派停止，见[开发待办](docs/development/todo_backlog.md) |
 | **Solver 解耦** | ✅ 已完成 | `SearchController` 与 Genetic / Random / Simulated Annealing / Local Genetic 插件分离；新增算法不改策略和评价层 |
 | **报告与通知** | ✅ 已完成 | HTML、PDF、邮件、飞书和 Telegram 共享报告合同；移动端日报展示决策板、完整行情矩阵、估值/待派息事件，正文不再堆叠持仓或周 NAV 箱线图 |
 | **可配置回测区间** | ✅ 已完成 | `/backtest 代码 起 止` 自动准备指标预热、raw/qfq、公司行为与基准，缺失时补数后执行严格校验 |

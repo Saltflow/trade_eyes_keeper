@@ -150,6 +150,10 @@ point_in_time_data:
     prefer_explainable_actions: true
     coverage_tolerance_days: 31
     baostock_socket_timeout_seconds: 20
+    # Optimizer-only bounded recovery; normal backtests keep their configured route.
+    optimizer_auto_backfill:
+      max_attempts: 2
+      market_budget_seconds: 3600
 
 
 # 发行人接口彼此不统一；可按代码声明官方资料和持仓CSV。

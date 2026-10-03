@@ -24,6 +24,16 @@ python main.py --status        # JSON 状态；运行且心跳新鲜返回 0，�
 
 单次日报和简报仍使用 `--once` / `--brief [id]`。验证业务数据时可设置 `SKIP_NOTIFICATIONS=true`，这样仍生成报告但不外发。策略绩效验收必须使用主配置全部标的，运行完整 `--optimize`，不能用少量标的代替。
 
+优化会在启动时复用有效逐时点行情包，并对缺失或过期输入做有界补数与来源切换；
+补数记录位于 `data/optimizer/runs/<run_id>/data_readiness.json`。先检查各市场的
+`issues`、`fetch_attempts` 和 `listing_dates`，再看同目录的 `run_summary.yaml`、
+搜索归档及候选状态。`--optimize --group hk` 可单独诊断完整港股池，不能替代三市场
+全配置验收。数据就绪不等于策略通过留出期门槛，候选不会自动激活。
+
+当前港股 00700 的跨股票实物分派仍超出回测账本能力；应保留
+`corporate_action_unsupported` 回执，不得用现金分红、前复权收益或静默删标的
+制造通过结果。所需账本扩展见[开发待办](development/todo_backlog.md)。
+
 ## Linux 常驻服务
 
 项目的部署脚本维护 `/etc/systemd/system/trade-eyes.service`。手工部署示例（路径按实际目录修改）：
@@ -77,6 +87,11 @@ python ci_cd_deploy.py --mode investigate
 ```
 
 实际部署会推送代码、保留远端私有配置、安装依赖、校验完整优化配置、运行禁止外发的系统检查、迁移调度并启动服务。验收使用 systemd 状态及当前 PID 的新鲜本地心跳，成功后按统一通知开关发送部署通知。
+
+若服务器 Git 工作树有未提交的 Bot 或数据集改动，先对账并备份，再使用常规拉取部署；
+不要以 `git reset --hard` 覆盖它们。2026-10-03 的优化修复在该服务器采用哈希校验的
+定向文件部署，运行文件已更新，但服务器 Git HEAD 仍落后于 GitHub `master`。
+下次常规部署前须先核对这些保留改动与已发布提交，不能把 Git HEAD 当成运行文件版本。
 
 `--sync-config` 明确用本地主配置替换远端配置；`--sync-env` 明确同步凭证文件。默认两项均关闭。`--dry-run` 只预览，不构成远端验收。
 

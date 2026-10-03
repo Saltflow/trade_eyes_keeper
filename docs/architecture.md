@@ -126,6 +126,9 @@ main.py --once
 
 ```text
 main.py --optimize
+  -> prepare_backtest_data(purpose="optimizer")
+  -> 有效本地包 / 有界披露来源补数 / 官方上市日与公司行动校验
+  -> 全量标的及基准就绪门禁、data_readiness.json
   -> search.workflow.run_optimizer
   -> SearchController
   -> Solver.ask()
@@ -142,6 +145,10 @@ main.py --optimize
 Solver 只能看到排名窗口。隔离窗口、最终留出窗口、策略判断和成交细节不得进入
 `ask/tell`。当前 Solver 插件为 `genetic`、`local_genetic`、`random` 和
 `simulated_annealing`。
+
+数据门禁按市场独立执行；任一配置标的或基准未就绪时写出不可激活的诊断回执，
+其他市场仍可完成搜参。候选产物不自动修改活动策略指针。外部股票实物分派尚未进入
+统一回测账本，港股 00700 在这些事件上保持阻断。
 
 ### 逐时点基本面与 MOE 研究
 
