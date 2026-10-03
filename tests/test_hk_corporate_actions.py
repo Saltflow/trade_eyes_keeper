@@ -513,6 +513,76 @@ of interim dividend on H Shares is HK$1 = RMB0.862364.
 """
 
 
+PICC_2018_VOTE_NOTICE = """
+(Stock Code: 1339)
+The H share register of members of the Company on 1 May 2018 determines
+entitlement to the final dividend. The Company will distribute on around
+15 May 2018. The declared amount is RMB0.394 per 10 shares. The applicable
+exchange rate for calculating the H share dividend is HK$1=RMB0.800536.
+"""
+
+
+def _picc_2018_rmb_only():
+    return _parse(
+        [
+            _row(
+                particulars="末期息人民幣 0.0394",
+                announcement="2018/03/23",
+                ex="2018/04/24",
+                payable="2018/05/25",
+                book_start="2018/04/26",
+                book_end="2018/05/01",
+            )
+        ],
+        code="01339",
+    )[0]
+
+
+def test_official_record_and_cash_resolve_approximate_pay_date_conflict():
+    source = _picc_2018_rmb_only()
+    result = match_hkex_cash_notice(
+        PICC_2018_VOTE_NOTICE,
+        source,
+        published_at=date(2018, 4, 19),
+        source_url=OFFICIAL_URL,
+    )
+    assert result.cash_per_share == pytest.approx(0.0394 / 0.800536)
+    assert result.record_date == date(2018, 5, 1)
+    assert result.payable_date is None
+    assert result.published_at == date(2018, 4, 19)
+    assert "hkex_event_match=record_date_and_cash" in result.diagnostics
+    assert "payable_date_unverified_approximate_hkex_notice" in result.diagnostics
+    assert corporate_action_issues([result]) == ()
+    assert source.published_at is None
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        PICC_2018_VOTE_NOTICE.replace("on 1 May 2018", "on 2 May 2018"),
+        PICC_2018_VOTE_NOTICE.replace("RMB0.394", "RMB0.395"),
+        PICC_2018_VOTE_NOTICE.replace("Stock Code: 1339", "Stock Code: 1816"),
+    ],
+)
+def test_approximate_notice_requires_record_cash_and_issuer(changed):
+    assert match_hkex_cash_notice(
+        changed,
+        _picc_2018_rmb_only(),
+        published_at=date(2018, 4, 19),
+        source_url=OFFICIAL_URL,
+    ) is None
+
+
+def test_firm_official_payment_conflict_still_rejects_cash_notice():
+    with pytest.raises(ValueError, match="conflicting official payment date"):
+        match_hkex_cash_notice(
+            PICC_2018_VOTE_NOTICE + "\nPayment date 15 May 2018",
+            _picc_2018_rmb_only(),
+            published_at=date(2018, 4, 19),
+            source_url=OFFICIAL_URL,
+        )
+
+
 def test_actual_declared_cash_and_implementation_fx_are_explicitly_converted():
     result = match_hkex_cash_notice(
         PICC_FX_NOTICE,

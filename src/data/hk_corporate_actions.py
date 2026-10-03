@@ -328,14 +328,55 @@ def match_hkex_cash_notice(
         payment_dates.update(
             _named_day(value) for value in re.findall(pattern, compact, re.IGNORECASE)
         )
-    if explicit_ex is None and (
-        action.payable_date is None or action.payable_date not in payment_dates
-    ):
+    approximate_payment_dates = {
+        _named_day(value)
+        for value in re.findall(
+            r"\b(?:on\s+(?:or\s+)?around|around)\s+"
+            + weekday
+            + "("
+            + _NAMED_DATE
+            + ")",
+            compact,
+            re.IGNORECASE,
+        )
+    }
+    firm_payment_dates = payment_dates - approximate_payment_dates
+    firm_payment_dates.update(
+        _named_day(value)
+        for value in re.findall(
+            r"Payment date\s+(" + _NAMED_DATE + ")",
+            compact,
+            re.IGNORECASE,
+        )
+    )
+    register_dates = {
+        _named_day(value)
+        for value in re.findall(
+            r"\bH\s+share\s+register\s+of\s+members.{0,80}?\bon\s+("
+            + _NAMED_DATE
+            + ")",
+            compact,
+            re.IGNORECASE,
+        )
+    }
+    book_end = next(
+        (
+            _day(item.split("=", 1)[1])
+            for item in action.diagnostics
+            if item.startswith("book_closed_until=")
+        ),
+        None,
+    )
+    record_match = len(register_dates) == 1 and book_end in register_dates
+    payable_match = (
+        action.payable_date is not None and action.payable_date in payment_dates
+    )
+    if explicit_ex is None and not payable_match and not record_match:
         return None
     if (
         action.payable_date is not None
-        and payment_dates
-        and action.payable_date not in payment_dates
+        and firm_payment_dates
+        and action.payable_date not in firm_payment_dates
     ):
         raise ValueError(
             f"{action.code}: conflicting official payment date on {action.ex_date}"
@@ -406,6 +447,15 @@ def match_hkex_cash_notice(
     result.published_at = published_at
     if action.payable_date is None and len(payment_dates) == 1:
         result.payable_date = next(iter(payment_dates))
+    approximate_mismatch = bool(
+        record_match and approximate_payment_dates and not payable_match
+    )
+    if approximate_mismatch:
+        # A filing's "around" date is an estimate, not proof that a later
+        # ETNet settlement date is false. Neither date is treated as verified.
+        result.payable_date = None
+    if record_match:
+        result.record_date = next(iter(register_dates))
     if is_form:
         record = re.search(
             r"Record date\s+(" + _NAMED_DATE + ")", compact, re.IGNORECASE
@@ -428,10 +478,16 @@ def match_hkex_cash_notice(
             "cash_stock_components_complete",
             "hkex_cash_evidence_matched",
             "hkex_event_match="
-            + ("ex_date" if explicit_ex else "payable_date_and_cash"),
+            + (
+                "ex_date"
+                if explicit_ex
+                else "payable_date_and_cash" if payable_match else "record_date_and_cash"
+            ),
             "hkex_published_at=" + published_at.isoformat(),
         ]
     )
+    if approximate_mismatch:
+        result.diagnostics.append("payable_date_unverified_approximate_hkex_notice")
     if conversion:
         result.diagnostics.append(conversion)
     if code_match is None:

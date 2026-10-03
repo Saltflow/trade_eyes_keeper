@@ -236,6 +236,11 @@ def _issue(
     lowered = text.lower()
     if "403" in lowered or "blocked" in lowered or "forbidden" in lowered:
         category = "source_blocked"
+    elif (
+        "in-kind distribution is not supported" in lowered
+        or "rights issue is not supported" in lowered
+    ):
+        category = "corporate_action_unsupported"
     elif "corporate action" in lowered or "adjustment factor" in lowered:
         category = "corporate_action_evidence_missing"
     elif (
