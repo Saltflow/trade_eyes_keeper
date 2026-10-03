@@ -11,13 +11,10 @@ from __future__ import annotations
 import json
 import logging
 import re
-import socket
-import threading
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 import numpy as np
 import pandas as pd
@@ -25,6 +22,13 @@ import requests
 from pydantic import BaseModel, Field
 
 from src.instruments.classifier import detect_market, normalize_yahoo_symbol
+
+from .baostock_access import (
+    BaostockAccessBlocked,
+)
+from .baostock_access import (
+    guarded_baostock_session as baostock_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +72,7 @@ class CorporateAction(BaseModel):
     payable_date: date | None = None
     cash_per_share: float | None = None
     share_multiplier: float | None = None
+    share_rounding: Literal["none", "ceil"] = "none"
     rights_price: float | None = None
     raw_adjustment_factor: float | None = None
     source: str
@@ -143,6 +148,7 @@ class PriceHistoryBundle:
     source: str = ""
     currency: str | None = None
     diagnostics: list[str] = field(default_factory=list)
+    listing_evidence: dict[str, str] | None = None
 
     REQUIRED_COLUMNS = (
         "date",
@@ -193,9 +199,6 @@ class PriceHistoryBundle:
         return self
 
 
-_BAOSTOCK_SOCKET_LOCK = threading.RLock()
-
-
 def baostock_timeout_seconds(config: dict | None) -> float:
     """Return the bounded socket timeout for Baostock's blocking SDK."""
     root = config or {}
@@ -210,35 +213,19 @@ def baostock_timeout_seconds(config: dict | None) -> float:
     return max(1.0, float(value))
 
 
-@contextmanager
-def baostock_session(module: Any, timeout_seconds: float):
-    """Bound the SDK's global blocking socket and always restore process state."""
-    with _BAOSTOCK_SOCKET_LOCK:
-        previous_timeout = socket.getdefaulttimeout()
-        socket.setdefaulttimeout(timeout_seconds)
-        try:
-            login = module.login()
-            if str(getattr(login, "error_code", "0")) != "0":
-                message = getattr(login, "error_msg", "unknown error")
-                raise RuntimeError(f"baostock login failed: {message}")
-            yield module
-        finally:
-            try:
-                module.logout()
-            except Exception as exc:
-                logger.debug("Baostock logout failed after request: %s", exc)
-            socket.setdefaulttimeout(previous_timeout)
-
-
 def _result_rows(result: Any) -> list[dict[str, str]]:
     """Convert a Baostock result object without depending on its DataFrame API."""
-    if result is None or str(getattr(result, "error_code", "0")) != "0":
-        return []
+    if result is None:
+        raise RuntimeError("Baostock returned no result")
+    if str(getattr(result, "error_code", "0")) != "0":
+        raise RuntimeError(f"Baostock query failed: {getattr(result, 'error_msg', '')}")
     fields = list(getattr(result, "fields", []) or [])
     rows: list[dict[str, str]] = []
     while result.next():
         values = list(result.get_row_data())
         rows.append(dict(zip(fields, values)))
+    if str(getattr(result, "error_code", "0")) != "0":
+        raise RuntimeError(f"Baostock pagination failed: {getattr(result, 'error_msg', '')}")
     return rows
 
 
@@ -259,9 +246,12 @@ class BaostockMarketHistoryProvider:
         self,
         module: Any | None = None,
         config: dict | None = None,
+        action_provider: Any | None = None,
     ):
         self._module = module
+        self.config = config
         self.socket_timeout_seconds = baostock_timeout_seconds(config)
+        self.action_provider = action_provider
 
     def _load(self):
         if self._module is None:
@@ -273,8 +263,9 @@ class BaostockMarketHistoryProvider:
         return self._module
 
     def fetch(self, code: str, start: date, end: date) -> PriceHistoryBundle:
-        bs = self._load()
-        with baostock_session(bs, self.socket_timeout_seconds):
+        with baostock_session(
+            self._load(), self.socket_timeout_seconds, self.config
+        ) as bs:
             symbol = _baostock_code(code)
             raw = self._prices(bs, symbol, start, end, adjustflag="3")
             qfq = self._prices(bs, symbol, start, end, adjustflag="2")
@@ -282,13 +273,27 @@ class BaostockMarketHistoryProvider:
                 raise ValueError(f"empty unadjusted history for {code}")
             frame = self._merge_prices(raw, qfq)
             actions = self._actions(bs, code, symbol, start, end)
-            return PriceHistoryBundle(
+            bundle = PriceHistoryBundle(
                 code=str(code),
                 prices=frame,
                 actions=actions,
                 source="baostock",
                 currency="CNY",
             ).validate()
+        # The factor feed is metadata, not a second executable distribution.
+        # Match it to a complete, dated implementation disclosure before the
+        # preparation gate; unmatched or contradictory factors remain unsafe.
+        if str(code).startswith(("0", "3", "6")):
+            from .corporate_action_sources import (
+                SinaCorporateActionProvider,
+                reconcile_corporate_actions,
+            )
+
+            provider = self.action_provider or SinaCorporateActionProvider(self.config)
+            disclosed = provider.fetch(str(code), start, end)
+            bundle.actions = reconcile_corporate_actions(bundle.actions, disclosed)
+            bundle.diagnostics.append("actions_reconciled_with_implementation_notices")
+        return bundle
 
     def _prices(
         self,
@@ -320,6 +325,12 @@ class BaostockMarketHistoryProvider:
             else pd.Series("1", index=frame.index)
         )
         frame["tradable"] = trade_status.astype(str).eq("1")
+        # Baostock explicitly marks suspended sessions with tradestatus=0
+        # and blank turnover. Those sessions have zero executions; do not
+        # generalize this normalization to missing data on trading sessions.
+        suspended = trade_status.astype(str).eq("0")
+        for name in ("volume", "amount"):
+            frame.loc[suspended & frame[name].isna(), name] = 0.0
         return frame
 
     @staticmethod
@@ -383,7 +394,12 @@ class BaostockMarketHistoryProvider:
                 start_date=start.isoformat(),
                 end_date=end.isoformat(),
             )
-            for row in _result_rows(result):
+            factor_rows = sorted(
+                _result_rows(result),
+                key=lambda row: str(row.get("dividOperateDate") or row.get("diviDate") or row.get("date") or ""),
+            )
+            previous_factors = None
+            for row in factor_rows:
                 ex_date = _date(
                     row.get("dividOperateDate")
                     or row.get("diviDate")
@@ -395,6 +411,23 @@ class BaostockMarketHistoryProvider:
                     row.get("foreAdjustFactor")
                     or row.get("adjustFactor")
                 )
+                factors = tuple(
+                    _float(row.get(name))
+                    for name in ("foreAdjustFactor", "backAdjustFactor", "adjustFactor")
+                )
+                if all(value is not None for value in factors):
+                    if factors == previous_factors:
+                        # This feed can repeat an unchanged cumulative factor
+                        # on a later metadata date. It is not a price/share
+                        # adjustment. All three independent fields must agree.
+                        if actions:
+                            actions[-1].diagnostics.append(
+                                f"unchanged_factor_record:{ex_date.isoformat()}"
+                            )
+                        continue
+                    previous_factors = factors
+                else:
+                    previous_factors = None
                 actions.append(
                     CorporateAction(
                         code=str(code),
@@ -690,6 +723,7 @@ class MarketHistoryProvider:
         *,
         baostock_provider: BaostockMarketHistoryProvider | None = None,
         yahoo_provider: YahooMarketHistoryProvider | None = None,
+        disclosed_provider: object | None = None,
     ):
         self.baostock = baostock_provider or BaostockMarketHistoryProvider(
             config=config
@@ -698,6 +732,12 @@ class MarketHistoryProvider:
         settings = (config.get("point_in_time_data", {}) or {}).get(
             "market_history", {}
         ) or {}
+        self.disclosed = disclosed_provider
+        self.use_disclosed_sources = bool(settings.get("disclosed_sources", False))
+        if self.use_disclosed_sources and self.disclosed is None:
+            from .disclosed_market_history import DisclosedMarketHistoryProvider
+
+            self.disclosed = DisclosedMarketHistoryProvider(config)
         self.compare_fallback_on_partial = bool(
             settings.get("compare_fallback_on_partial", True)
         )
@@ -712,24 +752,47 @@ class MarketHistoryProvider:
     def _first_date(bundle: PriceHistoryBundle) -> date:
         return pd.Timestamp(bundle.prices["date"].min()).date()
 
-    def _covers_requested_start(
-        self, bundle: PriceHistoryBundle, start: date
+    @staticmethod
+    def _last_date(bundle: PriceHistoryBundle) -> date:
+        return pd.Timestamp(bundle.prices["date"].max()).date()
+
+    def _covers_requested_window(
+        self, bundle: PriceHistoryBundle, start: date, end: date
     ) -> bool:
-        return self._first_date(bundle) <= start + timedelta(
-            days=self.coverage_tolerance_days
+        return (
+            self._first_date(bundle)
+            <= start + timedelta(days=self.coverage_tolerance_days)
+            and self._last_date(bundle)
+            >= end - timedelta(days=self.coverage_tolerance_days)
         )
 
-    @classmethod
     def _prefer_coverage(
-        cls,
+        self,
         primary: PriceHistoryBundle,
         fallback: PriceHistoryBundle,
         start: date,
+        end: date,
     ) -> PriceHistoryBundle:
-        primary_start = cls._first_date(primary)
-        fallback_start = cls._first_date(fallback)
-        primary_key = (primary_start, -len(primary.prices))
-        fallback_key = (fallback_start, -len(fallback.prices))
+        def coverage_key(bundle: PriceHistoryBundle) -> tuple[object, ...]:
+            first = self._first_date(bundle)
+            last = self._last_date(bundle)
+            overlap_days = max(0, (min(last, end) - max(first, start)).days)
+            return (
+                not self._covers_requested_window(bundle, start, end),
+                last < end - timedelta(days=self.coverage_tolerance_days),
+                first > start + timedelta(days=self.coverage_tolerance_days),
+                -overlap_days,
+                first,
+                -last.toordinal(),
+                -len(bundle.prices),
+            )
+
+        primary_start = self._first_date(primary)
+        primary_end = self._last_date(primary)
+        fallback_start = self._first_date(fallback)
+        fallback_end = self._last_date(fallback)
+        primary_key = coverage_key(primary)
+        fallback_key = coverage_key(fallback)
         chosen, rejected = (
             (fallback, primary)
             if fallback_key < primary_key
@@ -739,9 +802,11 @@ class MarketHistoryProvider:
             [
                 (
                     "coverage_comparison:"
-                    f"requested_start={start.isoformat()};"
-                    f"{primary.source}={primary_start.isoformat()};"
-                    f"{fallback.source}={fallback_start.isoformat()}"
+                    f"requested={start.isoformat()}~{end.isoformat()};"
+                    f"{primary.source}={primary_start.isoformat()}~"
+                    f"{primary_end.isoformat()};"
+                    f"{fallback.source}={fallback_start.isoformat()}~"
+                    f"{fallback_end.isoformat()}"
                 ),
                 (
                     "coverage_selected:"
@@ -778,15 +843,25 @@ class MarketHistoryProvider:
         return fallback
 
     def fetch(self, code: str, start: date, end: date) -> PriceHistoryBundle:
+        if self.use_disclosed_sources and not str(code).endswith("=X"):
+            if detect_market(code) == "a_share" and str(code).startswith(("0", "3", "6")):
+                # A source failure must not silently select split-adjusted Yahoo
+                # prices and then apply the same share action a second time.
+                return self.baostock.fetch(code, start, end)
+            return self.disclosed.fetch(code, start, end)
         if detect_market(code) == "a_share":
             try:
                 primary = self.baostock.fetch(code, start, end)
+            except BaostockAccessBlocked:
+                raise
             except Exception as exc:
                 logger.warning("Baostock history failed for %s: %s", code, exc)
                 bundle = self.yahoo.fetch(code, start, end)
                 bundle.diagnostics.append(f"baostock_failed:{exc}")
                 return bundle
-            primary_has_coverage = self._covers_requested_start(primary, start)
+            primary_has_coverage = self._covers_requested_window(
+                primary, start, end
+            )
             primary_action_issues = corporate_action_issues(primary.actions)
             should_probe_fallback = (
                 self.compare_fallback_on_partial and not primary_has_coverage
@@ -801,8 +876,9 @@ class MarketHistoryProvider:
                 if not primary_has_coverage:
                     primary.diagnostics.append(
                         "partial_coverage_fallback_failed:"
-                        f"requested_start={start.isoformat()};"
-                        f"actual_start={self._first_date(primary).isoformat()};"
+                        f"requested={start.isoformat()}~{end.isoformat()};"
+                        f"actual={self._first_date(primary).isoformat()}~"
+                        f"{self._last_date(primary).isoformat()};"
                         f"reason={exc}"
                     )
                 else:
@@ -811,7 +887,9 @@ class MarketHistoryProvider:
                         f"source={primary.source};reason={exc}"
                     )
                 return primary
-            fallback_has_coverage = self._covers_requested_start(fallback, start)
+            fallback_has_coverage = self._covers_requested_window(
+                fallback, start, end
+            )
             fallback_action_issues = corporate_action_issues(fallback.actions)
             if (
                 self.prefer_explainable_actions
@@ -821,14 +899,14 @@ class MarketHistoryProvider:
             ):
                 return self._prefer_explainable_actions(primary, fallback)
             if not primary_has_coverage:
-                return self._prefer_coverage(primary, fallback, start)
+                return self._prefer_coverage(primary, fallback, start, end)
             if primary_action_issues and fallback_action_issues:
                 primary.diagnostics.append(
                     "corporate_action_fallback_unresolved:"
                     f"source={fallback.source};issues="
                     + "|".join(fallback_action_issues)
                 )
-            return self._prefer_coverage(primary, fallback, start)
+            return self._prefer_coverage(primary, fallback, start, end)
         return self.yahoo.fetch(code, start, end)
 
 
@@ -873,6 +951,7 @@ class PointInTimeMarketStore:
                     "end": bundle.prices["date"].max().date().isoformat(),
                     "actions": len(bundle.actions),
                     "diagnostics": bundle.diagnostics,
+                    "listing_evidence": bundle.listing_evidence,
                     "contract": "raw-and-qfq-1",
                     "updated_at": datetime.now().isoformat(),
                 },
@@ -907,12 +986,14 @@ class PointInTimeMarketStore:
         source = ""
         currency: str | None = None
         diagnostics: list[str] = []
+        listing_evidence: dict[str, str] | None = None
         if metadata_path.exists():
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             source = str(metadata.get("source", ""))
             currency_value = metadata.get("currency")
             currency = str(currency_value).upper() if currency_value else None
             diagnostics = list(metadata.get("diagnostics", []) or [])
+            listing_evidence = metadata.get("listing_evidence")
         return PriceHistoryBundle(
             code=str(code),
             prices=prices,
@@ -920,4 +1001,5 @@ class PointInTimeMarketStore:
             source=source,
             currency=currency,
             diagnostics=diagnostics,
+            listing_evidence=listing_evidence,
         ).validate()

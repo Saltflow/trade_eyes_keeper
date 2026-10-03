@@ -317,7 +317,7 @@ def test_search_context_scales_benchmark_dividend_cash_with_fx():
                 "lot_sizes": {"a_share": 1, "us": 1},
                 "fx_rates": {"a_share": 1.0, "us": 7.0},
             },
-            "walk_forward": {"num_windows": 1, "test_months": 1},
+            "walk_forward": {"num_windows": 1, "test_months": 24},
         }
     )
     cfg.set_group("a_share")
@@ -375,16 +375,16 @@ def test_schedule_rejects_unresolved_rights_issue():
         )
 
 
-def test_walk_forward_contract_is_22_16_2_4():
+def test_walk_forward_contract_is_5_3_1_1_with_two_year_holdout():
     constraints = StrategyConstraints(
         {
             "benchmarks": {"a_share": ["risk_free"]},
             "walk_forward": {
                 "state_lookback_months": 12,
-                "test_months": 9,
-                "step_months": 3,
-                "num_windows": 22,
-                "validation_windows": 4,
+                "test_months": 24,
+                "step_months": 12,
+                "num_windows": 5,
+                "validation_windows": 1,
                 "purge_overlapping_windows": True,
             },
             "execution_params": {"initial_capital": 1_000.0},
@@ -407,10 +407,11 @@ def test_walk_forward_contract_is_22_16_2_4():
     )
     windows = manager.iter_windows()
     ranking, purged, holdout = _partition_window_indexes(windows, constraints)
-    assert len(windows) == 22
-    assert len(ranking) == 16
-    assert len(purged) == 2
-    assert len(holdout) == 4
+    assert len(windows) == 5
+    assert len(ranking) == 3
+    assert len(purged) == 1
+    assert len(holdout) == 1
+    assert constraints.walk_forward.holdout_calendar_span_months == 24
     assert set(ranking).isdisjoint(holdout)
 
 
@@ -438,7 +439,7 @@ def test_point_in_time_manager_separates_qfq_signals_from_raw_execution():
     constraints = StrategyConstraints(
         {
             "benchmarks": {"a_share": ["risk_free"]},
-            "walk_forward": {"num_windows": 1, "test_months": 1},
+            "walk_forward": {"num_windows": 1, "test_months": 24},
         }
     )
     manager = WalkForwardManager(
@@ -450,3 +451,67 @@ def test_point_in_time_manager_separates_qfq_signals_from_raw_execution():
     assert manager.price_matrix[0, 0] == 20.0
     assert manager.raw_price_matrix[0, 0] == 10.0
     assert manager.raw_price_high_matrix[0, 0] == 11.0
+
+
+def test_recent_listing_does_not_truncate_old_symbol_or_trade_prelisting():
+    def bundle(code, dates):
+        values = np.linspace(10.0, 20.0, len(dates))
+        prices = pd.DataFrame(
+            {
+                "date": dates,
+                "raw_open": values,
+                "raw_high": values + 1,
+                "raw_low": values - 1,
+                "raw_close": values,
+                "qfq_open": values,
+                "qfq_high": values + 1,
+                "qfq_low": values - 1,
+                "qfq_close": values,
+                "qfq_factor": np.ones(len(dates)),
+                "volume": np.full(len(dates), 1000),
+                "tradable": np.ones(len(dates), dtype=bool),
+            }
+        )
+        return PriceHistoryBundle(code=code, prices=prices).validate()
+
+    old_dates = pd.date_range("2015-01-05", "2024-12-31", freq="B")
+    ipo_dates = pd.date_range("2020-01-02", "2024-12-31", freq="B")
+    bundles = {
+        "600000": bundle("600000", old_dates),
+        "688001": bundle("688001", ipo_dates),
+    }
+    constraints = StrategyConstraints(
+        {
+            "benchmarks": {"a_share": ["risk_free"]},
+            "walk_forward": {"num_windows": 1, "test_months": 24},
+        }
+    )
+    manager = WalkForwardManager(
+        {code: pd.DataFrame() for code in bundles},
+        constraints,
+        list(bundles),
+        market_bundles=bundles,
+    )
+
+    assert manager.dates[0] == old_dates[0]
+    assert manager.dates[-1] == old_dates[-1]
+    ipo_index = manager.stock_codes.index("688001")
+    before_ipo = manager.dates < ipo_dates[0]
+    assert before_ipo.any()
+    assert np.isnan(manager.price_matrix[before_ipo, ipo_index]).all()
+    assert not manager.execution_tradable_matrix[before_ipo, ipo_index].any()
+    assert manager.execution_tradable_matrix[
+        manager.dates == ipo_dates[0], ipo_index
+    ].item()
+    market_data = StrategyMarketData(
+        indicator_matrix=manager.indicator_matrix,
+        prices=manager.price_matrix,
+        symbols=manager.stock_codes,
+        observation_counts=np.cumsum(
+            np.isfinite(manager.price_matrix), axis=0, dtype=np.int64
+        ),
+    )
+    around_listing = np.flatnonzero(manager.dates >= ipo_dates[0])[:4]
+    eligibility = market_data.eligibility_mask(minimum_rows=3)
+    assert not eligibility[around_listing[:2], ipo_index].any()
+    assert eligibility[around_listing[2], ipo_index]

@@ -23,6 +23,7 @@ class CorporateActionSlice:
     share_multipliers: np.ndarray
     gross_cash_dividends: np.ndarray | None = None
     dividend_tax_costs: np.ndarray | None = None
+    share_rounding_up: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         cash = np.asarray(self.cash_dividends, dtype=np.float64)
@@ -37,6 +38,11 @@ class CorporateActionSlice:
             if self.dividend_tax_costs is None
             else np.asarray(self.dividend_tax_costs, dtype=np.float64)
         )
+        rounding = (
+            np.zeros_like(cash, dtype=np.bool_)
+            if self.share_rounding_up is None
+            else np.asarray(self.share_rounding_up, dtype=np.bool_)
+        )
         if cash.ndim == 1:
             cash = cash.reshape(-1, 1)
         if multipliers.ndim == 1:
@@ -45,6 +51,10 @@ class CorporateActionSlice:
             gross = gross.reshape(-1, 1)
         if taxes.ndim == 1:
             taxes = taxes.reshape(-1, 1)
+        if rounding.ndim == 1:
+            rounding = rounding.reshape(-1, 1)
+        if rounding.shape != cash.shape:
+            raise ValueError("share rounding and cash arrays must have the same shape")
         if cash.ndim != 2 or multipliers.ndim != 2:
             raise ValueError("corporate action arrays must be two-dimensional")
         if cash.shape != multipliers.shape or cash.shape != gross.shape or cash.shape != taxes.shape:
@@ -61,6 +71,7 @@ class CorporateActionSlice:
         object.__setattr__(self, "share_multipliers", multipliers)
         object.__setattr__(self, "gross_cash_dividends", gross)
         object.__setattr__(self, "dividend_tax_costs", taxes)
+        object.__setattr__(self, "share_rounding_up", rounding)
 
     @classmethod
     def empty(cls, rows: int, columns: int) -> "CorporateActionSlice":
@@ -78,6 +89,7 @@ class CorporateActionSlice:
             share_multipliers=self.share_multipliers[start:end].copy(),
             gross_cash_dividends=self.gross_cash_dividends[start:end].copy(),
             dividend_tax_costs=self.dividend_tax_costs[start:end].copy(),
+            share_rounding_up=self.share_rounding_up[start:end].copy(),
         )
 
     def scaled(self, factor: float) -> "CorporateActionSlice":
@@ -87,6 +99,7 @@ class CorporateActionSlice:
             share_multipliers=self.share_multipliers.copy(),
             gross_cash_dividends=self.gross_cash_dividends * float(factor),
             dividend_tax_costs=self.dividend_tax_costs * float(factor),
+            share_rounding_up=self.share_rounding_up.copy(),
         )
 
     def with_withholding(self, rate: float) -> "CorporateActionSlice":
@@ -101,6 +114,7 @@ class CorporateActionSlice:
             share_multipliers=self.share_multipliers.copy(),
             gross_cash_dividends=gross,
             dividend_tax_costs=taxes,
+            share_rounding_up=self.share_rounding_up.copy(),
         )
 
 
@@ -126,6 +140,7 @@ def build_corporate_action_schedule(
     cash = result.cash_dividends.copy()
     gross_cash = result.gross_cash_dividends.copy()
     multipliers = result.share_multipliers.copy()
+    rounding = result.share_rounding_up.copy()
     if not actions:
         return result
 
@@ -148,6 +163,11 @@ def build_corporate_action_schedule(
             )
         cash_value = getattr(action, "cash_per_share", None)
         multiplier_value = getattr(action, "share_multiplier", None)
+        rounding_rule = getattr(action, "share_rounding", "none")
+        if rounding_rule not in {"none", "ceil"}:
+            raise ValueError(f"unsupported share rounding for {code} {ex_date}")
+        if rounding_rule != "none" and multiplier_value is None:
+            raise ValueError(f"share rounding requires a multiplier: {code} {ex_date}")
         raw_factor = getattr(action, "raw_adjustment_factor", None)
         if cash_value is None and multiplier_value is None:
             if raw_factor is not None and not np.isclose(float(raw_factor), 1.0):
@@ -174,11 +194,17 @@ def build_corporate_action_schedule(
             multiplier_value = float(multiplier_value)
             if not np.isfinite(multiplier_value) or multiplier_value <= 0.0:
                 raise ValueError(f"invalid share multiplier for {code} {ex_date}")
-            multipliers[row, symbol_index[code]] *= multiplier_value
+            column = symbol_index[code]
+            if multiplier_value != 1.0:
+                if (rounding[row, column] or rounding_rule == "ceil") and multipliers[row, column] != 1.0:
+                    raise ValueError(f"multiple rounded share actions: {code} {ex_date}")
+                rounding[row, column] = rounding_rule == "ceil"
+                multipliers[row, column] *= multiplier_value
     return CorporateActionSlice(
         cash,
         multipliers,
         gross_cash_dividends=gross_cash,
+        share_rounding_up=rounding,
     )
 
 

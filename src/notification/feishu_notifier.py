@@ -547,12 +547,22 @@ def _build_ref_portfolio_markdown(session) -> str:
             if s["holdings"]
             else "空仓"
         )
+        nav = f"{s['nav']:,.0f}" if s.get("nav") is not None else "待补全"
+        nav_return = (
+            f"{s['nav_return_pct']:+.1f}%"
+            if s.get("nav_return_pct") is not None
+            else "待补全"
+        )
         lines.append(
-            f"{label}: 净值 {s['nav']:,.0f} | "
-            f"回报 {s['nav_return_pct']:+.1f}% | "
+            f"{label}: 净值 {nav} | "
+            f"回报 {nav_return} | "
             f"现金 {s['cash']:,.0f} | "
             f"{holdings_str}"
         )
+        if s.get("valuation_reason"):
+            lines.append(str(s["valuation_reason"]))
+        if s.get("_trading_blocked_reason"):
+            lines.append("停单原因：" + str(s["_trading_blocked_reason"]))
     return "\n".join(lines)
 
 

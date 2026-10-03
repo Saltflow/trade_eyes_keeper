@@ -212,6 +212,118 @@ class ScheduleManager:
         if get_schedule_manager() is self:
             set_schedule_manager(None)
 
+    def reload_config(self) -> None:
+        """Reload saved scheduling fields without rerunning the startup task.
+
+        The assistant writes with ConfigStore before calling this method. Read
+        again under the scheduler lock so a later /schedule change cannot be
+        overwritten by a stale snapshot. An installation failure restores the
+        old jobs where possible and is reported to the caller as a saved-but-
+        not-applied change.
+        """
+        from apscheduler.schedulers.base import STATE_RUNNING
+
+        with self._change_lock:
+            if not self.scheduler.running:
+                raise RuntimeError("调度器尚未启动，配置在下次启动后生效")
+            saved = ConfigStore(self.config_path).load_runtime()
+            previous = self._scheduled_specs(self.config)
+            proposed = self._scheduled_specs(saved)
+            owned_ids = {item[0] for item in previous + proposed}
+            was_running = self.scheduler.state == STATE_RUNNING
+            if was_running:
+                self.scheduler.pause()
+            try:
+                self._install_scheduled_specs(proposed, owned_ids)
+            except Exception as exc:
+                try:
+                    self._install_scheduled_specs(previous, owned_ids)
+                except Exception:
+                    logger.exception("调度刷新失败，旧任务恢复失败，请重启服务")
+                raise RuntimeError(
+                    "调度配置已保存，但运行时刷新失败，请重启服务"
+                ) from exc
+            else:
+                self.config = saved
+            finally:
+                if was_running:
+                    self.scheduler.resume()
+
+    @classmethod
+    def _scheduled_specs(cls, config: dict) -> list[tuple]:
+        """Validate all new jobs before modifying any currently running jobs."""
+        sched = config.get("scheduler", {})
+        specs = []
+        if sched.get("daily_enabled", True):
+            specs.append(
+                (
+                    "daily",
+                    "daily",
+                    sched.get("run_time", "19:00"),
+                    ["--once"],
+                    "每日日报",
+                    cls._grace_seconds(
+                        sched.get("daily_misfire_grace_seconds"),
+                        DEFAULT_DAILY_MISFIRE_GRACE_SECONDS,
+                    ),
+                )
+            )
+        for brief in sched.get("brief_reports", []):
+            if not brief.get("enabled", True):
+                continue
+            task_id = brief.get("id", "morning_snapshot")
+            specs.append(
+                (
+                    _JOB_IDS.get(task_id, f"brief_{task_id}"),
+                    task_id,
+                    brief.get("run_time", "09:50"),
+                    ["--brief", task_id],
+                    brief.get("label", task_id),
+                    cls._grace_seconds(
+                        brief.get(
+                            "misfire_grace_seconds",
+                            sched.get("brief_misfire_grace_seconds"),
+                        ),
+                        DEFAULT_BRIEF_MISFIRE_GRACE_SECONDS,
+                    ),
+                )
+            )
+        if sched.get("optimize_enabled", False):
+            specs.append(
+                (
+                    "optimize",
+                    "optimize",
+                    sched.get("optimize_time", "02:00"),
+                    ["--optimize"],
+                    "策略优化",
+                    cls._grace_seconds(
+                        sched.get("optimize_misfire_grace_seconds"),
+                        DEFAULT_OPTIMIZE_MISFIRE_GRACE_SECONDS,
+                    ),
+                )
+            )
+        ids = [spec[0] for spec in specs]
+        if len(ids) != len(set(ids)):
+            raise ValueError("调度任务 id 重复")
+        if any(cls._parse_time(spec[2])[0] is None for spec in specs):
+            raise ValueError("调度时间无效")
+        return specs
+
+    def _install_scheduled_specs(self, specs: list[tuple], owned_ids: set[str]) -> None:
+        for job_id, task_id, run_time, cli_args, name, grace in specs:
+            self._add_job(
+                task_id,
+                run_time,
+                cli_args,
+                name,
+                job_id_override=job_id,
+                misfire_grace_seconds=grace,
+            )
+        selected = {spec[0] for spec in specs}
+        for job_id in owned_ids - selected:
+            if self.scheduler.get_job(job_id) is not None:
+                self.scheduler.remove_job(job_id)
+
     def get_schedule(self) -> list[dict]:
         """返回当前所有任务的调度信息。"""
         result = []

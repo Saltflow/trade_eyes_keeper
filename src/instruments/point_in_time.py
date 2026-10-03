@@ -88,6 +88,7 @@ class BaostockStatementProvider:
         config: dict | None = None,
     ):
         self._module = module
+        self.config = config
         self.socket_timeout_seconds = baostock_timeout_seconds(config)
 
     def _load(self):
@@ -102,13 +103,22 @@ class BaostockStatementProvider:
         return self._module
 
     def fetch(self, code: str, start: date, end: date) -> StatementFetchResult:
-        bs = self._load()
         attempts: list[dict[str, Any]] = []
         statements: list[FinancialStatementSnapshot] = []
-        with baostock_session(bs, self.socket_timeout_seconds):
+        with baostock_session(
+            self._load(), self.socket_timeout_seconds, self.config
+        ) as bs:
             symbol = _baostock_code(code)
             for year in range(start.year - 1, end.year + 1):
                 for quarter in range(1, 5):
+                    # A future quarter cannot yet contain a disclosed statement.
+                    month = quarter * 3
+                    period_end = (
+                        date(year + 1, 1, 1) if month == 12
+                        else date(year, month + 1, 1)
+                    ) - timedelta(days=1)
+                    if period_end > end:
+                        continue
                     result = bs.query_profit_data(symbol, year, quarter)
                     rows = _result_rows(result)
                     attempts.append(
@@ -645,7 +655,7 @@ class CninfoAnnualReportProvider:
                         "url": url,
                     }
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - preserve PDF/provider diagnostics
                 attempts.append(
                     {
                         "source": "cninfo_annual_report",
@@ -890,6 +900,7 @@ class CninfoAnnualReportProvider:
             ),
             "parent_equity": (
                 rf"归属于上市公司股东的净资产[（(](?P<unit>元|千元|万元)[）)](?P<value>{cls.MONEY})",
+                rf"归属于上市公司股东的净资产(?P<value>{cls.MONEY})",
                 rf"归属于母公司所有者权益合计(?P<value>{cls.MONEY})",
             ),
             "basic_eps": (rf"基本每股收益[（(]元/?股[）)](?P<value>{cls.NUMBER})",),
@@ -1112,6 +1123,168 @@ class CninfoAnnualReportProvider:
         if not values:
             raise ValueError("no audited financial labels parsed from CNINFO PDF")
         return values, parser_name
+
+
+class CninfoInterimReportProvider(CninfoAnnualReportProvider):
+    """Read disclosure-dated A-share half-year balance-sheet evidence."""
+
+    SOURCE = "cninfo_interim_report"
+
+    def fetch(self, code: str, start: date, end: date) -> StatementFetchResult:
+        normalized = str(code).strip()
+        attempts: list[dict[str, Any]] = []
+        if not normalized.startswith(("0", "2", "3", "5", "6", "9")):
+            return StatementFetchResult(
+                statements=[],
+                attempts=[
+                    {
+                        "source": self.SOURCE,
+                        "status": "not_applicable",
+                        "reason": "not an A-share security",
+                    }
+                ],
+            )
+        org_id = self._org_id(normalized)
+        announcements = self._interim_announcements(normalized, org_id, start, end)
+        attempts.append(
+            {
+                "source": f"{self.SOURCE}_index",
+                "status": "success" if announcements else "empty",
+                "rows": len(announcements),
+            }
+        )
+        statements: list[FinancialStatementSnapshot] = []
+        for year, announcement in sorted(announcements.items()):
+            url = self.STATIC_ROOT + str(announcement["adjunctUrl"]).lstrip("/")
+            try:
+                cached = self._read_pdf_cache(url)
+                cache_hit = cached is not None
+                if cached is not None:
+                    values = {
+                        str(key): float(value)
+                        for key, value in cached["values"].items()
+                    }
+                    parser_name = str(cached.get("parser", "unknown"))
+                else:
+                    response = self.http.get(
+                        url,
+                        headers=self._headers,
+                        timeout=max(self.timeout, 60),
+                    )
+                    response.raise_for_status()
+                    values, parser_name = self._parse_pdf(response.content)
+                    self._write_pdf_cache(
+                        url,
+                        response.content,
+                        values,
+                        parser_name,
+                    )
+                parent_equity = _float(values.get("parent_equity"))
+                if parent_equity is None:
+                    raise ValueError(
+                        "official interim report did not yield parent_equity"
+                    )
+                published_at = datetime.fromtimestamp(
+                    float(announcement["announcementTime"]) / 1000.0,
+                    tz=timezone(timedelta(hours=8)),
+                ).date()
+                diagnostics = [
+                    f"cninfo_pdf_parser:{parser_name}",
+                    "parent_equity_from_official_interim_report",
+                    "interim_pdf_carries_parent_equity_only",
+                ]
+                if cache_hit:
+                    diagnostics.append("cninfo_pdf_parse_cache_hit")
+                statements.append(
+                    FinancialStatementSnapshot(
+                        period_end=date(year, 6, 30),
+                        published_at=published_at,
+                        period_type="quarter",
+                        is_cumulative=True,
+                        currency="CNY",
+                        accounting_standard="PRC-GAAP",
+                        source=self.SOURCE,
+                        source_url=url,
+                        diagnostics=diagnostics,
+                        parent_equity=parent_equity,
+                    )
+                )
+                attempts.append(
+                    {
+                        "source": self.SOURCE,
+                        "year": year,
+                        "status": "cached" if cache_hit else "success",
+                        "fields": ["parent_equity"],
+                        "url": url,
+                    }
+                )
+            except Exception as exc:
+                attempts.append(
+                    {
+                        "source": self.SOURCE,
+                        "year": year,
+                        "status": "failed",
+                        "reason": str(exc),
+                        "url": url,
+                    }
+                )
+        return StatementFetchResult(statements=statements, attempts=attempts)
+
+    def _interim_announcements(
+        self,
+        code: str,
+        org_id: str,
+        start: date,
+        end: date,
+    ) -> dict[int, dict[str, Any]]:
+        is_sse = str(code).startswith(("5", "6", "9"))
+        response = self.http.post(
+            self.ANNOUNCEMENT_URL,
+            data={
+                "pageNum": 1,
+                "pageSize": 50,
+                "column": "sse" if is_sse else "szse",
+                "tabName": "fulltext",
+                "plate": "sh" if is_sse else "sz",
+                "stock": f"{code},{org_id}",
+                "searchkey": "",
+                "secid": "",
+                "category": "",
+                "trade": "",
+                "seDate": f"{start.isoformat()}~{end.isoformat()}",
+                "sortName": "",
+                "sortType": "",
+                "isHLtitle": "true",
+            },
+            headers=self._headers,
+            timeout=max(self.timeout, 45),
+        )
+        response.raise_for_status()
+        selected: dict[int, dict[str, Any]] = {}
+        for row in response.json().get("announcements", []) or []:
+            title = re.sub(r"<[^>]+>", "", str(row.get("announcementTitle", "")))
+            compact = re.sub(r"\s+", "", title)
+            match = re.search(r"(20\d{2})年?半年度报告", compact)
+            if not match or "摘要" in compact or not row.get("adjunctUrl"):
+                continue
+            timestamp = _float(row.get("announcementTime"))
+            if timestamp is None or timestamp <= 0:
+                continue
+            year = int(match.group(1))
+            period_end = date(year, 6, 30)
+            published_at = datetime.fromtimestamp(
+                timestamp / 1000.0,
+                tz=timezone(timedelta(hours=8)),
+            ).date()
+            if not start <= period_end <= end or published_at > end:
+                continue
+            current = selected.get(year)
+            current_timestamp = (
+                _float(current.get("announcementTime")) if current else 0.0
+            )
+            if current is None or timestamp > (current_timestamp or 0.0):
+                selected[year] = row
+        return selected
 
 
 class HkexStatementProvider:
@@ -2116,7 +2289,11 @@ class PointInTimeFundamentalStore:
         statements = []
         for item in rows:
             statement = FinancialStatementSnapshot(**item)
-            if "cninfo_annual_report" in statement.source and statement.source_url:
+            if (
+                {"cninfo_annual_report", "cninfo_interim_report"}
+                .intersection(statement.source.split("+"))
+                and statement.source_url
+            ):
                 match = re.search(
                     r"/finalpage/(20\d{2}-\d{2}-\d{2})/",
                     statement.source_url,

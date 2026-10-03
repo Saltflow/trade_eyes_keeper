@@ -11,15 +11,21 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.fundamental_embedding.industry import (  # noqa: E402
+from src.data.market_history import (
+    baostock_session,
+    baostock_timeout_seconds,
+)
+from src.fundamental_embedding.industry import (
     INDUSTRY_CLASSIFICATION_CONTRACT,
     IndustryClassification,
 )
@@ -44,6 +50,8 @@ def _requested_symbols(manifest: Path | None) -> set[str]:
 
 def fetch_classifications(
     requested_symbols: set[str] | None = None,
+    *,
+    config: dict | None = None,
 ) -> list[IndustryClassification]:
     """Fetch labels once and retain the source-provided effective date."""
 
@@ -52,10 +60,7 @@ def fetch_classifications(
     except ImportError as exc:  # pragma: no cover - deployment dependency
         raise RuntimeError("baostock is required to fetch industry labels") from exc
 
-    login = bs.login()
-    if login.error_code != "0":
-        raise RuntimeError(f"baostock login failed: {login.error_msg}")
-    try:
+    with baostock_session(bs, baostock_timeout_seconds(config), config) as bs:
         query = bs.query_stock_industry()
         if query.error_code != "0":
             raise RuntimeError(f"baostock industry query failed: {query.error_msg}")
@@ -68,7 +73,9 @@ def fetch_classifications(
         while query.next():
             row = query.get_row_data()
             symbol = _symbol(row[fields["code"]])
-            if symbol is None or (requested_symbols and symbol not in requested_symbols):
+            if symbol is None or (
+                requested_symbols and symbol not in requested_symbols
+            ):
                 continue
             effective = row[fields["updateDate"]]
             try:
@@ -77,9 +84,7 @@ def fetch_classifications(
                     industry_code=(row[fields["industry"]] or None),
                     industry_name=(row[fields["industry"]] or None),
                     taxonomy=(row[fields["industryClassification"]] or "unspecified"),
-                    effective_from=datetime.strptime(
-                        effective, "%Y-%m-%d"
-                    ).date(),
+                    effective_from=date.fromisoformat(effective),
                     source="baostock.query_stock_industry",
                 )
             except (TypeError, ValueError):
@@ -88,8 +93,6 @@ def fetch_classifications(
             if previous is None or previous.effective_from < label.effective_from:
                 records[symbol] = label
         return sorted(records.values(), key=lambda item: item.symbol)
-    finally:
-        bs.logout()
 
 
 def write_snapshot(
@@ -122,17 +125,24 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True)
     parser.add_argument("--universe-manifest")
+    parser.add_argument("--config", default=str(PROJECT_ROOT / "config/config.yaml"))
     args = parser.parse_args()
     manifest = Path(args.universe_manifest) if args.universe_manifest else None
     requested = _requested_symbols(manifest)
-    labels = fetch_classifications(requested)
+    config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8")) or {}
+    labels = fetch_classifications(requested, config=config)
     write_snapshot(Path(args.output), labels, requested)
-    print(json.dumps({
-        "output": str(Path(args.output).resolve()),
-        "requested": len(requested),
-        "classified": len(labels),
-        "missing": len(requested - {item.symbol for item in labels}),
-    }, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "output": str(Path(args.output).resolve()),
+                "requested": len(requested),
+                "classified": len(labels),
+                "missing": len(requested - {item.symbol for item in labels}),
+            },
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

@@ -707,18 +707,29 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
 
 
 def optimizer_notification_title(report, group_name: str = "") -> str:
-    """Return one consistent success/failure title for every channel."""
-
-    failed = str(getattr(report, "status", "completed")) in {
-        "failed",
-        "interrupted",
+    """Return a title consistent with both aggregate and per-market outcomes."""
+    states = {
+        str(getattr(item, "status", ""))
+        for item in (getattr(report, "groups", {}) or {}).values()
     }
-    title = (
-        "\u7b56\u7565\u4f18\u5316\u5931\u8d25"
-        if failed
-        else "\u7b56\u7565\u4f18\u5316\u5b8c\u6210"
+    aggregate_status = str(getattr(report, "status", "completed"))
+    failed = aggregate_status in {"failed", "interrupted"} or bool(
+        states & {"failed", "interrupted"}
     )
-    return f"{title} \u00b7 {group_name}" if group_name else title
+    finished = bool(states & {"completed", "no_candidates"})
+    if states and "no_data" in states and states <= {"no_data", "not_run"}:
+        title = "策略数据未就绪"
+    elif failed:
+        title = "策略优化部分失败" if finished else "策略优化失败"
+    elif states and states <= {"no_symbols", "no_data", "not_run"}:
+        title = "策略优化未执行"
+    elif aggregate_status == "partial":
+        title = "策略优化部分失败" if finished else "策略优化失败"
+    elif finished and states & {"no_symbols", "no_data", "not_run"}:
+        title = "策略优化部分完成"
+    else:
+        title = "策略优化完成"
+    return f"{title} · {group_name}" if group_name else title
 
 
 def build_optimizer_summary(
@@ -952,8 +963,36 @@ def _build_optimizer_run_summary(report) -> str:
             lines.append(f"配置指纹: <code>{config_hash}</code>")
         if item_run_id:
             lines.append(f"独立 run_id: <code>{item_run_id}</code>")
+        diagnostics = getattr(item, "ranking_diagnostics", {}) or {}
+        readiness_issues = diagnostics.get("data_readiness_issues", []) or []
+        data_reasons: dict[str, list[str]] = {}
+        for issue in readiness_issues:
+            if not isinstance(issue, dict) or not issue.get("reason"):
+                continue
+            code = str(issue.get("code", ""))
+            reason = str(issue["reason"])
+            category = issue.get("category")
+            if category and category != "missing_data":
+                reason = f"[{category}] {reason}"
+            reasons = data_reasons.setdefault(code, [])
+            if reason not in reasons:
+                reasons.append(reason)
+        for exclusion in diagnostics.get("data_exclusions", []) or []:
+            code, separator, reason = str(exclusion).partition(": ")
+            reasons = data_reasons.setdefault(code if separator else "", [])
+            reason = reason or code
+            if reason not in reasons:
+                reasons.append(reason)
+        if data_reasons:
+            lines.append("数据准备问题（含基准）:")
+            lines.extend(
+                f"{_html_escape(code)}: {_html_escape('; '.join(reasons))}"
+                for code, reasons in data_reasons.items()
+            )
         if item.status != "completed":
             evaluated = int(getattr(item, "evaluated_count", 0) or 0)
+            if item.status in {"no_symbols", "no_data"} and not evaluated:
+                lines.append("候选评估 0 次；请先恢复数据就绪。")
             if evaluated:
                 prefix = "搜索已完成" if item.status == "no_candidates" else "中止前已完成"
                 lines.append(f"{prefix} {evaluated:,} 次候选评估。")

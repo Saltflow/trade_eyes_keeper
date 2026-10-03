@@ -19,6 +19,7 @@ import numpy as np
 from datetime import datetime
 from pathlib import Path
 from time import monotonic
+from typing import Callable
 from dotenv import load_dotenv
 
 # 加载环境变量
@@ -36,8 +37,11 @@ from src.backtest import build_trade_plan, evaluate_all_groups
 from src.search import get_market_optimizer_config, get_market_optimizer_configs
 from src.markets import _detect_fine_group, get_skip_search, get_skip_signals
 from src.core.ref_portfolio import (
+    RefPortfolio,
     RefPortfolioManager,
+    reference_execution_binding_status,
     reference_execution_contract,
+    reference_valuation_price,
 )
 from src.core.process_lock import exclusive_process_lock
 from src.search import run_optimizer
@@ -371,6 +375,43 @@ def _load_optimizer_benchmark_bundles(
     )
 
 
+def _reference_portfolio_prices(
+    portfolio: RefPortfolio,
+    stock_data: pd.DataFrame,
+    fx_rate: float,
+    fetch_quote: Callable[[str], dict | None],
+) -> dict[str, float]:
+    """Value every held symbol, including those removed from the watchlist.
+
+    Session prices and supplemental provider quotes are in native currency.
+    Only complete, positive quotes are converted to the account's CNY basis.
+    A failed lookup stays absent so the status reports incomplete valuation.
+    This function never changes holdings or the configured signal universe.
+    """
+    fx = reference_valuation_price(fx_rate)
+    if fx is None:
+        raise ValueError("reference portfolio FX rate must be finite and positive")
+    prices: dict[str, float] = {}
+    for _, row in stock_data.iterrows():
+        code = str(row.get("stock_code", ""))
+        if code not in portfolio.holdings:
+            continue
+        price = reference_valuation_price(row.get("close"))
+        if price is not None:
+            prices[code] = price * fx
+    for code in portfolio.missing_price_codes(prices):
+        try:
+            quote = fetch_quote(code)
+            price = reference_valuation_price((quote or {}).get("close"))
+            if price is not None:
+                prices[code] = price * fx
+            else:
+                logger.warning("参考持仓 %s 无有效补充行情，估值不完整", code)
+        except Exception as exc:
+            logger.warning("参考持仓 %s 补充行情失败，估值不完整: %s", code, exc)
+    return prices
+
+
 def _reference_portfolio_actions(config: dict, portfolio) -> list[object]:
     """Load the exact stored corporate actions for every live holding.
 
@@ -664,6 +705,9 @@ def _run_optimization_group(
 
     lookback_days = _optimizer_lookback_days(constraints)
     preloaded_market_bundles: dict[str, dict[str, object]] = {}
+    preloaded_benchmark_bundles: dict[str, dict[str, object]] = {}
+    benchmark_readiness_errors: dict[str, list[str]] = {}
+    readiness_blocked = False
     if "point_in_time_data" in config:
         optimizer_end = pd.Timestamp.now().normalize().date()
         optimizer_start = optimizer_end - pd.Timedelta(days=lookback_days).to_pytimedelta()
@@ -686,6 +730,10 @@ def _run_optimization_group(
                 readiness_path=run_dir / "data_readiness.json",
             )
             if readiness.issues:
+                readiness_blocked = True
+                summaries[group].ranking_diagnostics["data_readiness_issues"] = [
+                    item.as_dict() for item in readiness.issues
+                ]
                 logger.warning(
                     "%s optimizer data readiness has %d unresolved symbols: %s",
                     group,
@@ -694,23 +742,37 @@ def _run_optimization_group(
                         f"{item.code}: {item.reason}" for item in readiness.issues
                     ),
                 )
-            bundles, errors = _load_optimizer_market_bundles_with_errors(
-                config, codes, lookback_days
-            )
-            if errors:
-                summaries[group].ranking_diagnostics["data_exclusions"] = list(errors)
-                logger.warning(
-                    "%s optimizer excludes these symbols from search only: %s",
-                    group,
-                    "; ".join(errors),
-                )
-            groups[group] = list(bundles)
-            preloaded_market_bundles[group] = bundles
+            # A production optimizer must use the complete configured universe
+            # and every requested benchmark. Partial searches can produce
+            # plausible but invalid candidates, so fail this market closed.
+            if readiness.issues:
+                groups[group] = []
+                preloaded_market_bundles[group] = {}
+                preloaded_benchmark_bundles[group] = {}
+            else:
+                # Preparation is authoritative: it excludes incomplete
+                # sessions. Re-reading the store could reintroduce stale bars.
+                bundles = {
+                    code: readiness.bundles[code]
+                    for code in codes
+                    if code in readiness.bundles
+                }
+                preloaded_benchmark_bundles[group] = {
+                    code: readiness.bundles[code]
+                    for code in benchmark_codes
+                    if code in readiness.bundles
+                }
+                benchmark_readiness_errors[group] = [
+                    code for code in benchmark_codes
+                    if code not in preloaded_benchmark_bundles[group]
+                ]
+                groups[group] = list(bundles)
+                preloaded_market_bundles[group] = bundles
 
     required_groups = tuple(group for group, codes in groups.items() if codes)
     if not required_groups:
         logger.error("No optimizer-eligible market group has configured symbols")
-        summaries[group].status = "no_symbols"
+        summaries[group].status = "no_data" if readiness_blocked else "no_symbols"
         emit_report(
             OptimizerRunSummary(
                 run_strategy_name,
@@ -719,6 +781,16 @@ def _run_optimization_group(
                 monotonic() - started,
                 summaries,
                 run_id=run_id,
+                status="failed" if readiness_blocked else "completed",
+                failure_reason=(
+                    "optimizer data is not ready: "
+                    + "; ".join(
+                        f"{item.code}: {item.reason}"
+                        for item in readiness.issues
+                    )
+                    if readiness_blocked
+                    else ""
+                ),
                 strategy_by_group={group: strategy.name},
                 run_ids_by_group={group: run_id},
             )
@@ -779,9 +851,17 @@ def _run_optimization_group(
                 }
                 if not stocks_data:
                     raise RuntimeError("no usable point-in-time market bundles")
-                benchmark_bundles = _load_optimizer_benchmark_bundles(
-                    config, constraints, group, lookback_days
-                )
+                missing_benchmarks = benchmark_readiness_errors.get(group, [])
+                if missing_benchmarks:
+                    raise RuntimeError(
+                        f"{group} benchmark data is not ready: "
+                        + ", ".join(missing_benchmarks)
+                    )
+                benchmark_bundles = preloaded_benchmark_bundles.get(group)
+                if benchmark_bundles is None:
+                    benchmark_bundles = _load_optimizer_benchmark_bundles(
+                        config, constraints, group, lookback_days
+                    )
             else:
                 # Small legacy callers/tests can still inject a DataSource.
                 # The production config always declares point_in_time_data,
@@ -1579,21 +1659,19 @@ def run_daily_task(force: bool = False):
             fx = float(
                 market_config.execution.fx_rates.get(group_key, 1.0)
             )
-            prices = {}
-            for _, row in stock_data_df.iterrows():
-                code = str(row.get("stock_code", ""))
-                if _detect_fine_group(code) != group_key:
-                    continue
-                close = row.get("close")
-                if code and close is not None and not pd.isna(close):
-                    prices[code] = float(close) * fx
+            prices = _reference_portfolio_prices(
+                pf, stock_data_df, fx, fetcher.web_crawler.fetch_realtime_quote
+            )
             status = mgr.get_status(pf, prices)
             status["_group"] = group_key
             status["_label"] = label
             all_statuses[group_key] = status
             logger.debug(
-                f"参考持仓{label}已加载: 净值 {status['nav']:,.0f}, "
-                f"回报 {status['nav_return_pct']:+.2f}%"
+                "参考持仓%s已加载: 净值 %s, 回报 %s, %s",
+                label,
+                status["nav"],
+                status["nav_return_pct"],
+                status["valuation_reason"],
             )
         object.__setattr__(session, "ref_portfolio_status", all_statuses)
 
@@ -1758,15 +1836,6 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                 logger.debug(f"参考持仓{pool['label']} 未初始化，跳过")
                 continue
 
-            prices = {}
-            for _, row in stock_data_df.iterrows():
-                code = str(row.get("stock_code", ""))
-                if _detect_fine_group(code) != group_key:
-                    continue
-                close = row.get("close")
-                if code and close is not None and not pd.isna(close):
-                    prices[code] = float(close)
-
             new_pf = pf
             trading_blocked_reason = ""
             try:
@@ -1806,7 +1875,7 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                     if pinned is not None
                     else None
                 )
-                binding_valid = bool(
+                strategy_binding_valid = bool(
                     pinned is not None
                     and pinned_strategy is not None
                     and pinned_strategy.name == pf.strategy_id
@@ -1818,21 +1887,29 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                         }
                     )
                     == pf.params_hash
-                    and stable_hash(
+                )
+                binding_status = (
+                    reference_execution_binding_status(
+                        pf.execution_hash,
                         reference_execution_contract(
                             params.execution_snapshot,
                             exec_cfg,
                             group_key,
-                        )
+                        ),
                     )
-                    == pf.execution_hash
+                    if strategy_binding_valid
+                    else "unavailable"
                 )
-                if not binding_valid:
-                    trading_blocked_reason = "固定运行或执行合同不可恢复"
+                if binding_status != "current":
+                    trading_blocked_reason = (
+                        "旧版执行合同缺少分红税率绑定，需保留持仓迁移"
+                        if binding_status == "legacy_missing_withholding"
+                        else "固定运行或执行合同不可恢复"
+                    )
                     logger.error(
-                        "参考持仓%s 固定运行或合同不可恢复；跳过交易，"
-                        "需手动 /ref_date 重置",
+                        "参考持仓%s %s；跳过交易，保留当前持仓及交易历史",
                         pool["label"],
+                        trading_blocked_reason,
                     )
                 else:
                     active_codes = sorted(
@@ -1893,7 +1970,12 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                         )
 
             # 本组 status（现价 × FX → CNY，与成本基准一致）
-            cny_prices = {code: p * pool["fx"] for code, p in prices.items()}
+            cny_prices = _reference_portfolio_prices(
+                new_pf,
+                stock_data_df,
+                pool["fx"],
+                fetcher.web_crawler.fetch_realtime_quote,
+            )
             status = mgr.get_status(new_pf, cny_prices)
             status["_group"] = group_key
             status["_label"] = (

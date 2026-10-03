@@ -260,7 +260,7 @@ def test_a_share_complete_primary_history_skips_fallback():
     primary = _StaticMarketProvider(
         _bundle(
             "601398",
-            dates=("2020-01-02", "2020-01-03"),
+            dates=("2020-01-02", "2026-01-01"),
         )
     )
     fallback = _StaticMarketProvider(error=AssertionError("must not fetch"))

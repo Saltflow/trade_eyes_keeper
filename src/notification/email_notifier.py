@@ -1225,6 +1225,67 @@ class EmailNotifier(BaseNotifier):
             )
         return '<section class="daily-section"><div class="section-heading">未解禁定增</div>' + "".join(cards) + '</section>'
 
+    def _build_daily_signal_section(self, signal_scan, stock_data) -> str:
+        """Show scan details even when historical evaluation reports are absent."""
+        parts = [
+            '<section class="daily-section signal-section">'
+            '<div class="section-heading">今日策略信号'
+        ]
+        if signal_scan is None:
+            parts.append(
+                '</div><div class="muted-note">策略扫描结果不可用；'
+                '不能据此判断为无信号。</div></section>'
+            )
+            return "".join(parts)
+
+        alerts = getattr(signal_scan, "alerts", None) or []
+        codes = {str(_alert_value(alert, "stock_code", "?")) for alert in alerts}
+        parts.append(
+            f'<span class="section-count">{len(alerts)}条 / {len(codes)}只'
+            '</span></div>'
+        )
+        if not alerts:
+            parts.append(
+                '<div class="muted-note">本次扫描无触发信号。</div></section>'
+            )
+            return "".join(parts)
+
+        rows = self._daily_row_map(stock_data)
+        map_a = _build_signal_label_map("a_share")
+        map_hk = _build_signal_label_map("hk") or _build_signal_label_map("non_a_share")
+        map_us = _build_signal_label_map("us") or _build_signal_label_map("non_a_share")
+        for alert in alerts:
+            code = str(_alert_value(alert, "stock_code", "?"))
+            name = _alert_value(
+                alert, "stock_name", rows.get(code, {}).get("stock_name", "")
+            )
+            raw_label = _alert_value(
+                alert, "rule_label", _alert_value(alert, "label", "规则未提供")
+            )
+            rule = _readable_signal(code, raw_label, map_a, map_hk, map_us)
+            side = str(_alert_value(alert, "side", "")).lower()
+            if not side:
+                kind = str(_alert_value(alert, "type", "")).lower()
+                side = {"strategy_buy": "buy", "strategy_sell": "sell"}.get(kind, "")
+            direction = {"buy": "买入", "sell": "卖出"}.get(side, side or "方向未提供")
+            current_value = self._daily_get(alert, "current_value")
+            detail = _alert_value(alert, "detail", _alert_value(alert, "reason", ""))
+            signal_date = _alert_value(alert, "signal_date", "")
+            parts.append(
+                '<div class="signal-row"><div class="signal-title"><strong>'
+                f'{_html_escape(code)} · {_html_escape(name, "")}</strong>'
+                f' <span>{_html_escape(direction)}</span></div>'
+                f'<div>规则：{_html_escape(rule)} · '
+                f'当前值：{_html_escape(current_value)}</div>'
+            )
+            if detail:
+                parts.append(f'<div>触发依据：{_html_escape(detail)}</div>')
+            if signal_date:
+                parts.append(f'<div>信号日期：{_html_escape(signal_date)}</div>')
+            parts.append('</div>')
+        parts.append('</section>')
+        return "".join(parts)
+
     def _build_daily_strategy_section(
         self,
         evaluation_reports,
@@ -1501,8 +1562,7 @@ class EmailNotifier(BaseNotifier):
                 f'回报 {_html_escape(self._daily_metric(status.get("nav_return_pct"), "%", 2))} · '
                 f'交易日 {_html_escape(status.get("trading_days", "—"))}</div>'
             ]
-            if status.get("requires_manual_reset"):
-                lines.append('<div class="muted-note">旧账户未绑定当前运行，需通过机器人 /ref_date 重置后恢复交易。</div>')
+            lines.append(self._build_ref_portfolio_status_note(status))
             lines.append(f'<div class="stock-line">现金：{_html_escape(self._daily_metric(status.get("cash"), "", 2))}</div></div>')
             sections.append("".join(lines))
         if not sections:
@@ -1548,6 +1608,7 @@ class EmailNotifier(BaseNotifier):
             summary_section=self._build_daily_summary_section(
                 watchlist_rows, alert_stocks, signal_scan
             ),
+            signal_section=self._build_daily_signal_section(signal_scan, stock_data),
             decision_section=self._build_daily_strategy_section(
                 reports,
                 signal_scan,
@@ -2453,6 +2514,45 @@ class EmailNotifier(BaseNotifier):
     # ── 参考持仓 HTML 构建 ────────────────────────────────────
 
     @staticmethod
+    def _build_ref_portfolio_status_note(status) -> str:
+        """Explain blocked trading and incomplete valuation without mutating state."""
+        notes = []
+        reason = str(status.get("_trading_blocked_reason") or "")
+        manual_reset = bool(status.get("requires_manual_reset"))
+        if manual_reset and not reason:
+            reason = "未绑定运行，需手动重置"
+        if reason:
+            notes.append(f'<p class="muted-note">停单原因：{_html_escape(reason)}</p>')
+            if "未绑定运行" in reason:
+                recovery = (
+                    "旧账户未绑定策略运行。若选择重建，先确认有效策略已激活，"
+                    "再通过机器人 /ref_date YYYY-MM-DD 重置；"
+                    "这会清空三市场持仓并重设基期。"
+                )
+            elif "固定运行或执行合同不可恢复" in reason:
+                recovery = "请恢复该账户绑定的策略产物及执行合同后重新检查。"
+            elif "公司行为数据不就绪" in reason:
+                recovery = "请补齐分红、除权等公司行为数据后重新检查。"
+            elif "没有完整历史数据" in reason:
+                recovery = "请补齐监控标的及持仓的历史行情后重新检查。"
+            else:
+                recovery = "请核对对应运行日志，修复上述停单原因后重新检查。"
+            notes.append(f'<p class="muted-note">恢复提示：{_html_escape(recovery)}</p>')
+
+        if status.get("valuation_complete") is False:
+            valuation_reason = str(status.get("valuation_reason") or "")
+            if not valuation_reason:
+                missing = ", ".join(
+                    str(code) for code in status.get("missing_price_codes", [])
+                )
+                valuation_reason = f"缺少 {missing} 行情" if missing else "持仓行情不完整"
+            notes.append(
+                '<p class="muted-note">估值不完整：'
+                f'{_html_escape(valuation_reason)}</p>'
+            )
+        return "".join(notes)
+
+    @staticmethod
     def _build_ref_portfolio_html(session, today_date) -> str:
         """构建参考持仓 HTML 片段。三组（A股/港股/美股）各自展示。"""
         all_statuses = getattr(session, "ref_portfolio_status", None)
@@ -2467,13 +2567,15 @@ class EmailNotifier(BaseNotifier):
             if not status:
                 continue
             label = status.get("_label", gk)
+            nav = _fmt(status.get("nav"), fmt_spec=",.0f")
+            nav_return = _fmt(status.get("nav_return_pct"), "%", "+.2f")
             lines.append(
-                f"<h4>{label}</h4>"
-                f"<p>📅 期初: {status['inception_date']} | "
-                f"💰 净值: {status['nav']:,.0f} | "
-                f"📈 回报: {status['nav_return_pct']:+.2f}% | "
-                f"📆 交易日: {status['trading_days']}</p>"
+                f"<h4>{_html_escape(label)}</h4>"
+                f"<p>📅 期初: {_html_escape(status.get('inception_date'))} | "
+                f"💰 净值: {nav} | 📈 回报: {nav_return} | "
+                f"📆 交易日: {_html_escape(status.get('trading_days'))}</p>"
             )
+            lines.append(EmailNotifier._build_ref_portfolio_status_note(status))
 
             if status["holdings"]:
                 lines.append(
@@ -2483,18 +2585,19 @@ class EmailNotifier(BaseNotifier):
                 for h in status["holdings"]:
                     lines.append(
                         f"<tr>"
-                        f"<td>{h['code']}</td>"
-                        f"<td>{h['shares']}</td>"
-                        f"<td>{h['price']:.2f}</td>"
-                        f"<td>{h['market_value']:,.0f}</td>"
-                        f"<td>{h['avg_cost']:.2f}</td>"
+                        f"<td>{_html_escape(h['code'])}</td>"
+                        f"<td>{_html_escape(h['shares'])}</td>"
+                        f"<td>{_fmt(h.get('price'))}</td>"
+                        f"<td>{_fmt(h.get('market_value'), fmt_spec=',.0f')}</td>"
+                        f"<td>{_fmt(h.get('avg_cost'))}</td>"
                         f"</tr>"
                     )
                 lines.append("</table>")
             else:
                 lines.append("<p>📭 空仓</p>")
 
-            lines.append(f"<p>💵 现金: {status['cash']:,.2f}</p>")
+            cash = _fmt(status.get("cash"), fmt_spec=",.2f")
+            lines.append(f"<p>💵 现金: {cash}</p>")
 
         return "\n".join(lines)
 
@@ -2634,9 +2737,8 @@ class EmailNotifier(BaseNotifier):
 
         try:
             # 创建 HTML 部分
+            # MIMEText encodes the payload and sets its matching transfer header.
             html_part = MIMEText(body, "html", "utf-8")
-            html_part.set_charset("utf-8")
-            html_part["Content-Transfer-Encoding"] = "quoted-printable"
 
             has_any_chart = chart_png_bytes or portfolio_chart_dict or candlestick_png
 

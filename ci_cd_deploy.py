@@ -291,8 +291,13 @@ def _git_push():
     """将本地代码通过 git push 直推远程服务器"""
     _info("Pushing local code to remote server via git...")
 
+    source_ref = os.environ.get("DEPLOY_SOURCE_REF", "master")
+    if source_ref not in {"master", "HEAD"}:
+        raise ValueError("DEPLOY_SOURCE_REF must be master or HEAD")
+    push_ref = "master" if source_ref == "master" else "HEAD:master"
+
     if _get_dry_run():
-        print(f"  [MOCK] git push {REMOTE_SSH} master")
+        print(f"  [MOCK] git push {REMOTE_SSH} {push_ref}")
         return True
 
     env = os.environ.copy()
@@ -303,7 +308,7 @@ def _git_push():
         cmd = ["git", "push"]
         if force:
             cmd.append("--force")
-        cmd.extend([REMOTE_SSH, "master"])
+        cmd.extend([REMOTE_SSH, push_ref])
 
         try:
             result = subprocess.run(

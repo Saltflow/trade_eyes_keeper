@@ -60,6 +60,11 @@
   .chart-card {{ margin-top:8px; padding:8px; border:1px solid #e0e8f0;
     border-radius:8px; background:#fbfdff; }}
   .chart-card img {{ display:block; width:100%; max-width:100%; height:auto; }}
+  .signal-row {{ padding:8px 1px; border-bottom:1px solid #e8eef4;
+    color:#4a5c70; font-size:11px; overflow-wrap:anywhere; }}
+  .signal-title {{ margin-bottom:3px; color:#173b62; font-size:12px; }}
+  .signal-title span {{ display:inline-block; padding:1px 5px; border-radius:4px;
+    background:#eef6ff; color:#315a82; }}
   .event-row {{ padding:6px 1px; border-bottom:1px solid #e8eef4; color:#4a5c70;
     font-size:11px; overflow-wrap:anywhere; }}
   .event-row:last-of-type {{ border-bottom:0; }}
@@ -94,6 +99,7 @@
         {deployment_status}
         {summary_section}
         <!-- Strategy Search Results -->
+        {signal_section}
         {decision_section}
         {watchlist_section}
         {chart_section}

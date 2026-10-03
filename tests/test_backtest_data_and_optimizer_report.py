@@ -1,9 +1,12 @@
 """回测外层补数和窗口报告合同。"""
 
-from datetime import date
+from datetime import date, datetime, timezone
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
+import requests
 
 from src.data.backtest_data import prepare_backtest_data
 from src.data.market_history import CorporateAction, PriceHistoryBundle
@@ -47,7 +50,19 @@ def _bundle(code="600000"):
     ).validate()
 
 
+def _stub_market_calendar(monkeypatch, end="2020-01-03"):
+    effective_end = date.fromisoformat(end)
+    monkeypatch.setattr(
+        "src.data.backtest_data.resolve_market_data_cutoff",
+        lambda _code, _end, as_of=None: SimpleNamespace(
+            effective_end=effective_end,
+            as_dict=lambda: {"effective_end": effective_end.isoformat()},
+        ),
+    )
+
+
 def test_prepare_backtest_data_fetches_missing_strict_bundle(tmp_path, monkeypatch):
+    _stub_market_calendar(monkeypatch)
     bundle = _bundle()
 
     class FakeProvider:
@@ -73,7 +88,11 @@ def test_prepare_backtest_data_fetches_missing_strict_bundle(tmp_path, monkeypat
     assert (tmp_path / "market" / "600000.csv").is_file()
 
 
-def test_prepare_backtest_data_fails_closed_without_legacy_fallback(tmp_path, monkeypatch):
+def test_prepare_backtest_data_fails_closed_without_legacy_fallback(
+    tmp_path, monkeypatch
+):
+    _stub_market_calendar(monkeypatch)
+
     class BrokenProvider:
         def __init__(self, _config):
             pass
@@ -96,7 +115,177 @@ def test_prepare_backtest_data_fails_closed_without_legacy_fallback(tmp_path, mo
     assert not list(tmp_path.rglob("*.csv"))
 
 
+def test_optimizer_backfill_retries_retry_after_and_enables_disclosures(
+    tmp_path, monkeypatch
+):
+    _stub_market_calendar(monkeypatch)
+    bundle = _bundle()
+
+    class FakeProvider:
+        def __init__(self, config):
+            assert config["point_in_time_data"]["market_history"][
+                "disclosed_sources"
+            ] is True
+            self.calls = 0
+
+        def fetch(self, _code, _start, _end):
+            self.calls += 1
+            if self.calls == 1:
+                response = requests.Response()
+                response.status_code = 429
+                response.headers["Retry-After"] = "3"
+                raise requests.HTTPError("rate limited", response=response)
+            return bundle
+
+    sleeps = []
+    monkeypatch.setattr("src.data.backtest_data.MarketHistoryProvider", FakeProvider)
+    monkeypatch.setattr("src.data.backtest_data.time.sleep", sleeps.append)
+    config = {"point_in_time_data": {"output_dir": str(tmp_path)}}
+    result = prepare_backtest_data(
+        config,
+        ["600000"],
+        "2020-01-01",
+        "2020-01-03",
+        purpose="optimizer",
+        as_of=datetime(2020, 1, 3, tzinfo=timezone.utc),
+    )
+
+    assert result.ready
+    assert sleeps == [3.0]
+    assert [attempt.status for attempt in result.fetch_attempts] == [
+        "retryable_failure",
+        "fetched",
+    ]
+    # Provider overrides are scoped to the run and do not mutate caller config.
+    assert "market_history" not in config["point_in_time_data"]
+
+
+def test_optimizer_backfill_does_not_retry_forbidden_or_invalid_data(
+    tmp_path, monkeypatch
+):
+    _stub_market_calendar(monkeypatch)
+    calls = []
+
+    class FakeProvider:
+        def __init__(self, _config):
+            pass
+
+        def fetch(self, _code, _start, _end):
+            calls.append(True)
+            response = requests.Response()
+            response.status_code = 403
+            raise requests.HTTPError("forbidden", response=response)
+
+    monkeypatch.setattr("src.data.backtest_data.MarketHistoryProvider", FakeProvider)
+    monkeypatch.setattr(
+        "src.data.backtest_data.time.sleep",
+        lambda _delay: pytest.fail("403 must not be retried"),
+    )
+    result = prepare_backtest_data(
+        {"point_in_time_data": {"output_dir": str(tmp_path)}},
+        ["600000"],
+        "2020-01-01",
+        "2020-01-03",
+        purpose="optimizer",
+        as_of=datetime(2020, 1, 3, tzinfo=timezone.utc),
+    )
+
+    assert not result.ready
+    assert len(calls) == 1
+    assert result.fetch_attempts[-1].status == "rejected"
+    assert not list(tmp_path.rglob("*.csv"))
+
+
+def test_valid_market_cache_is_reused_without_provider_access(tmp_path, monkeypatch):
+    _stub_market_calendar(monkeypatch)
+    bundle = _bundle()
+
+    class FakeProvider:
+        def __init__(self, _config):
+            pass
+
+        def fetch(self, *_args):
+            pytest.fail("a valid cached bundle must not be downloaded again")
+
+    monkeypatch.setattr("src.data.backtest_data.MarketHistoryProvider", FakeProvider)
+    from src.data.market_history import PointInTimeMarketStore
+
+    PointInTimeMarketStore(tmp_path).write(bundle)
+    result = prepare_backtest_data(
+        {"point_in_time_data": {"output_dir": str(tmp_path)}},
+        ["600000"],
+        "2020-01-01",
+        "2020-01-03",
+        as_of=datetime(2020, 1, 3, tzinfo=timezone.utc),
+    )
+
+    assert result.ready
+    assert result.reused_codes == ["600000"]
+    assert result.fetch_attempts[0].status == "reused"
+
+
+def test_short_history_without_listing_evidence_remains_not_ready():
+    bundle = _bundle()
+    with pytest.raises(ValueError, match="coverage starts"):
+        from src.data.backtest_data import validate_market_bundle
+
+        validate_market_bundle(
+            bundle,
+            "600000",
+            date(2018, 1, 1),
+            date(2020, 1, 3),
+            tolerance_days=31,
+        )
+
+
+def test_optimizer_reuses_short_cache_after_official_listing_lookup(
+    tmp_path, monkeypatch
+):
+    _stub_market_calendar(monkeypatch)
+    from src.data.listing_dates import ListingDateEvidence
+    from src.data.market_history import PointInTimeMarketStore
+
+    cached = _bundle()
+    later = cached.prices.iloc[[-1]].copy()
+    later["date"] = pd.Timestamp("2020-01-04")
+    cached.prices = pd.concat([cached.prices, later], ignore_index=True)
+    PointInTimeMarketStore(tmp_path).write(cached)
+    monkeypatch.setattr(
+        "src.data.backtest_data.ListingDateStore.resolve",
+        lambda _self, _code: ListingDateEvidence(
+            "600000",
+            date(2020, 1, 1),
+            "https://query.sse.com.cn/sseQuery/commonQuery.do",
+            "2026-10-03T00:00:00+00:00",
+        ),
+    )
+
+    class NeverFetch:
+        def __init__(self, _config):
+            pass
+
+        def fetch(self, *_args):
+            pytest.fail("verified cache should be reusable")
+
+    monkeypatch.setattr("src.data.backtest_data.MarketHistoryProvider", NeverFetch)
+    result = prepare_backtest_data(
+        {"point_in_time_data": {"output_dir": str(tmp_path)}},
+        ["600000"],
+        "2018-01-01",
+        "2020-01-03",
+        purpose="optimizer",
+        as_of=datetime(2020, 1, 3, tzinfo=timezone.utc),
+    )
+    assert result.ready
+    assert result.reused_codes == ["600000"]
+    assert result.as_dict()["listing_dates"]["600000"]["listing_date"] == "2020-01-01"
+    persisted = PointInTimeMarketStore(tmp_path).read("600000")
+    assert persisted.listing_evidence
+    assert len(persisted.prices) == 4
+
+
 def test_fundamental_dependency_failure_is_not_silently_accepted(tmp_path, monkeypatch):
+    _stub_market_calendar(monkeypatch)
     bundle = _bundle()
 
     class FakeProvider:
@@ -148,6 +337,56 @@ def test_fundamental_dependency_failure_is_not_silently_accepted(tmp_path, monke
     assert not result.ready
     assert result.issues[-1].source == "fundamental"
     assert "no dated statement" in result.issues[-1].reason
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        {"status": "failed", "reason": "provider failed"},
+        {"instruments": [], "pending_codes": ["600000"]},
+        {"instruments": [{"code": "600001", "statements": {"status": "success"}}]},
+    ],
+)
+def test_fundamental_backfill_requires_receipt_for_requested_code(
+    tmp_path, monkeypatch, receipt
+):
+    _stub_market_calendar(monkeypatch)
+
+    class FakeProvider:
+        def __init__(self, _config):
+            pass
+
+        def fetch(self, _code, _start, _end):
+            return _bundle()
+
+    class FakeBackfill:
+        def __init__(self, _config):
+            pass
+
+        def run(self, *, codes, evaluation_date):
+            return receipt
+
+    monkeypatch.setattr("src.data.backtest_data.MarketHistoryProvider", FakeProvider)
+    monkeypatch.setattr(
+        "src.data.point_in_time_backfill.PointInTimeBackfillService",
+        FakeBackfill,
+    )
+    strategy = type(
+        "FundamentalStrategy",
+        (),
+        {"fundamental_feature_dependencies": ("valuation:quality",)},
+    )()
+    result = prepare_backtest_data(
+        {"point_in_time_data": {"output_dir": str(tmp_path)}},
+        ["600000"],
+        "2020-01-01",
+        "2020-01-03",
+        purpose="test",
+        strategy=strategy,
+    )
+    assert not result.ready
+    assert result.issues[-1].code == "600000"
+    assert result.issues[-1].source == "fundamental"
 
 
 def test_optimizer_report_exposes_all_roles_and_holdout_aggregate():

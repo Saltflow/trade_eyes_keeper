@@ -218,6 +218,28 @@ def test_example_declares_the_approved_complete_market_contracts():
 
 
 @pytest.mark.parametrize(
+    ("source_ref", "expected_ref"),
+    [("master", "master"), ("HEAD", "HEAD:master")],
+)
+def test_deploy_pushes_selected_release_ref_without_force(
+    monkeypatch, source_ref, expected_ref
+):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setenv("DEPLOY_SOURCE_REF", source_ref)
+    monkeypatch.setattr(ci_cd_deploy, "REMOTE_SSH", "deploy.invalid:/repo")
+    monkeypatch.setattr(ci_cd_deploy, "_get_dry_run", lambda: False)
+    monkeypatch.setattr(ci_cd_deploy, "_get_ssh_key", lambda: "test-key")
+    monkeypatch.setattr(ci_cd_deploy.subprocess, "run", fake_run)
+    assert ci_cd_deploy._git_push()
+    assert calls == [["git", "push", "deploy.invalid:/repo", expected_ref]]
+
+
+@pytest.mark.parametrize(
     ("case", "error"),
     [
         ("legacy_engine", "global optimizer fallback fields are forbidden: engine"),
