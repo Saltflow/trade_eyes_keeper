@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+
+import pandas as pd
+import pytest
 import yaml
 
 import main
@@ -11,7 +16,6 @@ from src.search.artifacts import (
     load_latest_strategy_run,
     publish_complete_run,
 )
-
 
 GROUPS = ("a_share", "hk", "us")
 SOLVERS = {
@@ -286,3 +290,123 @@ def test_failing_holdout_without_relative_evidence_cannot_activate(tmp_path):
     )
 
     assert not activate_run("no_relative_evidence", group="a_share", root=tmp_path)
+
+
+@pytest.mark.parametrize(
+    "enabled,auto_activate,candidate_return,incumbent_available,comparison_available",
+    [
+        pytest.param(True, True, 12.0, True, True, id="better-auto-activates"),
+        pytest.param(True, False, 12.0, True, True, id="auto-disabled"),
+        pytest.param(False, True, 12.0, True, True, id="promotion-disabled"),
+        pytest.param(True, True, 8.0, True, True, id="worse-candidate"),
+        pytest.param(True, True, 10.0, True, True, id="equal-candidate"),
+        pytest.param(True, True, 12.0, False, False, id="no-incumbent"),
+        pytest.param(True, True, 12.0, True, False, id="missing-comparison"),
+    ],
+)
+def test_optimizer_auto_activation_updates_only_the_improved_market(
+    tmp_path,
+    monkeypatch,
+    enabled,
+    auto_activate,
+    candidate_return,
+    incumbent_available,
+    comparison_available,
+):
+    """Exercise real promotion, publication and active pointers with fake scoring."""
+    config = main.load_config()
+    config.pop("point_in_time_data", None)
+    config["stocks"] = ["00883", "01816", "00700", "00728", "01339"]
+    config["skip_search"] = []
+    market_config = main.get_market_optimizer_config("hk", config)
+    monkeypatch.chdir(tmp_path)
+    root = Path("data/optimizer")
+    for group in GROUPS:
+        if group == "hk" and not incumbent_available:
+            continue
+        assert _candidate(root, f"baseline_{group}", group)
+        assert activate_run(f"baseline_{group}", group=group, root=root)
+    before = (root / "latest_strategy.yaml").read_bytes()
+    before_entries = yaml.safe_load(before)["groups"]
+    policy_path = Path("config/promotion_policy.yaml")
+    policy_path.parent.mkdir()
+    policy_path.write_text(
+        yaml.safe_dump(
+            {"enabled": enabled, "auto_activate_if_better": auto_activate}
+        ),
+        encoding="utf-8",
+    )
+    history = pd.DataFrame(
+        {"date": pd.date_range("2026-01-01", periods=2), "close": [10.0, 11.0]}
+    )
+
+    class FixtureDataSource:
+        def __init__(self, config):
+            pass
+
+        def fetch_stock_data(self, code, days):
+            return history.copy()
+
+    def search(*args, output_dir, _constraints, **kwargs):
+        assert _candidate(root, output_dir.name, "hk", eligible=False)
+        path = output_dir / "hk_best_params.yaml"
+        artifact = yaml.safe_load(path.read_text(encoding="utf-8"))
+        artifact["market_config_hash"] = market_config.config_hash
+        path.write_text(yaml.safe_dump(artifact), encoding="utf-8")
+        result = SimpleNamespace(parameters={"adx_min": 1}, objective_score=1.0)
+        return [result], _constraints
+
+    def snapshot(total_return):
+        return {
+            "total_return": total_return,
+            "max_drawdown": -10.0,
+            "trade_count": 4,
+            "benchmark_returns": {"VOO": 20.0, "BRK.B": 15.0, "risk_free": 3.0},
+        }
+
+    evaluations = iter(
+        [
+            {"hk": snapshot(candidate_return)},
+            {"hk": snapshot(10.0)} if comparison_available else {},
+        ]
+    )
+    monkeypatch.setattr("src.data.data_source.DataSource", FixtureDataSource)
+    monkeypatch.setattr(main, "_has_optimizer_history", lambda *args: True)
+    monkeypatch.setattr(main, "_load_optimizer_benchmarks", lambda *args: {})
+    monkeypatch.setattr(main, "run_optimizer", search)
+    monkeypatch.setattr(
+        main, "evaluate_all_groups", lambda *args, **kwargs: next(evaluations)
+    )
+    monkeypatch.setattr(main, "_optimizer_validation_snapshot", lambda report: report)
+    reports = []
+
+    assert main._run_optimization_group(
+        config, "hk", market_config, report_sink=reports
+    ) == {"hk": 1}
+
+    report = reports[0]
+    expected_activation = bool(
+        enabled
+        and auto_activate
+        and candidate_return > 10.0
+        and incumbent_available
+        and comparison_available
+    )
+    assert report.activated is expected_activation
+    assert report.candidate is not expected_activation
+    run_dir = root / "runs" / report.run_id
+    assert (run_dir / "manifest.yaml").exists()
+    receipt = yaml.safe_load((run_dir / "run_summary.yaml").read_text("utf-8"))
+    assert receipt["activated"] is expected_activation
+    after = yaml.safe_load((root / "latest_strategy.yaml").read_text("utf-8"))
+    for group in ("a_share", "us"):
+        assert after["groups"][group] == before_entries[group]
+    if expected_activation:
+        assert after["groups"]["hk"]["run_id"] == report.run_id
+        artifact = yaml.safe_load(
+            (run_dir / "hk_best_params.yaml").read_text("utf-8")
+        )
+        assert artifact["activation"]["relative_promotion_passed"] is True
+        assert artifact["activation"]["holdout_passed"] is False
+    else:
+        assert (root / "latest_strategy.yaml").read_bytes() == before

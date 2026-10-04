@@ -1085,11 +1085,12 @@ def _run_optimization_group(
             promotion_decision.compared_group_count,
             list(promotion_decision.reasons),
         )
-    # A search run is always published as an auditable candidate.  Promotion
-    # remains a separate, explicit ``--activate-run`` operation even when the
-    # configured relative-promotion policy passes; a scheduled search must
-    # never mutate the production strategy pointer by itself.
-    should_activate = False
+    # Preserve the candidate artifact, then honor automatic replacement only
+    # when the same-market comparison passed and the policy enables it.
+    # Otherwise the candidate remains available for explicit --activate-run.
+    should_activate = bool(
+        promotion_policy.auto_activate_if_better and promotion_decision.passed
+    )
     published = publish_complete_run(
         run_id,
         run_strategy_name,

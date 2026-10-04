@@ -1,6 +1,8 @@
 # Production replacement is relative to the incumbent, evaluated on the same
 # frozen 9-month slice with identical data, benchmarks and execution rules.
 enabled: true
+# Automatically replace only the compared market after relative promotion
+# passes. False retains the candidate for explicit --activate-run approval.
 auto_activate_if_better: true
 
 # These defaults describe an explicit combined-portfolio comparison. The
