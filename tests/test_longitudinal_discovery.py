@@ -22,14 +22,14 @@ def test_catalog_discovery_is_read_only_and_verifies_original_hash(tmp_path):
     dbpath = folder / "catalog.sqlite3"
     with sqlite3.connect(dbpath) as db:
         db.executescript("""
-        CREATE TABLE documents(document_id,title,publication_date);
+        CREATE TABLE documents(document_id,title,publication_date,source_url);
         CREATE TABLE document_sources(document_id,code);
         CREATE TABLE document_artifacts(document_id,file_id,kind);
         CREATE TABLE files(file_id,relative_path,sha256,present);
         """)
         db.execute(
-            "INSERT INTO documents VALUES(?,?,?)",
-            ("d1", "2022年年度报告", "2023-04-01"),
+            "INSERT INTO documents VALUES(?,?,?,?)",
+            ("d1", "2022年年度报告", "2023-04-01", "https://static.cninfo.com.cn/example.pdf"),
         )
         db.execute("INSERT INTO document_sources VALUES(?,?)", ("d1", "600039"))
         db.execute("INSERT INTO document_artifacts VALUES(?,?,?)", ("d1", "f1", "pdf"))
@@ -40,6 +40,7 @@ def test_catalog_discovery_is_read_only_and_verifies_original_hash(tmp_path):
     )
     assert rows[0]["period_end"] == "2022-12-31"
     assert rows[0]["discovered_from"] == "dataset_catalog"
+    assert rows[0]["url"] == "https://static.cninfo.com.cn/example.pdf"
     assert hashlib.sha256(dbpath.read_bytes()).hexdigest() == before
     assert (
         archived_documents(

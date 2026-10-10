@@ -144,7 +144,7 @@ class PDFBatchReader:
         with sqlite3.connect(catalog.as_uri() + "?mode=ro", uri=True) as db:
             db.row_factory = sqlite3.Row
             rows = db.execute(
-                "SELECT DISTINCT d.document_id,d.title,d.publication_date,"
+                "SELECT DISTINCT d.document_id,d.title,d.publication_date,d.source_url,"
                 "f.relative_path,f.sha256 FROM documents d "
                 "JOIN document_sources s ON s.document_id=d.document_id "
                 "JOIN document_artifacts a ON a.document_id=d.document_id "
@@ -193,6 +193,7 @@ class PDFBatchReader:
                     "published_at": published,
                     "document_kind": kind,
                     "document_title": title,
+                    "url": row["source_url"],
                 },
                 self.project_root,
             )

@@ -150,6 +150,8 @@ def discover_documents(group, as_of):
         key = (doc["issuer_id"], doc["sha256"], doc["published_at"])
         if key in docs and docs[key]["period_end"] != doc["period_end"]:
             raise ValueError("catalog_source_period_conflict")
+        if key in docs and not docs[key].get("url") and doc.get("url"):
+            docs[key]["url"] = doc["url"]
         docs.setdefault(key, doc)
     lower = int(as_of[:4]) - group.get("history_years", 7)
     return sorted(

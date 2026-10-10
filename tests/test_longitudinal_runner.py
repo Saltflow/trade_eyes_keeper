@@ -2,8 +2,8 @@
 
 import copy
 import json
-from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -246,3 +246,16 @@ def test_preparation_uses_isolated_valuation_snapshot(tmp_path, monkeypatch):
     inputs, _ = runner._preparation_inputs(group, {"companies": [], "as_of": "2026-10-10"}, [])
     assert observed == [group["valuation_store_root"]]
     assert "valuation_events_hash" in inputs
+
+
+def test_catalog_url_fills_duplicate_manifest_missing_url(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.json"
+    entry = {"issuer_id": "a_share:600039", "period_end": "2022-12-31", "published_at": "2023-04-01", "pdf_file": "original.pdf", "pdf_sha256": "a" * 64}
+    write(manifest_path, {"documents": [entry]})
+    group = {"companies": [{"issuer_id": "a_share:600039", "name": "test"}], "document_manifests": [str(manifest_path)]}
+    catalog = {"issuer_id": entry["issuer_id"], "period_end": entry["period_end"], "published_at": entry["published_at"], "sha256": entry["pdf_sha256"], "url": "https://static.cninfo.com.cn/fixture.pdf"}
+    monkeypatch.setattr("src.fundamental_quant.longitudinal_discovery.archived_documents", lambda *a: [catalog])
+    docs = runner.discover_documents(group, "2026-10-10")
+    assert len(docs) == 1
+    assert docs[0]["url"] == catalog["url"]
+    assert docs[0]["path"] == str((tmp_path / "original.pdf").resolve())
