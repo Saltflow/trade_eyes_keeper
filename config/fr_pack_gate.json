@@ -1,0 +1,13 @@
+{
+  "version": "fr-material-gate/1",
+  "profile": "ordinary_company",
+  "critical_fields": [
+    "revenue",
+    "cost",
+    "net_profit_parent",
+    "cfo",
+    "capex",
+    "parent_equity"
+  ],
+  "minimum_fill_rate": 0.85
+}

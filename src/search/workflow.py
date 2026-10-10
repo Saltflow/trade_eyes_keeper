@@ -611,8 +611,11 @@ def run_optimizer(
             for window in windows
         ]
     )
+    from ..data.corporate_action_currency import CORPORATE_ACTION_CURRENCY_CONTRACT
+
     execution_hash = stable_hash(
         {
+            "currency_cash_version": CORPORATE_ACTION_CURRENCY_CONTRACT,
             "initial_capital": exec_cfg.initial_capital,
             "commission_rate": exec_cfg.commission_rate,
             "min_holding_days": exec_cfg.min_holding_days,
@@ -759,6 +762,7 @@ def run_optimizer(
         "feature_contract_hash": feature_hash,
         "data_contract_hash": data_hash,
         "execution_contract_hash": execution_hash,
+        "execution_contracts": {"currency_cash_version": CORPORATE_ACTION_CURRENCY_CONTRACT},
         "window_contract_hash": window_hash,
         "control_benchmarks": list(constraints.benchmark_codes),
         "ranking_window_indexes": ranking_indexes,
@@ -1040,6 +1044,7 @@ def _save_optimizer_result(
             "parameter-space/1",
         ),
         "solver_id": solver_id,
+        "execution_contracts": dict(search_metadata.get("execution_contracts", {})),
         "solver_config": dict(search_metadata.get("solver_config", {})),
         "gate_profile": gate_profile,
         "gate_contract": dict(search_metadata.get("gate_contract", {})),

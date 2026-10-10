@@ -1041,6 +1041,45 @@ class EmailNotifier(BaseNotifier):
             ),
         )
 
+    def _daily_scan_outcomes(self, signal_scan):
+        outcomes = getattr(signal_scan, "group_outcomes", None)
+        outcomes = outcomes if isinstance(outcomes, dict) else {}
+        return {
+            group: outcomes.get(group) or {
+                "status": "not_run", "reason": "缺少扫描完成状态"
+            }
+            for group in ("a_share", "hk", "us")
+        }
+
+
+    def _daily_scan_status_text(self, outcome):
+        labels = {
+            "completed": "扫描完成",
+            "completed_no_signal": "扫描完成，无触发信号",
+            "blocked": "扫描受阻",
+            "failed": "扫描失败",
+            "not_run": "未执行扫描",
+            "not_applicable": "无需扫描",
+        }
+        label = labels.get(outcome.get("status"), "扫描状态未知")
+        reason = str(outcome.get("reason") or "")
+        text = f"{label}：{reason}" if reason else label
+        if "expected_codes" in outcome:
+            expected = set(outcome["expected_codes"])
+            scanned = set(outcome.get("scanned_codes", [])) & expected
+            text += f"（覆盖{len(scanned)}/{len(expected)}只）"
+        return text
+
+
+    def _daily_scan_complete(self, signal_scan):
+        return all(
+            outcome.get("status") in {
+                "completed", "completed_no_signal", "not_applicable"
+            }
+            for outcome in self._daily_scan_outcomes(signal_scan).values()
+        )
+
+
     def _build_daily_summary_section(self, rows, alert_stocks, signal_scan=None):
         alert_codes, signal_codes = self._daily_alert_code_sets(
             alert_stocks, signal_scan
@@ -1050,7 +1089,11 @@ class EmailNotifier(BaseNotifier):
             ("行情就绪", f"{active_count}/{len(rows)}"),
             ("告警标的", len(alert_codes)),
             ("触发条件", len(alert_stocks or [])),
-            ("策略信号", len(signal_codes)),
+            (
+                "策略信号",
+                len(signal_codes) if self._daily_scan_complete(signal_scan)
+                else f"{len(signal_codes)}（扫描未完成）",
+            ),
         ]
         html = [
             '<section class="daily-section summary-section">'
@@ -1237,6 +1280,85 @@ class EmailNotifier(BaseNotifier):
             )
         return '<section class="daily-section"><div class="section-heading">未解禁定增</div>' + "".join(cards) + '</section>'
 
+    def _build_daily_signal_section(self, signal_scan, stock_data) -> str:
+        """Show scan details even when historical evaluation reports are absent."""
+        parts = [
+            '<section class="daily-section signal-section">'
+            '<div class="section-heading">今日策略信号'
+        ]
+        if signal_scan is None:
+            parts.append(
+                '</div><div class="muted-note">策略扫描结果不可用；'
+                '不能据此判断为无信号。</div></section>'
+            )
+            return "".join(parts)
+
+        alerts = getattr(signal_scan, "alerts", None) or []
+        codes = {str(_alert_value(alert, "stock_code", "?")) for alert in alerts}
+        parts.append(
+            f'<span class="section-count">{len(alerts)}条 / {len(codes)}只'
+            '</span></div>'
+        )
+        for group, outcome in self._daily_scan_outcomes(signal_scan).items():
+            label = {"a_share": "A股", "hk": "港股", "us": "美股"}[group]
+            parts.append(
+                '<div class="muted-note">'
+                f'{label}：{_html_escape(self._daily_scan_status_text(outcome))}</div>'
+            )
+        if not self._daily_scan_complete(signal_scan):
+            parts.append(
+                '<div class="muted-note">策略扫描未全部完成；'
+                '已列出的信号来自实际扫描子集，不能据此判断全部市场无信号。</div>'
+            )
+        if not alerts:
+            if not self._daily_scan_complete(signal_scan):
+                return "".join(parts) + "</section>"
+            no_signal_text = (
+                "本次无待扫描标的。"
+                if all(outcome.get("status") == "not_applicable"
+                       for outcome in self._daily_scan_outcomes(signal_scan).values())
+                else "本次扫描无触发信号。"
+            )
+            parts.append(f'<div class="muted-note">{no_signal_text}</div></section>')
+            return "".join(parts)
+
+        rows = self._daily_row_map(stock_data)
+        map_a = _build_signal_label_map("a_share")
+        map_hk = _build_signal_label_map("hk") or _build_signal_label_map("non_a_share")
+        map_us = _build_signal_label_map("us") or _build_signal_label_map("non_a_share")
+        for alert in alerts:
+            code = str(_alert_value(alert, "stock_code", "?"))
+            name = _alert_value(
+                alert, "stock_name", rows.get(code, {}).get("stock_name", "")
+            )
+            raw_label = _alert_value(
+                alert, "rule_label", _alert_value(alert, "label", "规则未提供")
+            )
+            rule = _readable_signal(code, raw_label, map_a, map_hk, map_us)
+            side = str(_alert_value(alert, "side", "")).lower()
+            if not side:
+                kind = str(_alert_value(alert, "type", "")).lower()
+                side = {"strategy_buy": "buy", "strategy_sell": "sell"}.get(kind, "")
+            direction = {"buy": "买入", "sell": "卖出"}.get(side, side or "方向未提供")
+            current_value = self._daily_get(alert, "current_value")
+            detail = _alert_value(alert, "detail", _alert_value(alert, "reason", ""))
+            signal_date = _alert_value(alert, "signal_date", "")
+            parts.append(
+                '<div class="signal-row"><div class="signal-title"><strong>'
+                f'{_html_escape(code)} · {_html_escape(name, "")}</strong>'
+                f' <span>{_html_escape(direction)}</span></div>'
+                f'<div>规则：{_html_escape(rule)} · '
+                f'当前值：{_html_escape(current_value)}</div>'
+            )
+            if detail:
+                parts.append(f'<div>触发依据：{_html_escape(detail)}</div>')
+            if signal_date:
+                parts.append(f'<div>信号日期：{_html_escape(signal_date)}</div>')
+            parts.append('</div>')
+        parts.append('</section>')
+        return "".join(parts)
+
+
     def _build_daily_strategy_section(
         self,
         evaluation_reports,
@@ -1267,14 +1389,16 @@ class EmailNotifier(BaseNotifier):
         ]
         for group, label in labels.items():
             report = reports.get(group)
+            outcome = self._daily_scan_outcomes(signal_scan)[group]
             action_text = (
-                f'策略信号 {signal_counts[group]} · 价格预警 {alert_counts[group]}'
+                f'{self._daily_scan_status_text(outcome)} · '
+                f'已发现策略信号 {signal_counts[group]} · 价格预警 {alert_counts[group]}'
             )
             if report is None:
                 parts.append(
                     '<div class="market-card market-card-inactive"><div class="market-title">'
                     f'<strong>{_html_escape(label)}</strong><span>{_html_escape(action_text)}</span>'
-                    '</div><div class="muted-note">该市场未激活独立策略；未读取其他市场结果。</div></div>'
+                    '</div><div class="muted-note">该市场历史评估报告不可用；扫描状态独立列示。</div></div>'
                 )
                 continue
 
@@ -1597,6 +1721,7 @@ class EmailNotifier(BaseNotifier):
             summary_section=self._build_daily_summary_section(
                 watchlist_rows, alert_stocks, signal_scan
             ),
+            signal_section=self._build_daily_signal_section(signal_scan, stock_data),
             decision_section=self._build_daily_strategy_section(
                 reports,
                 signal_scan,

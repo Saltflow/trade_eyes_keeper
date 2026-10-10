@@ -1,0 +1,29 @@
+{
+  "purpose": "Real HKEX text excerpts; issuer identity additionally grounded in official title-search code 09999, not fabricated body text",
+  "sources": [
+    {
+      "fixture": "2025022000534.txt",
+      "url": "https://www.hkexnews.hk/listedco/listconews/sehk/2025/0220/2025022000534.pdf",
+      "pdf_sha256": "08e561e3c71b11185b730cd8ca377bf79d4b222aa7e72ade1c977fdc2f93f035",
+      "fixture_sha256": "240c6f804c49b0960ddaa510c002b8f8aa9d03c0291c8b8b753017d7c1f9dd5e",
+      "listed_code": "09999",
+      "scope": "full form"
+    },
+    {
+      "fixture": "2020111900807.txt",
+      "url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2020/1119/2020111900807.pdf",
+      "pdf_sha256": "157339a9502e6052283c4d59fa8465b440e79078d439121c29b84e817598cae4",
+      "fixture_sha256": "251821febcc11e27844f376b78d62a2886965c18be16d4cc9002333dac2bdbf2",
+      "listed_code": "09999",
+      "scope": "Quarterly Dividend section"
+    },
+    {
+      "fixture": "prospectus_page_38.txt",
+      "url": "https://www.hkexnews.hk/listedco/listconews/sehk/2020/0602/2020060200009.pdf",
+      "pdf_sha256": "10018458823ff79f20f28abea4747fc528bce247dde7148b574cd7b3464069e7",
+      "fixture_sha256": "0dffb080b4e4934c3c6bc3830021a51c473353a3c6f273d08dadcbb26cd025df",
+      "listed_code": "09999",
+      "scope": "PDF page 38 definitions"
+    }
+  ]
+}

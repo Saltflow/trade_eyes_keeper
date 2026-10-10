@@ -165,6 +165,9 @@ def build_corporate_action_schedule(
                 raise ValueError(
                     f"cash dividend lacks causal publication date: {code} {ex_date}"
                 )
+            from ..data.corporate_action_currency import validate_cash_currency
+
+            validate_cash_currency(action)
             cash_value = float(cash_value)
             if not np.isfinite(cash_value) or cash_value < 0.0:
                 raise ValueError(f"invalid cash dividend for {code} {ex_date}")

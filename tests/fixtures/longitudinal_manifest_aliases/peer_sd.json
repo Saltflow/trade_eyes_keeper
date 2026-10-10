@@ -1,0 +1,83 @@
+{
+  "company": "山东高速路桥集团股份有限公司",
+  "code": "000498",
+  "documents": [
+    {
+      "company": "山东高速路桥集团股份有限公司",
+      "code": "000498",
+      "period": "2023年度报告全文",
+      "publication_date": "2024-04-15",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2024-04-15/1219597914.PDF",
+      "source_kind": "official_cninfo",
+      "pdf_file": "2023_annual.pdf",
+      "pdf_bytes": 6757125,
+      "pdf_sha256": "48fdf76591479ab439cbe8834fa1e84e9eda4bc3be313a912d60cc93cb9c4831",
+      "text_file": "2023_annual.txt",
+      "pdf_header_valid": true,
+      "source_company_identity_verified": true,
+      "pdf_pages": 396
+    },
+    {
+      "company": "山东高速路桥集团股份有限公司",
+      "code": "000498",
+      "period": "2024年度报告全文",
+      "publication_date": "2025-04-15",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2025-04-15/1223096801.pdf",
+      "source_kind": "official_cninfo",
+      "pdf_file": "2024_annual.pdf",
+      "pdf_bytes": 2146357,
+      "pdf_sha256": "1e2ca738a1db0359610b4ea84745b532545af543d2efc4e2f12c9dfc552521db",
+      "text_file": "2024_annual.txt",
+      "pdf_header_valid": true,
+      "source_company_identity_verified": true,
+      "pdf_pages": 405
+    },
+    {
+      "company": "山东高速路桥集团股份有限公司",
+      "code": "000498",
+      "period": "2025年度报告全文",
+      "publication_date": "2026-04-18",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-04-18/1225123102.PDF",
+      "source_kind": "official_cninfo",
+      "pdf_file": "2025_annual.pdf",
+      "pdf_bytes": 8587450,
+      "pdf_sha256": "ecbc66587299817b4c51f8f029ccc77baf4b61b004477c712c4973b8226ffa17",
+      "text_file": "2025_annual.txt",
+      "pdf_header_valid": true,
+      "source_company_identity_verified": true,
+      "pdf_pages": 374
+    },
+    {
+      "company": "山东高速路桥集团股份有限公司",
+      "code": "000498",
+      "period": "2025年半年度报告全文",
+      "publication_date": "2025-08-30",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2025-08-30/1224627499.PDF",
+      "source_kind": "official_cninfo",
+      "pdf_file": "2025_h1.pdf",
+      "pdf_bytes": 1801378,
+      "pdf_sha256": "f77bdd4b3970535eeae2bd2334716fd6ac9291014d73dcb79973f7b15bd444bd",
+      "text_file": "2025_h1.txt",
+      "pdf_header_valid": true,
+      "source_company_identity_verified": true,
+      "pdf_pages": 338
+    },
+    {
+      "company": "山东高速路桥集团股份有限公司",
+      "code": "000498",
+      "period": "2026年半年度报告全文",
+      "publication_date": "2026-08-26",
+      "source_url": "https://static.cninfo.com.cn/finalpage/2026-08-26/1225506088.PDF",
+      "source_kind": "official_cninfo",
+      "pdf_file": "2026_h1.pdf",
+      "pdf_bytes": 7146404,
+      "pdf_sha256": "203af84150f38ac4175248e4f0798e3a54c5eebbfe1297fb9f0d4b47417ff8ce",
+      "text_file": "2026_h1_mirror.txt",
+      "pdf_header_valid": true,
+      "source_company_identity_verified": true,
+      "pdf_pages": 370,
+      "mirror_pdf_sha256_matches_official": true
+    }
+  ],
+  "availability_note": "2026H1 official CNINFO full report located at 1225506088.PDF (file SHA-256 matches Sina mirror fetched earlier). The mirror text extraction is byte-identical to official report."
+}

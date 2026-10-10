@@ -1,0 +1,56 @@
+{
+  "company": "安徽建工集团股份有限公司",
+  "ticker": "600502",
+  "source_registry": "巨潮资讯网（CNINFO）公告原文，交易所法定披露镜像",
+  "documents": [
+    {
+      "document_id": "annual_2023",
+      "period_end": "2023-12-31",
+      "disclosure_date": "2024-03-27",
+      "title": "安徽建工_2023年年度报告",
+      "url": "https://static.cninfo.com.cn/finalpage/2024-03-27/1219412593.PDF",
+      "local_file": "安徽建工_2023年年度报告.pdf",
+      "sha256": "44CB678083EE0AA7EA91FCB3F8AC3D883D35C0415BEA49197F57841FB9E5421A",
+      "pdf_signature": "%PDF-",
+      "hash_matches_recorded": true,
+      "pages_total": 279
+    },
+    {
+      "document_id": "annual_2024",
+      "period_end": "2024-12-31",
+      "disclosure_date": "2025-03-29",
+      "title": "安徽建工_2024年年度报告",
+      "url": "https://static.cninfo.com.cn/finalpage/2025-03-29/1222949376.PDF",
+      "local_file": "安徽建工_2024年年度报告.pdf",
+      "sha256": "734F4A58A37C1C60DFB5FFA75DEE29FBF640165914788438540AFED927493DA0",
+      "pdf_signature": "%PDF-",
+      "hash_matches_recorded": true,
+      "pages_total": 313
+    },
+    {
+      "document_id": "annual_2025",
+      "period_end": "2025-12-31",
+      "disclosure_date": "2026-03-28",
+      "title": "安徽建工_2025年年度报告",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-03-28/1225040976.PDF",
+      "local_file": "安徽建工_2025年年度报告.pdf",
+      "sha256": "C61BEF2BCC3D84EB8A88D5DED7FB6A3A27F010B95984FCB4BEDE07843FDE495B",
+      "pdf_signature": "%PDF-",
+      "hash_matches_recorded": true,
+      "pages_total": 267
+    },
+    {
+      "document_id": "interim_2026H1",
+      "period_end": "2026-06-30",
+      "disclosure_date": "2026-08-31",
+      "title": "安徽建工_2026年半年度报告",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-08-31/1225534339.PDF",
+      "local_file": "安徽建工_2026年半年度报告.pdf",
+      "sha256": "C2EBFB0AAD2A6AC226663200CB32EB08B685806ABCB324FEC6EAE2BF65EF9227",
+      "pdf_signature": "%PDF-",
+      "hash_matches_recorded": true,
+      "pages_total": 216,
+      "integrity_note": "SHA-256 recomputed from local source; earlier summary transcription differed only in terminal byte, so recorded hash here is the local-file digest."
+    }
+  ]
+}

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
 import yaml
+from src.data.corporate_action_currency import CORPORATE_ACTION_CURRENCY_CONTRACT
+from src.search.artifacts import execution_contract_compatibility
 
 import main
 from src.search.artifacts import (
@@ -44,6 +47,9 @@ def _candidate(
                 "market_config_hash": config_hash,
                 "params": {"adx_min": 1},
                 "execution": {"model": "cash_cap"},
+                "execution_contracts": {
+                    "currency_cash_version": CORPORATE_ACTION_CURRENCY_CONTRACT,
+                },
                 "activation": {
                     "eligible": eligible,
                     "holdout_passed": eligible,
@@ -199,22 +205,36 @@ def test_activate_run_cli_requires_market_group():
     assert args.market_group is None
 
 
-def test_legacy_pointer_still_resolves_every_market(tmp_path):
+def test_legacy_pointer_preserves_native_markets_but_blocks_unproven_hk(tmp_path):
     artifacts = {
         group: _legacy_market(tmp_path, "legacy_run", group) for group in GROUPS
     }
     _legacy_pointer(tmp_path, "legacy_run", artifacts)
 
-    active = load_latest_strategy_run(groups=GROUPS, root=tmp_path)
+    active = load_latest_strategy_run(groups=("a_share", "us"), root=tmp_path)
 
     assert active is not None
     assert active.run_id == "legacy_run"
-    for group in GROUPS:
+    for group in ("a_share", "us"):
         assert active.strategy_for(group).name == "percentile"
         assert active.run_id_for(group) == "legacy_run"
         assert active.params_by_group[group].values == {"adx_min": 1}
         assert active.solver_by_group[group] == ""
         assert active.config_hash_by_group[group] == ""
+
+    diagnostics = {}
+    assert (
+        load_latest_strategy_run(
+            groups=("hk",), root=tmp_path, compatibility_diagnostics=diagnostics
+        )
+        is None
+    )
+    assert diagnostics["hk"]["requires_reoptimization"] is True
+    assert diagnostics["hk"]["status"] == "incompatible_execution_contract"
+    for group in ("a_share", "us"):
+        assert active.execution_compatibility_by_group[group]["status"] == (
+            "legacy_native_currency_compatible"
+        )
 
 
 def test_activation_carries_legacy_markets_forward(tmp_path):
@@ -234,10 +254,10 @@ def test_activation_carries_legacy_markets_forward(tmp_path):
     assert index["groups"]["hk"]["artifact"] == artifacts["hk"]
     assert index["groups"]["hk"]["legacy"] is True
 
-    active = load_latest_strategy_run(groups=GROUPS, root=tmp_path)
+    active = load_latest_strategy_run(groups=("a_share", "us"), root=tmp_path)
     assert active is not None
     assert active.strategy_for("a_share").name == "technical_ensemble"
-    assert active.strategy_for("hk").name == "percentile"
+    assert load_latest_strategy_run(groups=("hk",), root=tmp_path) is None
     assert active.strategy_for("us").name == "percentile"
 
 
@@ -286,3 +306,63 @@ def test_failing_holdout_without_relative_evidence_cannot_activate(tmp_path):
     )
 
     assert not activate_run("no_relative_evidence", group="a_share", root=tmp_path)
+
+
+@pytest.mark.parametrize("group", GROUPS)
+def test_explicit_unknown_currency_contract_is_rejected(group):
+    result = execution_contract_compatibility(
+        {"execution_contracts": {"currency_cash_version": "future/999"}}, group
+    )
+    assert result["compatible"] is False
+    assert result["requires_reoptimization"] is True
+
+
+@pytest.mark.parametrize("group", GROUPS)
+def test_current_currency_contract_is_compatible(group):
+    result = execution_contract_compatibility(
+        {
+            "execution_contracts": {
+                "currency_cash_version": CORPORATE_ACTION_CURRENCY_CONTRACT,
+            }
+        },
+        group,
+    )
+    assert result["status"] == "compatible"
+    assert result["requires_reoptimization"] is False
+
+
+@pytest.mark.parametrize("contract", [None, [], {"currency_cash_version": ""}])
+def test_malformed_contract_cannot_use_native_legacy_policy(contract):
+    result = execution_contract_compatibility({"execution_contracts": contract}, "us")
+    assert result["compatible"] is False
+
+
+def test_activation_cannot_bypass_current_currency_contract(tmp_path):
+    assert _candidate(tmp_path, "new_hk", "hk")
+    artifact = tmp_path / "runs/new_hk/hk_best_params.yaml"
+    data = yaml.safe_load(artifact.read_text(encoding="utf-8"))
+    data.pop("execution_contracts")
+    artifact.write_text(yaml.safe_dump(data), encoding="utf-8")
+    before = artifact.read_bytes()
+    assert not activate_run("new_hk", group="hk", root=tmp_path)
+    assert artifact.read_bytes() == before
+    assert not (tmp_path / "latest_strategy.yaml").exists()
+
+
+def test_loading_rejects_matching_old_self_hash_without_rewriting_artifact(tmp_path):
+    assert _candidate(tmp_path, "active_hk", "hk")
+    assert activate_run("active_hk", group="hk", root=tmp_path)
+    artifact = tmp_path / "runs/active_hk/hk_best_params.yaml"
+    data = yaml.safe_load(artifact.read_text(encoding="utf-8"))
+    data["execution_contracts"]["currency_cash_version"] = "old/0"
+    artifact.write_text(yaml.safe_dump(data), encoding="utf-8")
+    before = artifact.read_bytes()
+    diagnostics = {}
+    assert (
+        load_latest_strategy_run(
+            groups=("hk",), root=tmp_path, compatibility_diagnostics=diagnostics
+        )
+        is None
+    )
+    assert diagnostics["hk"]["status"] == "incompatible_execution_contract"
+    assert artifact.read_bytes() == before

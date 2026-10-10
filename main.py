@@ -1403,42 +1403,14 @@ def run_daily_task(force: bool = False):
             )
             if scan_timestamp:
                 logger.info("Signal scan uses active optimizer run from %s", scan_timestamp)
-            a_alerts = _scan_group(
-                session,
-                scan_strategies.get("a_share"),
-                "a_share",
-                scan_params.get("a_share"),
-                config=config,
+            session.signal_scan = _collect_signal_scan(
+                session, scan_strategies, scan_params, config
             )
-            hk_alerts = _scan_group(
-                session,
-                scan_strategies.get("hk"),
-                "hk",
-                scan_params.get("hk"),
-                config=config,
-            )
-            us_alerts = _scan_group(
-                session,
-                scan_strategies.get("us"),
-                "us",
-                scan_params.get("us"),
-                config=config,
-            )
-
-            for sa in a_alerts + hk_alerts + us_alerts:
-                session.alerts.append(sa)
-
-            # 存入信号扫描结果供邮件使用
-            session.signal_scan = type("ScanResult", (), {
-                "alerts": a_alerts + hk_alerts + us_alerts,
-                "consensus": None,
-                "indicator_snapshot": {},
-                "divergence_warnings": [],
-            })()
-
+            session.alerts.extend(session.signal_scan.alerts)
             logger.info(
-                f"策略信号扫描完成: A股={len(a_alerts)} + "
-                f"境外={len(hk_alerts) + len(us_alerts)} 个策略告警"
+                "策略信号扫描结果: %s; %s 个策略告警",
+                session.signal_scan.group_outcomes,
+                len(session.signal_scan.alerts),
             )
         except Exception as e:
             logger.warning(f"策略信号扫描失败 (非致命): {e}")
@@ -1708,38 +1680,11 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
                     brief_timestamp,
                 )
             brief_skipped_signals = get_skip_signals(config)
-            a_alerts = _scan_group(
-                session,
-                brief_strategies.get("a_share"),
-                "a_share",
-                brief_params.get("a_share"),
+            session.signal_scan = _collect_signal_scan(
+                session, brief_strategies, brief_params, config,
                 skip_codes=brief_skipped_signals,
-                config=config,
             )
-            hk_alerts = _scan_group(
-                session,
-                brief_strategies.get("hk"),
-                "hk",
-                brief_params.get("hk"),
-                skip_codes=brief_skipped_signals,
-                config=config,
-            )
-            us_alerts = _scan_group(
-                session,
-                brief_strategies.get("us"),
-                "us",
-                brief_params.get("us"),
-                skip_codes=brief_skipped_signals,
-                config=config,
-            )
-
-            session.signal_scan = type("ScanResult", (), {
-                "alerts": a_alerts + hk_alerts + us_alerts,
-                "consensus": None,
-                "indicator_snapshot": {},
-                "divergence_warnings": [],
-            })()
-            logger.info(f"简报策略信号扫描完成: {len(session.signal_scan.alerts)} 个策略告警")
+            logger.info("简报策略信号扫描结果: %s", session.signal_scan.group_outcomes)
         except Exception as e:
             logger.warning(f"简报策略信号扫描失败 (非致命): {e}")
 
@@ -1999,6 +1944,42 @@ def _fetch_benchmarks(config, session) -> dict:
     return bench_data
 
 
+def _collect_signal_scan(session, strategies, params, config, skip_codes=None):
+    """Keep each market's completion evidence separate from its alert count."""
+    outcomes = {}
+    alerts = []
+    for group in OPTIMIZER_GROUPS:
+        try:
+            alerts.extend(
+                _scan_group(
+                    session,
+                    strategies.get(group),
+                    group,
+                    params.get(group),
+                    skip_codes=skip_codes,
+                    config=config,
+                    scan_outcomes=outcomes,
+                )
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).exception("%s signal scan failed", group)
+            outcomes[group] = {
+                "status": "failed",
+                "reason": f"策略扫描异常：{type(exc).__name__}: {exc}",
+            }
+    return type(
+        "ScanResult",
+        (),
+        {
+            "alerts": alerts,
+            "group_outcomes": outcomes,
+            "consensus": None,
+            "indicator_snapshot": {},
+            "divergence_warnings": [],
+        },
+    )()
+
+
 def _scan_group(
     session,
     strategy,
@@ -2007,9 +1988,50 @@ def _scan_group(
     top_n: int = 5,
     skip_codes: set[str] | None = None,
     config: dict | None = None,
+    scan_outcomes: "dict | None" = None,
 ):
     """Derive today's alerts from the canonical full-market TradePlan."""
-    if strategy is None or not strategy.supports_market(group):
+    outcome = {"status": "not_run", "reason": "扫描尚未执行"}
+    if scan_outcomes is not None:
+        scan_outcomes[group] = outcome
+    df = session.get_all_dataframe()
+    skipped = skip_codes or set()
+    expected_codes = sorted(
+        {
+            _stock_code(stock)
+            for stock in (config or {}).get("stocks", [])
+            if _detect_fine_group(_stock_code(stock)) == group
+            and _stock_code(stock) not in skipped
+        }
+    )
+    if "stocks" not in (config or {}):
+        expected_codes = sorted(
+            {
+                str(row.get("stock_code", ""))
+                for _, row in df.iterrows()
+                if _detect_fine_group(str(row.get("stock_code", ""))) == group
+                and str(row.get("stock_code", "")) not in skipped
+            }
+        )
+    outcome.update(expected_codes=expected_codes, scanned_codes=[])
+    if not expected_codes:
+        outcome.update(status="not_applicable",
+                       reason="该市场无待扫描标的（含配置跳过）")
+        return []
+    if strategy is None:
+        compatibility = {}
+        load_latest_strategy_run(
+            groups=(group,), compatibility_diagnostics=compatibility
+        )
+        detail = compatibility.get(group, {})
+        if detail.get("status") == "incompatible_execution_contract":
+            outcome.update(status="blocked", reason=str(detail["reason"]))
+            outcome["execution_compatibility"] = detail
+        else:
+            outcome["reason"] = "未激活可用策略"
+        return []
+    if not strategy.supports_market(group):
+        outcome["reason"] = "策略不支持该市场"
         return []
     if params is None:
         active = load_latest_strategy_run(groups=(group,))
@@ -2021,10 +2043,9 @@ def _scan_group(
             else None
         )
     if params is None:
+        outcome.update(status="blocked", reason="缺少已激活策略参数")
         return []
-    df = session.get_all_dataframe()
     historical = getattr(session, "_historical", {}) or {}
-    skipped = skip_codes or set()
     active_codes = sorted(
         {
             str(row.get("stock_code", ""))
@@ -2034,7 +2055,19 @@ def _scan_group(
             and str(row.get("stock_code", "")) in historical
         }
     )
+    missing_codes = sorted(set(expected_codes) - set(active_codes))
+    outcome.update(
+        expected_codes=expected_codes,
+        available_codes=active_codes,
+        missing_codes=missing_codes,
+    )
     if not active_codes:
+        outcome.update(
+            status="blocked" if expected_codes else "not_run",
+            reason="无可扫描的行情及历史数据"
+            if expected_codes
+            else "该市场无待扫描标的（含配置跳过）",
+        )
         return []
     try:
         trade_plan, _, _, _ = build_trade_plan(
@@ -2049,13 +2082,17 @@ def _scan_group(
                 active_codes,
             ),
         )
-    except Exception:
+    except Exception as exc:
+        outcome.update(
+            status="failed", reason=f"交易计划生成失败：{type(exc).__name__}: {exc}"
+        )
         logging.getLogger(__name__).exception(
             "Unable to build %s live TradePlan",
             group,
         )
         return []
     if trade_plan is None or not trade_plan.dates:
+        outcome.update(status="blocked", reason="交易计划为空或没有可用交易日期")
         return []
     row = len(trade_plan.dates) - 1
     buys = np.asarray(
@@ -2107,6 +2144,17 @@ def _scan_group(
             str(item.get("stock_code", "")),
             str(item.get("side", "")),
         )
+    )
+    missing_codes = sorted(set(expected_codes) - set(trade_plan.symbols))
+    outcome.update(
+        status="blocked"
+        if missing_codes
+        else ("completed" if alerts else "completed_no_signal"),
+        reason="部分标的缺少扫描数据：" + ", ".join(missing_codes)
+        if missing_codes
+        else "",
+        scanned_codes=list(trade_plan.symbols),
+        missing_codes=missing_codes,
     )
     return alerts[:top_n]
 

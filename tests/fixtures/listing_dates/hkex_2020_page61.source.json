@@ -1,0 +1,9 @@
+{
+  "source_url": "https://www.hkex.com.hk/-/media/HKEX-Market/Market-Data/Statistics/Consolidated-Reports/HKEX-Fact-Book/HKEX-Fact-Book-2020/FB_2020.pdf",
+  "pdf_sha256": "f2c989387e9129a3fe77042298dbda77b33ab9373e69da879fa5c833d013305c",
+  "pdf_page": 61,
+  "printed_page": 59,
+  "extraction_method": "pdfplumber.extract_text; complete original page",
+  "retrieved_at": "2026-10-10",
+  "scope": "HKEX published completed new listings, not forward-looking IPO announcement"
+}

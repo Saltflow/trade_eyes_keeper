@@ -118,6 +118,9 @@ class ActiveStrategyRun:
     solver_by_group: dict[str, str] = field(default_factory=dict)
     config_hash_by_group: dict[str, str] = field(default_factory=dict)
     run_ids_by_group: dict[str, str] = field(default_factory=dict)
+    execution_compatibility_by_group: dict[str, dict[str, object]] = field(
+        default_factory=dict
+    )
 
     @property
     def strategy(self):
@@ -489,6 +492,11 @@ def _selection_diagnostics(data: dict) -> dict[str, object]:
         ),
         "sensitivity": dict(sensitivity),
         "selection_score": search.get("selection_score"),
+        "time_contract": (
+            dict(search.get("time_contract", {}))
+            if isinstance(search.get("time_contract"), dict)
+            else {}
+        ),
     }
     if windows or isinstance(data.get("holdout_summary"), dict):
         result.update({
@@ -676,11 +684,58 @@ def _artifact_matches_legacy_entry(data: dict, entry: dict, group: str) -> bool:
     return isinstance(data.get("execution"), dict)
 
 
+def execution_contract_compatibility(data: dict, group: str) -> dict[str, object]:
+    """Compare recorded cash semantics with the runtime without rewriting history.
+
+    The versioned change introduces HK declared-currency conversion. Existing
+    A-share equity/fund providers emit CNY cash and US providers emit USD cash;
+    their native-currency calculations are unchanged by this HK-only migration.
+    This explicit legacy policy does not certify any other contract or stamp a
+    new execution version on historical artifacts.
+    """
+    from ..data.corporate_action_currency import CORPORATE_ACTION_CURRENCY_CONTRACT
+
+    contracts = data.get("execution_contracts", {})
+    malformed = not isinstance(contracts, dict)
+    recorded = contracts.get("currency_cash_version") if not malformed else None
+    explicit = malformed or "currency_cash_version" in contracts
+    result: dict[str, object] = {
+        "status": "incompatible_execution_contract",
+        "compatible": False,
+        "recorded_currency_cash_version": recorded,
+        "runtime_currency_cash_version": CORPORATE_ACTION_CURRENCY_CONTRACT,
+        "requires_reoptimization": True,
+    }
+    if explicit and recorded == CORPORATE_ACTION_CURRENCY_CONTRACT:
+        result.update(
+            status="compatible",
+            compatible=True,
+            requires_reoptimization=False,
+            reason="",
+        )
+    elif not explicit and group in {"a_share", "us"}:
+        result.update(
+            status="legacy_native_currency_compatible",
+            compatible=True,
+            requires_reoptimization=False,
+            reason="旧产物保留原执行版本；A股CNY/美股USD同币种路径未变",
+            compatibility_policy="hk_conversion_only_native_cash_unchanged/1",
+        )
+    else:
+        result["reason"] = (
+            "港股旧产物缺少现金币种转换合同证据，需要按当前合同重新优化"
+            if not explicit and group == "hk"
+            else "产物现金币种执行合同与当前运行时不兼容，需要重新优化"
+        )
+    return result
+
+
 def load_latest_strategy_run(
     groups: tuple[str, ...] = MARKET_GROUPS,
     root: Path | str | None = None,
     *,
     _manifest_run_id: str | None = None,
+    compatibility_diagnostics: dict | None = None,
 ) -> ActiveStrategyRun | None:
     """Load explicitly activated v4 market entries only.
 
@@ -702,6 +757,7 @@ def load_latest_strategy_run(
     params_by_group: dict[str, Params] = {}
     validation_by_group: dict[str, dict[str, str]] = {}
     selection_by_group: dict[str, dict[str, object]] = {}
+    execution_compatibility_by_group: dict[str, dict[str, object]] = {}
     for group in requested:
         entry = _manifest_entry(manifest, group)
         legacy_entry = entry is None
@@ -723,6 +779,13 @@ def load_latest_strategy_run(
                 "Ignoring artifact whose market contract does not match %s",
                 group,
             )
+            return None
+        compatibility = execution_contract_compatibility(data or {}, group)
+        execution_compatibility_by_group[group] = compatibility
+        if compatibility_diagnostics is not None:
+            compatibility_diagnostics[group] = dict(compatibility)
+        if not compatibility["compatible"]:
+            logger.warning("%s: %s", group, compatibility["reason"])
             return None
         params = _parse_params(data or {}, str(entry["strategy"]))
         if params is None:
@@ -755,6 +818,7 @@ def load_latest_strategy_run(
         solver_by_group=solver_by_group,
         config_hash_by_group=config_hash_by_group,
         run_ids_by_group=run_ids_by_group,
+        execution_compatibility_by_group=execution_compatibility_by_group,
     )
 def load_strategy_run(
     run_id: str,
@@ -899,6 +963,10 @@ def activate_run(
     group_strategy = str(entry["strategy"])
     if not _artifact_matches_entry(data or {}, entry, group):
         logger.warning("%s candidate artifact does not match its market entry", group)
+        return False
+    compatibility = execution_contract_compatibility(data or {}, group)
+    if not compatibility["compatible"]:
+        logger.warning("%s candidate: %s", group, compatibility["reason"])
         return False
     if _parse_params(data or {}, group_strategy) is None:
         return False
