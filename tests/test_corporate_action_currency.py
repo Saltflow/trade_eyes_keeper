@@ -4,32 +4,12 @@ from datetime import date
 
 import pytest
 
-from src.data.corporate_action_currency import HkmaCashValuation, validate_cash_currency
+from src.data.corporate_action_currency import (
+    FixedCashValuation,
+    validate_cash_currency,
+)
 from src.data.hk_corporate_actions import match_hkex_cash_notice
 from src.data.market_history import CorporateAction
-
-
-class Response:
-    def __init__(self, payload):
-        self.text = json.dumps(payload)
-
-    def raise_for_status(self):
-        pass
-
-
-class HTTP:
-    def __init__(self, rows):
-        self.rows = rows
-        self.calls = 0
-
-    def get(self, url, **kwargs):
-        self.calls += 1
-        return Response(
-            {
-                "header": {"success": True},
-                "result": {"datasize": len(self.rows), "records": self.rows},
-            }
-        )
 
 
 def action(**kwargs):
@@ -50,49 +30,96 @@ def test_foreign_cash_requires_conversion():
         validate_cash_currency(action())
 
 
-def test_causal_hkma_conversion_preserves_original_and_reuses(tmp_path):
-    http = HTTP([{"end_of_day": "2025-03-04", "usd": 7.778}])
-    p = HkmaCashValuation({"point_in_time_data": {"output_dir": str(tmp_path)}}, http)
-    result = p.convert(action())
-    assert result.cash_per_share == pytest.approx(0.24405 * 7.778)
-    assert (
-        result.declared_cash_per_share == 0.24405 and result.declared_currency == "USD"
+@pytest.fixture
+def fixed_config(tmp_path):
+    import yaml
+
+    from src.search.config import DEFAULT_APPLICATION_PATH, DEFAULT_PATH
+
+    app = yaml.safe_load(DEFAULT_APPLICATION_PATH.read_text(encoding="utf-8"))
+    raw = yaml.safe_load(DEFAULT_PATH.read_text(encoding="utf-8"))
+    profile = app["optimizer"]["markets"]["hk"]["execution_profile"]
+    raw["execution_profiles"][profile]["fx_rates"] = {
+        "a_share": 1.0,
+        "hk": 0.9,
+        "us": 7.0,
+    }
+    path = tmp_path / "constraints.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    return app, raw, profile, path
+
+
+def test_fixed_conversion_preserves_original_and_never_requests_fx(
+    fixed_config, monkeypatch
+):
+    import requests
+
+    monkeypatch.setattr(
+        requests.Session, "request", lambda *a, **kw: pytest.fail("FX network request")
     )
-    assert result.cash_conversion["rate_date"] == "2025-03-04"
+    app, _, _, path = fixed_config
+    converter = FixedCashValuation(app, constraints_path=path)
+    result = converter.convert(action())
+    assert result.cash_per_share == pytest.approx(0.24405 * 7.0 / 0.9)
+    assert result.declared_cash_per_share == 0.24405
+    assert result.declared_currency == "USD"
+    assert "rate_date" not in result.cash_conversion
+    assert result.cash_conversion["source_record"]["fx_rates"] == {"us": 7.0, "hk": 0.9}
     assert "not_actual_HKD_receipt" in result.cash_conversion["basis"]
-    assert p.convert(action()).dict() == result.dict() and http.calls == 1
-    bad = copy.deepcopy(result)
-    bad.cash_per_share += 0.01
-    with pytest.raises(ValueError, match="valuation evidence"):
-        validate_cash_currency(bad)
-    bad = copy.deepcopy(result)
-    bad.cash_conversion["rate_date"] = "2025-03-05"
-    with pytest.raises(ValueError, match="valuation evidence"):
-        validate_cash_currency(bad)
+    assert converter.convert(result).dict() == result.dict()
+    for field in ("cash_per_share", "rate", "source_record"):
+        bad = copy.deepcopy(result)
+        if field == "cash_per_share":
+            bad.cash_per_share += 0.01
+        elif field == "rate":
+            bad.cash_conversion["rate"] += 0.01
+        else:
+            bad.cash_conversion["source_record"]["fx_rates"]["us"] = 8.0
+        with pytest.raises(ValueError, match="valuation evidence"):
+            validate_cash_currency(bad)
 
 
-@pytest.mark.parametrize(
-    "rows",
-    [
-        [{"end_of_day": "2026-01-01", "usd": 7.8}],
-        [],
-        [{"end_of_day": "2025-03-04", "usd": None}],
-    ],
-)
-def test_missing_future_invalid_fx_fails(tmp_path, rows):
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), True, None])
+def test_invalid_fixed_rate_has_no_silent_default(fixed_config, value):
+    import yaml
+
+    app, raw, profile, path = fixed_config
+    raw["execution_profiles"][profile]["fx_rates"]["us"] = value
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
     with pytest.raises((ValueError, TypeError)):
-        HkmaCashValuation(
-            {"point_in_time_data": {"output_dir": str(tmp_path)}}, HTTP(rows)
-        ).convert(action())
+        FixedCashValuation(app, constraints_path=path).convert(action())
 
 
-def test_unknown_currency_not_guessed(tmp_path):
+def test_missing_fixed_rate_has_no_silent_default(fixed_config):
+    import yaml
+
+    app, raw, profile, path = fixed_config
+    del raw["execution_profiles"][profile]["fx_rates"]["us"]
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(KeyError):
+        FixedCashValuation(app, constraints_path=path).convert(action())
+
+
+def test_rate_change_revalues_original_and_old_hkma_conversion(fixed_config):
+    import yaml
+
+    app, raw, profile, path = fixed_config
+    old = FixedCashValuation(app, constraints_path=path).convert(action())
+    old.cash_conversion["method"] = "declared-cash+causal-hkma-valuation/1"
+    old.cash_per_share = 0.24405 * 7.778
+    raw["execution_profiles"][profile]["fx_rates"]["us"] = 7.2
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    result = FixedCashValuation(app, constraints_path=path).convert(old)
+    assert result.cash_per_share == pytest.approx(0.24405 * 8.0)
+    assert old.cash_per_share == pytest.approx(0.24405 * 7.778)
+    assert result.declared_cash_per_share == 0.24405
+
+
+def test_unknown_currency_not_guessed():
     a = action()
     a.currency = "EUR"
     with pytest.raises(ValueError, match="unsupported"):
-        HkmaCashValuation(
-            {"point_in_time_data": {"output_dir": str(tmp_path)}}
-        ).convert(a)
+        FixedCashValuation().convert(a)
 
 
 def test_native_a_us_no_conversion():
@@ -131,25 +158,6 @@ def test_execution_refuses_foreign_currency():
 
     with pytest.raises(ValueError, match="currency mismatch"):
         build_corporate_action_schedule([action()], ["2025-03-05"], ["09999"])
-
-
-def test_provider_refusal_persists_cooldown_without_repeated_requests(tmp_path):
-    class BlockedHTTP:
-        calls = 0
-
-        def get(self, *args, **kwargs):
-            self.calls += 1
-            response = Response({"error": "blocked"})
-            response.status_code = 405
-            return response
-
-    http = BlockedHTTP()
-    cfg = {"point_in_time_data": {"output_dir": str(tmp_path)}}
-    with pytest.raises(ValueError, match="provider blocked"):
-        HkmaCashValuation(cfg, http).convert(action())
-    with pytest.raises(ValueError, match="provider blocked"):
-        HkmaCashValuation(cfg, http).convert(action())
-    assert http.calls == 1
 
 
 def test_usd_form_future_announcement_still_rejected():
@@ -200,3 +208,59 @@ def test_official_usd_disclosures_replay(filename, ex_day, pub_day, amount, paym
         and result.currency == "USD"
     )
     assert result.published_at == date.fromisoformat(pub_day)
+
+
+def test_cached_bundle_revalues_both_cash_and_qfq_without_disk_rewrite(tmp_path):
+    import pandas as pd
+
+    from src.data.market_history import PointInTimeMarketStore, PriceHistoryBundle
+    from src.data.price_adjustments import apply_disclosed_adjustments
+
+    days = pd.to_datetime(["2025-03-04", "2025-03-05"])
+    frame = pd.DataFrame({"date": days, "volume": [100, 100], "tradable": [True, True]})
+    for prefix in ("raw", "qfq"):
+        for field in ("open", "high", "low", "close"):
+            frame[f"{prefix}_{field}"] = [100.0, 100.0]
+    frame["qfq_factor"] = 1.0
+    bundle = PriceHistoryBundle(
+        code="09999", prices=frame, actions=[], currency="HKD", source="fixture"
+    )
+    converted = FixedCashValuation().convert(action())
+    bundle = apply_disclosed_adjustments(
+        bundle, [converted], evidence="fixture_complete_disclosures"
+    )
+    store = PointInTimeMarketStore(tmp_path)
+    paths = store.write(bundle)
+    payload = json.loads(paths["actions"].read_text(encoding="utf-8"))
+    payload[0]["cash_per_share"] = 0.24405 * 7.778
+    payload[0]["cash_conversion"]["method"] = "declared-cash+causal-hkma-valuation/1"
+    paths["actions"].write_text(json.dumps(payload), encoding="utf-8")
+    before = {k: p.read_bytes() for k, p in paths.items()}
+    result = store.read("09999")
+    cash = FixedCashValuation().convert(action()).cash_per_share
+    assert result.actions[0].cash_per_share == pytest.approx(cash)
+    assert result.prices["qfq_close"].iloc[0] == pytest.approx(100.0 - cash)
+    assert result.prices["qfq_close"].iloc[1] == 100.0
+    assert before == {k: p.read_bytes() for k, p in paths.items()}
+
+
+@pytest.mark.parametrize(
+    "group,compatible", [("a_share", True), ("us", True), ("hk", False)]
+)
+def test_previous_hkma_version_only_preserves_unchanged_native_markets(
+    group, compatible
+):
+    from src.search.artifacts import execution_contract_compatibility
+
+    old = {
+        "execution_contracts": {
+            "currency_cash_version": "declared-cash+causal-hkma-valuation/1"
+        }
+    }
+    assert execution_contract_compatibility(old, group)["compatible"] is compatible
+    assert (
+        execution_contract_compatibility(
+            {"execution_contracts": {"currency_cash_version": "future/999"}}, group
+        )["compatible"]
+        is False
+    )

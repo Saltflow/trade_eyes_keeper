@@ -1,7 +1,7 @@
-"""Explicit cash currency contract; foreign dividends use causal HKMA valuation.
+"""Cash valuation uses the same configured fixed FX as portfolio execution.
 
-This is an ex-date HKD valuation, not an assertion of issuer-paid HKD cash.
-Historical HKMA observations are preserved as retrieved, not a vintage dataset.
+Original declared amounts remain evidence. Converted cash is a simulation
+valuation, never a claim about the issuer's actual settlement currency.
 """
 
 from __future__ import annotations
@@ -11,13 +11,8 @@ import json
 import math
 import re
 from copy import deepcopy
-from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 
-import requests
-
-CORPORATE_ACTION_CURRENCY_CONTRACT = "declared-cash+causal-hkma-valuation/1"
-HKMA_FX_URL = "https://api.hkma.gov.hk/public/market-data-and-statistics/monthly-statistical-bulletin/er-ir/er-eeri-daily"
+CORPORATE_ACTION_CURRENCY_CONTRACT = "declared-cash+configured-fixed-fx/1"
 
 
 def native_currency(code: str) -> str:
@@ -28,13 +23,29 @@ def native_currency(code: str) -> str:
     return "USD"
 
 
+def _rate(rates: dict, key: str) -> float:
+    value = rates[key]
+    if isinstance(value, bool):
+        raise TypeError("fixed FX rate must be numeric")
+    value = float(value)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("fixed FX rate must be finite and positive")
+    return value
+
+
+def _digest(record: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            record, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode()
+    ).hexdigest()
+
+
 def validate_cash_currency(action, expected: str | None = None) -> None:
     if getattr(action, "cash_per_share", None) is None:
         return
     expected = expected or native_currency(action.code)
     currency = getattr(action, "currency", None)
-    # Legacy domestic/US records predate explicit currency; their native
-    # contract is unchanged. HK cash must be explicit after this repair.
     if currency is None and expected != "HKD":
         return
     if currency != expected:
@@ -46,8 +57,9 @@ def validate_cash_currency(action, expected: str | None = None) -> None:
         return
     proof = getattr(action, "cash_conversion", None) or {}
     try:
-        rate = float(proof["rate"])
-        day = date.fromisoformat(proof["rate_date"])
+        record = proof["source_record"]
+        rates = record["fx_rates"]
+        rate = _rate(rates, "us") / _rate(rates, "hk")
         original = float(action.declared_cash_per_share)
         valid = (
             declared == "USD"
@@ -55,20 +67,17 @@ def validate_cash_currency(action, expected: str | None = None) -> None:
             and proof.get("from_currency") == declared
             and proof.get("to_currency") == currency
             and proof.get("method") == CORPORATE_ACTION_CURRENCY_CONTRACT
-            and proof["source_url"].startswith(HKMA_FX_URL + "?")
-            and proof["source_record"]["end_of_day"] == proof["rate_date"]
-            and float(proof["source_record"]["usd"]) == rate
-            and re.fullmatch(r"[a-f0-9]{64}", proof["source_sha256"])
-            and 0 < (action.ex_date - day).days <= 7
-            and math.isfinite(rate)
-            and rate > 0
-            and original > 0
+            and record.get("source") == "optimizer_execution_profile"
+            and bool(record.get("execution_profile"))
+            and proof["source_sha256"] == _digest(record)
+            and math.isclose(float(proof["rate"]), rate, rel_tol=1e-12)
             and math.isfinite(original)
+            and original > 0
             and math.isclose(
                 float(action.cash_per_share), original * rate, rel_tol=1e-12
             )
         )
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, OverflowError):
         valid = False
     if not valid:
         raise ValueError(
@@ -76,119 +85,104 @@ def validate_cash_currency(action, expected: str | None = None) -> None:
         )
 
 
-class HkmaCashValuation:
-    def __init__(self, config=None, http=None):
-        settings = (config or {}).get("point_in_time_data", {}) or {}
-        self.root = Path(settings.get("output_dir", "data/point_in_time")) / "hkma_fx"
-        self.http = http or requests.Session()
-        self.timeout = float(settings.get("hkma_fx_timeout_seconds", 20))
+class FixedCashValuation:
+    """Resolve the HK execution profile lazily; no FX network client exists."""
 
-    def quote(self, ex_date: date) -> dict:
-        start, end = ex_date - timedelta(days=7), ex_date - timedelta(days=1)
-        params = {
-            "choose": "end_of_day",
-            "from": start.isoformat(),
-            "to": end.isoformat(),
-            "fields": "end_of_day,usd",
-            "pagesize": 100,
-        }
-        url = requests.Request("GET", HKMA_FX_URL, params=params).prepare().url
-        path = self.root / (ex_date.isoformat() + ".json")
-        if path.exists():
-            stored = json.loads(path.read_text(encoding="utf-8"))
-            raw = stored["body"]
-            if (
-                stored.get("url") != url
-                or stored.get("sha256") != hashlib.sha256(raw.encode()).hexdigest()
-            ):
-                raise ValueError("HKMA cached response integrity mismatch")
-        else:
-            block_path = self.root / "provider_block.json"
-            now = datetime.now(timezone.utc)
-            if block_path.exists():
-                blocked = json.loads(block_path.read_text(encoding="utf-8"))
-                until = datetime.fromisoformat(blocked["retry_after"])
-                if now < until:
-                    raise ValueError(
-                        "HKMA provider blocked; retry_after=" + blocked["retry_after"]
-                    )
-            response = self.http.get(url, timeout=self.timeout)
-            if getattr(response, "status_code", None) in {403, 405, 429}:
-                self.root.mkdir(parents=True, exist_ok=True)
-                blocked = {
-                    "status": "blocked",
-                    "http_status": response.status_code,
-                    "source_url": url,
-                    "observed_at": now.isoformat(),
-                    "retry_after": (now + timedelta(hours=6)).isoformat(),
-                    "response_sha256": hashlib.sha256(
-                        response.text.encode()
-                    ).hexdigest(),
-                    "reason": "official_provider_refused_request_no_alternate_host_or_rate_guess",
-                }
-                block_path.write_text(json.dumps(blocked, indent=2), encoding="utf-8")
-                raise ValueError(
-                    "HKMA provider blocked; retry_after=" + blocked["retry_after"]
-                )
-            response.raise_for_status()
-            raw = response.text
-        payload = json.loads(raw)
-        if payload.get("header", {}).get("success") is not True:
-            raise ValueError("HKMA FX request was not successful")
-        records = payload.get("result", {}).get("records", [])
-        if (
-            not records
-            or len(records) != payload["result"].get("datasize")
-            or len(records) >= 100
-        ):
-            raise ValueError("HKMA FX response missing or potentially truncated")
-        dates = [date.fromisoformat(r["end_of_day"]) for r in records]
-        if len(set(dates)) != len(dates) or any(not start <= d <= end for d in dates):
-            raise ValueError("HKMA ignored requested dates or duplicated observations")
-        row = max(records, key=lambda r: r["end_of_day"])
-        rate = float(row["usd"])
-        if not math.isfinite(rate) or rate <= 0:
-            raise ValueError("HKMA USD rate is invalid")
-        sha = hashlib.sha256(raw.encode()).hexdigest()
-        self.root.mkdir(parents=True, exist_ok=True)
-        if not path.exists():
-            temporary = path.with_suffix(".tmp")
-            temporary.write_text(
-                json.dumps(
-                    {"url": url, "sha256": sha, "body": raw}, ensure_ascii=False
-                ),
-                encoding="utf-8",
+    def __init__(self, config=None, *, constraints_path=None):
+        self.config = config
+        self.constraints_path = constraints_path
+        self._proof = None
+
+    def quote(self) -> dict:
+        if self._proof is None:
+            from ..search.config import load_market_optimizer_config
+
+            resolved = load_market_optimizer_config(
+                "hk", self.config, self.constraints_path
             )
-            temporary.replace(path)
-        return {
-            "from_currency": "USD",
-            "to_currency": "HKD",
-            "rate": rate,
-            "rate_date": row["end_of_day"],
-            "source_url": url,
-            "source_sha256": sha,
-            "method": CORPORATE_ACTION_CURRENCY_CONTRACT,
-            "basis": "previous_observed_day_HKD_valuation_not_actual_HKD_receipt",
-            "source_record": row,
-        }
+            rates = resolved.constraints.execution.fx_rates
+            record = {
+                "source": "optimizer_execution_profile",
+                "execution_profile": resolved.execution_profile,
+                "fx_rates": {"us": _rate(rates, "us"), "hk": _rate(rates, "hk")},
+                "rate_unit": "CNY_per_native_currency_unit",
+            }
+            self._proof = {
+                "from_currency": "USD",
+                "to_currency": "HKD",
+                "rate": record["fx_rates"]["us"] / record["fx_rates"]["hk"],
+                "method": CORPORATE_ACTION_CURRENCY_CONTRACT,
+                "basis": "configured_fixed_HKD_valuation_not_actual_HKD_receipt",
+                "source_record": record,
+                "source_sha256": _digest(record),
+            }
+        return deepcopy(self._proof)
 
     def convert(self, action):
-        if action.currency == "HKD":
+        declared = getattr(action, "declared_currency", None) or action.currency
+        if declared == "HKD" and action.currency == "HKD":
             validate_cash_currency(action, "HKD")
             return action
-        if action.currency != "USD" or action.published_at is None:
+        if declared != "USD" or action.published_at is None:
             raise ValueError(
-                f"unsupported or unverified foreign cash currency: {action.code} {action.currency}"
+                f"unsupported or unverified foreign cash currency: {action.code} {declared}"
             )
-        proof = self.quote(action.ex_date)
-        result = deepcopy(action)
-        result.declared_cash_per_share = action.cash_per_share
-        result.declared_currency = action.currency
-        result.cash_per_share = action.cash_per_share * proof["rate"]
-        result.currency = "HKD"
-        result.cash_conversion = proof
-        result.diagnostics.append(
-            "cash_is_HKD_ex_date_valuation_not_issuer_HKD_payment"
+        # Revalue an old conversion from its retained original, never multiply
+        # already converted HKD again. Missing original evidence is an error.
+        original = (
+            action.declared_cash_per_share
+            if action.declared_currency
+            else action.cash_per_share
         )
+        if original is None:
+            raise ValueError("foreign cash conversion is missing original amount")
+        result = deepcopy(action)
+        result.declared_cash_per_share = original
+        result.declared_currency = declared
+        result.cash_conversion = self.quote()
+        result.cash_per_share = original * result.cash_conversion["rate"]
+        result.currency = "HKD"
+        marker = "cash_is_configured_fixed_HKD_valuation_not_issuer_HKD_payment"
+        result.diagnostics = [
+            x
+            for x in result.diagnostics
+            if x != "cash_is_HKD_ex_date_valuation_not_issuer_HKD_payment"
+        ]
+        if marker not in result.diagnostics:
+            result.diagnostics.append(marker)
         validate_cash_currency(result, "HKD")
         return result
+
+
+def revalue_cached_bundle(bundle, config=None):
+    """Rebuild cash and qfq in memory from cached originals under current FX.
+
+    Preserve the disk evidence and immutable optimizer runs. Do not combine
+    freshly converted cash with factors calculated under a previous rate.
+    """
+    foreign = [
+        a
+        for a in bundle.actions
+        if a.cash_per_share is not None
+        and (a.declared_currency or a.currency) == "USD"
+        and native_currency(a.code) == "HKD"
+    ]
+    if not foreign:
+        return bundle
+    converter = FixedCashValuation(config)
+    revised = [converter.convert(a) if a in foreign else a for a in bundle.actions]
+    if all(a.dict() == b.dict() for a, b in zip(bundle.actions, revised)):
+        return bundle
+    evidence = next(
+        (
+            x.split(":", 1)[1]
+            for x in bundle.diagnostics
+            if x.startswith("action_coverage:")
+        ),
+        None,
+    )
+    if not evidence:
+        raise ValueError("cached foreign cash lacks complete action coverage evidence")
+    from .price_adjustments import apply_disclosed_adjustments
+
+    return apply_disclosed_adjustments(bundle, revised, evidence=evidence)

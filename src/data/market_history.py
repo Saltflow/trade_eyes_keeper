@@ -979,7 +979,7 @@ class PointInTimeMarketStore:
             "metadata": metadata_path,
         }
 
-    def read(self, code: str) -> PriceHistoryBundle | None:
+    def read(self, code: str, *, config=None) -> PriceHistoryBundle | None:
         stem = self._safe_code(code)
         price_path = self.market_dir / f"{stem}.csv"
         action_path = self.market_dir / f"{stem}.actions.json"
@@ -1004,7 +1004,7 @@ class PointInTimeMarketStore:
             currency = str(currency_value).upper() if currency_value else None
             diagnostics = list(metadata.get("diagnostics", []) or [])
             listing_evidence = metadata.get("listing_evidence")
-        return PriceHistoryBundle(
+        bundle = PriceHistoryBundle(
             code=str(code),
             prices=prices,
             actions=actions,
@@ -1012,4 +1012,7 @@ class PointInTimeMarketStore:
             currency=currency,
             diagnostics=diagnostics,
             listing_evidence=listing_evidence,
-        ).validate()
+        )
+        from .corporate_action_currency import revalue_cached_bundle
+
+        return revalue_cached_bundle(bundle, config).validate()

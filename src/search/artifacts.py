@@ -713,7 +713,9 @@ def execution_contract_compatibility(data: dict, group: str) -> dict[str, object
             requires_reoptimization=False,
             reason="",
         )
-    elif not explicit and group in {"a_share", "us"}:
+    elif group in {"a_share", "us"} and (
+        not explicit or recorded == "declared-cash+causal-hkma-valuation/1"
+    ):
         result.update(
             status="legacy_native_currency_compatible",
             compatible=True,

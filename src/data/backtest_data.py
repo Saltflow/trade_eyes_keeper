@@ -397,7 +397,7 @@ def prepare_backtest_data(
         loaded = None
         load_reason = "bundle is absent"
         try:
-            loaded = store.read(code)
+            loaded = store.read(code, config=config)
             if loaded is not None:
                 cached_bundle = loaded
                 listing_added = False

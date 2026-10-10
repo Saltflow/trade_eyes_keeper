@@ -774,9 +774,9 @@ class HkCorporateActionProvider:
     def __init__(self, config: dict | None = None, http=None):
         self.history = EtnetCorporateActionProvider(config, http=http)
         self.evidence = HkexDividendEvidenceProvider(config, http=http)
-        from .corporate_action_currency import HkmaCashValuation
+        from .corporate_action_currency import FixedCashValuation
 
-        self.fx = HkmaCashValuation(config, http=http)
+        self.fx = FixedCashValuation(config)
 
     def fetch(self, code: str, start: date, end: date) -> list[CorporateAction]:
         actions = self.evidence.refine(self.history.fetch(code, start, end))
