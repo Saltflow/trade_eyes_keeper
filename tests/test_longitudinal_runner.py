@@ -106,17 +106,19 @@ def test_real_legacy_manifests_preserve_all_companies_and_interim_periods(monkey
         "src.fundamental_quant.longitudinal_discovery.archived_documents",
         lambda *args, **kwargs: [],
     )
-    config = runner.read(runner.DEFAULT_CONFIG)
-    group = copy.deepcopy(config["groups"][1])
-    group.pop("ledger_issuers")
-    # This regression covers legacy aliases; newly acquired history is separate.
-    group["document_manifests"] = [
-        p for p in group["document_manifests"] if "full_comparison_20261006" in p
-    ]
-    group["document_manifests"] = [
-        str(Path(__file__).parent / "fixtures" / "longitudinal_manifest_aliases" / (Path(p).parent.name + ".json"))
-        for p in group["document_manifests"]
-    ]
+    # Real legacy metadata is a checked-in fixture, independent of deployment config.
+    group = {
+        "companies": [
+            {"issuer_id": issuer, "name": issuer}
+            for issuer in ("a_share:600502", "a_share:601800", "a_share:000498")
+        ],
+        "document_manifests": [
+            str(path)
+            for path in sorted(
+                (Path(__file__).parent / "fixtures" / "longitudinal_manifest_aliases").glob("*.json")
+            )
+        ],
+    }
     docs = runner.discover_documents(group, "2026-10-10")
     assert len(docs) == 13
     assert {d["issuer_id"] for d in docs} == {
