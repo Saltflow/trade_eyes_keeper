@@ -1,0 +1,18 @@
+[
+  {
+    "file": "without_metadata.html.gz",
+    "raw_sha256": "9049d190db84f7d96e7b905cdb1f03f3e902b9a48796f6a588c4c97dcaa22f42",
+    "raw_bytes": 59358,
+    "official_url": "https://investor.vanguard.com/investment-products/etfs/profile/voo",
+    "retrieved_from": "production_public_response_cache",
+    "status": "without_metadata"
+  },
+  {
+    "file": "with_metadata.html.gz",
+    "raw_sha256": "25b86b6fa70433a1c893ace4cf10714f312ecd2bdd9b99399cec2059f2fce849",
+    "raw_bytes": 263955,
+    "official_url": "https://investor.vanguard.com/investment-products/etfs/profile/voo",
+    "retrieved_from": "production_public_response_cache",
+    "status": "with_metadata"
+  }
+]

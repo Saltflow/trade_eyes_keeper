@@ -14,7 +14,7 @@ import json
 import logging
 import re
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Mapping
 from urllib.parse import quote, urljoin, urlsplit
@@ -1003,6 +1003,27 @@ class VanguardDistributionProvider:
         return sorted(actions, key=lambda action: action.ex_date)
 
 
+VANGUARD_IDENTITY_CACHE_VERSION = 1
+VANGUARD_IDENTITY_CACHE_DAYS = 366
+
+
+class USIssuerMetadataTransientError(ValueError):
+    """Official HTTP 200 page arrived without its fund metadata.
+
+    This is a source response failure, not evidence that the ETF does not exist.
+    The caller's normal bounded retry budget applies; this provider never retries.
+    Explicit HTTP access refusals remain HTTPError and do not take this path.
+    """
+
+    def __init__(self, symbol: str, source_url: str, detail: str):
+        self.symbol = symbol
+        self.source_url = source_url
+        self.retry_after_seconds = 1.0
+        super().__init__(
+            f"{symbol}: Vanguard issuer metadata temporarily unavailable: {detail}"
+        )
+
+
 class USDisclosedMarketHistoryProvider:
     """Nasdaq prices plus issuer actions and persistent publication evidence.
 
@@ -1050,26 +1071,141 @@ class USDisclosedMarketHistoryProvider:
             url, headers={"User-Agent": PUBLIC_USER_AGENT}, timeout=self.timeout
         )
 
+    @staticmethod
+    def _identity_url(code: str) -> str:
+        return (
+            "https://investor.vanguard.com/investment-products/etfs/profile/"
+            + code.lower()
+        )
+
+    @staticmethod
+    def _parse_fund_identity(content: bytes, code: str, source_url: str) -> str:
+        expected_url = USDisclosedMarketHistoryProvider._identity_url(code)
+        if source_url.rstrip("/") != expected_url:
+            raise ValueError(
+                "Vanguard identity response URL is not the official symbol profile"
+            )
+        soup = BeautifulSoup(content, "html.parser")
+        nodes = soup.find_all(attrs={"data-vgn-funds-profile": True})
+        if not nodes:
+            raise USIssuerMetadataTransientError(
+                code, source_url, "fund profile metadata absent in HTTP 200 response"
+            )
+        if len(nodes) != 1:
+            raise ValueError(
+                "Vanguard issuer metadata contains ambiguous fund identities"
+            )
+        try:
+            payload = json.loads(nodes[0]["data-vgn-funds-profile"])
+        except (ValueError, TypeError) as exc:
+            raise USIssuerMetadataTransientError(
+                code, source_url, "fund profile JSON incomplete"
+            ) from exc
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("overview"), dict
+        ):
+            raise USIssuerMetadataTransientError(
+                code, source_url, "fund overview absent"
+            )
+        overview = payload["overview"]
+        ticker = overview.get("iovTickerSymbol")
+        if not ticker:
+            raise USIssuerMetadataTransientError(code, source_url, "fund ticker absent")
+        if ticker != f"{code}.P":
+            raise ValueError("Vanguard issuer metadata does not match requested symbol")
+        value = str(overview.get("fundId", ""))
+        if not value:
+            raise USIssuerMetadataTransientError(code, source_url, "fund ID absent")
+        if not re.fullmatch(r"\d{4}", value):
+            raise ValueError("Vanguard issuer metadata lacks a valid fund ID")
+        return value
+
+    def _cached_fund_id(self, code: str, now: datetime) -> str | None:
+        path = self.cache_dir / "fund_identities" / f"{code}.json"
+        if not path.exists():
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema_version") != VANGUARD_IDENTITY_CACHE_VERSION
+            or payload.get("symbol") != code
+        ):
+            raise ValueError("Vanguard identity cache schema/symbol mismatch")
+        digest = payload.get("response_sha256", "")
+        if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+            raise ValueError("Vanguard identity cache response digest invalid")
+        source = self.cache_dir / "responses" / f"{digest}.bin"
+        if not source.exists():
+            raise ValueError("Vanguard identity cache source bytes missing")
+        content = source.read_bytes()
+        if hashlib.sha256(content).hexdigest() != digest:
+            raise ValueError("Vanguard identity cache source bytes changed")
+        source_url = payload.get("source_url", "")
+        if not isinstance(source_url, str):
+            raise ValueError("Vanguard identity cache URL invalid")  # noqa: TRY004 -- corrupt persisted data
+        try:
+            value = self._parse_fund_identity(content, code, source_url)
+        except USIssuerMetadataTransientError as exc:
+            # A receipt claiming a verified identity cannot be backed by a shell.
+            raise ValueError(
+                "Vanguard identity cache is not backed by verified metadata"
+            ) from exc
+        if value != payload.get("fund_id"):
+            raise ValueError(
+                "Vanguard identity cache fund ID disagrees with source bytes"
+            )
+        try:
+            observed = datetime.fromisoformat(payload["observed_at"])
+            expires = datetime.fromisoformat(payload["expires_at"])
+            if (
+                observed.tzinfo is None
+                or expires.tzinfo is None
+                or observed > now
+                or expires != observed + timedelta(days=VANGUARD_IDENTITY_CACHE_DAYS)
+            ):
+                raise ValueError("invalid identity cache dates")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Vanguard identity cache dates invalid") from exc
+        if expires <= now:
+            return None
+        self.records[source_url] = digest
+        return value
+
     def _fund_id(self, code: str) -> str:
+        code = _symbol(code)
         if code in self.fund_ids:
             value = str(self.fund_ids[code])
             if not re.fullmatch(r"\d{4}", value):
                 raise ValueError("configured Vanguard fund_id must have four digits")
             return value
-        response = self._read_public(
-            "https://investor.vanguard.com/investment-products/etfs/profile/"
-            + code.lower()
-        )
-        soup = BeautifulSoup(response.content, "html.parser")
-        node = soup.find(attrs={"data-vgn-funds-profile": True})
-        if node is None:
-            raise ValueError("Vanguard issuer metadata is unavailable for symbol")
-        overview = json.loads(node["data-vgn-funds-profile"]).get("overview") or {}
-        if overview.get("iovTickerSymbol") != f"{code}.P":
-            raise ValueError("Vanguard issuer metadata does not match requested symbol")
-        value = str(overview.get("fundId", ""))
-        if not re.fullmatch(r"\d{4}", value):
-            raise ValueError("Vanguard issuer metadata lacks a valid fund ID")
+        now = datetime.now(timezone.utc)
+        cached = self._cached_fund_id(code, now)
+        if cached is not None:
+            return cached
+        response = self._read_public(self._identity_url(code))
+        value = self._parse_fund_identity(response.content, code, response.url)
+        observed = datetime.now(timezone.utc)
+        payload = {
+            "schema_version": VANGUARD_IDENTITY_CACHE_VERSION,
+            "symbol": code,
+            "fund_id": value,
+            "source_url": response.url,
+            "response_sha256": hashlib.sha256(response.content).hexdigest(),
+            "observed_at": observed.isoformat(),
+            "expires_at": (
+                observed + timedelta(days=VANGUARD_IDENTITY_CACHE_DAYS)
+            ).isoformat(),
+            "method": "official_fund_profile_overview_ticker_and_fund_id",
+        }
+        folder = self.cache_dir / "fund_identities"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{code}.json"
+        temporary = path.with_suffix(".json.tmp")
+        try:
+            temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
         return value
 
     def _load_publications(self, code: str) -> dict[date, DividendPublication]:

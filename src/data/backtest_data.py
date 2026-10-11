@@ -281,6 +281,10 @@ def _planned_source(code: str, purpose: str) -> str:
 
 def _retry_delay(exc: Exception, attempt: int, now: datetime) -> float | None:
     """Return a safe delay only for transient transport/service failures."""
+    from .us_market_history import USIssuerMetadataTransientError
+
+    if isinstance(exc, USIssuerMetadataTransientError):
+        return min(60.0, max(0.0, float(exc.retry_after_seconds)))
     if isinstance(exc, BaostockAccessBlocked):
         return None
     if isinstance(exc, BaostockTransientError):
