@@ -465,6 +465,10 @@ def _pre_deploy_checks(dry_run):
         "tests/test_notify_align.py",
         "tests/test_email_daily_mode.py",
         "tests/test_telegram_notifier.py",
+        "tests/test_vanguard_identity_cache.py",
+        "tests/test_optimizer_shared_recovery.py",
+        "tests/test_us_market_history.py",
+        "tests/test_optimizer_data_notifications.py",
         "-p", "no:capture", "-q",
         timeout=120,
     )
