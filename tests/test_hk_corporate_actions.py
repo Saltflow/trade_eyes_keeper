@@ -438,7 +438,7 @@ def test_in_kind_event_cannot_be_rewritten_by_unrelated_cash_notice():
 
 def test_refine_stops_after_latest_conflicting_evidence_and_keeps_gap():
     calls = []
-    response = SimpleNamespace(content=b"latest", raise_for_status=lambda: None)
+    response = _notice_response(b"latest")
     provider = HkexDividendEvidenceProvider(
         http=SimpleNamespace(get=lambda *a, **kw: calls.append(a[0]) or response)
     )
@@ -457,7 +457,7 @@ def test_refine_stops_after_latest_conflicting_evidence_and_keeps_gap():
 
 def test_refine_respects_document_budget_and_preserves_unresolved_input():
     calls = []
-    response = SimpleNamespace(content=b"unrelated", raise_for_status=lambda: None)
+    response = _notice_response(b"unrelated")
     provider = HkexDividendEvidenceProvider(
         {"point_in_time_data": {"hkex_dividend_max_documents": 1}},
         http=SimpleNamespace(get=lambda *a, **kw: calls.append(a[0]) or response),
@@ -565,12 +565,15 @@ def test_official_record_and_cash_resolve_approximate_pay_date_conflict():
     ],
 )
 def test_approximate_notice_requires_record_cash_and_issuer(changed):
-    assert match_hkex_cash_notice(
-        changed,
-        _picc_2018_rmb_only(),
-        published_at=date(2018, 4, 19),
-        source_url=OFFICIAL_URL,
-    ) is None
+    assert (
+        match_hkex_cash_notice(
+            changed,
+            _picc_2018_rmb_only(),
+            published_at=date(2018, 4, 19),
+            source_url=OFFICIAL_URL,
+        )
+        is None
+    )
 
 
 def test_firm_official_payment_conflict_still_rejects_cash_notice():
@@ -622,21 +625,60 @@ def test_cash_cannot_be_inferred_from_wrong_terms_date_or_unspecified_fx(changed
     )
 
 
-def test_late_implementation_pages_are_kept_in_official_notice_evidence(monkeypatch):
-    pages = [SimpleNamespace(extract_text=lambda: "opening") for _ in range(8)]
-    pages.append(SimpleNamespace(extract_text=lambda: "HK$0.08302 per Share"))
+def _pdf_pages(texts):
+    """Tiny uncompressed PDF fixture, without a test-only PDF writer dependency."""
+    objects = [b"", b"", b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    kids = []
+    for text in texts:
+        page_id = len(objects) + 1
+        kids.append(f"{page_id} 0 R")
+        objects.append(
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            f"/Resources << /Font << /F1 3 0 R >> >> "
+            f"/Contents {page_id + 1} 0 R >>".encode()
+        )
+        lines = ["BT /F1 10 Tf 30 750 Td 12 TL"]
+        for line in text.splitlines():
+            escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+            lines.append(f"({escaped}) Tj T*")
+        stream = ("\n".join([*lines, "ET"]) + "\n").encode("ascii")
+        objects.append(
+            f"<< /Length {len(stream)} >>\nstream\n".encode() + stream + b"endstream"
+        )
+    objects[0] = b"<< /Type /Catalog /Pages 2 0 R >>"
+    objects[1] = (
+        f"<< /Type /Pages /Count {len(kids)} /Kids [{' '.join(kids)}] >>".encode()
+    )
+    content = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for number, obj in enumerate(objects, 1):
+        offsets.append(len(content))
+        content.extend(f"{number} 0 obj\n".encode() + obj + b"\nendobj\n")
+    xref = len(content)
+    content.extend(f"xref\n0 {len(offsets)}\n0000000000 65535 f \n".encode())
+    for offset in offsets[1:]:
+        content.extend(f"{offset:010d} 00000 n \n".encode())
+    content.extend(
+        f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\n"
+        f"startxref\n{xref}\n%%EOF\n".encode()
+    )
+    return bytes(content)
 
-    class PdfDocument:
-        def __enter__(self):
-            return SimpleNamespace(pages=pages)
 
-        def __exit__(self, *_):
-            return False
-
-    monkeypatch.setattr("pdfplumber.open", lambda stream: PdfDocument())
+@pytest.mark.parametrize("page_count", [9, 32])
+def test_late_implementation_pages_are_kept_in_official_notice_evidence(page_count):
     provider = HkexDividendEvidenceProvider()
-    provider.provider._extract_pdf_text = lambda content: ("first eight pages", "test")
-    assert "HK$0.08302 per Share" in provider._notice_text(b"pdf")
+    content = _pdf_pages(["opening"] * (page_count - 1) + [PICC_FX_NOTICE])
+    text = provider._notice_text(content)
+    assert "HK$1 = RMB0.862364" in text
+    result = match_hkex_cash_notice(
+        text,
+        _picc_rmb_only(),
+        published_at=date(2020, 10, 28),
+        source_url=OFFICIAL_URL,
+    )
+    assert result.cash_per_share == pytest.approx(0.036 / 0.862364)
+    assert corporate_action_issues([result]) == ()
 
 
 def test_image_only_stock_code_needs_matching_official_listing_identity():
@@ -665,3 +707,288 @@ def test_listing_identity_cannot_override_a_different_explicit_pdf_issuer():
         )
         is None
     )
+
+
+def _notice_response(content):
+    return SimpleNamespace(
+        content=content,
+        headers={},
+        raise_for_status=lambda: None,
+        iter_content=lambda chunk_size: iter([content]),
+        close=lambda: None,
+    )
+
+
+def test_long_unrelated_notice_does_not_abort_later_verified_picc_evidence():
+    calls = []
+    provider = HkexDividendEvidenceProvider(
+        http=SimpleNamespace(
+            get=lambda url, **kw: calls.append(url) or _notice_response(url.encode())
+        )
+    )
+    long_url = OFFICIAL_URL + "?long=1"
+    provider._announcements = lambda *args: [
+        {"published_at": date(2020, 10, 29), "url": long_url},
+        {"published_at": date(2020, 10, 28), "url": OFFICIAL_URL},
+    ]
+
+    def extract(content):
+        if content == long_url.encode():
+            raise ValueError("HKEX cash notice exceeds the 32-page evidence limit")
+        return PICC_FX_NOTICE
+
+    provider._notice_text = extract
+    source = _picc_rmb_only()
+    (result,) = provider.refine([source])
+    assert result.published_at == date(2020, 10, 28)
+    assert result.cash_per_share == pytest.approx(0.036 / 0.862364)
+    assert corporate_action_issues([result]) == ()
+    assert source.published_at is None
+    assert len(calls) == 2
+    assert any(long_url in item for item in result.diagnostics)
+
+
+@pytest.mark.parametrize("page_count", [33, 200])
+def test_long_pdf_enumerates_only_33_pages_and_extracts_none(monkeypatch, page_count):
+    from pdfminer.pdfpage import PDFPage
+
+    read_pages = []
+    original = PDFPage.get_pages
+
+    def counted_pages(*args, **kwargs):
+        assert kwargs["caching"] is False
+        for page in original(*args, **kwargs):
+            read_pages.append(page)
+            yield page
+
+    monkeypatch.setattr(PDFPage, "get_pages", counted_pages)
+    monkeypatch.setattr(
+        "pdfminer.pdfinterp.PDFPageInterpreter.process_page",
+        lambda *args: pytest.fail("Long documents must not enter layout extraction"),
+    )
+    provider = HkexDividendEvidenceProvider()
+    with pytest.raises(ValueError, match="32-page"):
+        provider._notice_text(_pdf_pages([PICC_FX_NOTICE] * page_count))
+    assert len(read_pages) == 33
+
+
+def test_pdf_byte_limit_is_checked_before_parser(monkeypatch):
+    monkeypatch.setattr("src.data.hk_corporate_actions._NOTICE_MAX_BYTES", 10)
+    monkeypatch.setattr(
+        "pdfminer.pdfpage.PDFPage.get_pages",
+        lambda *a, **kw: pytest.fail("Oversized bytes must not enter parser"),
+    )
+    with pytest.raises(ValueError, match="document size limit"):
+        HkexDividendEvidenceProvider()._notice_text(b"x" * 11)
+
+
+def test_extracted_text_limit_rejects_whole_notice(monkeypatch):
+    monkeypatch.setattr("src.data.hk_corporate_actions._NOTICE_MAX_TEXT_CHARS", 20)
+    with pytest.raises(ValueError, match="extracted text limit"):
+        HkexDividendEvidenceProvider()._notice_text(_pdf_pages([PICC_FX_NOTICE]))
+
+
+def test_stream_download_stops_at_byte_budget_and_closes_response(monkeypatch):
+    monkeypatch.setattr("src.data.hk_corporate_actions._NOTICE_MAX_BYTES", 10)
+    consumed, closed = [], []
+
+    def chunks(chunk_size):
+        assert chunk_size == 64 * 1024
+        for index in range(100):
+            consumed.append(index)
+            yield b"abcdef"
+
+    response = _notice_response(b"")
+    response.iter_content = chunks
+    response.close = lambda: closed.append(True)
+
+    def get(url, **kwargs):
+        assert kwargs["stream"] is True
+        return response
+
+    provider = HkexDividendEvidenceProvider(http=SimpleNamespace(get=get))
+    with pytest.raises(ValueError, match="document size limit"):
+        provider._download_notice(OFFICIAL_URL)
+    assert consumed == [0, 1]
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("failure", ["corrupt", "long", "http", "timeout"])
+def test_unavailable_notice_keeps_gap_once_per_call_and_can_retry(failure):
+    import requests
+
+    calls = []
+    bad_content = (
+        _pdf_pages([PICC_FX_NOTICE] * 33) if failure == "long" else b"not a PDF"
+    )
+
+    def get(url, **kwargs):
+        calls.append(url)
+        if failure == "timeout":
+            raise requests.Timeout("timeout")
+        response = _notice_response(bad_content)
+        if failure == "http":
+
+            def fail():
+                raise requests.HTTPError("503 unavailable")
+
+            response.raise_for_status = fail
+        return response
+
+    provider = HkexDividendEvidenceProvider(http=SimpleNamespace(get=get))
+    provider._announcements = lambda *args: [
+        {"published_at": date(2020, 10, 28), "url": OFFICIAL_URL}
+    ]
+    source = _picc_rmb_only()
+    result = provider.refine([source, source])
+    assert len(calls) == 1  # shared by both events and both title searches
+    assert OFFICIAL_URL not in provider._text_cache
+    for action in result:
+        assert action.published_at is None
+        assert action.cash_per_share is None
+        assert corporate_action_issues([action])
+        assert len([d for d in action.diagnostics if "unavailable=" in d]) == 1
+    assert not any("unavailable=" in d for d in source.diagnostics)
+    provider.refine([source])
+    assert len(calls) == 2  # transient failure cache does not survive a call
+
+
+def test_failed_downloads_consume_budget_without_poisoning_other_issuers():
+    import requests
+
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append(url)
+        if url.endswith("?picc"):
+            raise requests.Timeout("timeout")
+        return _notice_response(_pdf_pages([OFFICIAL_FORM]))
+
+    provider = HkexDividendEvidenceProvider(
+        {"point_in_time_data": {"hkex_dividend_max_documents": 1}},
+        http=SimpleNamespace(get=get),
+    )
+    provider._announcements = lambda code, *args: (
+        [
+            {"published_at": date(2020, 10, 28), "url": OFFICIAL_URL + "?picc"},
+            {"published_at": date(2020, 10, 27), "url": OFFICIAL_URL + "?extra"},
+        ]
+        if code == "01339"
+        else [{"published_at": date(2025, 5, 21), "url": OFFICIAL_URL}]
+    )
+    picc, cgn = provider.refine([_picc_rmb_only(), _cgn_undated_cash()])
+    assert picc.published_at is None
+    assert "hkex_cash_evidence_document_budget_exhausted" in picc.diagnostics
+    assert cgn.published_at == date(2025, 5, 21)
+    assert corporate_action_issues([cgn]) == ()
+    assert calls == [OFFICIAL_URL + "?picc", OFFICIAL_URL]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Poll results: ordinary business only.",
+        PICC_FX_NOTICE.replace("Stock Code: 1339", "Stock Code: 1816"),
+        PICC_FX_NOTICE.replace("18 December 2020", "19 December 2020"),
+        PICC_FX_NOTICE.replace("RMB0.36", "RMB0.37"),
+        PICC_FX_NOTICE.replace("HK$1 = RMB0.862364", "USD1 = RMB0.862364"),
+    ],
+)
+def test_pdf_refinement_never_admits_unrelated_or_unverified_terms(text):
+    provider = HkexDividendEvidenceProvider(
+        http=SimpleNamespace(get=lambda *a, **kw: _notice_response(_pdf_pages([text])))
+    )
+    provider._announcements = lambda *args: [
+        {
+            "published_at": date(2020, 10, 28),
+            "url": OFFICIAL_URL,
+            "listed_code": "01339",
+        }
+    ]
+    (result,) = provider.refine([_picc_rmb_only()])
+    assert result.published_at is None
+    assert result.cash_per_share is None
+    assert corporate_action_issues([result])
+
+
+def test_successful_notice_cache_is_bounded_across_calls():
+    calls = []
+    provider = HkexDividendEvidenceProvider(
+        {"point_in_time_data": {"hkex_dividend_max_documents": 1}},
+        http=SimpleNamespace(
+            get=lambda url, **kw: (
+                calls.append(url) or _notice_response(_pdf_pages([PICC_FX_NOTICE]))
+            )
+        ),
+    )
+    for suffix in ("first", "second", "first"):
+        url = OFFICIAL_URL + "?" + suffix
+        provider._announcements = lambda *args, url=url: [
+            {"published_at": date(2020, 10, 28), "url": url}
+        ]
+        (result,) = provider.refine([_picc_rmb_only()])
+        assert result.published_at == date(2020, 10, 28)
+        assert list(provider._text_cache) == [url]
+    assert len(calls) == 3
+
+
+def test_real_pdf_pipeline_skips_long_and_unrelated_before_valid_notice():
+    documents = {
+        OFFICIAL_URL + "?long": _pdf_pages([PICC_FX_NOTICE] * 33),
+        OFFICIAL_URL + "?unrelated": _pdf_pages(["Ordinary poll results"]),
+        OFFICIAL_URL: _pdf_pages(["opening"] * 8 + [PICC_FX_NOTICE]),
+    }
+    provider = HkexDividendEvidenceProvider(
+        http=SimpleNamespace(get=lambda url, **kw: _notice_response(documents[url]))
+    )
+    provider._announcements = lambda *args: [
+        {"published_at": date(2020, 10, 28), "url": url, "listed_code": "01339"}
+        for url in documents
+    ]
+    (result,) = provider.refine([_picc_rmb_only()])
+    assert result.published_at == date(2020, 10, 28)
+    assert result.cash_per_share == pytest.approx(0.036 / 0.862364)
+    assert result.source_url == OFFICIAL_URL
+    assert corporate_action_issues([result]) == ()
+    assert any("32-page" in item for item in result.diagnostics)
+    assert OFFICIAL_URL + "?long" not in provider._text_cache
+
+
+def test_captured_picc_form_preserves_positioned_label_value_rows():
+    from pathlib import Path
+
+    content = (Path(__file__).parent / "fixtures/hkex/2026092901567.pdf").read_bytes()
+    (action,) = parse_etnet_dividend_html(
+        _html(
+            [
+                _row(
+                    particulars="中期息人民幣 0.11 或港元 0.12791962",
+                    announcement="2026/08/28",
+                    ex="2026/10/07",
+                    payable="2026/11/06",
+                    book_start="2026/10/09",
+                    book_end="2026/10/14",
+                )
+            ]
+        ),
+        "01339",
+        START,
+        date(2026, 10, 15),
+    )
+    provider = HkexDividendEvidenceProvider(
+        http=SimpleNamespace(get=lambda *a, **kw: _notice_response(content))
+    )
+    url = (
+        "https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0929/2026092901567.pdf"
+    )
+    provider._announcements = lambda *args: [
+        {"published_at": date(2026, 9, 29), "url": url, "listed_code": "01339"}
+    ]
+    (result,) = provider.refine([action])
+    assert result.published_at == date(2026, 9, 29)
+    assert result.cash_per_share == 0.12791962
+    assert result.currency == "HKD"
+    assert result.ex_date == date(2026, 10, 7)
+    assert result.record_date == date(2026, 10, 14)
+    assert result.payable_date == date(2026, 11, 6)
+    assert corporate_action_issues([result]) == ()

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import io
 import re
+from collections import OrderedDict
 from copy import deepcopy
 from datetime import date, datetime
 from decimal import Decimal
+from itertools import islice
 from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlsplit
 
@@ -248,7 +250,7 @@ def _named_day(value: str) -> date:
     text = re.sub(r"\s+", " ", value).strip()
     for pattern in ("%d %B %Y", "%B %d, %Y", "%B %d %Y"):
         try:
-            return datetime.strptime(text, pattern).date()  # noqa: DTZ007 -- date only
+            return datetime.strptime(text, pattern).date()  # Date-only value.
         except ValueError:
             continue
     raise ValueError(f"invalid HKEX announcement date: {value!r}")
@@ -481,7 +483,9 @@ def match_hkex_cash_notice(
             + (
                 "ex_date"
                 if explicit_ex
-                else "payable_date_and_cash" if payable_match else "record_date_and_cash"
+                else "payable_date_and_cash"
+                if payable_match
+                else "record_date_and_cash"
             ),
             "hkex_published_at=" + published_at.isoformat(),
         ]
@@ -496,6 +500,20 @@ def match_hkex_cash_notice(
     return result
 
 
+_NOTICE_MAX_BYTES = 16 * 1024 * 1024
+_NOTICE_MAX_PAGES = 32
+_NOTICE_MAX_TEXT_CHARS = 2 * 1024 * 1024
+
+
+class _BoundedNoticeText(io.StringIO):
+    """Stop retaining extracted text as soon as the evidence budget is exceeded."""
+
+    def write(self, text: str) -> int:
+        if self.tell() + len(text) > _NOTICE_MAX_TEXT_CHARS:
+            raise ValueError("HKEX cash notice exceeds the extracted text limit")
+        return super().write(text)
+
+
 class HkexDividendEvidenceProvider:
     """Use bounded official searches to resolve previously unknown HKD dates."""
 
@@ -507,22 +525,93 @@ class HkexDividendEvidenceProvider:
         self.max_documents = max(
             1, int(settings.get("hkex_dividend_max_documents", 48))
         )
-        self._text_cache = {}
+        # Bound retained successful texts across repeated provider calls too.
+        self._text_cache: OrderedDict[str, str] = OrderedDict()
+
+    def _download_notice(self, url: str) -> bytes:
+        """Bound response buffering, including absent or misleading length headers."""
+        response = self.provider.http.get(
+            url,
+            headers=self.provider._headers,
+            timeout=max(self.provider.timeout, 30),
+            stream=True,
+        )
+        try:
+            response.raise_for_status()
+            content = bytearray()
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if len(content) + len(chunk) > _NOTICE_MAX_BYTES:
+                    raise ValueError("HKEX cash notice exceeds the document size limit")
+                content.extend(chunk)
+            return bytes(content)
+        finally:
+            response.close()
 
     def _notice_text(self, content: bytes) -> str:
-        """Retain later implementation clauses in small official notices."""
-        import pdfplumber
+        """Read complete short notices; never treat a truncated filing as evidence.
 
-        if len(content) > 16 * 1024 * 1024:
+        Enumerate at most 33 pages and reject long documents before any layout
+        extraction. Extract each accepted page once, including implementation
+        clauses after page eight, without the financial-statement selector or
+        its fallback to a second parser. Byte/page/text limits bound retained
+        evidence; they are not a CPU deadline for arbitrary malformed PDFs.
+        """
+        from pdfminer.converter import PDFPageAggregator
+        from pdfminer.layout import LAParams, LTTextLine
+        from pdfminer.pdfinterp import PDFPageInterpreter, PDFResourceManager
+        from pdfminer.pdfpage import PDFPage
+
+        if len(content) > _NOTICE_MAX_BYTES:
             raise ValueError("HKEX cash notice exceeds the document size limit")
-        with pdfplumber.open(io.BytesIO(content)) as reader:
-            if len(reader.pages) > 32:
+        with io.BytesIO(content) as stream, _BoundedNoticeText() as output:
+            pages = list(
+                islice(
+                    PDFPage.get_pages(stream, caching=False),
+                    _NOTICE_MAX_PAGES + 1,
+                )
+            )
+            if len(pages) > _NOTICE_MAX_PAGES:
                 raise ValueError("HKEX cash notice exceeds the 32-page evidence limit")
-            opening, _ = self.provider._extract_pdf_text(content)
-            # The statement extractor intentionally keeps the opening eight
-            # pages. AGM notices can put final cash/FX terms on later pages.
-            remainder = [page.extract_text() or "" for page in reader.pages[8:]]
-        return "\f".join([opening, *remainder])
+            manager = PDFResourceManager(caching=False)
+            with PDFPageAggregator(
+                manager, laparams=LAParams(char_margin=1.0, word_margin=0.1)
+            ) as device:
+                interpreter = PDFPageInterpreter(manager, device)
+
+                def text_lines(item):
+                    if isinstance(item, LTTextLine):
+                        yield item
+                    else:
+                        for child in getattr(item, "_objs", ()):
+                            yield from text_lines(child)
+
+                for page in pages:
+                    interpreter.process_page(page)
+                    # HKEX forms emit labels and values in separate columns.
+                    # Preserve the statement extractor's visual-row ordering,
+                    # but retain every page and never retry with another parser.
+                    line_items = [
+                        (
+                            float(item.x0),
+                            (float(item.y0) + float(item.y1)) / 2.0,
+                            str(item.get_text()).strip(),
+                        )
+                        for item in text_lines(device.get_result())
+                        if str(item.get_text()).strip()
+                    ]
+                    row_groups: list[list[tuple[float, float, str]]] = []
+                    for item in sorted(line_items, key=lambda value: -value[1]):
+                        if row_groups and abs(item[1] - row_groups[-1][0][1]) <= 1.5:
+                            row_groups[-1].append(item)
+                        else:
+                            row_groups.append([item])
+                    for row in row_groups:
+                        for item in sorted(row, key=lambda value: value[0]):
+                            output.write(item[2])
+                            output.write(" ")
+                        output.write("\n")
+                    output.write("\f")
+            return output.getvalue()
 
     def _announcements(
         self, code: str, start: date, end: date, title: str
@@ -588,6 +677,9 @@ class HkexDividendEvidenceProvider:
     def refine(self, actions: list[CorporateAction]) -> list[CorporateAction]:
         """Return copies, preserving gaps when no causal official match exists."""
         result = deepcopy(actions)
+        # Retry transient failures on the next refine call, never for each event
+        # or title query in this call. Failed downloads consume the same budget.
+        failures: dict[str, str] = {}
         missing = [
             a
             for a in result
@@ -623,17 +715,37 @@ class HkexDividendEvidenceProvider:
                         if not announced <= published <= action.ex_date:
                             continue
                         url = record["url"]
-                        if url not in self._text_cache:
+                        if url not in self._text_cache and url not in failures:
                             if downloaded >= self.max_documents:
+                                diagnostic = (
+                                    "hkex_cash_evidence_document_budget_exhausted"
+                                )
+                                if diagnostic not in action.diagnostics:
+                                    action.diagnostics.append(diagnostic)
                                 break
-                            response = self.provider.http.get(
-                                url,
-                                headers=self.provider._headers,
-                                timeout=max(self.provider.timeout, 30),
-                            )
-                            response.raise_for_status()
                             downloaded += 1
-                            self._text_cache[url] = self._notice_text(response.content)
+                            try:
+                                content = self._download_notice(url)
+                                self._text_cache[url] = self._notice_text(content)
+                                while len(self._text_cache) > self.max_documents:
+                                    self._text_cache.popitem(last=False)
+                            except Exception as exc:  # noqa: BLE001 -- isolate PDF/HTTP failures
+                                # Transport/parser failures are not contradictory
+                                # cash terms. Keep the gap visible and try other
+                                # official notices; never cache partial text.
+                                failures[url] = (
+                                    "hkex_cash_evidence_unavailable="
+                                    + url
+                                    + "; "
+                                    + type(exc).__name__
+                                    + ": "
+                                    + str(exc)[:240]
+                                )
+                        if url in failures:
+                            if failures[url] not in action.diagnostics:
+                                action.diagnostics.append(failures[url])
+                            continue
+                        self._text_cache.move_to_end(url)
                         try:
                             matched = match_hkex_cash_notice(
                                 self._text_cache[url],
