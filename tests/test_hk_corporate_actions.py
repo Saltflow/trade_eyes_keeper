@@ -814,7 +814,8 @@ def test_stream_download_stops_at_byte_budget_and_closes_response(monkeypatch):
 
 
 @pytest.mark.parametrize("failure", ["corrupt", "long", "http", "timeout"])
-def test_unavailable_notice_keeps_gap_once_per_call_and_can_retry(failure):
+def test_unavailable_notice_keeps_gap_once_per_call_and_can_retry(failure, monkeypatch):
+    monkeypatch.setattr("src.data.hk_corporate_actions.time.sleep", lambda delay: None)
     import requests
 
     calls = []
@@ -841,7 +842,8 @@ def test_unavailable_notice_keeps_gap_once_per_call_and_can_retry(failure):
     ]
     source = _picc_rmb_only()
     result = provider.refine([source, source])
-    assert len(calls) == 1  # shared by both events and both title searches
+    attempts = 2 if failure == "timeout" else 1
+    assert len(calls) == attempts  # shared by both events and both title searches
     assert OFFICIAL_URL not in provider._text_cache
     for action in result:
         assert action.published_at is None
@@ -850,7 +852,7 @@ def test_unavailable_notice_keeps_gap_once_per_call_and_can_retry(failure):
         assert len([d for d in action.diagnostics if "unavailable=" in d]) == 1
     assert not any("unavailable=" in d for d in source.diagnostics)
     provider.refine([source])
-    assert len(calls) == 2  # transient failure cache does not survive a call
+    assert len(calls) == attempts * 2  # failure cache does not survive a call
 
 
 def test_failed_downloads_consume_budget_without_poisoning_other_issuers():
@@ -992,3 +994,167 @@ def test_captured_picc_form_preserves_positioned_label_value_rows():
     assert result.record_date == date(2026, 10, 14)
     assert result.payable_date == date(2026, 11, 6)
     assert corporate_action_issues([result]) == ()
+
+
+@pytest.mark.parametrize("notice_url", [OFFICIAL_URL, OFFICIAL_URL + "?file=20240301"])
+def test_long_notice_diagnostic_survives_optimizer_readiness(
+    monkeypatch, tmp_path, notice_url
+):
+    import pandas as pd
+
+    from src.data import backtest_data
+    from src.data.market_history import PriceHistoryBundle
+    from src.data.price_adjustments import apply_disclosed_adjustments
+
+    provider = HkexDividendEvidenceProvider(
+        http=SimpleNamespace(
+            get=lambda *a, **kw: _notice_response(_pdf_pages([PICC_FX_NOTICE] * 33))
+        )
+    )
+    provider._announcements = lambda *args: [
+        {"published_at": date(2020, 10, 28), "url": notice_url}
+    ]
+    source = _picc_rmb_only()
+    raw = PriceHistoryBundle(code="01339", prices=pd.DataFrame(), actions=[])
+
+    def fetch(code, start, end):
+        actions = provider.refine([source])
+        assert actions[0].published_at is None
+        return apply_disclosed_adjustments(raw, actions, evidence="official HKEX")
+
+    class Store:
+        def __init__(self, root):
+            pass
+
+        def read(self, code):
+            return None
+
+        def write(self, bundle):
+            pytest.fail("Unverified actions must never be cached")
+
+    monkeypatch.setattr(backtest_data, "PointInTimeMarketStore", Store)
+    monkeypatch.setattr(
+        backtest_data,
+        "MarketHistoryProvider",
+        lambda config: SimpleNamespace(fetch=fetch),
+    )
+    monkeypatch.setattr(
+        backtest_data,
+        "resolve_market_data_cutoff",
+        lambda code, end, **kw: SimpleNamespace(effective_end=end, as_dict=dict),
+    )
+    result = backtest_data.prepare_backtest_data(
+        {"point_in_time_data": {"output_dir": str(tmp_path)}},
+        ["01339"],
+        date(2020, 1, 1),
+        date(2020, 11, 3),
+        purpose="optimizer",
+    )
+    assert not result.ready
+    assert result.bundles == {}
+    assert result.fetched_codes == []
+    assert "unresolved corporate action factor" in result.issues[0].reason
+    assert notice_url in result.issues[0].reason
+    assert result.issues[0].category == "corporate_action_evidence_missing"
+    assert "hkex_cash_evidence_unavailable=" in result.issues[0].reason
+    assert "32-page evidence limit" in result.issues[0].reason
+    assert result.issues[0].reason.endswith(result.fetch_attempts[-1].reason)
+    assert source.published_at is None
+
+
+@pytest.mark.parametrize("failure", ["timeout", "503", "partial"])
+def test_captured_2018_poll_notice_recovers_one_transient_download(monkeypatch, failure):
+    monkeypatch.setattr("src.data.hk_corporate_actions.time.sleep", lambda delay: None)
+    from pathlib import Path
+
+    import requests
+
+    content = (Path(__file__).parent / "fixtures/hkex/ltn201804191437.pdf").read_bytes()
+    url = "https://www1.hkexnews.hk/listedco/listconews/sehk/2018/0419/ltn201804191437.pdf"
+    calls = []
+
+    def get(request_url, **kwargs):
+        calls.append(request_url)
+        if len(calls) == 1:
+            if failure == "timeout":
+                raise requests.Timeout("temporary notice timeout")
+            if failure == "partial":
+                response = _notice_response(content)
+
+                def interrupted(chunk_size):
+                    yield content[:200]
+                    raise requests.ConnectionError("interrupted response body")
+
+                response.iter_content = interrupted
+                return response
+            response = requests.Response()
+            response.status_code = 503
+            raise requests.HTTPError("temporary service failure", response=response)
+        return _notice_response(content)
+
+    provider = HkexDividendEvidenceProvider(http=SimpleNamespace(get=get))
+    provider._announcements = lambda code, start, end, title: (
+        [{"published_at": date(2018, 4, 19), "url": url, "listed_code": "01339"}]
+        if title == "poll results"
+        else []
+    )
+    source = _picc_2018_rmb_only()
+    (result,) = provider.refine([source])
+    assert len(calls) == 2
+    assert result.published_at == date(2018, 4, 19)
+    assert result.ex_date == date(2018, 4, 24)
+    assert result.record_date == date(2018, 5, 1)
+    assert result.cash_per_share == pytest.approx(0.0394 / 0.800536)
+    assert result.currency == "HKD"
+    assert result.payable_date is None
+    assert corporate_action_issues([result]) == ()
+    assert source.published_at is None
+
+
+@pytest.mark.parametrize("budget, expected", [(1, 1), (2, 2), (3, 3)])
+def test_transient_retries_share_total_document_request_budget(monkeypatch, budget, expected):
+    import requests
+
+    monkeypatch.setattr("src.data.hk_corporate_actions.time.sleep", lambda delay: None)
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append(url)
+        raise requests.Timeout("temporary failure")
+
+    provider = HkexDividendEvidenceProvider(
+        {"point_in_time_data": {"hkex_dividend_max_documents": budget}},
+        http=SimpleNamespace(get=get),
+    )
+    provider._announcements = lambda *args: [
+        {"published_at": date(2018, 4, 19), "url": OFFICIAL_URL + suffix}
+        for suffix in ("?one", "?two", "?three")
+    ]
+    (result,) = provider.refine([_picc_2018_rmb_only()])
+    assert len(calls) == expected
+    assert max(calls.count(url) for url in calls) <= 2
+    assert not provider._text_cache
+    assert corporate_action_issues([result])
+    assert "hkex_cash_evidence_document_budget_exhausted" in result.diagnostics
+
+
+@pytest.mark.parametrize(
+    "status, retry_after, expected",
+    [(503, None, 1.0), (429, "2", 2.0), (503, "5", 5.0),
+     (503, "6", None), (503, "-1", None),
+     (503, "Wed, 01 Jan 2020 00:00:00 GMT", 0.0),
+     (503, "Thu, 01 Jan 2099 00:00:00 GMT", None),
+     (429, "nonsense", None), (503, "nan", None), (503, "inf", None),
+     (403, None, None), (404, None, None), (400, None, None)],
+)
+def test_notice_retry_only_for_bounded_transient_http(status, retry_after, expected):
+    import requests
+
+    from src.data.hk_corporate_actions import _notice_retry_delay
+
+    response = requests.Response()
+    response.status_code = status
+    if retry_after is not None:
+        response.headers["Retry-After"] = retry_after
+    assert _notice_retry_delay(requests.HTTPError(response=response)) == expected
+    assert _notice_retry_delay(ValueError("32-page evidence limit")) is None
