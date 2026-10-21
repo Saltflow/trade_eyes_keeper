@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import email.utils
 import io
+import math
 import re
+import time
 from collections import OrderedDict
 from copy import deepcopy
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from itertools import islice
 from typing import TYPE_CHECKING
@@ -514,6 +517,34 @@ class _BoundedNoticeText(io.StringIO):
         return super().write(text)
 
 
+def _notice_retry_delay(exc: Exception) -> float | None:
+    """Allow one short retry for transport failures, never parsing/evidence errors."""
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        return 1.0
+    if not isinstance(exc, requests.HTTPError):
+        return None
+    response = exc.response
+    if getattr(response, "status_code", None) not in (429, 500, 502, 503, 504):
+        return None
+    value = (getattr(response, "headers", {}) or {}).get("Retry-After")
+    if not value:
+        return 1.0
+    try:
+        delay = float(value)
+        if delay < 0:
+            return None
+    except (TypeError, ValueError):
+        try:
+            retry_at = email.utils.parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            delay = (retry_at - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    # Do not hammer a server asking us to wait longer than this bounded retry.
+    return max(0.0, delay) if math.isfinite(delay) and delay <= 5.0 else None
+
+
 class HkexDividendEvidenceProvider:
     """Use bounded official searches to resolve previously unknown HKD dates."""
 
@@ -677,8 +708,8 @@ class HkexDividendEvidenceProvider:
     def refine(self, actions: list[CorporateAction]) -> list[CorporateAction]:
         """Return copies, preserving gaps when no causal official match exists."""
         result = deepcopy(actions)
-        # Retry transient failures on the next refine call, never for each event
-        # or title query in this call. Failed downloads consume the same budget.
+        # Allow one bounded transient retry, then deduplicate failures across
+        # events/title queries. Every HTTP attempt consumes the same budget.
         failures: dict[str, str] = {}
         missing = [
             a
@@ -723,24 +754,37 @@ class HkexDividendEvidenceProvider:
                                 if diagnostic not in action.diagnostics:
                                     action.diagnostics.append(diagnostic)
                                 break
-                            downloaded += 1
-                            try:
-                                content = self._download_notice(url)
-                                self._text_cache[url] = self._notice_text(content)
-                                while len(self._text_cache) > self.max_documents:
-                                    self._text_cache.popitem(last=False)
-                            except Exception as exc:  # noqa: BLE001 -- isolate PDF/HTTP failures
-                                # Transport/parser failures are not contradictory
-                                # cash terms. Keep the gap visible and try other
-                                # official notices; never cache partial text.
-                                failures[url] = (
-                                    "hkex_cash_evidence_unavailable="
-                                    + url
-                                    + "; "
-                                    + type(exc).__name__
-                                    + ": "
-                                    + str(exc)[:240]
-                                )
+                            for attempt in range(2):
+                                downloaded += 1
+                                try:
+                                    content = self._download_notice(url)
+                                    self._text_cache[url] = self._notice_text(content)
+                                    while len(self._text_cache) > self.max_documents:
+                                        self._text_cache.popitem(last=False)
+                                    break
+                                except Exception as exc:  # noqa: BLE001 -- isolate PDF/HTTP failures
+                                    delay = _notice_retry_delay(exc)
+                                    if (
+                                        attempt == 0
+                                        and delay is not None
+                                        and downloaded < self.max_documents
+                                    ):
+                                        # Retries consume the SAME request budget;
+                                        # never multiply the maximum network work.
+                                        diagnostic = "hkex_cash_evidence_retried=" + url
+                                        if diagnostic not in action.diagnostics:
+                                            action.diagnostics.append(diagnostic)
+                                        time.sleep(delay)
+                                        continue
+                                    failures[url] = (
+                                        "hkex_cash_evidence_unavailable="
+                                        + url
+                                        + "; "
+                                        + type(exc).__name__
+                                        + ": "
+                                        + str(exc)[:240]
+                                    )
+                                    break
                         if url in failures:
                             if failures[url] not in action.diagnostics:
                                 action.diagnostics.append(failures[url])

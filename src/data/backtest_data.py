@@ -233,7 +233,9 @@ def _issue(
     reason: object,
 ) -> DataReadinessIssue:
     text = str(reason)
-    lowered = text.lower()
+    # URL/error details must not override the primary readiness category
+    # (e.g. a filename containing "403" is not an HTTP access denial).
+    lowered = text.split("; hkex_evidence_details=[", 1)[0].lower()
     if "403" in lowered or "blocked" in lowered or "forbidden" in lowered:
         category = "source_blocked"
     elif (
