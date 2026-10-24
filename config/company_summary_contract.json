@@ -1,0 +1,41 @@
+{
+  "version": "company-summary-draft-1",
+  "status": "offline_preparation_only",
+  "model": "deepseek-flash",
+  "thinking": {"type": "enabled"},
+  "reasoning_effort": "high",
+  "input_waterline": 500000,
+  "message_token_reserve": 4096,
+  "image_token_reserve_each": 1024,
+  "recovery_max_tokens": 65536,
+  "summary_max_tokens": 131072,
+  "recovery_visible_target": [10000, 20000],
+  "summary_visible_target": [20000, 40000],
+  "summary_visible_ceiling": 60000,
+  "price_checked_date": "2026-10-24",
+  "price_source": "https://api-docs.deepseek.com/quick_start/pricing/",
+  "vision_source": "https://api-docs.deepseek.com/guides/vision/",
+  "usd_per_million_cache_miss": {
+    "off_peak": {"input": 0.15, "output": 0.60},
+    "peak": {"input": 0.30, "output": 1.20}
+  },
+  "questions": [
+    "公司怎样赚钱，产品、客户与单位经济的成本锚是什么？",
+    "实际历史中利润、资本与每股价值怎样增长或损耗？",
+    "最近经营方向发生什么变化，是行业共因还是公司差异？",
+    "利润如何变成现金，正常化现金需要什么恢复和投入假设？",
+    "现金投向哪里，再投资、分红和回购能否延续价值创造？",
+    "哪些现金与增长对应当前价格，价值范围和安全边际怎样？",
+    "哪些具体反证会推翻判断，何时重看？"
+  ],
+  "prompts": {
+    "summary": "config/prompts/company_summary.md",
+    "recovery": "config/prompts/company_summary_recovery.md",
+    "example": "docs/design/company_summary_example.md"
+  },
+  "example_metric_codes": [
+    "IS_REVENUE", "IS_PARENT_NET_PROFIT", "CFS_NET_OPERATING",
+    "CFS_CAPEX", "CAP_TOTAL_SHARES", "CAP_BASIC_EPS",
+    "CAP_DILUTED_EPS", "CAP_BVPS", "CAP_ROE", "CAP_ADJUSTED_ROE"
+  ]
+}

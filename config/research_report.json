@@ -1,0 +1,71 @@
+{
+  "version": "research-report-v5-actual-years-local-known-price",
+  "prompts": [
+    "config/prompts/research_basis_v3.md",
+    "config/prompts/research_valuation_v5.md",
+    "config/prompts/research_visuals.md",
+    "docs/design/research_report_example.md"
+  ],
+  "rounds": [
+    {
+      "id": "draft",
+      "prompt": "config/prompts/research_draft_v5.md",
+      "max_tokens": 131072,
+      "output_planning_tokens": 48000
+    },
+    {
+      "id": "review",
+      "prompt": "config/prompts/research_audit_v5.md",
+      "max_tokens": 131072,
+      "output_planning_tokens": 48000
+    },
+    {
+      "id": "write",
+      "prompt": "config/prompts/research_final_v5.md",
+      "max_tokens": 131072,
+      "output_planning_tokens": 40000
+    }
+  ],
+  "questions": "config/company_summary_contract.json",
+  "request": {
+    "model": "deepseek-flash",
+    "thinking": {
+      "type": "enabled"
+    },
+    "reasoning_effort": "high",
+    "max_tokens": 131072,
+    "response_format": {
+      "type": "text"
+    },
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "input_waterline": 500000,
+  "message_token_reserve": 4096,
+  "image_token_reserve_each": 1024,
+  "planned_images_each_later_round": 14,
+  "handoff_token_reserve": 40000,
+  "maximum_request_bytes": 50331648,
+  "tokenizer": "data/fundamental_quant/tokenizer/tokenizer.json",
+  "pricing_checked_date": "2026-10-24",
+  "pricing_utc_dates": [
+    "2026-10-24",
+    "2026-10-25"
+  ],
+  "price_source": "https://api-docs.deepseek.com/quick_start/pricing/",
+  "vision_source": "https://api-docs.deepseek.com/guides/vision/",
+  "pricing_note": "Dated assumptions copied from the verified 2026-10-24 flash weekend plan; refresh and prepare a new run for any other UTC date. Not a live price lookup.",
+  "model_input_capacity_bound": 1048576,
+  "peak_rates": {
+    "input": "0.30",
+    "output": "1.20"
+  },
+  "execution_rates": {
+    "input": 0.15,
+    "output": 0.6,
+    "cached_input": 0.003
+  },
+  "local_latest_price": true
+}

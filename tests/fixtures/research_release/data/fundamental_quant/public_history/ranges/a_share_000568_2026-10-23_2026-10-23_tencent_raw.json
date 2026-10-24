@@ -1,0 +1,41 @@
+{
+  "version": "longitudinal-public-history/1",
+  "issuer_id": "a_share:000568",
+  "start": "2026-10-23",
+  "end": "2026-10-23",
+  "retrieved_at": "2026-10-23T13:00:57.923136+00:00",
+  "source": "tencent_raw_day",
+  "source_url": "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sz000568%2Cday%2C2026-10-23%2C2026-10-23%2C800%2C",
+  "query": {
+    "adjustflag": "3",
+    "frequency": "d",
+    "provider_adjustment": "",
+    "provider_response_key": "day",
+    "params": {
+      "param": "sz000568,day,2026-10-23,2026-10-23,800,"
+    }
+  },
+  "currency": "CNY",
+  "rows": [
+    {
+      "date": "2026-10-23",
+      "code": "sz.000568",
+      "open": 68.29,
+      "close": 69.99,
+      "high": 70.16,
+      "low": 67.86,
+      "volume": 15943300.0,
+      "volume_unit": "shares",
+      "provider_volume": 159433.0,
+      "provider_volume_unit": "lots_100_shares",
+      "tradestatus": "1",
+      "trade_status_basis": "provider_raw_daily_volume_positive_or_zero",
+      "peTTM": null,
+      "pbMRQ": null
+    }
+  ],
+  "valuation_basis": "raw_prices_only; provider_PE_PB_unavailable; no_corporate_action_assertion",
+  "raw_response_path": "data\\fundamental_quant\\public_history\\fallback\\responses\\0b7372b6fc30f02fd7283def230313f3b4e4611a43749f1ba1fa4ac5541c1cc9.json",
+  "raw_response_body_sha256": "0b7372b6fc30f02fd7283def230313f3b4e4611a43749f1ba1fa4ac5541c1cc9",
+  "rows_sha256": "b9b7a893e34ff625263744e704fb04e9985f28d7c2fa5ed114e5a644beb105dc"
+}

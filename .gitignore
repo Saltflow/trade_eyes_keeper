@@ -121,3 +121,10 @@ test_cache/
 # provider-specific for the public source repository.
 data/point_in_time/
 data/reference_universe/
+
+# Formal research: local execution evidence and disposable test workspaces.
+/.tmp/
+/data/acceptance/
+/data/fundamental_data/
+/data/fundamental_quant/*
+!/data/fundamental_quant/tokenizer/

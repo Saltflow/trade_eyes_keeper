@@ -1,0 +1,8 @@
+# Standalone formal-research runtime; no data acquisition or trading services.
+requests>=2.31,<3
+python-dotenv>=1,<2
+tokenizers>=0.20,<1
+PyYAML>=6,<7
+markdown>=3.5,<4
+bleach>=6,<7
+matplotlib>=3.4,<4

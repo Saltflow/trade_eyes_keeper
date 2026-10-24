@@ -1,0 +1,6 @@
+{
+  "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/resolve/main/tokenizer.json",
+  "sha256": "8f9f37ca37fdc4f5fd36d5cf4d3b0e8392edb4e894fd10cc0d70b4957c8633cf",
+  "bytes": 6367146,
+  "purpose": "text token counts; image tokens separately estimated"
+}

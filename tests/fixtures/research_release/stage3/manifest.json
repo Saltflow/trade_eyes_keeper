@@ -1,0 +1,65 @@
+{
+  "kind": "stage3_input_v1",
+  "model_calls": 0,
+  "purpose": "仅交接输入；同行资格、经济可比性及跨公司分析尚未执行。",
+  "selection": {
+    "structure_topics": [
+      "segments_geographies"
+    ],
+    "policy_topics": [
+      "reporting_basis"
+    ]
+  },
+  "companies": [
+    {
+      "company": "000568",
+      "summary": "000568/完整摘要.md",
+      "summary_status": "complete",
+      "metadata_records": 3
+    },
+    {
+      "company": "600039",
+      "summary": "600039/完整摘要.md",
+      "summary_status": "complete",
+      "metadata_records": 3
+    },
+    {
+      "company": "600820",
+      "summary": "600820/完整摘要.md",
+      "summary_status": "complete",
+      "metadata_records": 3
+    }
+  ],
+  "source_hashes": {
+    "E:\\CodeBases\\trade_eyes_keeper\\data\\fundamental_data\\three_companies_fixed4_20261024_115306\\sources.json": "7999a03355047d80353f2cfcf7c53a933b28aa7713f5bcdc9c40042811839286",
+    "E:\\CodeBases\\trade_eyes_keeper\\data\\fundamental_data\\three_companies_fixed4_20261024_115306\\stage1\\600039_2023\\data.json": "35cf134afe4776ca7289cb739da4ab9ca0cf9747d4f8e459a715703003613bd3",
+    "E:\\CodeBases\\trade_eyes_keeper\\data\\fundamental_data\\three_companies_fixed4_20261024_115306\\stage1\\600039_2024\\data.json": "f26211196b4d45f665ba3bc29a2430a9e3918db4413e4f6a9a40522b4c207c73",
+    "E:\\CodeBases\\trade_eyes_keeper\\data\\fundamental_data\\three_companies_fixed4_20261024_115306\\stage1\\600039_2025\\data.json": "e6279421497c0229296e74fc541ffefcd382cf1fb1e9492d4c1aaa44951f5540",
+    "E:\\CodeBases\\trade_eyes_keeper\\data\\fundamental_data\\three_companies_fixed4_20261024_115306\\stage1\\600820_2023\\data.json": "226ebba566d3d105e6fdb07a19740fc145f1d6e0e6dd1dd61d5d9cbc71bf7392",
+    "E:\\CodeBases\\trade_eyes_keeper\\data\\fundamental_data\\three_companies_fixed4_20261024_115306\\stage1\\600820_2024\\data.json": "ceb378ca0bd34df1983c9a13b9bfd234a76a97a49302ac082542924c028385b4",
+    "E:\\CodeBases\\trade_eyes_keeper\\data\\fundamental_data\\three_companies_fixed4_20261024_115306\\stage1\\600820_2025\\data.json": "4dbd6fc2a8ca06d55003399781dc37ff1c0613bcdc2d8bb7997f09f72974c813",
+    "E:\\CodeBases\\trade_eyes_keeper\\data\\fundamental_data\\three_companies_fixed4_20261024_115306\\stage1\\000568_2023\\data.json": "98cc4a4f6ce5c576f12b1e0605a523d08640764ae4beeeb2e7532316c00e3662",
+    "E:\\CodeBases\\trade_eyes_keeper\\data\\fundamental_data\\three_companies_fixed4_20261024_115306\\stage1\\000568_2024\\data.json": "397d192fa4f05bb2979b08f28858bd73ccae51af5a4a487ee53f9f76fb28ebd2",
+    "E:\\CodeBases\\trade_eyes_keeper\\data\\fundamental_data\\three_companies_fixed4_20261024_115306\\stage1\\000568_2025\\data.json": "f836e86229a0b2b3d932c887cd4060a433c572f740ff4815b6ae32602ddc9b18",
+    "E:\\CodeBases\\trade_eyes_keeper\\data\\fundamental_data\\summary_best_effort_20261024_162500\\000568\\完整摘要.md": "b44c57cc5cbf21d8f77740f32a6a2f3b3f0f62025c8e52fec629b9de8498130d",
+    "E:\\CodeBases\\trade_eyes_keeper\\data\\fundamental_data\\summary_best_effort_20261024_162500\\600039\\完整摘要.md": "91d48e8b38ce5a7779e52b0c7a9c2f6669a4e87544c1a7b0987b65e81c93c407",
+    "E:\\CodeBases\\trade_eyes_keeper\\data\\fundamental_data\\summary_best_effort_20261024_162500\\600820\\完整摘要.md": "8e4befb65a3ea49264b3587dcff79e1aae04a85c6b8f7a6f297b76ed43d5708d",
+    "E:\\CodeBases\\trade_eyes_keeper\\config\\fundamental_data_v2.json": "aabd81723eacfff112263cca0475bd9ce4dcb28763cf5fa19e72227a2bd211f7",
+    "E:\\CodeBases\\trade_eyes_keeper\\data\\fundamental_data\\summary_best_effort_20261024_162500\\jobs\\000568_summary\\receipt.json": "4673d1d0a9d9ec1875f50c16cd29b894341aed8e7b1ee6fb56061b61e04fe2f1",
+    "E:\\CodeBases\\trade_eyes_keeper\\data\\fundamental_data\\summary_best_effort_20261024_162500\\jobs\\600039_summary\\receipt.json": "36734c2b42b0c13743fb94f88a0e22d445b69c83f8a1f453bc17621582e86a10",
+    "E:\\CodeBases\\trade_eyes_keeper\\data\\fundamental_data\\summary_best_effort_20261024_162500\\jobs\\600820_summary\\receipt.json": "e7592c27745d8017ddf764d5f5c2eb3f30caa421d4787e8eede0bb071b6b3f33"
+  },
+  "files": {
+    "元数据.json": "8231fe8126887c34b1cf1ecaac6e389e9880e2b66f0bd9d60cecc405735ada85",
+    "模型输入.md": "e6e91e2c144846458456001f3983c9a932f36d234fcbec7514f797a0e2144c91",
+    "000568\\元数据.md": "db050e330d680f969140710844f0f170916622a4af197254c50945e28e83bd35",
+    "000568\\完整摘要.md": "b44c57cc5cbf21d8f77740f32a6a2f3b3f0f62025c8e52fec629b9de8498130d",
+    "000568\\摘要状态.json": "4673d1d0a9d9ec1875f50c16cd29b894341aed8e7b1ee6fb56061b61e04fe2f1",
+    "600039\\元数据.md": "74f6ea0c363b41c4c3c5472351011af550cae823211b18b7f178c179c4241ffc",
+    "600039\\完整摘要.md": "91d48e8b38ce5a7779e52b0c7a9c2f6669a4e87544c1a7b0987b65e81c93c407",
+    "600039\\摘要状态.json": "36734c2b42b0c13743fb94f88a0e22d445b69c83f8a1f453bc17621582e86a10",
+    "600820\\元数据.md": "0f8fc2e1fcbaddf4254465e2f90f73052ec40725d98f1185eb81c66f498adef2",
+    "600820\\完整摘要.md": "8e4befb65a3ea49264b3587dcff79e1aae04a85c6b8f7a6f297b76ed43d5708d",
+    "600820\\摘要状态.json": "e7592c27745d8017ddf764d5f5c2eb3f30caa421d4787e8eede0bb071b6b3f33"
+  }
+}

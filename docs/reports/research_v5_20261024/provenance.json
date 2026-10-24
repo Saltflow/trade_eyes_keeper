@@ -1,0 +1,19 @@
+{
+  "source_run": "data/fundamental_data/research_v5_paid_20261024_114027",
+  "date": "2026-10-24",
+  "kind": "real_paid_model_report_unchanged",
+  "api_requests": 3,
+  "api_input_tokens": 505445,
+  "api_output_tokens_including_thinking": 113746,
+  "reasoning_tokens": 78376,
+  "visible_report_tokens_local": 15217,
+  "usage_cost_usd": "0.14237091",
+  "cost_scope": "Returned usage at frozen published rates; not provider-console billing or Codex usage.",
+  "budget_usd": "5",
+  "automatic_retries": 0,
+  "additional_requests": 0,
+  "generated_images": 0,
+  "known_limit": "First two model rounds returned no chart data. Actual image review was not exercised.",
+  "report_sha256": "9ad002572881aeade320a801e49d3a88c18a53fe7e2784f7b7a85dbecb8e7884",
+  "full_raw_archive": "Retained locally in source_run; not added to Git."
+}
