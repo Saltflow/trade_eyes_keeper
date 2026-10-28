@@ -555,6 +555,24 @@ def handle_save(config_path=None) -> str:
 
 def _run_main(command_args: list[str], env_extra: dict | None = None) -> str:
     """后台启动 main.py 子进程。返回提示消息。"""
+    if command_args and command_args[0] in {"--once", "--brief"}:
+        from ...core.report_execution import submit_report
+
+        brief = command_args[0] == "--brief"
+        try:
+            submit_report(
+                _load_config(), kind="brief" if brief else "daily",
+                report_id=(
+                    command_args[1]
+                    if brief and len(command_args) > 1 else "morning_snapshot"
+                ),
+                force=bool(env_extra and env_extra.get("BOT_FORCE") == "1"),
+                source="bot", config_path=CONFIG_PATH,
+            )
+            return True
+        except Exception:
+            logger.exception("报表入队失败")
+            return False
     import os
     import subprocess
     import sys

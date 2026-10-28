@@ -1,5 +1,7 @@
 """Handle message events already authenticated by the official WebSocket SDK."""
 
+from __future__ import annotations
+
 import json
 import logging
 
@@ -33,7 +35,8 @@ def handle_feishu_message(app: FeishuApp, body: dict) -> str:
     if not app.gate.is_allowed(chat_id):
         return finish("unauthorized", "chat_not_allowed")
     text = _message_text(message)
-    if not text:
+    attachments = _message_images(message)
+    if not text and not attachments:
         return finish("ignored", "no_text")
     # Only a leading slash is a legacy command. A quoted example such as
     # '解释 /config set workers 4' must never execute that command.
@@ -57,13 +60,22 @@ def handle_feishu_message(app: FeishuApp, body: dict) -> str:
                 addressed = True
                 text = text.replace(key, "").strip()
     is_command = text.startswith("/")
-    if not is_command and (not app.assistant_enabled or not text):
+    if not is_command and (not app.assistant_enabled or not (text or attachments)):
         return finish("ignored", "assistant_disabled_or_empty_text")
     if not is_command and message.get("chat_type") != "p2p" and not addressed:
         return finish("ignored", "group_not_addressed")
-    result = app.access.accept(
-        chat_id, str(message.get("message_id") or header.get("event_id") or "")
-    )
+    from .ingress import ingress_access_check
+
+    def check_access():
+        return app.access.accept(
+            chat_id,
+            str(message.get("message_id") or header.get("event_id") or "")
+            if is_command
+            else "",
+        )
+
+    durable_check = ingress_access_check.get()
+    result = durable_check(check_access) if durable_check else check_access()
     if result != "accepted":
         if result == "rate_limited":
             app.send_message(chat_id, "操作过于频繁，请稍后再试。")
@@ -82,19 +94,34 @@ def handle_feishu_message(app: FeishuApp, body: dict) -> str:
     try:
         assistant = app.get_assistant()
         if assistant is not None:
+            image_context = {}
+            if attachments:
+                image_context = {
+                    "attachments": attachments,
+                    "message_time": {
+                        "create_time": message.get("create_time"),
+                        "update_time": message.get("update_time"),
+                    },
+                }
+            elif message.get("create_time") or message.get("update_time"):
+                image_context["message_time"] = {
+                    "create_time": message.get("create_time"),
+                    "update_time": message.get("update_time"),
+                }
             submitted = assistant.submit(
                 chat_id,
                 sender,
                 text,
                 str(message.get("message_id") or header.get("event_id") or ""),
+                **image_context,
             )
             return finish(
                 "accepted", "assistant_queued" if submitted else "assistant_not_queued"
             )
-    except Exception as exc:  # noqa: BLE001 - preserve legacy commands if assistant fails
+    except Exception as exc:  # noqa: BLE001 - keep durable ingress pending on admission failure
         logger.error("Feishu assistant initialization failed: %s", type(exc).__name__)
-        app.send_message(chat_id, "自然语言助手暂不可用；原有 /help 命令仍可使用。")
-    return finish("accepted", "assistant_unavailable")
+        return finish("retry", "assistant_admission_failed")
+    return finish("unavailable", "assistant_unavailable")
 
 
 def _message_text(message: dict) -> str:
@@ -145,3 +172,42 @@ def _message_text(message: dict) -> str:
     if not isinstance(text, str):
         return ""
     return text.strip()
+
+
+def _message_images(message: dict) -> list[dict]:
+    """Keep platform resource references; never accept an arbitrary image URL."""
+    try:
+        content = json.loads(message.get("content") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(content, dict):
+        return []
+    keys = []
+    if message.get("message_type") == "image":
+        keys.append(content.get("image_key"))
+    if message.get("message_type") == "post":
+        posts = [content] if "content" in content else list(content.values())
+        for post in posts:
+            if not isinstance(post, dict):
+                continue
+            for block in post.get("content", []):
+                if not isinstance(block, list):
+                    continue
+                for item in block:
+                    if isinstance(item, dict) and item.get("tag") == "img":
+                        keys.append(item.get("image_key"))
+    result = []
+    seen = set()
+    for key in keys:
+        if not isinstance(key, str) or not key or key in seen:
+            continue
+        # The download boundary applies stricter resource-key validation.
+        seen.add(key)
+        result.append(
+            {
+                "type": "image",
+                "image_key": key,
+                "message_id": str(message.get("message_id") or ""),
+            }
+        )
+    return result

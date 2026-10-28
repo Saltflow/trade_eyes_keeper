@@ -8,14 +8,131 @@ now injected explicitly, so this module owns one job.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 
-from .report_builders import _alert_value, _benchmark_label
+from .report_builders import (
+    _alert_value,
+    _benchmark_label,
+    build_daily_event_rows,
+    report_data_readiness,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _converter_probe_preamble() -> str:
+    """Cache the real driver probe before a large Unix TeX process can fork."""
+    import re
+    import subprocess
+
+    result = subprocess.run(
+        ["extractbb", "--version"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    lines = result.stdout.splitlines()
+    first = next((line for line in lines if line.strip()), "")
+    if (
+        result.returncode != 0
+        or not re.search(r"\bVersion +[0-9]{8}(?: +|$)", first)
+        or len(re.findall(r"\bVersion\b", first)) != 1
+        or not first.isascii()
+        or any(character in first for character in "\\{}%#$&^_~")
+        or any(not 32 <= ord(character) < 127 for character in first)
+    ):
+        raise ValueError("Unrecognized converter version probe")
+    # Only this exact command uses the cached, actual first line. All other
+    # commands retain the original public conditional and catcode setup. The
+    # backend still parses the version and selects its own color/link behavior.
+    return (
+        "\\ExplSyntaxOn\n"
+        r"\cs_new_eq:NN \tradeeyes_original_shell:nnNTF \sys_get_shell:nnNTF"
+        "\n"
+        r"\cs_set_protected:Npn \sys_get_shell:nnNTF #1#2#3#4#5"
+        "\n{\n"
+        r"\str_if_eq:nnTF {#1} {extractbb~--version}"
+        "\n{\n"
+        r"\cs_gset_eq:NN \sys_get_shell:nnNTF \tradeeyes_original_shell:nnNTF"
+        "\n"
+        r"\sys_if_shell:TF"
+        "\n{\n"
+        r"\tl_set_rescan:Nnn #3 {#2} {" + first.replace(" ", "~") + "~}\n#4\n}\n{\n"
+        r"\tradeeyes_original_shell:nnNTF {#1} {#2} #3 {#4} {#5}"
+        "\n}\n}\n{\n"
+        r"\tradeeyes_original_shell:nnNTF {#1} {#2} #3 {#4} {#5}"
+        "\n}\n}\n\\ExplSyntaxOff\n"
+    )
+
+
+def _compile_pdf(tex_file: Path) -> bytes | None:
+    """Release XeTeX memory before converting the final XDV to PDF."""
+    import subprocess
+
+    if os.name != "nt":
+        preamble = _converter_probe_preamble()
+        if preamble:
+            tex_file.write_text(
+                preamble + tex_file.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+    xdv_file = tex_file.with_suffix(".xdv")
+    for _ in range(2):  # Preserve both passes for cross references.
+        # A failed later pass must not reuse the previous pass's output.
+        xdv_file.unlink(missing_ok=True)
+        result = subprocess.run(
+            [
+                "xelatex",
+                "-no-pdf",
+                "-interaction=nonstopmode",
+                "-output-directory",
+                str(tex_file.parent),
+                str(tex_file),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if result.returncode != 0:
+            log_file = tex_file.with_suffix(".log")
+            log_tail = ""
+            if log_file.exists():
+                lines = log_file.read_text(errors="replace").split("\n")
+                for index, line in enumerate(lines):
+                    if line.startswith("!"):
+                        log_tail = "\\n".join(lines[max(0, index - 1) : index + 5])
+                        break
+            logger.warning("xelatex 编译问题: %s", log_tail or result.stderr[-200:])
+
+    if not xdv_file.exists():
+        logger.error("xelatex 未产出 XDV")
+        return None
+
+    pdf_file = tex_file.with_suffix(".pdf")
+    pdf_file.unlink(missing_ok=True)
+    # These are XeTeX's default converter flags. Running after XeTeX exits
+    # avoids its fork/exec briefly duplicating the resident TeX memory on Linux.
+    result = subprocess.run(
+        ["xdvipdfmx", "-q", "-E", "-o", str(pdf_file), str(xdv_file)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0 or not pdf_file.exists():
+        logger.error("XDV 转 PDF 失败: %s", result.stderr[-200:])
+        return None
+    pdf_bytes = pdf_file.read_bytes()
+    if not pdf_bytes.startswith(b"%PDF-"):
+        logger.error("XDV 转换结果不是有效的 PDF 文件头")
+        return None
+    logger.info("日报 PDF 生成成功 (%d bytes)", len(pdf_bytes))
+    return pdf_bytes
 
 
 def generate_daily_pdf(
@@ -30,11 +147,11 @@ def generate_daily_pdf(
     get_server_info,
 ) -> bytes | None:
     """生成日报 PDF（xelatex 编译 LaTeX 模板），返回 bytes"""
-    import tempfile
-    import subprocess
     import os
     import re
+    import tempfile
 
+    chart_path = None
     try:
         # 1. 图表 PNG
         chart_buf = chart_deviation_timeline(
@@ -62,14 +179,11 @@ def generate_daily_pdf(
         # ── LaTeX 转义函数 (必须在使用前定义) ──
         def _esc(s):
             """LaTeX 转义"""
-            return (
-                str(s)
-                .replace("&", "\\&")
-                .replace("%", "\\%")
-                .replace("#", "\\#")
-                .replace("$", "\\$")
-                .replace("_", "\\_")
-            )
+            escaped = {"\\": r"\textbackslash{}", "&": r"\&", "%": r"\%",
+                       "#": r"\#", "$": r"\$", "_": r"\_", "{": r"\{",
+                       "}": r"\}", "~": r"\textasciitilde{}",
+                       "^": r"\textasciicircum{}"}
+            return "".join(escaped.get(char, char) for char in str(s))
 
         buy_count = len(sa)
         evaluation_reports = getattr(session, "evaluation_reports", {}) or {}
@@ -105,6 +219,51 @@ def generate_daily_pdf(
         kpi_color_h = "green" if th is not None and th > 0 else "red"
         kpi_color_u = "green" if tu is not None and tu > 0 else "red"
         kpi_color_s = "green" if buy_count > 0 else "red"
+        readiness = report_data_readiness(session)
+        readiness_section = ""
+        if readiness["status"] == "not_ready":
+            kpi_s, kpi_color_s = "数据未就绪", "red"
+            labels = {"a_share": "A股", "hk": "港股", "us": "美股"}
+            issues = [
+                f"{labels.get(group, group)}：{status}"
+                for group, status in readiness["analysis_issues"].items()
+            ]
+            if readiness["missing_codes"]:
+                issues.append("缺少标的：" + "、".join(readiness["missing_codes"]))
+            if readiness["error_count"]:
+                issues.append(f"采集错误：{readiness['error_count']}项")
+            readiness_section = (
+                r"{\color{red}\small 数据未就绪：" + _esc("；".join(issues)) + "}"
+            )
+            for group, key in (("a_share", "kpi_a"), ("hk", "kpi_h"), ("us", "kpi_u")):
+                if group in readiness["analysis_issues"]:
+                    if key == "kpi_a":
+                        kpi_a = "受阻"
+                    elif key == "kpi_h":
+                        kpi_h = "受阻"
+                    else:
+                        kpi_u = "受阻"
+
+        events = build_daily_event_rows(
+            getattr(session, "announcements", None),
+            getattr(session, "placements", None),
+            stock_data,
+            getattr(session, "dividend_events", None),
+        )
+        events_section = ""
+        if events:
+            event_lines = [
+                r"\begingroup",
+                r"\section*{\color{navy}事件速览}",
+                r"\small\begin{longtable}{p{.14\textwidth}p{.12\textwidth}p{.13\textwidth}p{.49\textwidth}}",
+                r"\toprule 日期 & 标的 & 事项 & 详情 \\ \midrule\endhead",
+            ]
+            event_lines.extend(
+                " & ".join(_esc(row.get(key) or "—") for key in ("date", "code", "kind", "title")) + r" \\"
+                for row in events
+            )
+            event_lines.extend([r"\bottomrule\end{longtable}", r"\endgroup"])
+            events_section = "\n".join(event_lines)
 
         # 3. 触发信号
         trigger_lines = []
@@ -179,7 +338,7 @@ def generate_daily_pdf(
         # 列格式: l for 标的, c for signal, r for numbers
         col_fmt = "l" + "r" * (len(cons_inds) + 7) + "c"
         table_rows = ""
-        alert_codes = set(getattr(a, "stock_code", "") for a in sa)
+        alert_codes = {getattr(a, "stock_code", "") for a in sa}
 
         from src.markets import _detect_fine_group
 
@@ -291,8 +450,8 @@ def generate_daily_pdf(
             report_lines = [
                 "\\newpage",
                 "\\section*{\\color{navy}统一策略评估}",
-                "{\\footnotesize 本节直接渲染与 HTML、飞书和 Telegram "
-                "相同的 EvaluationReport。}",
+                ("{\\footnotesize 本节直接渲染与 HTML、飞书和 Telegram "
+                "相同的 EvaluationReport。}"),
             ]
             group_labels = {"a_share": "A股", "hk": "港股", "us": "美股"}
             for group, label in group_labels.items():
@@ -303,15 +462,15 @@ def generate_daily_pdf(
                     f"\\subsection*{{{label}}}",
                     "\\begin{tabular}{lr@{\\quad}lr@{\\quad}lr}",
                     "\\toprule",
-                    f"收益 & {report.total_return:+.1f}\\% & "
+                    (f"收益 & {report.total_return:+.1f}\\% & "
                     f"最大回撤 & {report.max_drawdown:.1f}\\% & "
-                    f"夏普 & {report.sharpe_ratio:.2f} \\",
-                    f"交易数 & {int(report.trade_count)} & "
+                    f"夏普 & {report.sharpe_ratio:.2f} \\"),
+                    (f"交易数 & {int(report.trade_count)} & "
                     f"期末资产 & {report.final_asset:,.2f} & "
-                    f"仓位 & {report.final_position_pct:.1f}\\% \\",
-                    f"分红税前 & {report.gross_dividend_cash:,.2f} & "
+                    f"仓位 & {report.final_position_pct:.1f}\\% \\"),
+                    (f"分红税前 & {report.gross_dividend_cash:,.2f} & "
                     f"预扣税额 & {report.dividend_tax_cost:,.2f} & "
-                    f"分红税后 & {report.net_dividend_cash:,.2f} \\",
+                    f"分红税后 & {report.net_dividend_cash:,.2f} \\"),
                     "\\bottomrule",
                     "\\end{tabular}",
                 ])
@@ -344,8 +503,8 @@ def generate_daily_pdf(
                     report_lines.extend([
                         "\\paragraph{季末持仓（自然季度最后有效交易日）}",
                         "\\begin{longtable}{llllrrr}",
-                        "\\toprule 季度 & 日期 & 代码 & 股数 & 成本 & 价格 & 市值 "
-                        "\\\\ \\midrule",
+                        ("\\toprule 季度 & 日期 & 代码 & 股数 & 成本 & 价格 & 市值 "
+                        "\\\\ \\midrule"),
                     ])
                     for snapshot in quarters:
                         positions = snapshot.get("positions", []) or []
@@ -371,8 +530,8 @@ def generate_daily_pdf(
                 report_lines.extend([
                     "\\paragraph{期末持仓}",
                     "\\begin{tabular}{lrrrrrr}",
-                    "\\toprule 代码 & 股数 & 成本 & 期末价 & 市值 & 权重 & 盈亏 \\\\ "
-                    "\\midrule",
+                    ("\\toprule 代码 & 股数 & 成本 & 期末价 & 市值 & 权重 & 盈亏 \\\\ "
+                    "\\midrule"),
                 ])
                 if final_holdings:
                     for position in final_holdings:
@@ -478,7 +637,7 @@ def generate_daily_pdf(
 
         info = get_server_info()
         html = template.replace(
-            "\\VAR{report_date}", datetime.now().strftime("%Y-%m-%d %A")
+            "\\VAR{report_date}", datetime.now().astimezone().strftime("%Y-%m-%d %A")
         )
         html = html.replace("\\VAR{server_hostname}", info.get("hostname", ""))
         html = html.replace("\\VAR{kpi_buy}", kpi_buy)
@@ -490,6 +649,8 @@ def generate_daily_pdf(
         html = html.replace("\\VAR{kpi_color_h}", kpi_color_h)
         html = html.replace("\\VAR{kpi_color_u}", kpi_color_u)
         html = html.replace("\\VAR{kpi_color_s}", kpi_color_s)
+        html = html.replace("\\VAR{readiness_section}", readiness_section)
+        html = html.replace("\\VAR{events_section}", events_section)
         html = html.replace("\\VAR{chart_section}", chart_section)
         html = html.replace("\\VAR{trigger_section}", trigger_section)
         html = html.replace("\\VAR{table_section}", table_section)
@@ -505,50 +666,10 @@ def generate_daily_pdf(
             tex_file = Path(tmpdir) / "report.tex"
             tex_file.write_text(html, encoding="utf-8")
 
-            for _ in range(2):  # 两次编译（交叉引用）
-                result = subprocess.run(
-                    [
-                        "xelatex",
-                        "-interaction=nonstopmode",
-                        "-output-directory",
-                        tmpdir,
-                        str(tex_file),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                )
-                if result.returncode != 0:
-                    log_file = Path(tmpdir) / "report.log"
-                    log_tail = ""
-                    if log_file.exists():
-                        lines = log_file.read_text(errors="replace").split("\n")
-                        # 找第一个 "!" 错误行
-                        for i, line_text in enumerate(lines):
-                            if line_text.startswith("!"):
-                                log_tail = "\\n".join(lines[max(0, i - 1) : i + 5])
-                                break
-                    logger.warning(
-                        "xelatex 编译问题: %s", log_tail or result.stderr[-200:]
-                    )
+            return _compile_pdf(tex_file)
 
-            pdf_file = Path(tmpdir) / "report.pdf"
-            if pdf_file.exists():
-                pdf_bytes = pdf_file.read_bytes()
-                logger.info("日报 PDF 生成成功 (%d bytes)", len(pdf_bytes))
-                return pdf_bytes
-            else:
-                log_file = Path(tmpdir) / "report.log"
-                if log_file.exists():
-                    logger.error(
-                        "xelatex 日志: %s",
-                        log_file.read_text(errors="replace")[-500:],
-                    )
-                logger.error("xelatex 未产出 PDF")
-                return None
-
-    except Exception as e:
-        logger.error("生成日报 PDF 失败: %s", e)
+    except Exception as e:  # noqa: BLE001 -- classify report generation failure
+        logger.error("生成日报 PDF 失败: %s", type(e).__name__)
         return None
     finally:
         if chart_path and os.path.exists(chart_path):

@@ -1117,3 +1117,160 @@ def _build_optimizer_run_summary(report) -> str:
                 )
                 lines.append(f"验证期 NAV 周线: {changes}")
     return "<br>".join(lines)
+
+
+def _event_number(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
+
+def build_daily_event_rows(announcements, placements, stock_data, dividend_events=None):
+    """Share the complete, ordered event feed across report channels."""
+    events = []
+    row_map = {
+        str(row.get("stock_code", "")): row
+        for _, row in stock_data.iterrows()
+    } if stock_data is not None and hasattr(stock_data, "iterrows") else {}
+    for item in dividend_events or []:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status", "") or "")
+        if status not in {"未除权", "已除权未派息"}:
+            continue
+        code = str(item.get("code", "") or "").strip()
+        ex_date = str(item.get("ex_date", "") or "")
+        payment_date = str(item.get("payment_date", "") or "")
+        cash_per_share = _event_number(item.get("cash_per_share"))
+        currency = str(item.get("currency", "") or "").strip().upper()
+        name = row_map.get(code, {}).get("stock_name", "")
+        amount = (
+            f"每股/份现金 {currency + ' ' if currency else ''}{cash_per_share:.4f}"
+            if cash_per_share is not None
+            else "金额待公告"
+        )
+        schedule = f"除权 {ex_date or '待确认'}"
+        if payment_date:
+            schedule += f" · 派息 {payment_date}"
+        events.append(
+            {
+                "date": ex_date,
+                "code": code,
+                "kind": status,
+                "title": f"{name} · {amount} · {schedule}",
+                "url": "",
+                "priority": 0 if status == "已除权未派息" else 1,
+            }
+        )
+    for code, items in (announcements or {}).items():
+        for item in items or []:
+            if isinstance(item, dict):
+                date = str(item.get("date", "") or "")
+                title = str(item.get("title", "未命名公告") or "未命名公告")
+                url = html_lib.unescape(_safe_html_url(item.get("url")))
+            else:
+                date, title, url = "", str(item), ""
+            events.append(
+                {
+                    "date": date,
+                    "code": str(code),
+                    "kind": "公告",
+                    "title": title,
+                    "url": url,
+                    "priority": 3,
+                }
+            )
+    for code, item in (placements or {}).items():
+        if not isinstance(item, dict):
+            continue
+        unlock_date = str(item.get("unlock_date", "") or "")
+        name = row_map.get(str(code), {}).get("stock_name", "")
+        issue_num = _event_number(item.get("issue_num"))
+        issue_price = _event_number(item.get("issue_price"))
+        pct_of_total = _event_number(item.get("pct_of_total"))
+        issue_num_text = _fmt(
+            issue_num / 1e8 if issue_num is not None else None,
+            "亿股",
+            ".2f",
+        )
+        events.append(
+            {
+                "date": unlock_date,
+                "code": str(code),
+                "kind": "未解禁定增",
+                "title": (
+                    f"{name} · {issue_num_text} · "
+                    f"占总股本 {_fmt(pct_of_total, '%', '.2f')} · "
+                    f"定增价 {_fmt(issue_price, '元', '.2f')} · "
+                    f"解禁 {unlock_date or '待确认'}"
+                ),
+                "url": "",
+                "priority": 2,
+            }
+        )
+    if not events:
+        return []
+    dividend = sorted(
+        (item for item in events if int(item.get("priority", 9)) < 2),
+        key=lambda item: (int(item["priority"]), item["date"], item["code"]),
+    )
+    placements = sorted(
+        (item for item in events if int(item.get("priority", 9)) == 2),
+        key=lambda item: (item["date"], item["code"]),
+        reverse=True,
+    )
+    announcements = sorted(
+        (item for item in events if int(item.get("priority", 9)) >= 3),
+        key=lambda item: (item["date"], item["code"]),
+        reverse=True,
+    )
+    return dividend + placements + announcements
+
+def build_daily_events_text(session, stock_data=None) -> str:
+    """Use the same event rows as email, without silently truncating the feed."""
+    rows = build_daily_event_rows(
+        getattr(session, "announcements", None),
+        getattr(session, "placements", None),
+        stock_data,
+        getattr(session, "dividend_events", None),
+    )
+    return "\n".join(
+        f"{_html_escape(row['date'] or '—')} · {_html_escape(row['code'])} · "
+        f"{_html_escape(row['kind'])}\n{_html_escape(row['title'])}"
+        for row in rows
+    )
+
+def report_data_readiness(session) -> dict:
+    """One readiness projection for execution receipts and report renderers."""
+    config = getattr(session, "config", {})
+    if not isinstance(config, dict) or "stocks" not in config:
+        return {"status": "not_applicable"}
+    expected = {
+        str(stock.get("code", "") if isinstance(stock, dict) else stock).strip()
+        for stock in config.get("stocks", [])
+    }
+    data = getattr(session, "stocks_data", {}) or {}
+    available = set(data) if isinstance(data, dict) else set()
+    missing = sorted(expected - available)
+    errors = getattr(session, "errors", []) or []
+    outcomes = getattr(getattr(session, "signal_scan", None), "group_outcomes", {}) or {}
+    analysis_issues = {
+        group: value.get("status") for group, value in outcomes.items()
+        if isinstance(value, dict) and value.get("status") in {"failed", "blocked", "not_run"}
+    } if isinstance(outcomes, dict) else {}
+    return {
+        "status": "not_ready" if missing or errors or analysis_issues else "ready",
+        "expected_codes": sorted(expected), "available_codes": sorted(available),
+        "missing_codes": missing, "error_count": len(errors),
+        "analysis_issues": analysis_issues,
+    }
+
+
+def get_brief_dataframe(session):
+    """Use the same eligible quote rows on every scheduled delivery channel."""
+    frame = session.get_all_dataframe()
+    codes = getattr(session, "brief_active_codes", None)
+    if isinstance(codes, (tuple, list, set, frozenset)):
+        return frame.loc[frame["stock_code"].astype(str).isin(codes)].copy()
+    return frame

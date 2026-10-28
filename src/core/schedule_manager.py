@@ -1,6 +1,6 @@
 """The service's single APScheduler entry point, shared with Bot commands.
 
-Task execution uses the same main.py commands as explicit command-line runs.
+Reports are submitted to the shared executor used by CLI and Bot requests.
 """
 
 from __future__ import annotations
@@ -50,10 +50,15 @@ def set_schedule_manager(manager: ScheduleManager | None) -> None:
 class ScheduleManager:
     """Manage the service schedule and persist Bot edits to the raw config."""
 
-    def __init__(self, config: dict, config_path: Path | None = None):
+    def __init__(
+        self, config: dict, config_path: Path | None = None, *, execution_runtime=None
+    ):
         self.config = config
         self.config_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
         self._change_lock = RLock()
+        self.execution_runtime = execution_runtime
+        self._generation = 0
+        self._task_generations: dict[str, int] = {}
         tz_str = config.get("scheduler", {}).get("timezone", "Asia/Shanghai")
         try:
             timezone = pytz.timezone(tz_str)
@@ -96,7 +101,7 @@ class ScheduleManager:
             )
             if sched_cfg.get("run_on_startup", False):
                 self.scheduler.add_job(
-                    func=self._job_runner("daily", ["--once"]),
+                    func=self._job_runner("daily", ["--once"], "startup"),
                     trigger="date",
                     run_date=datetime.now(self.timezone),
                     id="startup_task",
@@ -154,7 +159,7 @@ class ScheduleManager:
         job_id_override: str | None = None,
         misfire_grace_seconds: int = DEFAULT_BRIEF_MISFIRE_GRACE_SECONDS,
     ):
-        """注册一个 job，通过子进程执行 main.py。"""
+        """Register a trigger; report callbacks only submit durable work."""
         hour, minute = self._parse_time(time_str)
         if hour is None:
             logger.warning(f"跳过无效调度时间: {task_id}={time_str}")
@@ -181,9 +186,54 @@ class ScheduleManager:
             misfire_grace_seconds,
         )
 
-    @staticmethod
-    def _job_runner(task_id: str, cli_args: list[str]):
+
+
+    def _job_runner(self, task_id: str, cli_args: list[str], source: str = "schedule"):
+        generation = (self._generation, self._task_generations.get(task_id, 0))
+
         def run():
+            if generation != (self._generation, self._task_generations.get(task_id, 0)):
+                logger.info("已忽略失效的调度触发器: %s", task_id)
+                return None
+            if "--once" in cli_args or "--brief" in cli_args:
+                from .report_execution import submit_report
+
+                observed = datetime.now(self.timezone)
+                # The callback can execute late within APScheduler's grace
+                # window. Key it to its intended local occurrence, not to the
+                # actual invocation minute or process PID.
+                if source == "startup":
+                    request_id = f"startup:{os.getpid()}:{generation}"
+                else:
+                    from datetime import timedelta
+
+                    specs = self._scheduled_specs(self.config)
+                    spec = next(item for item in specs if item[1] == task_id)
+                    hour, minute = self._parse_time(spec[2])
+                    scheduled = observed.replace(
+                        hour=hour, minute=minute, second=0, microsecond=0
+                    )
+                    if scheduled > observed:
+                        scheduled -= timedelta(days=1)
+                    request_id = f"schedule:{task_id}:{scheduled.isoformat()}"
+                brief = "--brief" in cli_args
+                try:
+                    run_id = submit_report(
+                        self.config,
+                        kind="brief" if brief else "daily",
+                        report_id=cli_args[1] if brief else "morning_snapshot",
+                        source=source,
+                        request_id=request_id,
+                        config_path=self.config_path,
+                        runtime=self.execution_runtime,
+                    )
+                except Exception:
+                    logger.exception("调度任务入队失败: %s", task_id)
+                    raise
+                logger.info("调度任务已持久入队 run_id=%s: %s", run_id, task_id)
+                return run_id
+            # Optimizer is not migrated in this tranche. Its own existing
+            # process guard and execution contract remain authoritative.
             project_root = Path(__file__).resolve().parents[2]
             cmd = [sys.executable, str(project_root / "main.py"), *cli_args]
             try:
@@ -209,6 +259,7 @@ class ScheduleManager:
         if self.scheduler.running:
             self.scheduler.shutdown(wait=False)
             logger.info("调度器已停止")
+        self._generation += 1
         if get_schedule_manager() is self:
             set_schedule_manager(None)
 
@@ -234,9 +285,11 @@ class ScheduleManager:
             if was_running:
                 self.scheduler.pause()
             try:
+                self._generation += 1
                 self._install_scheduled_specs(proposed, owned_ids)
             except Exception as exc:
                 try:
+                    self._generation += 1
                     self._install_scheduled_specs(previous, owned_ids)
                 except Exception:
                     logger.exception("调度刷新失败，旧任务恢复失败，请重启服务")
@@ -244,6 +297,12 @@ class ScheduleManager:
                     "调度配置已保存，但运行时刷新失败，请重启服务"
                 ) from exc
             else:
+                if self.execution_runtime is not None:
+                    from .report_execution import register_report_jobs
+
+                    register_report_jobs(
+                        self.execution_runtime, self.config_path, config=saved
+                    )
                 self.config = saved
             finally:
                 if was_running:
@@ -370,6 +429,17 @@ class ScheduleManager:
             trigger = CronTrigger(hour=hour, minute=minute, timezone=self.timezone)
             try:
                 self.scheduler.reschedule_job(job_id, trigger=trigger)
+                self._task_generations[task_id] = (
+                    self._task_generations.get(task_id, 0) + 1
+                )
+                arguments = next(
+                    spec[3]
+                    for spec in self._scheduled_specs(runtime_config(saved))
+                    if spec[1] == task_id
+                )
+                self.scheduler.modify_job(
+                    job_id, func=self._job_runner(task_id, arguments)
+                )
             except Exception as exc:
                 raise RuntimeError(
                     "调度配置已保存，但运行时刷新失败，请重启服务"

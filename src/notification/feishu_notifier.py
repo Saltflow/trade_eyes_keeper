@@ -2,6 +2,9 @@
 飞书通知器 — 交互卡片消息推送
 """
 
+from __future__ import annotations
+
+import json
 import logging
 import os
 import unicodedata
@@ -11,6 +14,7 @@ import pandas as pd
 import requests
 
 from .base import BaseNotifier
+from .receipts import combine_receipts, legacy_tuple, normalize_receipt
 from .settings import channel_enabled
 
 logger = logging.getLogger(__name__)
@@ -28,7 +32,14 @@ class FeishuNotifier(BaseNotifier):
 
     # ── 传输层 ──────────────────────────────────
 
-    def _send(self, title: str, body: str, extra_elements: list | None = None) -> tuple:
+    def _send(
+        self,
+        title: str,
+        body: str,
+        extra_elements: list | None = None,
+        *,
+        classified: bool = False,
+    ):
         """发送飞书卡片消息
 
         Args:
@@ -39,178 +50,47 @@ class FeishuNotifier(BaseNotifier):
         Returns:
             (bool, str): (是否成功, 消息)
         """
-        if not channel_enabled(self.config, "feishu"):
-            return False, "飞书通知已禁用"
-        if not self.webhook_url:
-            return False, "飞书 webhook_url 未配置"
-
-        card = _build_interactive_card(title, body, extra_elements=extra_elements)
-        payload = {"msg_type": "interactive", "card": card}
         try:
-            resp = requests.post(
-                self.webhook_url,
-                json=payload,
-                timeout=10,
-                headers={"Content-Type": "application/json; charset=utf-8"},
+            card = _build_interactive_card(title, body, extra_elements=extra_elements)
+        except Exception as exc:  # noqa: BLE001 - preparation precedes transport
+            result = {
+                "status": "failed",
+                "reason": "feishu_card_preparation_failed",
+                "error": type(exc).__name__,
+                "detail": "飞书卡片准备失败",
+            }
+        else:
+            result = normalize_receipt(
+                self._send_card(
+                    {"msg_type": "interactive", "card": card}, classified=True
+                )
             )
-            if resp.status_code != 200:
-                logger.error(f"飞书 HTTP {resp.status_code}: {resp.text[:200]}")
-                return False, f"飞书 HTTP {resp.status_code}"
-            result = resp.json()
-            code = result.get("code", -1)
-            if code != 0:
-                logger.error(f"飞书 API 错误 code={code}: {result.get('msg', '')}")
-                return False, f"飞书 code={code} {result.get('msg', '')}"
-            return True, "ok"
-        except requests.exceptions.Timeout:
-            logger.error("飞书请求超时")
-            return False, "飞书请求超时"
-        except Exception as e:
-            logger.error(f"飞书发送失败: {e}")
-            return False, str(e)
+        return result if classified else legacy_tuple(result)
 
     # ── 接口实现 ───────────────────────────────
 
-    def send_from_session(self, session) -> None:
-        stock_data = session.get_all_dataframe()
-        alerts = session.get_alerts_as_dicts()
-        title = f"股票提醒 - {datetime.now().strftime('%Y-%m-%d')}"
-        for label, body, extra in self._build_report_sections(
-            stock_data, alerts=alerts, alert_only=True
-        ):
-            self._send(f"{title} · {label}", body, extra_elements=extra)
+    def send_from_session(self, session) -> dict:
+        return self._send_report(session, alert_only=True)
 
-        # 搜参策略 + 今日信号 + 定增摘要（与日报对齐，告警模式也需展示）
+    def send_daily_report_from_session(self, session) -> dict:
+        return self._send_report(session, alert_only=False)
+
+    def send_brief_report(self, session, report_config: dict) -> dict:
         try:
-            from ..notification.email_notifier import build_strategy_text_summary
+            payload = self._prepare_brief_report(session, report_config)
+        except Exception as exc:  # noqa: BLE001 - no transport before preparation
+            return {
+                "status": "failed",
+                "reason": "feishu_brief_preparation_failed",
+                "error": type(exc).__name__,
+            }
+        receipt = normalize_receipt(self._send_card(payload, classified=True))
+        return combine_receipts([{**receipt, "ordinal": 0, "label": "brief"}])
 
-            strat_body = build_strategy_text_summary(session, markdown=True)
-            if strat_body:
-                self._send(f"{title} · 策略与信号", strat_body)
-        except Exception as e:
-            logger.warning(f"飞书策略摘要发送失败 (非致命): {e}")
-
-        # ── 参考持仓 ──
-        ref_md = _build_ref_portfolio_markdown(session)
-        if ref_md:
-            self._send(f"{title} · 参考持仓", ref_md)
-
-    def send_daily_report_from_session(self, session) -> None:
-        stock_data = session.get_all_dataframe()
-        title = f"股票日报 - {datetime.now().strftime('%Y-%m-%d')}"
-        for label, body, extra in self._build_report_sections(stock_data):
-            self._send(f"{title} · {label}", body, extra_elements=extra)
-
-        # 搜参策略 + 今日信号 + 定增摘要（与邮件对齐）
-        try:
-            from ..notification.email_notifier import build_strategy_text_summary
-
-            strat_body = build_strategy_text_summary(session, markdown=True)
-            if strat_body:
-                self._send(f"{title} · 策略与信号", strat_body)
-        except Exception as e:
-            logger.warning(f"飞书策略摘要发送失败 (非致命): {e}")
-
-        # ── 参考持仓 ──
-        ref_md = _build_ref_portfolio_markdown(session)
-        if ref_md:
-            self._send(f"{title} · 参考持仓", ref_md)
-
-    def send_brief_report(self, session, report_config: dict) -> None:
-        label = report_config.get("label", "简报")
-        stock_data = session.get_all_dataframe()
-        today = datetime.now()
-
-        from ..notification.email_notifier import build_brief_entries
-
-        entries = build_brief_entries(stock_data, today)
-        title = f"{label} - {today.strftime('%Y-%m-%d')}"
-        active_count = len(entries)
-
-        # 摘要行
-        summary = f"**{label}** | {today.strftime('%H:%M')} | 活跃: {active_count}"
-
-        # 策略信号（直接用 SignalScanner 结果，和日报一致）
-        signal_scan = getattr(session, "signal_scan", None)
-
-        # 组装卡片 elements
-        extra = []
-        table = _build_brief_table_element(entries)
-        if table:
-            extra.append(table)
-        if signal_scan and signal_scan.alerts:
-            from ..notification.email_notifier import (
-                _alert_value,
-                _build_signal_label_map,
-                _readable_signal,
-            )
-
-            map_a = _build_signal_label_map("a_share")
-            map_hk = _build_signal_label_map("hk") or _build_signal_label_map(
-                "non_a_share"
-            )
-            map_us = _build_signal_label_map("us") or _build_signal_label_map(
-                "non_a_share"
-            )
-            alert_lines = []
-            for a in signal_scan.alerts[:8]:
-                code = _alert_value(a, "stock_code", "?")
-                raw = _alert_value(a, "rule_label", "?")
-                readable = _readable_signal(code, raw, map_a, map_hk, map_us)
-                alert_lines.append(f"  {code} {readable}")
-            extra.append(
-                {
-                    "tag": "markdown",
-                    "content": f"**策略信号** ({len(signal_scan.alerts)} 条)\n"
-                    + "\n".join(alert_lines),
-                }
-            )
-
-        # ── 参考持仓（无论有无信号都展示）──
-        ref_md = _build_ref_portfolio_markdown(session)
-        if ref_md:
-            extra.append({"tag": "markdown", "content": ref_md})
-
-        card = _build_interactive_card(
-            title, summary, extra_elements=extra if extra else None
-        )
-        payload = {"msg_type": "interactive", "card": card}
-        ok, msg = self._send_card(payload)
-        if not ok:
-            logger.error(f"飞书简报发送失败: {msg}")
-
-    def _send_card(self, payload: dict) -> tuple:
+    def _send_card(self, payload: dict, *, classified: bool = False):
         """发送飞书卡片（不经过 _send 的 body 参数）"""
-        if not channel_enabled(self.config, "feishu"):
-            return False, "飞书通知已禁用"
-        if not self.webhook_url:
-            return False, "飞书 webhook_url 未配置"
-        try:
-            resp = requests.post(
-                self.webhook_url,
-                json=payload,
-                timeout=10,
-                headers={"Content-Type": "application/json; charset=utf-8"},
-            )
-            if resp.status_code != 200:
-                msg = f"飞书 HTTP {resp.status_code}: {resp.text[:200]}"
-                logger.error(msg)
-                return False, msg
-            result = resp.json()
-            code = result.get("code", -1)
-            if code != 0:
-                msg = f"飞书 API 错误 code={code}: {result.get('msg', '')}"
-                logger.error(msg)
-                return False, msg
-            return True, "ok"
-        except requests.exceptions.Timeout:
-            msg = "飞书请求超时"
-            logger.error(msg)
-            return False, msg
-        except Exception as e:
-            msg = f"飞书发送失败: {e}"
-            logger.error(msg)
-            return False, msg
+        result = self._post_card(payload)
+        return result if classified else legacy_tuple(result)
 
     def send_deployment_notification(
         self, status: str, version: str = "", summary: str = ""
@@ -372,6 +252,223 @@ class FeishuNotifier(BaseNotifier):
         for row in rows:
             lines.append(_format_table_row(row, widths))
         return "\n".join(lines)
+
+    def _post_card(self, payload: dict) -> dict:
+        if not channel_enabled(self.config, "feishu"):
+            return {
+                "status": "skipped",
+                "reason": "channel_disabled",
+                "detail": "飞书通知已禁用",
+            }
+        if not self.webhook_url:
+            return {
+                "status": "failed",
+                "reason": "configuration_missing",
+                "detail": "飞书 webhook_url 未配置",
+            }
+        try:
+            json.dumps(payload, allow_nan=False)
+        except (TypeError, ValueError):
+            return {"status": "failed", "reason": "payload_invalid"}
+        try:
+            resp = requests.post(
+                self.webhook_url,
+                json=payload,
+                timeout=10,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                allow_redirects=False,
+            )
+        except (
+            requests.exceptions.ConnectTimeout,
+            requests.exceptions.InvalidURL,
+            requests.exceptions.MissingSchema,
+            requests.exceptions.InvalidSchema,
+            requests.exceptions.InvalidHeader,
+        ) as exc:
+            return {
+                "status": "failed",
+                "reason": "http_pre_submit_failed",
+                "error": type(exc).__name__,
+                "detail": "飞书发送失败（连接前）",
+            }
+        except Exception as exc:  # noqa: BLE001 - submission might have arrived
+            return {
+                "status": "unknown",
+                "reason": "http_submission_unknown",
+                "error": type(exc).__name__,
+                "detail": "飞书发送结果未知/timeout",
+            }
+        status = resp.status_code
+        if status != 200:
+            rejected = status in {400, 401, 403, 404, 405, 413, 415, 422, 429}
+            return {
+                "status": "failed" if rejected else "unknown",
+                "reason": "http_rejected" if rejected else "http_response_uncertain",
+                "http_status": status,
+                "detail": f"飞书 HTTP {status}",
+            }
+        try:
+            result = resp.json()
+        except (TypeError, ValueError):
+            result = None
+        code = result.get("code") if isinstance(result, dict) else None
+        if type(code) is not int:
+            return {
+                "status": "unknown",
+                "reason": "http_acknowledgement_missing",
+                "http_status": status,
+            }
+        return {
+            "status": "sent" if code == 0 else "failed",
+            "reason": "provider_accepted" if code == 0 else "provider_rejected",
+            "provider_code": code,
+            "http_status": status,
+            "detail": "ok" if code == 0 else f"飞书 code={code}",
+        }
+
+    def _send_report(self, session, *, alert_only: bool) -> dict:
+        try:
+            stock_data = session.get_all_dataframe()
+            alerts = session.get_alerts_as_dicts() if alert_only else None
+            sections = list(
+                self._build_report_sections(
+                    stock_data, alerts=alerts, alert_only=alert_only
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - no HTTP call has started
+            return {
+                "status": "failed",
+                "reason": "feishu_report_preparation_failed",
+                "error": type(exc).__name__,
+            }
+        title = f"股票{'提醒' if alert_only else '日报'} - {datetime.now().astimezone():%Y-%m-%d}"
+        preparation_failures = []
+        try:
+            from .report_builders import build_daily_events_text
+
+            events = "" if alert_only else build_daily_events_text(session, stock_data)
+            if events:
+                sections.append(("事件速览", events, None))
+        except Exception as exc:  # noqa: BLE001 - preparation before transport
+            preparation_failures.append(
+                {"label": "事件速览", "status": "failed", "attempted": False,
+                 "reason": "preparation_failed", "error": type(exc).__name__}
+            )
+        try:
+            from ..notification.email_notifier import build_strategy_text_summary
+
+            strat_body = build_strategy_text_summary(session, markdown=True)
+            if strat_body:
+                sections.append(("策略与信号", strat_body, None))
+        except Exception as exc:  # noqa: BLE001 - retain other report sections
+            preparation_failures.append(
+                {
+                    "label": "策略与信号",
+                    "status": "failed",
+                    "attempted": False,
+                    "reason": "preparation_failed",
+                    "error": type(exc).__name__,
+                }
+            )
+        try:
+            ref_md = _build_ref_portfolio_markdown(session)
+            if ref_md:
+                sections.append(("参考持仓", ref_md, None))
+        except Exception as exc:  # noqa: BLE001 - retain other report sections
+            preparation_failures.append(
+                {
+                    "label": "参考持仓",
+                    "status": "failed",
+                    "attempted": False,
+                    "reason": "preparation_failed",
+                    "error": type(exc).__name__,
+                }
+            )
+        pieces = []
+        halted = False
+        for ordinal, (label, body, extra) in enumerate(sections):
+            if halted:
+                receipt = {
+                    "status": "skipped",
+                    "reason": "batch_stopped",
+                    "attempted": False,
+                }
+            else:
+                receipt = normalize_receipt(
+                    self._send(
+                        f"{title} · {label}",
+                        body,
+                        extra_elements=extra,
+                        classified=True,
+                    )
+                )
+                halted = receipt["status"] != "sent"
+            pieces.append({**receipt, "ordinal": ordinal, "label": label})
+        return combine_receipts([*pieces, *preparation_failures])
+
+    def _prepare_brief_report(self, session, report_config: dict):
+        label = report_config.get("label", "简报")
+        stock_data = session.get_all_dataframe()
+        today = datetime.now().astimezone()
+
+        from ..notification.email_notifier import build_brief_entries
+
+        entries = build_brief_entries(stock_data, today)
+        title = f"{label} - {today.strftime('%Y-%m-%d')}"
+        active_count = len(entries)
+
+        # 摘要行
+        summary = f"**{label}** | {today.strftime('%H:%M')} | 活跃: {active_count}"
+
+        # 策略信号（直接用 SignalScanner 结果，和日报一致）
+        signal_scan = getattr(session, "signal_scan", None)
+
+        # 组装卡片 elements
+        extra = []
+        table = _build_brief_table_element(entries)
+        if table:
+            extra.append(table)
+        if signal_scan and signal_scan.alerts:
+            from ..notification.email_notifier import (
+                _alert_value,
+                _build_signal_label_map,
+                _readable_signal,
+            )
+
+            map_a = _build_signal_label_map("a_share")
+            map_hk = _build_signal_label_map("hk") or _build_signal_label_map(
+                "non_a_share"
+            )
+            map_us = _build_signal_label_map("us") or _build_signal_label_map(
+                "non_a_share"
+            )
+            alert_lines = []
+            for a in signal_scan.alerts[:8]:
+                code = _alert_value(a, "stock_code", "?")
+                raw = _alert_value(a, "rule_label", "?")
+                readable = _readable_signal(code, raw, map_a, map_hk, map_us)
+                alert_lines.append(f"  {code} {readable}")
+            extra.append(
+                {
+                    "tag": "markdown",
+                    "content": f"**策略信号** ({len(signal_scan.alerts)} 条)\n"
+                    + "\n".join(alert_lines),
+                }
+            )
+
+        # ── 参考持仓（无论有无信号都展示）──
+        ref_md = _build_ref_portfolio_markdown(session)
+        if ref_md:
+            extra.append({"tag": "markdown", "content": ref_md})
+
+        card = _build_interactive_card(
+            title, summary, extra_elements=extra if extra else None
+        )
+        payload = {"msg_type": "interactive", "card": card}
+        return payload
+
+
+
 
 
 def _collect_report_entries(stock_data, today) -> list[dict]:

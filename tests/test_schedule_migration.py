@@ -88,8 +88,10 @@ def test_explicit_optimizer_switch_wins_over_legacy_cron(
     [
         "0 2 * * 1-5 cd /srv/trade && python3 main.py --optimize\n",
         "*/5 2 * * * cd /srv/trade && python3 main.py --optimize\n",
-        "0 2 * * * cd /srv/trade && python3 main.py --optimize\n"
-        "0 3 * * * cd /srv/trade && python3 main.py --optimize\n",
+        (
+            "0 2 * * * cd /srv/trade && python3 main.py --optimize\n"
+            "0 3 * * * cd /srv/trade && python3 main.py --optimize\n"
+        ),
         "@hourly cd /srv/trade && python3 main.py --optimize\n",
         "0 2 * * * cd /srv/trade && python3 main.py --optimize --group us\n",
         "CRON_TZ=UTC\n0 2 * * * cd /srv/trade && python3 main.py --optimize\n",

@@ -12,6 +12,7 @@ import pandas as pd
 from datetime import datetime
 
 from .base import BaseNotifier
+from .receipts import combine_receipts, legacy_tuple, normalize_receipt
 from .settings import channel_enabled
 
 logger = logging.getLogger(__name__)
@@ -45,69 +46,17 @@ class TelegramNotifier(BaseNotifier):
 
     # ── 传输层 ──────────────────────────────────
 
-    def _send(self, title: str, body: str) -> tuple:
-        if not channel_enabled(self.config, "telegram"):
-            return False, "Telegram 通知已禁用"
-        if not self.bot_token or not self.chat_id:
-            return False, "Telegram bot_token 或 chat_id 未配置"
-
-        full_text = f"<b>{_esc(title)}</b>\n\n{body}"
-        url = f"{TELEGRAM_API}/bot{self.bot_token}/sendMessage"
-        MAX_LEN = 4000
-        chunks = _split_text(full_text, MAX_LEN)
-
-        for i, chunk in enumerate(chunks):
-            prefix = f"({i + 1}/{len(chunks)}) " if len(chunks) > 1 else ""
-            try:
-                resp = requests.post(
-                    url,
-                    data={
-                        "chat_id": self.chat_id,
-                        "text": prefix + chunk,
-                        "parse_mode": self.parse_mode,
-                        "disable_web_page_preview": "true",
-                    },
-                    timeout=15,
-                )
-                if resp.status_code != 200:
-                    logger.error(f"Telegram HTTP {resp.status_code}: {resp.text[:200]}")
-                    return False, f"Telegram HTTP {resp.status_code}"
-                result = resp.json()
-                if not result.get("ok", False):
-                    logger.error(f"Telegram API error: {result.get('description', '')}")
-                    return False, result.get("description", "unknown error")
-            except requests.exceptions.Timeout:
-                logger.error("Telegram 请求超时")
-                return False, "Telegram 请求超时"
-            except Exception as e:
-                safe_error = _redact_transport_error(e, self.bot_token)
-                logger.error("Telegram 发送失败: %s", safe_error)
-                return False, safe_error
-
-        return True, "ok"
+    def _send(self, title: str, body: str, *, classified: bool = False):
+        receipt = self._send_classified(title, body)
+        return receipt if classified else legacy_tuple(receipt)
 
     # ── 接口实现 ───────────────────────────────
 
-    def send_from_session(self, session) -> None:
-        df = session.get_all_dataframe()
-        alerts = session.get_alerts_as_dicts()
-        today = datetime.now().strftime("%Y-%m-%d")
-        title = f"股票提醒 - {today}"
-        sections = self._build_daily_sections(df, alerts)
-        for label, body in sections:
-            self._send(title, f"{label}\n{body}")
-        self._send_strategy_summary(session, title)
-        self._send_ref_portfolio(session, title)
+    def send_from_session(self, session) -> dict:
+        return self._send_report(session, alert_only=True)
 
-    def send_daily_report_from_session(self, session) -> None:
-        df = session.get_all_dataframe()
-        today = datetime.now().strftime("%Y-%m-%d")
-        title = f"股票日报 - {today}"
-        sections = self._build_daily_sections(df)
-        for label, body in sections:
-            self._send(title, f"{label}\n{body}")
-        self._send_strategy_summary(session, title)
-        self._send_ref_portfolio(session, title)
+    def send_daily_report_from_session(self, session) -> dict:
+        return self._send_report(session, alert_only=False)
 
     def _send_strategy_summary(self, session, title: str) -> None:
         """发送搜参策略+今日信号+定增摘要（与邮件对齐）。"""
@@ -126,21 +75,16 @@ class TelegramNotifier(BaseNotifier):
         if ref_text:
             self._send(title, ref_text)
 
-    def send_brief_report(self, session, report_config: dict) -> None:
-        label = report_config.get("label", "简报")
-        stock_data = session.get_all_dataframe()
-        today = datetime.now()
-        title = f"{label} - {today.strftime('%Y-%m-%d')}"
-        body = self._build_brief_blocks(stock_data, today)
-        if not body:
-            body = "无活跃标的"
-
-        # ── 参考持仓 ──
-        ref_text = self._build_ref_portfolio_text(session)
-        if ref_text:
-            body += "\n\n" + ref_text
-
-        self._send(title, body)
+    def send_brief_report(self, session, report_config: dict) -> dict:
+        try:
+            title, body = self._prepare_brief_report(session, report_config)
+        except Exception as exc:  # noqa: BLE001 - no transport before preparation
+            return {
+                "status": "failed",
+                "reason": "telegram_brief_preparation_failed",
+                "error": type(exc).__name__,
+            }
+        return normalize_receipt(self._send(title, body, classified=True))
 
     def send_deployment_notification(
         self, status: str, version: str = "", summary: str = ""
@@ -362,6 +306,197 @@ class TelegramNotifier(BaseNotifier):
             sections.append(("技术指标", "\n".join(lines)))
 
         return sections
+
+    def _send_classified(self, title: str, body: str) -> dict:
+        if not channel_enabled(self.config, "telegram"):
+            return {
+                "status": "skipped",
+                "reason": "channel_disabled",
+                "detail": "Telegram 通知已禁用",
+            }
+        if not self.bot_token or not self.chat_id:
+            return {
+                "status": "failed",
+                "reason": "configuration_missing",
+                "detail": "Telegram bot_token 或 chat_id 未配置",
+            }
+
+        full_text = f"<b>{_esc(title)}</b>\n\n{body}"
+        url = f"{TELEGRAM_API}/bot{self.bot_token}/sendMessage"
+        MAX_LEN = 4000
+        chunks = _split_text(full_text, MAX_LEN)
+
+        pieces = []
+        halted = False
+        for i, chunk in enumerate(chunks):
+            if halted:
+                pieces.append(
+                    {
+                        "ordinal": i,
+                        "status": "skipped",
+                        "attempted": False,
+                        "reason": "batch_stopped",
+                    }
+                )
+                continue
+            prefix = f"({i + 1}/{len(chunks)}) " if len(chunks) > 1 else ""
+            try:
+                resp = requests.post(
+                    url,
+                    data={
+                        "chat_id": self.chat_id,
+                        "text": prefix + chunk,
+                        "parse_mode": self.parse_mode,
+                        "disable_web_page_preview": "true",
+                    },
+                    timeout=15,
+                    allow_redirects=False,
+                )
+            except (
+                requests.exceptions.ConnectTimeout,
+                requests.exceptions.InvalidURL,
+                requests.exceptions.MissingSchema,
+                requests.exceptions.InvalidSchema,
+                requests.exceptions.InvalidHeader,
+            ) as exc:
+                receipt = {
+                    "status": "failed",
+                    "reason": "http_pre_submit_failed",
+                    "error": type(exc).__name__,
+                    "detail": "Telegram 连接前失败",
+                }
+            except Exception as exc:  # noqa: BLE001 - request might have arrived
+                receipt = {
+                    "status": "unknown",
+                    "reason": "http_submission_unknown",
+                    "error": type(exc).__name__,
+                    "detail": _redact_transport_error(exc, self.bot_token),
+                }
+            else:
+                status = resp.status_code
+                if status != 200:
+                    rejected = status in {400, 401, 403, 404, 405, 413, 415, 422, 429}
+                    receipt = {
+                        "status": "failed" if rejected else "unknown",
+                        "reason": "http_rejected"
+                        if rejected
+                        else "http_response_uncertain",
+                        "http_status": status,
+                        "detail": f"Telegram HTTP {status}",
+                    }
+                else:
+                    try:
+                        response = resp.json()
+                    except (TypeError, ValueError):
+                        response = None
+                    ok = response.get("ok") if isinstance(response, dict) else None
+                    if type(ok) is not bool:
+                        receipt = {
+                            "status": "unknown",
+                            "reason": "http_acknowledgement_missing",
+                        }
+                    elif not ok:
+                        receipt = {"status": "failed", "reason": "provider_rejected"}
+                    else:
+                        receipt = {"status": "sent", "reason": "provider_accepted"}
+                        message = response.get("result")
+                        if isinstance(message, dict) and isinstance(
+                            message.get("message_id"), int
+                        ):
+                            receipt["message_id"] = message["message_id"]
+            halted = receipt["status"] != "sent"
+            pieces.append({**receipt, "ordinal": i, "attempted": True})
+        return combine_receipts(pieces)
+
+    def _send_report(self, session, *, alert_only: bool) -> dict:
+        try:
+            df = session.get_all_dataframe()
+            alerts = session.get_alerts_as_dicts() if alert_only else None
+            sections = list(self._build_daily_sections(df, alerts))
+        except Exception as exc:  # noqa: BLE001 - no HTTP call has started
+            return {
+                "status": "failed",
+                "reason": "telegram_report_preparation_failed",
+                "error": type(exc).__name__,
+            }
+        title = f"股票{'提醒' if alert_only else '日报'} - {datetime.now().astimezone():%Y-%m-%d}"
+        preparation_failures = []
+        try:
+            from .report_builders import build_daily_events_text
+
+            events = "" if alert_only else build_daily_events_text(session, df)
+            if events:
+                sections.append(("事件速览", events))
+        except Exception as exc:  # noqa: BLE001 - preparation before transport
+            preparation_failures.append(
+                {"label": "事件速览", "status": "failed", "attempted": False,
+                 "reason": "preparation_failed", "error": type(exc).__name__}
+            )
+        try:
+            from .email_notifier import build_strategy_text_summary
+
+            summary = build_strategy_text_summary(session, markdown=False)
+            if summary:
+                sections.append(("策略与信号", f"<pre>{_esc(summary)}</pre>"))
+        except Exception as exc:  # noqa: BLE001 - retain other report sections
+            preparation_failures.append(
+                {
+                    "status": "failed",
+                    "label": "策略与信号",
+                    "reason": "preparation_failed",
+                    "error": type(exc).__name__,
+                }
+            )
+        try:
+            ref_text = self._build_ref_portfolio_text(session)
+            if ref_text:
+                sections.append(("", ref_text))
+        except Exception as exc:  # noqa: BLE001 - retain other report sections
+            preparation_failures.append(
+                {
+                    "status": "failed",
+                    "label": "参考持仓",
+                    "reason": "preparation_failed",
+                    "error": type(exc).__name__,
+                }
+            )
+        pieces = []
+        halted = False
+        for ordinal, (label, body) in enumerate(sections):
+            if halted:
+                receipt = {
+                    "status": "skipped",
+                    "reason": "batch_stopped",
+                    "attempted": False,
+                }
+            else:
+                receipt = normalize_receipt(
+                    self._send(
+                        title, f"{label}\n{body}" if label else body, classified=True
+                    )
+                )
+                halted = receipt["status"] != "sent"
+            pieces.append({**receipt, "ordinal": ordinal, "label": label})
+        return combine_receipts([*pieces, *preparation_failures])
+
+    def _prepare_brief_report(self, session, report_config: dict):
+        label = report_config.get("label", "简报")
+        stock_data = session.get_all_dataframe()
+        today = datetime.now().astimezone()
+        title = f"{label} - {today.strftime('%Y-%m-%d')}"
+        body = self._build_brief_blocks(stock_data, today)
+        if not body:
+            body = "无活跃标的"
+
+        # ── 参考持仓 ──
+        ref_text = self._build_ref_portfolio_text(session)
+        if ref_text:
+            body += "\n\n" + ref_text
+
+        return title, body
+
+
+
 
 
 def _fmt(v, spec=".2f"):

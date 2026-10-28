@@ -16,6 +16,10 @@ class AssistantSettings(BaseModel):
     reasoning_effort: Literal["low", "high", "max"] = "high"
     request_timeout_seconds: int = Field(60, ge=5, le=120)
     request_retries: int = Field(1, ge=0, le=2)
+    image_timeout_seconds: int = Field(120, ge=5, le=180)
+    image_request_retries: int = Field(1, ge=0, le=2)
+    image_max_tokens: int = Field(16384, ge=1024, le=32768)
+    image_reasoning_effort: Literal["low", "high", "max"] = "low"
     max_tokens: int = Field(16384, ge=512, le=32768)
     max_tool_rounds: int = Field(6, ge=1, le=16)
     max_history_messages: int = Field(20, ge=2, le=80)

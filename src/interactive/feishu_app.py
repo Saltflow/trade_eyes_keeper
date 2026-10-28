@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -24,8 +26,9 @@ REQUEST_TIMEOUT = (5, 5)
 class FeishuApp:
     """One long-lived application instance; no HTTP callback authentication API."""
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, *, execution_runtime=None):
         self.config = config
+        self.execution_runtime = execution_runtime
         ic = (config.get("interactive") or {}).get("feishu") or {}
         self.app_id = str(ic.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip()
         self.app_secret = str(
@@ -84,7 +87,13 @@ class FeishuApp:
                 from .assistant.service import FeishuAssistant
 
                 assistant = FeishuAssistant(
-                    self.config, self.send_message, self.send_file
+                    self.config,
+                    self.send_message,
+                    self.send_file,
+                    image_loader=self.download_message_image,
+                    personal_route_allowed=self.gate.is_allowed,
+                    personal_send=self.send_personal_message,
+                    execution_runtime=self.execution_runtime,
                 )
                 if self._stopped.is_set():
                     assistant.stop()
@@ -92,6 +101,56 @@ class FeishuApp:
                 self._assistant = assistant
                 logger.info("Feishu assistant initialized")
             return self._assistant
+
+    def download_message_image(self, message_id: str, image_key: str) -> dict:
+        """Download one authenticated message image with a bounded response body."""
+        from .assistant.position_images import detect_image_mime
+
+        if not self.enabled:
+            raise ValueError("飞书截图读取已停用。")
+        for value in (message_id, image_key):
+            if not isinstance(value, str) or not re.fullmatch(
+                r"[A-Za-z0-9_-]{1,256}", value
+            ):
+                raise ValueError("无效的飞书图片资源标识。")
+        token = self.get_tenant_token()
+        if not token:
+            raise ValueError("无法取得飞书图片读取凭据。")
+        limit = 10 * 1024 * 1024
+        try:
+            with requests.get(
+                f"{FEISHU_API}/im/v1/messages/{message_id}/resources/{image_key}",
+                params={"type": "image"},
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=(5, 30),
+                stream=True,
+                allow_redirects=False,
+            ) as response:
+                if response.status_code != 200:
+                    raise ValueError("飞书截图资源读取失败。")
+                declared = response.headers.get("Content-Length")
+                if declared and (not declared.isdigit() or int(declared) > limit):
+                    raise ValueError("截图超过 10 MiB 上限。")
+                mime = response.headers.get("Content-Type", "").split(";")[0].lower()
+                if mime not in {"image/jpeg", "image/png", "image/webp"}:
+                    raise ValueError("仅支持 JPEG、PNG、WebP 截图。")
+                chunks = []
+                size = 0
+                for chunk in response.iter_content(64 * 1024):
+                    size += len(chunk)
+                    if size > limit:
+                        raise ValueError("截图超过 10 MiB 上限。")
+                    chunks.append(chunk)
+                payload = b"".join(chunks)
+            if detect_image_mime(payload) != mime:
+                raise ValueError("截图文件内容与声明格式不一致。")
+            return {
+                "image": payload,
+                "mime_type": mime,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        except requests.RequestException:
+            raise ValueError("飞书截图资源网络读取失败。") from None
 
     def get_bot_open_id(self) -> str:
         """Resolve mentions against this authenticated bot, not any mentioned user."""
@@ -149,17 +208,35 @@ class FeishuApp:
             return ""
 
     def send_message(self, chat_id: str, text: str) -> tuple[bool, str]:
+        """Keep legacy tuple callers on the shared classified delivery path."""
+        result = self._deliver_message(chat_id, text)
+        return result["outcome"] == "sent", result["detail"]
+
+    def send_personal_message(self, route: str | dict, text: str) -> dict:
+        """Do not retry an ambiguous send; its caller persists the outcome."""
+        chat_id = route.get("chat_id", "") if isinstance(route, dict) else route
+        if not isinstance(chat_id, str) or not chat_id:
+            return {"outcome": "failed", "detail": "Invalid delivery route"}
+        return self._deliver_message(chat_id, text)
+
+    def _deliver_message(self, chat_id: str, text: str) -> dict:
         if not self._can_send():
             logger.warning("Feishu message suppressed: delivery_disabled")
-            return False, "Feishu interactive messages are disabled"
+            return {
+                "outcome": "failed",
+                "detail": "Feishu interactive messages are disabled",
+            }
         if not self.gate.is_allowed(chat_id):
             logger.warning("Feishu message suppressed: chat_not_allowed")
-            return False, "Chat is not allowed"
+            return {"outcome": "failed", "detail": "Chat is not allowed"}
         token = self.get_tenant_token()
         if not token:
-            return False, "Cannot obtain Feishu tenant token"
+            return {"outcome": "failed", "detail": "Cannot obtain Feishu tenant token"}
         if not self._can_send():
-            return False, "Feishu interactive messages are disabled"
+            return {
+                "outcome": "failed",
+                "detail": "Feishu interactive messages are disabled",
+            }
         from ..notification.feishu_notifier import _build_interactive_card
 
         card = _build_interactive_card("股票量化助手", text)
@@ -178,20 +255,39 @@ class FeishuApp:
                 timeout=REQUEST_TIMEOUT,
             )
             response.raise_for_status()
+            if isinstance(response.status_code, int) and response.status_code != 200:
+                return {"outcome": "unknown", "detail": "Unexpected Feishu HTTP status"}
             data = response.json()
-            if data.get("code") == 0:
+            if not isinstance(data, dict) or type(data.get("code")) is not int:
+                return {
+                    "outcome": "unknown",
+                    "detail": "Invalid Feishu delivery response",
+                }
+            if data["code"] == 0:
                 logger.info("Feishu message delivered: kind=interactive")
-                return True, "ok"
+                message_data = data.get("data")
+                message_id = (
+                    message_data.get("message_id")
+                    if isinstance(message_data, dict)
+                    else None
+                )
+                return {
+                    "outcome": "sent",
+                    "detail": "ok",
+                    "platform_message_id": message_id
+                    if isinstance(message_id, str)
+                    else None,
+                }
             # Never log API response bodies, credentials, or conversation contents.
             code = data.get("code")
             logger.error(
                 "Feishu message rejected: code=%s",
                 code if isinstance(code, int) else "invalid",
             )
-            return False, f"Feishu code={data.get('code')}"
+            return {"outcome": "failed", "detail": f"Feishu code={code}"}
         except (requests.RequestException, ValueError, TypeError) as exc:
             logger.error("Feishu message request failed: %s", type(exc).__name__)
-            return False, type(exc).__name__
+            return {"outcome": "unknown", "detail": type(exc).__name__}
 
     def send_file(self, chat_id: str, path: Path) -> tuple[bool, str]:
         """Upload one verified assistant artifact and send its platform file key."""

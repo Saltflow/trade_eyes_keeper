@@ -9,9 +9,19 @@
 4. 获取股票报告并分析基本面（LLM API）
 """
 
+from __future__ import annotations
+
 import argparse
 import os
 import sys
+
+if __name__ == "__main__" and any(
+    flag in sys.argv[1:] for flag in ("--once", "--brief")
+) and "--report-worker" not in sys.argv[1:]:
+    from src.core.report_cli import main as report_cli_main
+
+    raise SystemExit(report_cli_main(sys.argv[1:]))
+
 import yaml
 import logging
 import pandas as pd
@@ -1311,6 +1321,41 @@ def load_config(config_path=None):
         raise SystemExit(1) from exc
 
 
+def _report_result(status: str, reason: str, session=None, *, deliveries=None):
+    """Keep the business entrypoints independent from the execution worker."""
+    from src.core.execution import RunResult
+
+    artifacts = (
+        {"session_id": session.session_id, "data_readiness": _report_data_readiness(session)}
+        if session is not None else {}
+    )
+    return RunResult(
+        status=status, reason=reason, artifacts=artifacts, deliveries=deliveries or {}
+    )
+
+def _report_data_readiness(session):
+    from src.notification.report_builders import report_data_readiness
+
+    return report_data_readiness(session)
+
+def _report_delivery_result(delivery, session, skip_reason: str = ""):
+    if delivery is None and skip_reason:
+        return _report_result("skipped", skip_reason, session)
+    if not isinstance(delivery, dict):
+        return _report_result("unknown", "notification_receipt_missing", session)
+    status, reason = delivery.get("status", "unknown"), delivery.get("reason", "")
+    if _report_data_readiness(session)["status"] == "not_ready":
+        if status == "succeeded":
+            status = "partial"
+        reason = "data_not_ready" + (":" + reason if reason else "")
+    return _report_result(
+        status,
+        reason,
+        session,
+        deliveries=delivery.get("deliveries", {}),
+    )
+
+
 def should_send_daily_report(
     config: dict,
     *,
@@ -1346,7 +1391,9 @@ def should_send_daily_report(
     return True
 
 
-def run_daily_task(force: bool = False):
+def run_daily_task(
+    force: bool = False, *, config: dict | None = None, progress: Callable | None = None
+):
     """每日运行的任务
 
     Args:
@@ -1357,16 +1404,18 @@ def run_daily_task(force: bool = False):
     logger = logging.getLogger(__name__)
     logger.info("开始执行每日任务")
     # 加载配置
-    config = load_config()
+    config = config if config is not None else load_config()
 
     # 周末跳过（仅定时）
     if not force:
         today = datetime.now().date()
         if today.weekday() >= 5:
             logger.info(f"今天是周末 ({today})，跳过日报")
-            return
+            return _report_result("skipped", "weekend")
 
     try:
+        if progress:
+            progress("daily_session")
         # 创建Session（新数据流）
         session_manager = SessionManager(config)
         session = session_manager.create_session(config)
@@ -1413,6 +1462,8 @@ def run_daily_task(force: bool = False):
         except Exception as e:
             logger.warning(f"定增数据获取失败 (非致命): {e}")
 
+        if progress:
+            progress("daily_stock_data")
         # 2. 获取股票数据并存入Session
         logger.info("开始获取股票数据")
         fetcher = StockDataFetcher(config)
@@ -1423,7 +1474,7 @@ def run_daily_task(force: bool = False):
         )
         if not session.stocks_data:
             logger.warning("Session中无股票数据")
-            return
+            return _report_result("failed", "stock_data_unavailable", session)
         logger.info(f"股票数据获取完成: {len(session.stocks_data)}只股票")
 
         # 日报事件层只读取明确的除权/派息日期，不改变回测或交易数据合同。
@@ -1453,6 +1504,8 @@ def run_daily_task(force: bool = False):
                     len(audit.profiles),
                 )
 
+        if progress:
+            progress("daily_evaluation")
         # 3. 检查条件并存入Session
         logger.info("开始检查交易条件")
         checker = ConditionChecker(config)
@@ -1685,13 +1738,19 @@ def run_daily_task(force: bool = False):
             )
         object.__setattr__(session, "ref_portfolio_status", all_statuses)
 
+        if progress:
+            progress("daily_notifications")
+        delivery = None
+        skip_reason = "daily_frequency_not_met"
         # 8. 发送邮件（无论是否有满足条件的股票都发送日报）
         if session.alerts:
             logger.info(f"发现{len(session.alerts)}个满足条件的警报")
-            notifier.send_from_session(session)
+            skip_reason = ""
+            delivery = notifier.send_from_session(session)
         elif should_send_daily_report(config, force=force):
             logger.info("没有满足条件的股票，发送每日报告")
-            notifier.send_daily_report_from_session(session)
+            skip_reason = ""
+            delivery = notifier.send_daily_report_from_session(session)
         else:
             frequency = str(
                 (config.get("scheduler", {}) or {}).get(
@@ -1703,15 +1762,20 @@ def run_daily_task(force: bool = False):
                 frequency,
             )
         logger.info("每日任务执行完成")
+        return _report_delivery_result(delivery, session, skip_reason)
     except Exception as e:
-        logger.error(f"执行任务时发生错误: {e}", exc_info=True)
+        logger.exception("执行日报任务时发生错误")
+        return _report_result("failed", f"daily_task:{type(e).__name__}")
 
 
-def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
+def run_brief_report(
+    report_id: str = "morning_snapshot", force: bool = False, *,
+    config: dict | None = None, progress: Callable | None = None,
+):
     """
     运行简报任务（轻量级：仅价格 + 锚点偏离率）。
 
-    由 scheduler 通过 functools.partial 调用，或通过 CLI --brief 手动触发。
+    由公共执行器的内部 worker 调用，CLI/Bot/定时器只提交任务。
 
     Args:
         report_id: 简报 ID，对应 config scheduler.brief_reports[].id
@@ -1723,15 +1787,17 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
     logger = logging.getLogger(__name__)
     logger.info(f"开始执行简报任务: {report_id}")
 
-    config = load_config()
+    config = config if config is not None else load_config()
     today = datetime.now().date()
 
     # 周末跳过（仅定时）
     if not force and today.weekday() >= 5:
         logger.info(f"今天是周末 ({today})，跳过简报")
-        return
+        return _report_result("skipped", "weekend")
 
     try:
+        if progress:
+            progress("brief_session")
         # 查找简报配置
         brief_configs = config.get("scheduler", {}).get("brief_reports", [])
         report_config = next(
@@ -1746,13 +1812,15 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
         session = session_manager.create_session(config)
         logger.info(f"简报Session创建: {session.session_id}")
 
+        if progress:
+            progress("brief_stock_data")
         # 只获取股票数据，跳过 LLM/财报/回测/投资组合（使用实时行情模式）
         fetcher = StockDataFetcher(config)
         fetcher.fetch_to_session(session, session_manager, realtime_mode=True)
 
         if not session.stocks_data:
             logger.warning("简报：Session 中无股票数据")
-            return
+            return _report_result("failed", "stock_data_unavailable", session)
 
         logger.info(f"简报：获取到 {len(session.stocks_data)} 只股票数据")
 
@@ -1805,6 +1873,8 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
         except Exception as e:
             logger.warning(f"简报策略信号扫描失败 (非致命): {e}")
 
+        if progress:
+            progress("brief_reference_portfolio")
         # ── 参考持仓三分仓调仓（A股/港股/美股各自独立资金池）──
 
         market_configs = get_market_optimizer_configs(
@@ -1999,6 +2069,8 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
         # 合并附到 session
         object.__setattr__(session, "ref_portfolio_status", all_statuses)
 
+        if progress:
+            progress("brief_notifications")
         # 休市检测：数据指纹比较（仅定时，按简报类型区分文件）
         if not force:
             from src.utils.market_status import is_market_closed, mark_pushed
@@ -2006,23 +2078,26 @@ def run_brief_report(report_id: str = "morning_snapshot", force: bool = False):
             last_pushed_file = Path(f"cache/last_pushed_{report_id}.txt")
             if is_market_closed(stock_data_df, last_pushed_file):
                 logger.info("数据未更新（疑似休市），跳过简报推送")
-                return
+                return _report_result("skipped", "quote_fingerprint_unchanged", session)
 
             # 发送简报（统一入口）
             notifier = NotifierManager(config)
-            notifier.send_brief_report(session, report_config)
+            delivery = notifier.send_brief_report(session, report_config)
 
-            # 记录推送日期
-            mark_pushed(last_pushed_file, stock_data_df)
+            # Partial/unknown means a send was attempted; retain duplicate protection.
+            if not isinstance(delivery, dict) or delivery.get("status") != "failed":
+                mark_pushed(last_pushed_file, stock_data_df)
         else:
             # 手动触发：直接推送，不记录
             notifier = NotifierManager(config)
-            notifier.send_brief_report(session, report_config)
+            delivery = notifier.send_brief_report(session, report_config)
 
         logger.info(f"简报任务完成: {report_id}")
+        return _report_delivery_result(delivery, session)
 
     except Exception as e:
-        logger.error(f"简报任务失败 ({report_id}): {e}", exc_info=True)
+        logger.exception("简报任务失败 (%s)", report_id)
+        return _report_result("failed", f"brief_task:{type(e).__name__}")
 
 
 def _fetch_benchmarks(config, session) -> dict:
@@ -2246,6 +2321,12 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     mode.add_argument("--service", action="store_true", help="run scheduler and outbound Bots")
     mode.add_argument("--status", action="store_true", help="read local service status")
     mode.add_argument("--interactive", action="store_true", help="run configured outbound Bots")
+    mode.add_argument(
+        "--report-worker", choices=("daily", "brief"), help=argparse.SUPPRESS
+    )
+    parser.add_argument("--report-payload", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--report-result", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--config", type=Path, help="use an isolated configuration file")
     parser.add_argument(
         "--notify-start", action="store_true",
         help="explicitly send a notification after the service starts",
@@ -2263,6 +2344,17 @@ def main(argv: list[str] | None = None):
     """Application entry point."""
     parser = _build_argument_parser()
     args = parser.parse_args(argv)
+    if args.report_worker:
+        if args.report_payload is None or args.report_result is None:
+            parser.error("internal report worker requires payload and result paths")
+        from src.core.report_execution import run_report_worker
+
+        return run_report_worker(
+            args.report_worker,
+            args.report_payload,
+            args.report_result,
+            application=sys.modules[__name__],
+        )
     if (
         argv is None
         and args.optimize
@@ -2277,9 +2369,10 @@ def main(argv: list[str] | None = None):
             guard_argv,
             environment,
         )
-    config = load_config()
+    config = load_config(args.config) if args.config else load_config()
     if args.status:
         import json
+
         from src.core.runtime_service import read_service_status
 
         status = read_service_status(config)
@@ -2288,10 +2381,25 @@ def main(argv: list[str] | None = None):
     logger = setup_logging(config)
     if args.once:
         logger.info("Single daily run")
-        run_daily_task()
+        from src.core.config_store import DEFAULT_CONFIG_PATH
+        from src.core.report_execution import submit_report
+
+        record = submit_report(
+            config, kind="daily", force=os.getenv("BOT_FORCE") == "1",
+            source="cli", wait=True, config_path=args.config or DEFAULT_CONFIG_PATH,
+        )
+        return 0 if record.get("status") in {"succeeded", "skipped"} else 1
     elif args.brief is not None:
         logger.info("Brief run: %s", args.brief)
-        run_brief_report(args.brief)
+        from src.core.config_store import DEFAULT_CONFIG_PATH
+        from src.core.report_execution import submit_report
+
+        record = submit_report(
+            config, kind="brief", report_id=args.brief,
+            force=os.getenv("BOT_FORCE") == "1", source="cli", wait=True,
+            config_path=args.config or DEFAULT_CONFIG_PATH,
+        )
+        return 0 if record.get("status") in {"succeeded", "skipped"} else 1
     elif args.optimize:
         lock_path = Path("data/optimizer/.optimize.lock")
         with exclusive_process_lock(lock_path) as acquired:

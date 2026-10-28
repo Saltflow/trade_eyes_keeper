@@ -1874,3 +1874,16 @@ pytest tests/test_import_smoke.py         # 导入完整性
 - 2026-10-03 生产完整配置验收：A 股 12 个策略标的及 2 个基准全部就绪，正式搜参 155000 次，保存 500 个候选；最佳候选留出期收益 -2.47%、对主基准超额 -17.26%，未激活。美股 VOO、BRK.B 全部就绪，正式搜参 10000 次，保存 500 个候选；最佳候选留出期收益 14.03%、超额 -22.70%，未激活。港股当次因 00700 的实物分派和 01339 的历史股息证据缺口停止，0 次候选评估，不生成伪完整候选。
 - 部署 01339 修复后再次按港股完整配置准备数据：00883、01816、00728、01339 和 VOO、BRK.B 两个基准就绪，01339 由披露来源真实拉取；唯一阻断是 00700 的三次跨股票实物分派，类别为 `corporate_action_unsupported`。美股复验仍为 2/2 就绪。随后正式执行 `--optimize --group hk`，回执 `20261003T204144930583_regime_pullback_hk` 只列出 00700，状态 `no_data`、0 次候选评估、未激活。不能将 00700 的实物权益当现金分红、同股拆分或静默排除；后续支持范围记录在 `docs/development/todo_backlog.md`。
 - 发布使用 `codex/optimizer-backfill-20261003` 的提交 `e779749`、`e85e2c3`、`db5091e`，服务器保留原有脏工作树及机器人文件，按哈希校验只覆盖本次运行模块；服务器 Git HEAD 仍为旧提交。下一次常规拉取部署前，需先把这组提交与服务器保留的工作树变更对账，避免覆盖已上线的机器人改动。
+
+
+## 2026-10-28 Scoped shared-runtime release
+
+Conversations, personal holdings/reminders and report entry points now use the
+SQLite-backed executor and common lifecycle/health owner. The existing systemd
+service and APScheduler remain; optimizer/research behavior and configured report
+times are outside the migration. Delivery uncertainty is explicit, with no blind
+resend. See [migration contracts](../development/shared_runtime_migration.md).
+Deployment uses a reviewed filename/hash overlay to preserve existing production
+patches. Private acceptance data and unrelated unpublished work are excluded.
+The user accepted explained coordination overhead and waived the original 5%
+performance gate; original failing measurements remain recorded.
