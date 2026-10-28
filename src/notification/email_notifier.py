@@ -21,12 +21,12 @@ from pathlib import Path
 from .receipts import legacy_tuple, normalize_receipt
 from .base import BaseNotifier
 from .report_builders import (
-    SIGNAL_NAMES as SIGNAL_NAMES,
-    _benchmark_label as _benchmark_label,
-    _build_optimizer_run_summary as _build_optimizer_run_summary,
-    _signed_text_metric as _signed_text_metric,
-    build_strategy_suggestions as build_strategy_suggestions,
-    build_strategy_text_summary as build_strategy_text_summary,
+    SIGNAL_NAMES as SIGNAL_NAMES,  # noqa: PLC0414 -- compatibility re-export
+    _benchmark_label as _benchmark_label,  # noqa: PLC0414 -- compatibility re-export
+    _build_optimizer_run_summary as _build_optimizer_run_summary,  # noqa: PLC0414 -- compatibility re-export
+    _signed_text_metric as _signed_text_metric,  # noqa: PLC0414 -- compatibility re-export
+    build_strategy_suggestions as build_strategy_suggestions,  # noqa: PLC0414 -- compatibility re-export
+    build_strategy_text_summary as build_strategy_text_summary,  # noqa: PLC0414 -- compatibility re-export
 
     _alert_value,
     _build_signal_label_map,
