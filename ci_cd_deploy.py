@@ -287,6 +287,16 @@ def _ssh_cmd(cmd, description="", timeout=60):
 # ── Git 部署 ────────────────────────────────────────────
 
 
+def _build_release_manifest_command(source_commit: str) -> str:
+    """Record the pushed artifact, not the server dirty checkout's HEAD."""
+    if len(source_commit) != 40 or any(c not in "0123456789abcdef" for c in source_commit):
+        raise ValueError("invalid release source commit")
+    return (
+        f"cd {shlex.quote(REMOTE_DIR)} && python3 -m src.core.build_info "
+        f"--write --commit {source_commit}"
+    )
+
+
 def _git_push():
     """将本地代码通过 git push 直推远程服务器"""
     _info("Pushing local code to remote server via git...")
@@ -679,6 +689,9 @@ def deploy():
         )
 
         # ── 1. git push 本地代码到远程 ──
+        release_commit = "0" * 40 if dry_run else subprocess.check_output(
+            ["git", "rev-parse", "master"], cwd=PROJECT_DIR, text=True, timeout=5
+        ).strip()
         pushed = _git_push()
         _step("git_push", pushed)
         if not pushed:
@@ -883,6 +896,23 @@ fi
         _step("email_archive",
               True if archive_ok else None,  # None = WARN, don't block
               "ok" if archive_ok else "no server info (may be from SKIP_EMAIL run)")
+
+        # Publish identity only after source/config installation and validation.
+        release_ok, release_out, _ = _ssh_cmd(
+            _build_release_manifest_command(release_commit),
+            "Register deployed build version",
+            timeout=30,
+        )
+        if not dry_run:
+            import json
+
+            try:
+                release_ok = release_ok and json.loads(release_out).get("verified") is True
+            except (ValueError, TypeError, AttributeError):
+                release_ok = False
+        _step("release_version", release_ok, "recorded" if release_ok else "not verified")
+        if not release_ok:
+            return _print_summary(steps, cleaning_performed)
 
         # Install the only long-running host; no HTTP/HTTPS listener remains.
         _info("Installing scheduler/Bot systemd service...")

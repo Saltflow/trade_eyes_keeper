@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from .build_info import get_build_info
 from .execution import _identity, get_runtime
 from .process_lock import exclusive_process_lock
 from .report_execution import register_report_jobs, runtime_path
@@ -166,6 +167,7 @@ class RuntimeService:
             raise TypeError("bot_factory must be a trusted Python callable")
         if not isinstance(register_reports, bool):
             raise TypeError("register_reports must be boolean")
+        self.build_info = get_build_info()
         self.config = config
         self.scheduling = scheduling
         self.bot_factory = bot_factory
@@ -372,6 +374,7 @@ class RuntimeService:
             notifications = {"unavailable": True, "exception_class": type(exc).__name__}
         payload = {
             "pid": os.getpid(),
+            "build_info": self.build_info,
             "state": "failed" if self.failure and state == "stopped" else state,
             "started_at": self.started_at,
             "updated_at": datetime.now(timezone.utc).isoformat(),

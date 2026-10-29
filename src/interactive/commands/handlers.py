@@ -25,34 +25,12 @@ def _update_config(mutate: Callable[[dict], None]) -> dict:
 
 
 def _git_info() -> str:
-    """返回当前部署的更新日期 + 最近3条 commit（供 /help 展示）。"""
-    import subprocess
+    """Show the verified running build, including preserved production overlays."""
+    from html import escape
 
-    root = CONFIG_PATH.parent.parent
-    try:
-        out = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(root),
-                "log",
-                "-3",
-                "--pretty=format:%cd %h %s",
-                "--date=format:%m-%d %H:%M",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if out.returncode != 0 or not out.stdout.strip():
-            return ""
-        lines = ["\n\n<b>版本信息</b>"]
-        for ln in out.stdout.strip().split("\n"):
-            # 截断过长的 commit 描述
-            lines.append(f"<code>{ln[:70]}</code>")
-        return "\n".join(lines)
-    except Exception:
-        return ""
+    from ...core.build_info import build_label
+
+    return "\n\n<b>运行版本</b>\n<code>" + escape(build_label()) + "</code>"
 
 
 def handle_help() -> str:

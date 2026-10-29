@@ -1887,3 +1887,8 @@ Deployment uses a reviewed filename/hash overlay to preserve existing production
 patches. Private acceptance data and unrelated unpublished work are excluded.
 The user accepted explained coordination overhead and waived the original 5%
 performance gate; original failing measurements remain recorded.
+
+
+### 2026-10-29 运行版本标识
+
+软件版本升至1.18.0；新增部署生成的真实源码/模板构建清单，日报、简报、PDF、帮助和服务状态统一显示软件版本、审核提交与构建指纹。未知/损坏/源码不符显式显示，避免生产覆盖包误读旧Git HEAD。宿主/worker启动一次固定身份，不增加守护、调度、外部依赖或逐心跳扫描。保留所有原业务、投递和时点，未包含其他实验。命名覆盖及CI均先安装/登记再启动，失败时恢复登记。详见[版本标识](../development/build_version.md)。

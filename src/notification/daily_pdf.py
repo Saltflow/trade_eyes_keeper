@@ -640,6 +640,9 @@ def generate_daily_pdf(
             "\\VAR{report_date}", datetime.now().astimezone().strftime("%Y-%m-%d %A")
         )
         html = html.replace("\\VAR{server_hostname}", info.get("hostname", ""))
+        html = html.replace(
+            "\\VAR{release_label}", _esc(info.get("release_label", "未登记发布"))
+        )
         html = html.replace("\\VAR{kpi_buy}", kpi_buy)
         html = html.replace("\\VAR{kpi_a}", kpi_a)
         html = html.replace("\\VAR{kpi_h}", kpi_h)

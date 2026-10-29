@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
+from .build_info import get_build_info
 from .config_store import DEFAULT_CONFIG_PATH, ConfigStore
 from .execution import JobSpec, ModuleSpec, RunResult, get_runtime
 from .runtime_files import atomic_write_json
@@ -481,6 +482,7 @@ def run_report_worker(
     kind: str, payload_path: Path, result_path: Path, *, application=None
 ) -> int:
     """Internal child entry: call business functions directly, never enqueue."""
+    get_build_info()  # Freeze the child identity before loading business code.
     phase_path = result_path.with_name("phase.json")
     try:
         payload = json.loads(Path(payload_path).read_text(encoding="utf-8"))

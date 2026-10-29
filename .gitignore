@@ -124,3 +124,6 @@ test_cache/
 # provider-specific for the public source repository.
 data/point_in_time/
 data/reference_universe/
+
+# Generated build provenance is runtime state, never a source release.
+/data/deployment/

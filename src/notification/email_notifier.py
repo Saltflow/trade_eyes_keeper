@@ -1512,12 +1512,14 @@ class EmailNotifier(BaseNotifier):
         template = (template_dir / "daily_email_mobile.html").read_text(encoding="utf-8")
         server_info = self._get_server_info()
         deployment_status = (
-            '<div class="deployment-strip"><strong>部署状态</strong> · 节点 '
-            f'{_html_escape(server_info.get("hostname"))} · IP '
-            f'{_html_escape(server_info.get("ip_address"))}'
-            f'<span> · {_html_escape(server_info.get("system"))} '
-            f'{_html_escape(server_info.get("machine"))} '
-            f'{_html_escape(server_info.get("kernel_version"))}</span></div>'
+            '<div class="deployment-strip"><strong>版本 '
+            f"{_html_escape(server_info.get('release_label', '未登记发布'))}</strong><br>"
+            '<strong>部署状态</strong> · 节点 '
+            f"{_html_escape(server_info.get('hostname'))} · IP "
+            f"{_html_escape(server_info.get('ip_address'))}"
+            f"<span> · {_html_escape(server_info.get('system'))} "
+            f"{_html_escape(server_info.get('machine'))} "
+            f"{_html_escape(server_info.get('kernel_version'))}</span></div>"
         )
         reports = evaluation_reports or {}
         watchlist_rows = self._daily_watchlist_rows(
@@ -2226,6 +2228,7 @@ class EmailNotifier(BaseNotifier):
             backtest_section=backtest_section,
             portfolio_section=portfolio_section,
             strategy_results_section=strategy_results_section,
+            release_label=_html_escape(server_info.get("release_label", "未登记发布")),
             server_hostname=server_info["hostname"],
             server_ip=server_info["ip_address"],
         )
@@ -2364,6 +2367,13 @@ class EmailNotifier(BaseNotifier):
             dict: 包含服务器信息的字典
         """
         try:
+            from ..core.build_info import build_label, get_build_info
+        except ImportError:
+            from core.build_info import build_label, get_build_info
+
+        build = get_build_info()
+        release = {"release_label": build_label(build), "build_info": build}
+        try:
             # 获取主机名和IP地址
             hostname = socket.gethostname()
             ip_list = []
@@ -2412,6 +2422,7 @@ class EmailNotifier(BaseNotifier):
                 kernel_version = platform.uname().release
 
             return {
+                **release,
                 "hostname": hostname,
                 "ip_address": ip_address,
                 "kernel_version": kernel_version,
@@ -2421,6 +2432,7 @@ class EmailNotifier(BaseNotifier):
         except Exception as e:
             logger.warning(f"获取服务器信息失败: {e}")
             return {
+                **release,
                 "hostname": "未知",
                 "ip_address": "无法获取",
                 "kernel_version": "未知",
@@ -2613,7 +2625,10 @@ class EmailNotifier(BaseNotifier):
         template_dir = Path(__file__).parent.parent / "templates"
         template = (template_dir / "brief_email.html").read_text(encoding="utf-8")
 
+        from ..core.build_info import build_label
+
         body = template.format(
+            release_label=_html_escape(build_label()),
             label=label,
             report_date=today.strftime("%Y-%m-%d"),
             current_time=today.strftime("%H:%M"),
