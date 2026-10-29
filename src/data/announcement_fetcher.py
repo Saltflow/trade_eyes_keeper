@@ -1,19 +1,48 @@
 """
 股票公告抓取模块
-从上交所、深交所官方网站抓取上市公司公告
+从新浪财经采集沪深公告、披露易采集港股公告、SEC 采集美股披露
 """
 
 import logging
-import requests
+import re
 from datetime import datetime, timedelta
-from bs4 import BeautifulSoup
 from typing import Any
+
+import requests
+from bs4 import BeautifulSoup
+from zoneinfo import ZoneInfo
 
 # 为类型检查预先定义可选依赖
 ContentFetcher: Any = None
 LLMAnalyzer: Any = None
 
 logger = logging.getLogger(__name__)
+
+DIVIDEND_KEYWORDS = ("分红", "利润分配", "权益分派", "派息", "送股", "转增")
+HK_DIVIDEND_KEYWORDS = (
+    *DIVIDEND_KEYWORDS,
+    "分紅", "利潤分配", "權益分派", "股息", "分派", "紅股", "轉增",
+    "以股代息", "dividend", "distribution", "bonus issue",
+)
+HK_IMPORTANT_KEYWORDS = (
+    *HK_DIVIDEND_KEYWORDS,
+    "業績", "年報", "年度報告", "中期報告", "季報", "盈利", "盈警",
+    "收購", "出售", "重組", "合併", "增持", "減持", "購回", "回購",
+    "關連交易", "股份獎勵", "股權激勵", "訴訟", "擔保", "債券",
+    "票據", "配股", "供股", "配售", "停牌", "復牌", "內幕消息",
+    "results", "annual report", "interim report", "profit warning",
+    "acquisition", "disposal", "repurchase", "connected transaction",
+)
+
+
+def _is_dividend_announcement(announcement: dict) -> bool:
+    title = str(announcement.get("title", ""))
+    if announcement.get("exchange") == "hkex":
+        text = f"{title} {announcement.get('type', '')}".lower()
+        return any(keyword in text for keyword in HK_DIVIDEND_KEYWORDS)
+    if announcement.get("exchange") == "sec":
+        return any(keyword in title.lower() for keyword in ("dividend", "distribution"))
+    return any(keyword in title for keyword in DIVIDEND_KEYWORDS)
 
 # 尝试导入内容抓取和LLM分析模块
 try:
@@ -70,6 +99,8 @@ class AnnouncementFetcher:
 
         # 分红数据缓存
         self._dividend_cache = {}
+        self._hk_announcements = None
+        self._us_announcements = None
 
         # 初始化内容抓取器和LLM分析器（如果可用）
         self.content_fetcher = None
@@ -110,21 +141,27 @@ class AnnouncementFetcher:
 
         for stock_code in stock_codes:
             try:
-                stock_code = str(stock_code)
+                stock_code = str(stock_code).strip()
                 logger.info(f"开始获取股票 {stock_code} 的公告（窗口: {fetch_days}天）")
 
                 # 跳过ETF基金（它们没有公司公告，只有基金公告）
                 # ETF代码通常以51、52开头，使用不同的公告系统
-                if stock_code.startswith(("51", "52", "15", "16", "18")):
+                if len(stock_code) == 6 and stock_code.startswith(
+                    ("51", "52", "15", "16", "18")
+                ):
                     logger.info(f"跳过ETF基金 {stock_code}，ETF使用不同的公告系统")
                     announcements[stock_code] = []
                     continue
 
                 # 根据股票代码判断交易所
-                if stock_code.startswith(("6", "5", "9")):
+                if stock_code.isdigit() and len(stock_code) == 5:
+                    exchange = "hkex"
+                elif len(stock_code) == 6 and stock_code.startswith(("6", "5", "9")):
                     exchange = "sse"  # 上海证券交易所
-                elif stock_code.startswith(("0", "3", "2")):
+                elif len(stock_code) == 6 and stock_code.startswith(("0", "3", "2")):
                     exchange = "szse"  # 深圳证券交易所
+                elif re.fullmatch(r"[A-Za-z][A-Za-z0-9.\-]{0,14}", stock_code):
+                    exchange = "sec"
                 else:
                     logger.warning(f"无法识别的股票代码 {stock_code}，跳过")
                     continue
@@ -164,12 +201,11 @@ class AnnouncementFetcher:
             list: 过滤后的公告列表
         """
         filtered = []
-        dividend_keywords = ["分红", "利润分配", "派息", "送股", "转增"]
-        cutoff_date_original = datetime.now() - timedelta(days=original_days)
-        cutoff_date_dividend = datetime.now() - timedelta(days=dividend_days)
+        today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        cutoff_date_original = today - timedelta(days=original_days)
+        cutoff_date_dividend = today - timedelta(days=dividend_days)
 
         for announcement in announcements:
-            title = announcement.get("title", "")
             date_str = announcement.get("date", "")
 
             # 解析公告日期
@@ -177,7 +213,9 @@ class AnnouncementFetcher:
             if date_str:
                 for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"):
                     try:
-                        pub_date = datetime.strptime(date_str.strip(), fmt)
+                        pub_date = datetime.strptime(date_str.strip(), fmt).replace(
+                            tzinfo=ZoneInfo("Asia/Shanghai")
+                        )
                         break
                     except ValueError:
                         continue
@@ -185,16 +223,18 @@ class AnnouncementFetcher:
             if not pub_date:
                 # 如果无法解析日期，跳过该公告
                 continue
+            if pub_date.date() > today:
+                continue
 
             # 检查是否为分红相关公告
-            is_dividend = any(keyword in title for keyword in dividend_keywords)
+            is_dividend = _is_dividend_announcement(announcement)
 
             # 应用相应的时间窗口
             if is_dividend:
-                if pub_date.date() >= cutoff_date_dividend.date():
+                if pub_date.date() >= cutoff_date_dividend:
                     filtered.append(announcement)
             else:
-                if pub_date.date() >= cutoff_date_original.date():
+                if pub_date.date() >= cutoff_date_original:
                     filtered.append(announcement)
 
         return filtered
@@ -221,7 +261,6 @@ class AnnouncementFetcher:
             logger.debug("LLM提取未启用，跳过公告丰富")
             return announcements
 
-        dividend_keywords = ["分红", "利润分配", "派息", "送股", "转增"]
         enriched = []
         llm_calls_made = 0
 
@@ -231,7 +270,7 @@ class AnnouncementFetcher:
             date = announcement.get("date", "")
 
             # 检查是否为分红相关公告
-            is_dividend = any(keyword in title for keyword in dividend_keywords)
+            is_dividend = any(keyword in title for keyword in DIVIDEND_KEYWORDS)
 
             if not is_dividend:
                 enriched.append(announcement)
@@ -319,8 +358,26 @@ class AnnouncementFetcher:
             f"_fetch_from_exchange: stock_code={stock_code}, exchange={exchange}, fetch_days={fetch_days}, original_days={original_days}, dividend_days={dividend_days}"
         )
 
-        # 交易所官方接口长期失效，直接使用新浪公告页作为唯一来源
-        if exchange == "sse":
+        if exchange == "hkex":
+            if self._hk_announcements is None:
+                from .hk_announcements import HkexAnnouncementProvider
+
+                self._hk_announcements = HkexAnnouncementProvider(self.config)
+            today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+            result = self._hk_announcements.fetch(
+                stock_code, today - timedelta(days=fetch_days), today
+            )
+        elif exchange == "sec":
+            if self._us_announcements is None:
+                from .us_announcements import SecAnnouncementProvider
+
+                self._us_announcements = SecAnnouncementProvider(self.config)
+            today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+            result = self._us_announcements.fetch(
+                stock_code, today - timedelta(days=fetch_days), today
+            )
+        # 沪深交易所旧接口失效，沿用新浪公告页。
+        elif exchange == "sse":
             result = self._fetch_from_sse_backup(stock_code, fetch_days)
         elif exchange == "szse":
             result = self._fetch_from_szse_backup(stock_code, fetch_days)
@@ -335,6 +392,9 @@ class AnnouncementFetcher:
             logger.info(
                 f"股票 {stock_code} 获取到 {len(result)} 条公告，过滤后保留 {len(filtered_result)} 条"
             )
+            # 现有 LLM 分红金额结构没有币种；港股金额沿用独立分红事件源。
+            if exchange in {"hkex", "sec"}:
+                return filtered_result
             enriched_result = self._enrich_announcements(filtered_result)
             return enriched_result
 
@@ -598,11 +658,7 @@ class AnnouncementFetcher:
             "年报",
             "半年报",
             "季报",
-            "分红",
-            "利润分配",
-            "派息",
-            "转增",
-            "送股",
+            *DIVIDEND_KEYWORDS,
             "重大合同",
             "重大投资",
             "资产重组",
@@ -637,7 +693,19 @@ class AnnouncementFetcher:
             for announcement in announcements:
                 title = announcement.get("title", "")
                 # 检查标题是否包含重要关键词
-                if any(keyword in title for keyword in important_keywords):
+                if announcement.get("exchange") == "hkex":
+                    text = f"{title} {announcement.get('type', '')}".lower()
+                    is_important = any(k in text for k in HK_IMPORTANT_KEYWORDS)
+                elif announcement.get("exchange") == "sec":
+                    from .us_announcements import IMPORTANT_FORMS
+
+                    is_important = (
+                        announcement.get("type", "").removesuffix("/A") in IMPORTANT_FORMS
+                        or _is_dividend_announcement(announcement)
+                    )
+                else:
+                    is_important = any(k in title for k in important_keywords)
+                if is_important:
                     important_list.append(announcement)
                 else:
                     other_list.append(announcement)

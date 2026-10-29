@@ -1,0 +1,22 @@
+{
+  "source_url": "https://www1.hkexnews.hk/search/titlesearch.xhtml",
+  "method": "POST",
+  "parameters": {
+    "lang": "ZH",
+    "stockId": "7609",
+    "from": "20250905",
+    "to": "20261030",
+    "t1code": "-2"
+  },
+  "captured_on": "2026-10-30",
+  "source_total_records": 207,
+  "source_first_page_rows": 100,
+  "excerpt_row_indices": [
+    0,
+    4,
+    55,
+    6
+  ],
+  "note": "Unchanged real rows; wrapper count is adjusted for the four-row unit-test excerpt. Not a complete HKEX response.",
+  "sha256": "209f478bc0905b1754823e5e91e7b67edba9ed3bf7c22e4ef3b387e50ac59d4b"
+}
