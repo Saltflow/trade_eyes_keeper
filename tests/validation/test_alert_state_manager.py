@@ -37,7 +37,7 @@ def test_new_stock_allows_alert(
     temp_cache_dir, random_stock_code, random_interval_labels
 ):
     """测试新股票允许警报（连续天数=1）"""
-    asm = AlertStateManager(temp_cache_dir)
+    asm = AlertStateManager({}, cache_dir=temp_cache_dir)
     interval = random.choice(random_interval_labels)
 
     should_alert, consecutive = asm.should_alert(random_stock_code, "ma60", interval)
@@ -49,9 +49,9 @@ def test_same_day_no_increase(
     temp_cache_dir, random_stock_code, random_interval_labels
 ):
     """测试同一天重复检查不增加连续天数"""
-    asm = AlertStateManager(temp_cache_dir)
+    asm = AlertStateManager({}, cache_dir=temp_cache_dir)
     interval = random.choice(random_interval_labels)
-    today = datetime.now().date().isoformat()
+    today = datetime.now().astimezone().date().isoformat()
 
     asm.update(random_stock_code, "wma20", interval, today)
 
@@ -66,9 +66,9 @@ def test_consecutive_days_increase(
     temp_cache_dir, random_stock_code, random_interval_labels
 ):
     """测试连续天数正确累加（最大5天）"""
-    asm = AlertStateManager(temp_cache_dir)
+    asm = AlertStateManager({}, cache_dir=temp_cache_dir)
     interval = random.choice(random_interval_labels)
-    base_date = datetime.now() - timedelta(days=5)
+    base_date = datetime.now().astimezone() - timedelta(days=5)
 
     for i in range(5):
         current_date = (base_date + timedelta(days=i)).date().isoformat()
@@ -83,9 +83,9 @@ def test_consecutive_days_increase(
 
 def test_sixth_day_rejects(temp_cache_dir, random_stock_code, random_interval_labels):
     """测试第6天正确拒绝警报"""
-    asm = AlertStateManager(temp_cache_dir)
+    asm = AlertStateManager({}, cache_dir=temp_cache_dir)
     interval = random.choice(random_interval_labels)
-    base_date = datetime.now() - timedelta(days=6)
+    base_date = datetime.now().astimezone() - timedelta(days=6)
 
     # 更新前5天
     for i in range(5):
@@ -105,7 +105,7 @@ def test_new_interval_resets_count(
     temp_cache_dir, random_stock_code, random_interval_labels
 ):
     """测试区间切换正确重置计数器"""
-    asm = AlertStateManager(temp_cache_dir)
+    asm = AlertStateManager({}, cache_dir=temp_cache_dir)
 
     if len(random_interval_labels) >= 2:
         interval1, interval2 = random.sample(random_interval_labels, 2)
@@ -113,7 +113,7 @@ def test_new_interval_resets_count(
         interval1 = "(-10%, -5%]"
         interval2 = "[5%, 10%)"
 
-    base_date = datetime.now() - timedelta(days=3)
+    base_date = datetime.now().astimezone() - timedelta(days=3)
 
     # 更新interval1的前2天
     for i in range(2):
@@ -134,7 +134,7 @@ def test_new_interval_resets_count(
 
 def test_clear_all(temp_cache_dir, random_stock_code, random_interval_labels):
     """测试清除所有状态功能"""
-    asm = AlertStateManager(temp_cache_dir)
+    asm = AlertStateManager({}, cache_dir=temp_cache_dir)
     interval = random.choice(random_interval_labels)
 
     asm.update(random_stock_code, "ma60", interval)
@@ -152,11 +152,11 @@ def test_persistence(temp_cache_dir, random_stock_code, random_interval_labels):
     interval = random.choice(random_interval_labels)
 
     # 创建第一个实例并更新
-    asm1 = AlertStateManager(temp_cache_dir)
+    asm1 = AlertStateManager({}, cache_dir=temp_cache_dir)
     asm1.update(random_stock_code, "wma30", interval)
 
     # 创建第二个实例（应该加载保存的状态）
-    asm2 = AlertStateManager(temp_cache_dir)
+    asm2 = AlertStateManager({}, cache_dir=temp_cache_dir)
     key = asm2._key(random_stock_code, "wma30", interval)
 
     assert key in asm2._state.get("alerts", {})

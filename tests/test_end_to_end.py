@@ -85,11 +85,12 @@ def _smoke_constraints() -> StrategyConstraints:
     return StrategyConstraints(
         {
             "walk_forward": {
-                "train_months": 3,
-                "test_months": 3,
-                "step_months": 1,
-                "num_windows": 1,
-                "validation_windows": 0,
+                "state_lookback_months": 3,
+                "test_months": 24,
+                "step_months": 24,
+                "num_windows": 2,
+                "validation_windows": 1,
+                "purge_overlapping_windows": False,
             },
             "genetic_search": {
                 "phase1_random_samples": 50,
@@ -98,7 +99,6 @@ def _smoke_constraints() -> StrategyConstraints:
                 "population_size": 10,
                 "offspring_size": 0,
                 "sensitivity_top_candidates": 1,
-                "sensitivity_samples": 1,
                 "min_weighted_strategy_return": -999.0,
                 "min_positive_return_windows": 0,
             },

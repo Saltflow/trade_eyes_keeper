@@ -223,6 +223,7 @@ def host_writer(path, health=None):
     # Avoid constructing an ExecutionStore or starting a scheduler/Bot.
     service = runtime_service.RuntimeService.__new__(runtime_service.RuntimeService)
     service.status_path = path
+    service.build_info = {"version": "fixture-only", "verified": False}
     service.execution_runtime = SimpleNamespace(
         health=lambda: {"ready": True} if health is None else health
     )
@@ -316,3 +317,4 @@ def test_report_and_host_keep_their_distinct_nonfinite_json_policies(tmp_path):
     assert math.isnan(saved["execution"]["value"])
     assert "神华" in (tmp_path / "host.json").read_text(encoding="utf-8")
     assert saved["started_at"] == "fixture-start"
+    assert saved["build_info"] == {"version": "fixture-only", "verified": False}
