@@ -71,7 +71,6 @@ from src.search.artifacts import (
     prune_optimizer_runs,
     publish_complete_run,
 )
-from src.search.config import load_evaluation_horizon_policy
 from src.search.contracts import stable_hash
 from src.search.promotion import (
     PromotionDecision,
@@ -86,27 +85,24 @@ from src.strategy import Params
 OPTIMIZER_GROUPS = ("a_share", "hk", "us")
 DEFAULT_OPTIMIZER_GROUPS = OPTIMIZER_GROUPS
 DAILY_REPORT_FREQUENCIES = {"daily", "weekly", "off"}
-# The daily email's normalized NAV chart is a decision-history view.  Its
-# duration is centrally configured and must exceed the minimum two-year
-# evidence horizon.
+# Keep the existing three-year daily decision-history chart.
+DAILY_PORTFOLIO_HISTORY_MONTHS = 36
 DAILY_PORTFOLIO_HISTORY_BUFFER_DAYS = 35
 
 
-def _daily_portfolio_history_months() -> int:
-    return load_evaluation_horizon_policy().daily_portfolio_history_months
 
 
 def _daily_portfolio_history_days() -> int:
-    """Return the fetch horizon for the configured decision-history span."""
-    return int(_daily_portfolio_history_months() * 30.4375) + (
+    """Return the fetch horizon needed for an exact 36-calendar-month chart."""
+    return int(DAILY_PORTFOLIO_HISTORY_MONTHS * 30.4375) + (
         DAILY_PORTFOLIO_HISTORY_BUFFER_DAYS
     )
 
 
 def _daily_portfolio_evaluation_start(end_date: pd.Timestamp) -> pd.Timestamp:
-    """Anchor daily NAV to the centrally configured evidence horizon."""
+    """Anchor the daily NAV overview to a calendar, rather than a 9m holdout."""
     return pd.Timestamp(end_date).normalize() - pd.DateOffset(
-        months=_daily_portfolio_history_months()
+        months=DAILY_PORTFOLIO_HISTORY_MONTHS
     )
 
 
@@ -214,10 +210,7 @@ def _optimizer_evaluation_budget(constraints) -> int:
 
 def _optimizer_validation_start(constraints) -> str:
     """Legacy fallback when an artifact predates persisted WF boundaries."""
-    months = max(
-        constraints.evaluation_horizon.minimum_evaluation_months,
-        int(constraints.walk_forward.holdout_calendar_span_months),
-    )
+    months = max(1, int(constraints.walk_forward.holdout_calendar_span_months))
     return (pd.Timestamp.now().normalize() - pd.DateOffset(months=months)).strftime(
         "%Y-%m-%d"
     )
@@ -2479,7 +2472,7 @@ def _scan_group(
 
 
 def _eval_opt_lookback() -> int:
-    """读中心合同的 walk_forward.test_months，返回日历天数。
+    """读 optimizer_constraints.yaml 的 walk_forward.test_months，返回日历天数。
 
     fetch_stock_data(days=N) 的 N 是日历天，不是交易日。
     """
@@ -2487,16 +2480,10 @@ def _eval_opt_lookback() -> int:
         import yaml
         with open("config/optimizer_constraints.yaml", "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
-        policy = load_evaluation_horizon_policy()
-        months = int(
-            (raw.get("walk_forward", {}) or {}).get(
-                "test_months", policy.minimum_evaluation_months
-            )
-        )
-        policy.require_evaluation_months(months, context="main._eval_opt_lookback")
-        return int(months * 30.4375)
-    except Exception:  # noqa: BLE001 - Retain the legacy parser/policy fallback.
-        return 730
+        months = int((raw.get("walk_forward", {}) or {}).get("test_months", 9))
+        return int(months * 30.4375)  # 9 个月 ≈ 274 日历天
+    except Exception:
+        return 274
 
 
 def _send_restart_notification(config: dict, service):

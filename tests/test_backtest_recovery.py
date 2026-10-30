@@ -444,4 +444,4 @@ def test_interactive_backtest_uses_unified_evaluator(monkeypatch):
     )
     result = handlers.handle_backtest("600000", "2024-01-01", "2024-04-30")
     assert result.startswith("❌")
-    assert "至少需要" in result
+    assert "没有已激活的回测策略" in result

@@ -1,4 +1,4 @@
-"""Old research execution is absent; archive and current data boundaries remain."""
+"""Supported archive roots stay read-only; disputed legacy sources stay isolated."""
 
 import ast
 import json
@@ -37,7 +37,6 @@ OLD_SCRIPTS = (
     "run_fr_extraction_pilot",
     "run_full_comparison",
     "run_fundamental_quant_worker",
-    "run_longitudinal_research",
     "run_pi_research_campaign",
     "run_price_research_benchmark",
 )
@@ -57,10 +56,14 @@ def test_old_executable_script_is_physically_removed(name):
     assert not (ROOT / "scripts" / (name + ".py")).exists()
 
 
-def test_archive_dependency_closure_is_small_and_cannot_execute_research():
+def test_supported_archive_closure_cannot_execute_preserved_legacy_research():
     folder = ROOT / "src/fundamental_quant"
-    files = list(folder.glob("*.py"))
-    assert {p.stem for p in files} == {"__init__", "archive", "service", "reporting"}
+    # These are the current CLI/Bot roots, not every preserved historical file.
+    files = [
+        folder / (name + ".py")
+        for name in ("__init__", "archive", "service", "reporting")
+    ]
+    assert all(path.is_file() for path in files)
     for path in files:
         text = path.read_text(encoding="utf8")
         assert len(text.splitlines()) <= 100

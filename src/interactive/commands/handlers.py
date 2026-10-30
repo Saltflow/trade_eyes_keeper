@@ -56,7 +56,7 @@ def handle_help() -> str:
                 ),
                 (
                     "/backtest 代码 起 止",
-                    "回测例 <code>/backtest 601919 2023-01-01 2024-12-31</code>",
+                    "回测例 <code>/backtest 601919 2024-01-01 2024-12-31</code>",
                 ),
             ],
         ),
@@ -350,33 +350,20 @@ def _get_backtest_params(group: str, strategy):
 
 
 def handle_backtest(code: str, start: str, end: str) -> str:
-    """Run one stock only when its requested evaluation spans two years."""
+    """单票回测（使用统一评估引擎 evaluate_all_groups）。"""
     try:
         import pandas as pd
 
         from ...backtest.engine import evaluate_all_groups
         from ...data.backtest_data import prepare_backtest_data
         from ...markets import _detect_fine_group
-        from ...search.config import (
-            get_market_optimizer_config,
-            load_evaluation_horizon_policy,
-        )
+        from ...search.config import get_market_optimizer_config
 
         config = _load_config()
 
         # Date-only exchange bounds must match the naive pandas window contract.
         s = datetime.strptime(start, "%Y-%m-%d")  # noqa: DTZ007
         e = datetime.strptime(end, "%Y-%m-%d")  # noqa: DTZ007
-        policy = load_evaluation_horizon_policy()
-        minimum_end = pd.Timestamp(s) + pd.DateOffset(
-            months=policy.minimum_evaluation_months
-        ) - pd.Timedelta(days=1)
-        if pd.Timestamp(e) < minimum_end:
-            return (
-                "❌ 回测区间至少需要 "
-                f"{policy.minimum_evaluation_months} 个月："
-                f"{pd.Timestamp(s).date()} 至少应回测到 {minimum_end.date()}"
-            )
         group = _detect_fine_group(code)
         strategy = _get_backtest_strategy(config, group)
         if strategy is None:

@@ -107,6 +107,7 @@ flowchart TB
         FIN["财报提取 → 跨年对齐<br/>单公司摘要 → 横评 → 正式研究"]
         LAB["保留的逐时点数据与估值适配<br/>指定MOE/估值评分/Ke实验已终止"]
         HISTORY["本机旧 fundamental_quant<br/>仅历史查询与文件路径"]
+        LEGACY["保留争议旧手工源码<br/>legacy_reporting / legacy_service<br/>未注册到当前宿主"]
     end
 
     SCRIPT --> COLLECT
@@ -374,7 +375,7 @@ flowchart TB
 6. **源资料状态逐层区分。** 原件存在、文本可读、接口字段有值、模型提取成功、财务口径对齐和研究可用是不同状态。采集局部缺口标记为 partial，并保留实际数据；源站封禁、磁盘不足等全局问题另行处理。
 7. **费用与预留分开。** 返回 usage 的计价、账户范围的实际扣减和在途最大预留分列；缺 usage 保持未知。历史最大预留不是实际消费，模型 completion 已包含 reasoning，不重复相加。
 8. **输出与发送分开。** 生成研究 HTML、PDF 或图表不自动调用通知管理器。日常业务需要显式通知调用，个人提醒使用自己的投递适配器；发送回执区分成功、失败和未知。
-9. **旧路径只读。** `src/fundamental_quant` 保留历史查询与已有文件指针；旧执行、自动研究、补修与发布调度已退役。`data/fundamental_quant` 下仍可保存 tokenizer、源资料及历史文件，目录名称不能用于判断旧执行引擎仍在运行。
+9. **受支持旧入口只读。** `src/fundamental_quant`的当前service/archive/reporting保留历史查询与已有文件指针；争议旧手工源码仍保留，其必要接口显式隔离为legacy_reporting及仅含两个纯助手的legacy_service。当前宿主没有注册旧执行、自动研究、补修或发布调度；旧worker仍指向blocked服务。`data/fundamental_quant` 下仍可保存 tokenizer、源资料及历史文件，目录名称不能用于判断旧执行引擎仍在运行。
 10. **保留能力与已终止实验分开。** `fundamental_embedding` 只保留仍被其他业务使用的数据/估值适配，`experiments` 保留既有 benchmark 等工具；指定MOE训练、旧评分/消融与Ke实验已删除，后续不再尝试，见[终止记录](development/failed_quant_experiments_retirement_20261030.md)。助手的原研究worker队列与Docker沙箱仍保留，没有迁入公共对话队列，也不等于恢复这些实验。
 
 ## 模块与源码导航
@@ -470,3 +471,7 @@ flowchart TB
 - **不以未提交推断未部署。** 先前采用过限定文件发布/生产补丁；本节没有逐文件重新核对生产，不能仅看本机Git状态断言线上是否存在某个改动。
 
 完整逐文件清单保存在本机`.tmp/uncommitted_architecture_20261030/modules.json`，原始Git状态及差异统计分别为`status.json`、`numstat.txt`。大批产物文件不复制进正文；可据清单逐模块审阅，但不得直接`git add .`混入数据或未审改动。
+
+### 2026-10-30 本地优先源码合并
+
+所选本地业务与生产9m评价节点已按修改块合并；4个历史壳/17个基本面适配保留，争议55旧文件不删不自动注册。旧私有导入只改向显式legacy模块，未重建旧服务。详见[源码合并范围和本轮证据](development/local_preferred_merge_scope_20261030.md)。真实生产状态仍以之后部署核验为准；本次未推送或部署。

@@ -135,16 +135,6 @@ def render_optimizer_report(data: Mapping[str, object]) -> str:
         "holdout_test_months",
         contract.get("holdout_months", contract.get("holdout_window_months")),
     )
-    holdout_span_months = contract.get(
-        "holdout_calendar_span_months",
-        contract.get("holdout_window_months", holdout_test_months),
-    )
-    holdout_window_count = int(contract.get("holdout_window_count", 0) or 0)
-    holdout_aggregation_note = (
-        "单一连续 Holdout：直接报告该完整区间。"
-        if holdout_window_count == 1
-        else "多个重叠 Holdout：收益、超额和 Sharpe 取窗口等权均值，回撤取最差。"
-    )
 
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -180,8 +170,8 @@ th,td{{border-bottom:1px solid #e5edf4;padding:8px;text-align:left;vertical-alig
 </div></section>
 <section class="card"><h2>窗口合同总览</h2><div class="grid">
 <div class="metric"><span>总窗口</span><strong>{counts[0]}</strong></div><div class="metric"><span>Ranking</span><strong>{counts[1]}</strong></div><div class="metric"><span>Purged</span><strong>{counts[2]}</strong></div><div class="metric"><span>Holdout</span><strong>{counts[3]}</strong></div>
-</div><div class="meta">合同：{_esc(contract.get('total_months'))} 个月历史 · 状态预热 {_esc(contract.get('state_lookback_months'))} 个月 · Holdout {_esc(holdout_window_count)} × {_esc(holdout_test_months)} 个月窗口（总跨度 {_esc(holdout_span_months)} 个月） · 最低评估期 {_esc(contract.get('minimum_evaluation_months'))} 个月</div></section>
-<section class="card"><h2>Holdout 整体指标</h2><div class="grid">{holdout_html}</div><div class="meta">{_esc(holdout_aggregation_note)}</div></section>
+</div><div class="meta">合同：{_esc(contract.get('total_months'))} 个月历史 · 状态预热 {_esc(contract.get('state_lookback_months'))} 个月 · Holdout {_esc(contract.get('holdout_window_count'))} × {_esc(holdout_test_months)} 个月窗口（总跨度 {_esc(contract.get('holdout_window_months'))} 个月） · 重叠窗口不复合计算</div></section>
+<section class="card"><h2>Holdout 整体指标</h2><div class="grid">{holdout_html}</div><div class="meta">4 个重叠窗口采用等权平均收益、超额和 Sharpe；最大回撤取最差窗口。</div></section>
 <section class="card"><h2>全部窗口明细</h2><div class="table-wrap"><table><thead><tr><th>#</th><th>角色</th><th>训练区间</th><th>测试区间</th><th>收益</th><th>超额</th><th>最大回撤</th><th>Sharpe</th><th>交易</th><th>分红税前</th><th>税额</th><th>分红税后</th></tr></thead><tbody>{''.join(window_html)}</tbody></table></div><div class="meta">现金分红以执行币种/换汇后的账户币种计量；税额按市场执行合同的预扣率计提。</div></section>
 <section class="card"><h2>参数与数据合同</h2><div>{param_html}</div><div class="meta">基准：{benchmark_html}</div><div class="contract"><div>运行时间：{_esc(data.get('timestamp'))}</div><div>WF 得分：{_esc(data.get('wf_score'))}</div><div>数据合同：{_esc(data.get('contracts', {}).get('data_contract_hash') if isinstance(data.get('contracts'), dict) else '—')}</div></div><div class="meta">数据就绪：{_esc(readiness_detail)}</div></section>
 </main></body></html>"""

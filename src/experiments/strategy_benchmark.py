@@ -1,9 +1,10 @@
 """Parallel, publication-free benchmark for registered strategies.
 
-The benchmark intentionally mirrors the current market configuration: every
-strategy receives the same deterministic candidate budget, selection uses only
-the configured independent ranking windows, and the configured overlap-purged
-window plus continuous holdout are evaluated only after selection.
+The benchmark intentionally mirrors the current search contract: every
+strategy receives the same deterministic candidate budget and only the 16
+independent ranking windows may select parameters.  The two purged windows and
+the four overlapping holdout windows are evaluated once after selection and
+never feed back into the search.
 """
 
 from __future__ import annotations

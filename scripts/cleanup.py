@@ -15,9 +15,11 @@
     python cleanup.py --days 90 --archives
 """
 import os
+import sys
 import glob
 import time
 import argparse
+from datetime import datetime, timedelta
 
 def get_files_older_than(directory, pattern, days):
     """获取目录中超过指定天数的文件列表"""

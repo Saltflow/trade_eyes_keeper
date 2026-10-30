@@ -22,7 +22,6 @@ import numpy as np
 import pandas as pd
 
 from ..markets import _detect_fine_group
-from ..search.config import load_evaluation_horizon_policy
 from .base import BaseNotifier
 from .receipts import combine_receipts, legacy_tuple, normalize_receipt
 from .report_builders import (  # noqa: F401
@@ -1177,35 +1176,9 @@ class EmailNotifier(BaseNotifier):
         return "".join(sections)
 
     def _daily_holdout_payload(self, report):
-        """Return only a complete holdout satisfying the current duration policy."""
+        """Return only a complete, numerically trustworthy 22/16/2/4 holdout."""
         selection = self._daily_get(report, "selection_diagnostics", {}) or {}
         if not isinstance(selection, dict):
-            return None
-        try:
-            policy = load_evaluation_horizon_policy()
-        except ValueError:
-            return None
-        time_contract = selection.get("time_contract", {}) or {}
-        if not isinstance(time_contract, dict):
-            return None
-        try:
-            holdout_months = int(time_contract["holdout_test_months"])
-            expected_windows = int(time_contract["holdout_window_count"])
-            holdout_span_months = int(
-                time_contract.get("holdout_calendar_span_months", holdout_months)
-            )
-        except (KeyError, TypeError, ValueError):
-            return None
-        if (
-            expected_windows < 1
-            or holdout_span_months < policy.minimum_evaluation_months
-        ):
-            return None
-        try:
-            policy.require_evaluation_months(
-                holdout_months, context="daily optimizer holdout"
-            )
-        except ValueError:
             return None
         summary = selection.get("holdout_summary", {}) or {}
         if not isinstance(summary, dict):
@@ -1223,15 +1196,13 @@ class EmailNotifier(BaseNotifier):
             for item in selection.get("windows", []) or []
             if isinstance(item, dict) and item.get("role") == "holdout"
         ]
-        if len(windows) != expected_windows:
+        if len(windows) != 4:
             return None
         try:
             windows = sorted(windows, key=lambda item: int(item["role_index"]))
         except (KeyError, TypeError, ValueError):
             return None
-        if [int(item["role_index"]) for item in windows] != list(
-            range(1, expected_windows + 1)
-        ):
+        if [int(item["role_index"]) for item in windows] != [1, 2, 3, 4]:
             return None
         window_keys = ("return", "excess_return", "max_drawdown", "sharpe_ratio")
         if any(
@@ -1240,11 +1211,7 @@ class EmailNotifier(BaseNotifier):
             for key in window_keys
         ):
             return None
-        return {
-            "summary": summary,
-            "windows": windows,
-            "time_contract": time_contract,
-        }
+        return {"summary": summary, "windows": windows}
 
     def _build_daily_announcements_section(self, announcements):
         if not announcements:
@@ -1494,51 +1461,30 @@ class EmailNotifier(BaseNotifier):
             )
             holdout = self._daily_holdout_payload(report)
             if holdout is None:
-                try:
-                    minimum_months = (
-                        load_evaluation_horizon_policy().minimum_evaluation_months
-                    )
-                except ValueError:
-                    minimum_months = 24
                 parts.append(
-                    '<div class="holdout-note">'
-                    f"≥{minimum_months}个月 Holdout：当前激活产物未提供符合中心合同的完整证据；"
-                    "短窗历史诊断不在日报中作为参照显示。</div>"
+                    '<div class="holdout-note">84个月 Holdout：报告尚未形成完整 22/16/2/4 产物，'
+                    '请查看完整报告。</div>'
                 )
             else:
                 summary = holdout["summary"]
-                time_contract = holdout["time_contract"]
-                holdout_months = int(time_contract["holdout_test_months"])
-                holdout_count = int(time_contract["holdout_window_count"])
-                holdout_span = int(
-                    time_contract.get("holdout_calendar_span_months", holdout_months)
-                )
-                holdout_label = (
-                    f"连续{holdout_months}个月 Holdout"
-                    if holdout_count == 1
-                    else (
-                        f"{holdout_count}×{holdout_months}个月 Holdout "
-                        f"（总跨度{holdout_span}个月）"
-                    )
-                )
                 parts.append(
-                    f'<div class="holdout-title">{_html_escape(holdout_label)}</div>'
+                    '<div class="holdout-title">84个月 Holdout · 窗口等权，回撤取最差</div>'
                     '<div class="holdout-summary">'
-                    f"收益 {_html_escape(self._daily_metric(summary['return_pct'], '%', 1))} · "
-                    f"超额 {_html_escape(self._daily_metric(summary['excess_return_pct'], '%', 1))} · "
-                    f"回撤 {_html_escape(self._daily_metric(summary['max_drawdown_pct'], '%', 1))} · "
-                    f"Sharpe {_html_escape(self._daily_metric(summary['sharpe_ratio'], '', 2))}"
+                    f'收益 {_html_escape(self._daily_metric(summary["return_pct"], "%", 1))} · '
+                    f'超额 {_html_escape(self._daily_metric(summary["excess_return_pct"], "%", 1))} · '
+                    f'回撤 {_html_escape(self._daily_metric(summary["max_drawdown_pct"], "%", 1))} · '
+                    f'Sharpe {_html_escape(self._daily_metric(summary["sharpe_ratio"], "", 2))}'
                     '</div><div class="holdout-chip-row">'
                 )
                 for window in holdout["windows"]:
                     parts.append(
                         '<span class="holdout-chip"><strong>'
-                        f"H{int(window['role_index'])} </strong>"
-                        f"R {_html_escape(self._daily_metric(window['return'], '%', 1))} · "
-                        f"E {_html_escape(self._daily_metric(window['excess_return'], '%', 1))} · "
-                        f"DD {_html_escape(self._daily_metric(window['max_drawdown'], '%', 1))} · "
-                        f"S {_html_escape(self._daily_metric(window['sharpe_ratio'], '', 2))}"
-                        "</span>"
+                        f'H{int(window["role_index"])} </strong>'
+                        f'R {_html_escape(self._daily_metric(window["return"], "%", 1))} · '
+                        f'E {_html_escape(self._daily_metric(window["excess_return"], "%", 1))} · '
+                        f'DD {_html_escape(self._daily_metric(window["max_drawdown"], "%", 1))} · '
+                        f'S {_html_escape(self._daily_metric(window["sharpe_ratio"], "", 2))}'
+                        '</span>'
                     )
                 parts.append("</div>")
             parts.append("</div>")

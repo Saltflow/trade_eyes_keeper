@@ -3,6 +3,7 @@ import pytest
 
 from scripts.backtest_510300_collar import (
     Contract,
+    parse_args,
     Roll,
     _fourth_wednesday,
     _metrics,
@@ -12,10 +13,7 @@ from scripts.backtest_510300_collar import (
     _simulate,
     _spot_benchmark,
     _strike_from_contract_id,
-    _default_test_days,
-    _require_minimum_test_days,
 )
-from src.search.config import load_evaluation_horizon_policy
 from scripts.backtest_collar_nav_sizing import (
     _neutralize_relative_months,
     _simulate_nav_resized,
@@ -42,12 +40,13 @@ def test_parse_grid_deduplicates_and_sorts_targets():
     assert _parse_grid("1.10, 0.95, 1.10") == [0.95, 1.10]
 
 
-def test_collar_backtests_use_the_shared_minimum_duration_policy():
-    policy = load_evaluation_horizon_policy()
-
-    assert _default_test_days() == policy.default_backtest_trading_days
-    with pytest.raises(ValueError, match="at least"):
-        _require_minimum_test_days(policy.minimum_evaluation_trading_days - 1)
+def test_collar_backtest_retains_production_cli_duration(monkeypatch):
+    monkeypatch.setattr("sys.argv", ["backtest_510300_collar.py"])
+    assert parse_args().test_days == 756
+    monkeypatch.setattr(
+        "sys.argv", ["backtest_510300_collar.py", "--test-days", "189"]
+    )
+    assert parse_args().test_days == 189
 
 
 def test_selects_earliest_expiry_and_nearest_strikes():

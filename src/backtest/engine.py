@@ -13,11 +13,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-from ..search.config import (
-    WindowStats,
-    get_constraints,
-    load_evaluation_horizon_policy,
-)
+from ..search.config import WindowStats, get_constraints
 from ..strategy import (
     allocate_target_weights,
     EvaluationReport,
@@ -35,33 +31,6 @@ from .execution import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _minimum_evaluation_trading_days() -> int:
-    """Translate the central calendar-month rule for daily observations.
-
-    This is a lower bound for benchmark diagnostics, not a substitute for the
-    calendar-based walk-forward construction. A missing or invalid config
-    cannot make the engine fall back to a shorter period.
-    """
-
-    try:
-        return load_evaluation_horizon_policy().minimum_evaluation_trading_days
-    except ValueError:
-        return 24 * 21
-
-
-def _resolved_validation_days(validation_days: int | None) -> int:
-    minimum = _minimum_evaluation_trading_days()
-    if validation_days is None:
-        return minimum
-    resolved = int(validation_days)
-    if resolved < minimum:
-        raise ValueError(
-            "benchmark validation must cover at least "
-            f"{minimum} trading days under the central evidence policy"
-        )
-    return resolved
 
 try:
     from numba import jit
@@ -2775,10 +2744,9 @@ def _tradable_benchmark_detail(
     lot_size: int,
     commission_rate: float,
     corporate_actions: CorporateActionSlice | None = None,
-    validation_days: int | None = None,
+    validation_days: int = 9 * 21,
 ) -> dict[str, object] | None:
     """Evaluate a tradable baseline, re-entering with costs at every start."""
-    validation_days = _resolved_validation_days(validation_days)
     strategy = np.asarray(strategy_values, dtype=float)
     closes = np.asarray(close_prices, dtype=float)
     buys = np.asarray(buy_prices, dtype=float)
@@ -2862,7 +2830,7 @@ def _tradable_benchmark_detail(
 def _benchmark_return_and_win_rate(
     strategy_values: np.ndarray,
     benchmark_values: np.ndarray,
-    validation_days: int | None = None,
+    validation_days: int = 9 * 21,
 ) -> tuple[float | None, float | None]:
     """Return full-period benchmark return and recent validation win rate.
 
@@ -2870,7 +2838,6 @@ def _benchmark_return_and_win_rate(
     holding the strategy until the final date beat holding the same benchmark?
     This is intentionally distinct from the benchmark's cumulative return.
     """
-    validation_days = _resolved_validation_days(validation_days)
     if len(strategy_values) < 2 or len(strategy_values) != len(benchmark_values):
         return None, None
 
@@ -2893,9 +2860,8 @@ def _benchmark_return_and_win_rate(
 def _benchmark_detail(
     strategy_values: np.ndarray,
     benchmark_values: np.ndarray,
-    validation_days: int | None = None,
+    validation_days: int = 9 * 21,
 ) -> dict[str, object] | None:
-    validation_days = _resolved_validation_days(validation_days)
     if len(strategy_values) < 2 or len(strategy_values) != len(benchmark_values):
         return None
     strategy_return = (strategy_values[-1] / strategy_values[0] - 1) * 100
@@ -2925,10 +2891,9 @@ def _benchmark_detail(
 def _risk_free_return_and_win_rate(
     nav_series: list[float],
     annual_rate: float,
-    validation_days: int | None = None,
+    validation_days: int = 9 * 21,
 ) -> tuple[float, float | None]:
     """Calculate the cash baseline return and its forward-holding win rate."""
-    validation_days = _resolved_validation_days(validation_days)
     values = np.asarray(nav_series, dtype=float)
     values = values[np.isfinite(values) & (values > 0)]
     if len(values) < 2:
@@ -2953,9 +2918,8 @@ def _risk_free_return_and_win_rate(
 def _risk_free_detail(
     nav_series: list[float],
     annual_rate: float,
-    validation_days: int | None = None,
+    validation_days: int = 9 * 21,
 ) -> dict[str, object] | None:
-    validation_days = _resolved_validation_days(validation_days)
     values = np.asarray(nav_series, dtype=float)
     values = values[np.isfinite(values) & (values > 0)]
     if len(values) < 2:

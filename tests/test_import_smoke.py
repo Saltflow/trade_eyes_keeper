@@ -75,10 +75,10 @@ def test_all_key_modules():
 def test_project_structure():
     """项目关键目录存在（防重组回归）"""
     root = Path(__file__).parent.parent
+    # logs/cache are ignored runtime outputs, created lazily by their owners.
+    # A clean checkout must contain source directories, not historic outputs.
     required_dirs = [
         "config",
-        "logs",
-        "cache",
         "src/strategy",
         "src/search",
         "src/backtest",

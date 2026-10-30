@@ -96,26 +96,18 @@ def _stock_data():
 def _complete_holdout():
     return {
         "time_contract": {
-            "holdout_test_months": 24,
-            "holdout_window_count": 1,
-            "holdout_calendar_span_months": 24,
+            "holdout_test_months": 9, "holdout_window_count": 4,
+            "holdout_calendar_span_months": 18,
         },
         "holdout_summary": {
-            "return_pct": 2.0,
-            "excess_return_pct": 1.0,
-            "max_drawdown_pct": -4.0,
-            "sharpe_ratio": 0.8,
+            "return_pct": 2.0, "excess_return_pct": 1.0,
+            "max_drawdown_pct": -4.0, "sharpe_ratio": 0.8,
         },
-        "windows": [
-            {
-                "role": "holdout",
-                "role_index": 1,
-                "return": 2.0,
-                "excess_return": 0.5,
-                "max_drawdown": -2.0,
-                "sharpe_ratio": 0.6,
-            }
-        ],
+        "windows": [{
+            "role": "holdout", "role_index": index,
+            "return": 2.0, "excess_return": 0.5,
+            "max_drawdown": -2.0, "sharpe_ratio": 0.6,
+        } for index in range(1, 5)],
     }
 
 
@@ -183,7 +175,7 @@ def test_daily_matrix_uses_configured_pool_and_keeps_missing_data(monkeypatch):
     assert body.count("未就绪") == 1
 
 
-def test_daily_holdout_renders_only_when_the_two_year_contract_is_complete(monkeypatch):
+def test_daily_holdout_renders_only_when_the_production_four_windows_are_complete(monkeypatch):
     notifier = _notifier(monkeypatch)
     complete = notifier._build_daily_strategy_section(
         {"a_share": _report(_complete_holdout())}
@@ -199,10 +191,11 @@ def test_daily_holdout_renders_only_when_the_two_year_contract_is_complete(monke
         }
     )
 
-    assert "连续24个月 Holdout" in complete
+    assert "84个月 Holdout" in complete
+    assert all(f"H{index}" in complete for index in range(1, 5))
     assert "H1" in complete
     assert "H—" not in complete
-    assert "短窗历史诊断不在日报中作为参照显示" in incomplete
+    assert "完整 22/16/2/4 产物" in incomplete
     assert "H—" not in incomplete
 
 

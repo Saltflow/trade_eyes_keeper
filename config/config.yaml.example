@@ -1,18 +1,6 @@
 # 股票量化系统配置文件示例
 # 复制为 config/config.yaml 并修改
 
-# ── Baostock 共享访问控制（适用于行情、财报和行业分类）──
-# 相对路径固定从项目根解析；不同任务不得用不同 state_dir 绕过共享限制。
-# 连接在进程间串行；间隔/预算计入登录、退出和分页。
-provider_access:
-  baostock:
-    state_dir: data/provider_state/baostock
-    min_request_interval_seconds: 2
-    daily_request_budget: 40000  # 官方每天上限 50000，本地留余量
-    retry_backoff_initial_seconds: 60
-    retry_backoff_max_seconds: 900
-    connection_lock_timeout_seconds: 1200
-
 # ── 公告 ──
 announcements:
   days: 7
@@ -26,7 +14,23 @@ announcements:
 
 # ── 财报 ──
 financial_reports:
+  enable: false
+  auto_enable: true
+  conditional_enable: true
+  force_analyze: false
+  max_stocks_per_run: 2
+  max_force_stocks: 2
   max_llm_calls_per_run: 80
+  reports_per_stock: 3
+  conditional_days: 30
+
+# ── 数据源 ──
+data_source:
+  type: web_crawler
+  primary: web_crawler
+  secondary: baostock
+  etf_force_web_crawler: true
+  fallback_to_web_crawler: true
 
 # ── 新浪股指/ETF 期权 ──
 sina_options:
@@ -66,9 +70,6 @@ scheduler:
   # 有价格/策略告警时仍即时发送；/daily 手动触发不受影响。
   daily_report_frequency: daily
   daily_report_weekday: 4
-  # 定时日报触发条件；mode=any/all，空对象保持原有发送行为。
-  # 例：{mode: any, conditions: [{path: signal_scan.alerts, operator: non_empty}]}
-  daily_report_triggers: {}
   cache_bypass_cutoff: '15:55'
   timezone: Asia/Shanghai
   # 服务器繁忙时允许错过整点后补跑；APScheduler 默认约1秒会误跳任务。
@@ -81,15 +82,12 @@ scheduler:
       label: 早盘简报
       enabled: true
       skip_weekends: true
-      # 定时简报触发条件；空对象保持原有定时发送行为。
-      triggers: {}
       stocks: []   # 填入你的股票代码列表
     - id: afternoon_snapshot
       run_time: '14:30'
       label: 午后简报
       enabled: true
       skip_weekends: true
-      triggers: {}
       stocks: []
 
 # ── 监控标的 ──
@@ -115,36 +113,6 @@ interactive:
     enabled: false
     allowed_chat_ids: []
     rate_limit_per_minute: 10
-    # 自然语言只生成提案；发送“确认 编号”后才修改配置或运行研究。
-    # 使用 llm.base_url / DEEPSEEK_API_KEY，独立于公告分析额度。
-    assistant:
-      enabled: false
-      model: deepseek-flash
-      reasoning_effort: high
-      proposal_ttl_seconds: 900
-      request_timeout_seconds: 60
-      request_retries: 1
-      max_tokens: 16384
-      max_tool_rounds: 16
-      max_history_messages: 20
-      session_ttl_seconds: 1800
-      conversation_retention_days: 30  # 问答与工具轨迹留档天数，启动/接收消息时清理
-      harness_backend: pi  # 普通问答后端；资料研究始终走 Pi，启用前安装 Node>=22.19 和锁定依赖
-      max_tool_calls: 48
-      max_context_chars: 96000
-      conversation_timeout_seconds: 300
-      stock_data_auto_backfill: true
-      stock_data_backfill_cooldown_seconds: 1800
-      stock_data_backfills_per_hour: 6  # 单标的缺数时的自动补数次数上限
-      workspace_root: data/feishu_research
-      docker_image: trade-eyes-research:local
-      cpus: 2
-      memory_mb: 4096
-      prepare_memory_mb: null  # null follows memory_mb; host RSS + swap budget
-      prepare_min_available_mb: 128
-      timeout_seconds: 3600
-      prepare_timeout_seconds: 3600
-      max_output_mb: 100
   telegram:
     enabled: false
     allowed_chat_ids: []
@@ -182,10 +150,6 @@ point_in_time_data:
     prefer_explainable_actions: true
     coverage_tolerance_days: 31
     baostock_socket_timeout_seconds: 20
-    disclosed_sources: false  # 优化线程自动启用已验证的披露源路由
-    optimizer_auto_backfill:
-      max_attempts: 2  # 仅瞬时错误重试；403 不在同一来源上重试
-      market_budget_seconds: 3600
 
 
 # 发行人接口彼此不统一；可按代码声明官方资料和持仓CSV。
@@ -276,12 +240,16 @@ optimizer:
         risk_free_rates_json: data/analysis/capm_dcf_value_policy_us/risk_free_rates.json
         frozen_policy_report: data/analysis/capm_dcf_value_policy_us/report.json
 
-# ── 独立价投研究链路（默认不启用采集、模型、调度或外发） ──
-fundamental_quant:
-  # Retired execution; this section selects the read-only history location.
-  root: data/fundamental_quant
-  history_only: true
+# ── 历史数据缓存 ──
+historical_cache:
+  enable: true
+  historical_cache_days: 30
+  force_update_interval_days: 30
+  check_dividend_interval_days: 7
+  historical_lookback_days: 730
+  enable_historical_cache: true
 
+# ── 多层警报系统 ──
 alerts:
   config_path: "./config/alerts.yaml"
   enabled: true

@@ -492,11 +492,6 @@ def _selection_diagnostics(data: dict) -> dict[str, object]:
         ),
         "sensitivity": dict(sensitivity),
         "selection_score": search.get("selection_score"),
-        "time_contract": (
-            dict(search.get("time_contract", {}))
-            if isinstance(search.get("time_contract"), dict)
-            else {}
-        ),
     }
     if windows or isinstance(data.get("holdout_summary"), dict):
         result.update({

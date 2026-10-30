@@ -1,8 +1,8 @@
-"""Publication-free universe robustness diagnostics.
+"""Publication-free 84-month universe robustness diagnostics.
 
 Every variant reuses the configured market's strategy, Solver, budget and
-central walk-forward contract. It deliberately has no dependency on optimizer
-artifact activation: this is evidence for a human decision only.
+22/16/2/4 walk-forward contract.  It deliberately has no dependency on
+optimizer artifact activation: this is evidence for a human decision only.
 """
 
 from __future__ import annotations
@@ -157,54 +157,6 @@ def _variant_snapshot(
     }
 
 
-def _walk_forward_contract(market_config: Any) -> dict[str, Any]:
-    """Describe this market's configured evidence partition without literals."""
-
-    walk_forward = market_config.constraints.walk_forward
-    horizon = market_config.constraints.evaluation_horizon
-    return {
-        "total_months": walk_forward.total_months_needed,
-        "state_lookback_months": walk_forward.state_lookback_months,
-        "test_months": walk_forward.test_months,
-        "step_months": walk_forward.step_months,
-        "window_partition": {
-            "total": walk_forward.num_windows,
-            "ranking": walk_forward.independent_ranking_window_count,
-            "purged": walk_forward.purge_overlap_window_count,
-            "holdout": walk_forward.held_out_window_count,
-        },
-        "holdout_calendar_span_months": (
-            walk_forward.holdout_calendar_span_months
-        ),
-        "minimum_evaluation_months": horizon.minimum_evaluation_months,
-        "holdout_used_for_selection": False,
-    }
-
-
-def _render_contract_summary(payload: dict[str, Any]) -> str:
-    """Render the per-market horizon rather than narrating a stale global one."""
-
-    contracts = dict(payload.get("contract", {}).get("markets", {}) or {})
-    summaries: list[str] = []
-    for market, contract in contracts.items():
-        partition = dict(contract.get("window_partition", {}) or {})
-        total = contract.get("total_months", "—")
-        test_months = contract.get("test_months", "—")
-        holdout_span = contract.get("holdout_calendar_span_months", "—")
-        summaries.append(
-            f"{html.escape(str(market))}：{html.escape(str(total))} 个月，"
-            f"{html.escape(str(partition.get('total', '—')))} 个窗口（"
-            f"{html.escape(str(partition.get('ranking', '—')))} Ranking / "
-            f"{html.escape(str(partition.get('purged', '—')))} Purged / "
-            f"{html.escape(str(partition.get('holdout', '—')))} 个连续 "
-            f"{html.escape(str(test_months))} 个月 Holdout，"
-            f"覆盖 {html.escape(str(holdout_span))} 个月）。"
-        )
-    if summaries:
-        return " ".join(summaries)
-    return "按各市场当前主配置执行；报告未提供可验证的窗口合同。"
-
-
 def run_market_universe_robustness(
     *,
     config: dict,
@@ -232,10 +184,7 @@ def run_market_universe_robustness(
         "strategy_id": market_config.strategy_name,
         "solver_id": market_config.solver_id,
         "search_depth": int(search_depth),
-        "market_contract": {
-            **market_config.to_contract(),
-            "walk_forward": _walk_forward_contract(market_config),
-        },
+        "market_contract": market_config.to_contract(),
         "configured_codes": list(prepared_market.get("configured_codes", [])),
         "ready_codes": list(ready_codes),
         "data_exclusions": {
@@ -385,7 +334,6 @@ def render_universe_robustness_report(payload: dict[str, Any]) -> str:
                 "</tr>"
             )
     body = "".join(rows) or "<tr><td colspan='12'>没有可运行的市场变体。</td></tr>"
-    contract_summary = _render_contract_summary(payload)
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -396,10 +344,7 @@ main{{max-width:1440px;margin:auto;padding:16px 12px 28px}}section{{background:#
 h1,h2{{margin:0 0 8px;color:#173b62}}h1{{font-size:22px}}h2{{font-size:17px}}.meta{{font-size:12px;color:#61758b}}.scroll{{overflow-x:auto}}table{{width:100%;min-width:1100px;border-collapse:collapse;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #e3ebf3;text-align:left;vertical-align:top;overflow-wrap:anywhere}}th{{background:#f4f8fc;white-space:nowrap}}@media(max-width:640px){{main{{padding:10px 8px}}section{{padding:10px}}h1{{font-size:19px}}}}
 </style></head><body><main>
 <section><h1>三市场标的池稳健性 benchmark</h1><div class="meta">创建于 {html.escape(str(payload.get('created_at', '—')))} · 仅诊断，不会激活策略或修改生产指针。</div></section>
-<section><h2>合同</h2><div class="meta">
-{contract_summary} 所有变体复用各市场配置的策略、Solver、预算、
-raw 成交 / qfq 信号 / 公司行为合同；Holdout 只用于最终诊断。
-</div></section>
+<section><h2>合同</h2><div class="meta">84 个月 · 22 个窗口（16 Ranking / 2 Purged / 4 Holdout）。所有变体复用各市场配置的策略、Solver、预算、raw 成交 / qfq 信号 / 公司行为合同；Holdout 只用于最终诊断。</div></section>
 <section><h2>变体结果</h2><div class="scroll"><table><thead><tr><th>市场</th><th>变体</th><th>状态</th><th>入选标的</th><th>Holdout 收益</th><th>超额</th><th>最差回撤</th><th>Sharpe</th><th>交易</th><th>收益差</th><th>超额差</th><th>说明</th></tr></thead><tbody>{body}</tbody></table></div></section>
 </main></body></html>"""
 
@@ -489,12 +434,9 @@ def run_universe_robustness(
         "kind": "universe_robustness_v1",
         "activation": {"attempted": False, "changed": False},
         "contract": {
-            "markets": {
-                market["market"]: dict(
-                    market.get("market_contract", {}).get("walk_forward", {})
-                )
-                for market in markets
-            },
+            "total_months": 84,
+            "window_partition": {"total": 22, "ranking": 16, "purged": 2, "holdout": 4},
+            "holdout_used_for_selection": False,
             "execution": "raw-prices-qfq-signals-explicit-corporate-actions",
         },
         "data_readiness": summarize_prepared_data(prepared),

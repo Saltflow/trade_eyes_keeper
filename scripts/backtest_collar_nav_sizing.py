@@ -39,7 +39,6 @@ from scripts.backtest_510300_collar import (
     _underlying_execution_price,
     _with_entry_prices,
 )
-from src.search.config import load_evaluation_horizon_policy
 
 LISTING_STARTS = {
     "510300": "2019-12-23",
@@ -740,11 +739,8 @@ def _run_code(
 
 
 def main() -> None:
-    policy = load_evaluation_horizon_policy()
-    test_days = policy.default_backtest_trading_days
     summaries = [
-        _run_code(code, "2026-09-01", test_days, 0.002, 8)
-        for code in ("510300", "510500")
+        _run_code(code, "2026-09-01", 756, 0.002, 8) for code in ("510300", "510500")
     ]
     print(json.dumps(summaries, ensure_ascii=False, indent=2))
 

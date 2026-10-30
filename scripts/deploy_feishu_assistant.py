@@ -35,8 +35,6 @@ EXACT_FILES = {
     "src/instruments/point_in_time.py",
     "scripts/deploy_feishu_assistant.py",
     "src/data/dataset_catalog.py",
-    "src/data/dataset_documents.py",
-    "src/data/cninfo_reports.py",
     "scripts/build_feishu_research_image.py",
     "scripts/preflight_feishu_assistant.py",
     "scripts/feishu_assistant_preflight.py",

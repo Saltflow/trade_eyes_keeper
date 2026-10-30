@@ -15,7 +15,7 @@ valuation date.  Future prices are used exclusively as labels.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import date
 from math import sqrt
 from pathlib import Path
@@ -41,16 +41,8 @@ from src.instruments.point_in_time import (
     PointInTimeFundamentalStore,
     adjust_statement_shares,
 )
-from src.search.config import load_evaluation_horizon_policy
 
 DCF_ENTRY_CALIBRATION_CONTRACT = "capm-equity-dcf-entry-calibration-2"
-
-
-def _calibration_label_phase_days() -> int:
-    """Split the shared minimum horizon across entry and outcome phases."""
-
-    minimum_days = load_evaluation_horizon_policy().minimum_evaluation_trading_days
-    return max(1, int(np.ceil(minimum_days / 2)))
 
 
 @dataclass(frozen=True)
@@ -145,12 +137,8 @@ class CapmDcfEntryConfig:
     residual_income_roe_fade: float = 0.65
     max_financial_age_days: int = 550
     max_market_staleness_days: int = 10
-    # Neither half is published as a standalone result. Together they form
-    # one label that is at least the central two-year evaluation minimum.
-    hit_horizon_trading_days: int = field(default_factory=_calibration_label_phase_days)
-    outcome_horizon_trading_days: int = field(
-        default_factory=_calibration_label_phase_days
-    )
+    hit_horizon_trading_days: int = 252
+    outcome_horizon_trading_days: int = 252
     success_above_entry_fraction: float = 0.50
     target_success_rate: float = 0.70
     # These are calibration-evidence requirements, not a claim that a broad
@@ -218,17 +206,6 @@ class CapmDcfEntryConfig:
             raise ValueError("residual_income_roe_fade must be in [0, 1]")
         if self.minimum_hit_count < 1:
             raise ValueError("minimum_hit_count must be positive")
-        if self.hit_horizon_trading_days < 1 or self.outcome_horizon_trading_days < 1:
-            raise ValueError("calibration label phases must be positive")
-        minimum_days = load_evaluation_horizon_policy().minimum_evaluation_trading_days
-        if (
-            self.hit_horizon_trading_days + self.outcome_horizon_trading_days
-            < minimum_days
-        ):
-            raise ValueError(
-                "calibration entry-plus-outcome label must cover at least the "
-                f"configured {minimum_days} trading-day evaluation minimum"
-            )
         if not 0.0 <= self.minimum_hit_rate <= 1.0:
             raise ValueError("minimum_hit_rate must be in [0, 1]")
         if not 0.0 <= self.minimum_success_wilson_lower_95 <= 1.0:
@@ -1142,8 +1119,7 @@ class CapmDcfEntryCalibrator:
         """Build causal valuation snapshots without future-price labels.
 
         This is deliberately separate from :meth:`build_episodes`: calibration
-        needs completed entry-and-outcome price paths spanning the shared
-        evaluation minimum, whereas a live value strategy
+        needs completed one-year price paths, whereas a live value strategy
         must be able to value the latest available report without looking into
         its future.  Both paths share all accounting, split adjustment, route,
         risk-free-rate, and point-in-time beta logic.

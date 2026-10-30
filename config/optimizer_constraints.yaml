@@ -27,48 +27,26 @@ hard_constraints:
 soft_constraints:
   min_sharpe: 0.5
   sharpe_penalty_weight: 0.3
-evaluation_horizon_policy:
-  # Every runnable search, held-out strategy test and evaluative backtest must
-  # cover at least two calendar years.  Historical short-window artifacts are
-  # retained as diagnostics only and cannot be used as current evidence.
-  contract: minimum-two-year-evaluation/1
-  minimum_evaluation_months: 24
-  daily_portfolio_history_months: 36
-  # CLI backtests share this three-year default, while their explicit guard
-  # still rejects anything shorter than the 24-month minimum.
-  default_backtest_months: 36
-  default_research_horizon_profile: existing_data_66m_24m
-research_horizon_profiles:
-  # Fits the existing six-year reference store without a backfill.  Each
-  # individual test is 24 months; the final 24-month window is isolated from
-  # ranking by the immediately preceding overlapping window.
-  existing_data_66m_24m:
-    state_boundary_months: 6
-    test_months: 24
-    step_months: 12
-    total_windows: 4
-    warmup_windows: 0
-    ranking_windows: 2
-    purged_windows: 1
-    holdout_windows: 1
 walk_forward:
-  # 84 months of existing history: every window is 24 months.  The newest
-  # 24-month window is holdout-only; the preceding overlapping window is
-  # purged before parameter selection.
+  # Per-window indicator/signal-state lookback.  The four newest overlapping
+  # 9-month windows are holdout-only; two overlapping windows are purged.
   state_lookback_months: 12
-  test_months: 24
-  step_months: 12
-  # 3 ranking + 1 overlap-isolation + 1 continuous holdout window.
-  num_windows: 5
+  test_months: 9
+  step_months: 3
+  # 16 ranking + 2 overlap-isolation + 4 holdout windows.
+  num_windows: 22
   window_weights:
+  - 1.0
+  - 1.0
+  - 1.0
   - 1.0
   - 1.0
   - 1.0
   window_range_penalty: 0.5
   data_years: 8
-  # ``num_windows`` is the total number of windows.  The newest continuous
-  # 24-month window is held out and never enters Solver.
-  validation_windows: 1
+  # ``num_windows`` is the total number of windows.  The newest four
+  # validation windows are held out for validation and never enter Solver.
+  validation_windows: 4
   purge_overlapping_windows: true
 genetic_search:
   phase1_random_samples: 30000
@@ -78,18 +56,21 @@ genetic_search:
   offspring_size: 25000
   crossover_rate: 0.7
   mutation_rate: 0.3
+  mutation_builder_rate: 0.2
+  mutation_threshold_step: 2
   random_seed: 20260726
   # Candidates are ranked by WF excess first, then all of this pool receives
   # the full ranking-window sensitivity calculation before final selection.
   sensitivity_top_candidates: 500
+  sensitivity_samples: 10
   sensitivity_penalty_weight: 1.0
   # Numba signal/execution kernels release the GIL; fixed-order thread maps
   # preserve deterministic candidate order while using the local CPU.
   evaluation_workers: 4
   # Legacy artifact mirrors. gate_profiles.standard is authoritative.
   min_weighted_strategy_return: 0.0
-  min_positive_return_windows: 2
-  min_winning_benchmark_windows: 2
+  min_positive_return_windows: 6
+  min_winning_benchmark_windows: 6
 validation:
   local_sensitivity:
     enabled: true
@@ -175,8 +156,7 @@ gate_profiles:
       metric: positive_return_windows
       mode: hard
       operator: ge
-      # There are three 24-month ranking windows after the holdout embargo.
-      value: 2
+      value: 6
     - id: positive_mean_majority_excess
       metric: mean_majority_benchmark_excess
       mode: hard
@@ -186,7 +166,7 @@ gate_profiles:
       metric: majority_benchmark_win_windows
       mode: hard
       operator: ge
-      value: 2
+      value: 6
     - id: minimum_average_position
       metric: average_position_pct
       mode: hard
@@ -288,33 +268,33 @@ execution_params:
 walk_forward_profiles:
   a_share_84m:
     state_lookback_months: 12
-    test_months: 24
-    step_months: 12
-    num_windows: 5
-    window_weights: [1.0, 1.0, 1.0]
+    test_months: 9
+    step_months: 3
+    num_windows: 22
+    window_weights: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     window_range_penalty: 0.5
     data_years: 8
-    validation_windows: 1
+    validation_windows: 4
     purge_overlapping_windows: true
   hk_84m:
     state_lookback_months: 12
-    test_months: 24
-    step_months: 12
-    num_windows: 5
-    window_weights: [1.0, 1.0, 1.0]
+    test_months: 9
+    step_months: 3
+    num_windows: 22
+    window_weights: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     window_range_penalty: 0.5
     data_years: 8
-    validation_windows: 1
+    validation_windows: 4
     purge_overlapping_windows: true
   us_84m:
     state_lookback_months: 12
-    test_months: 24
-    step_months: 12
-    num_windows: 5
-    window_weights: [1.0, 1.0, 1.0]
+    test_months: 9
+    step_months: 3
+    num_windows: 22
+    window_weights: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     window_range_penalty: 0.5
     data_years: 8
-    validation_windows: 1
+    validation_windows: 4
     purge_overlapping_windows: true
 
 execution_profiles:

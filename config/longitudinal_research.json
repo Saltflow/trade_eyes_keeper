@@ -1,0 +1,64 @@
+{
+  "groups": [
+    {
+      "group_id": "liquor",
+      "industry": "liquor",
+      "history_years": 7,
+      "companies": [
+        {
+          "issuer_id": "a_share:000568",
+          "name": "泸州老窖"
+        },
+        {
+          "issuer_id": "a_share:000858",
+          "name": "五粮液"
+        },
+        {
+          "issuer_id": "a_share:600519",
+          "name": "贵州茅台"
+        }
+      ],
+      "supplemental_facts_paths": [
+        "data/fundamental_quant/longitudinal_comparison_20261010/review_source_facts.json"
+      ],
+      "title": "白酒：长期经营与现金对比",
+      "document_manifests": [
+        "data/fundamental_quant/portable_sources_20261010/liquor.documents.json"
+      ],
+      "image_evidence_paths": [],
+      "valuation_store_root": "data/fundamental_quant/portable_sources_20261010/valuation_snapshots/liquor"
+    },
+    {
+      "group_id": "construction",
+      "industry": "construction",
+      "history_years": 7,
+      "companies": [
+        {
+          "issuer_id": "a_share:600039",
+          "name": "四川路桥"
+        },
+        {
+          "issuer_id": "a_share:000498",
+          "name": "山东路桥"
+        },
+        {
+          "issuer_id": "a_share:600502",
+          "name": "安徽建工"
+        },
+        {
+          "issuer_id": "a_share:601800",
+          "name": "中国交建"
+        }
+      ],
+      "document_manifests": [
+        "data/fundamental_quant/portable_sources_20261010/construction.documents.json"
+      ],
+      "image_evidence_paths": [
+        "data/fundamental_quant/portable_sources_20261010/construction.image-review-0.json"
+      ],
+      "title": "工程建设：长期经营与现金对比",
+      "supplemental_facts_paths": [],
+      "valuation_store_root": "data/fundamental_quant/portable_sources_20261010/valuation_snapshots/construction"
+    }
+  ]
+}

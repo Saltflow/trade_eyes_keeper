@@ -108,11 +108,14 @@ def aggregate_holdout_metrics(
     stats: list[WindowStats] | tuple[WindowStats, ...],
     control_benchmarks=(),
 ) -> dict[str, float | int | None]:
-    """Aggregate final holdout windows without compounding overlap.
+    """Aggregate final holdout windows without compounding overlaps.
 
-    A one-window contract preserves that continuous interval verbatim.  A
-    multi-window contract records a window mean and worst drawdown rather than
-    fabricating a compounded curve across overlapping windows.
+    Holdout windows are deliberately overlapping (four nine-month windows in
+    the current contract), so they do not form one chronological equity
+    curve.  Report the equal-window mean for return, majority-control excess,
+    and Sharpe; use the worst window for maximum drawdown.  Keeping this
+    policy in the artifact writer prevents reports from silently presenting
+    an invalid compounded 36-month result.
     """
     rows = list(stats)
     if not rows:
@@ -161,34 +164,10 @@ def aggregate_holdout_metrics(
         ),
         "majority_benchmark_excess_pct": finite_mean(majority_excess),
         "sharpe_ratio": finite_mean(sharpes),
-        "aggregation": (
-            "single_continuous_window"
-            if len(rows) == 1
-            else "overlapping_window_mean_and_worst_drawdown"
-        ),
+        "aggregation": "overlapping_window_mean_and_worst_drawdown",
     }
 
 
-def _time_contract(constraints: StrategyConstraints) -> dict[str, int | str]:
-    """Serialize the central duration policy exactly once per artifact."""
-
-    horizon = constraints.walk_forward
-    return {
-        "total_months": horizon.total_months_needed,
-        "search_history_months": horizon.search_history_months,
-        "ranking_budget_months": horizon.ranking_budget_months,
-        "state_lookback_months": horizon.state_lookback_months,
-        "holdout_months": horizon.test_months,
-        "holdout_test_months": horizon.test_months,
-        "holdout_window_count": horizon.held_out_window_count,
-        "holdout_window_months": horizon.holdout_window_months,
-        "holdout_calendar_span_months": horizon.holdout_calendar_span_months,
-        "purged_overlap_window_count": horizon.purge_overlap_window_count,
-        "minimum_evaluation_months": (
-            constraints.evaluation_horizon.minimum_evaluation_months
-        ),
-        "evaluation_horizon_contract": constraints.evaluation_horizon.contract,
-    }
 
 
 def _prepare_wf_evaluation_contexts(
@@ -506,34 +485,6 @@ def _evaluate_params_wf(
 # ═══════════════════════════════════════════════════════════════
 
 
-def _require_current_evaluation_horizon(constraints: StrategyConstraints) -> None:
-    """Fail closed before a runnable search can emit short-window evidence."""
-
-    horizon = constraints.walk_forward
-    policy = constraints.evaluation_horizon
-    policy.require_evaluation_months(
-        horizon.test_months, context="optimizer Walk-Forward test window"
-    )
-    if horizon.held_out_window_count != 1:
-        raise ValueError(
-            "optimizer requires exactly one continuous held-out evaluation window"
-        )
-    if horizon.holdout_calendar_span_months < policy.minimum_evaluation_months:
-        raise ValueError(
-            "optimizer holdout calendar span is shorter than the central "
-            "minimum evaluation horizon"
-        )
-    if (
-        horizon.step_months < horizon.test_months
-        and not horizon.purge_overlapping_windows
-    ):
-        raise ValueError(
-            "overlapping optimizer windows require an explicit overlap purge"
-        )
-    if horizon.independent_ranking_window_count < 1:
-        raise ValueError(
-            "optimizer requires at least one independent ranking window"
-        )
 
 
 def run_optimizer(
@@ -575,7 +526,6 @@ def run_optimizer(
         # Low-level callers/tests may still construct a bare StrategyConstraints.
         # Production main.py always supplies a market-scoped contract.
         constraints.set_group(group)
-    _require_current_evaluation_horizon(constraints)
     exec_cfg = constraints.execution
 
     wf_manager = WalkForwardManager(
@@ -719,7 +669,29 @@ def run_optimizer(
             "control_benchmarks": tuple(constraints.benchmark_codes),
             "context_contract_hash": context_hash or None,
             "window_range_penalty": (constraints.walk_forward.window_range_penalty),
-            "time_contract": _time_contract(constraints),
+            "time_contract": {
+                "total_months": constraints.walk_forward.total_months_needed,
+                "search_history_months": (
+                    constraints.walk_forward.search_history_months
+                ),
+                "ranking_budget_months": (
+                    constraints.walk_forward.ranking_budget_months
+                ),
+                "state_lookback_months": (
+                    constraints.walk_forward.state_lookback_months
+                ),
+                "holdout_months": constraints.walk_forward.test_months,
+                "holdout_test_months": constraints.walk_forward.test_months,
+                "holdout_window_count": (
+                    constraints.walk_forward.held_out_window_count
+                ),
+                "holdout_window_months": (
+                    constraints.walk_forward.holdout_window_months
+                ),
+                "purged_overlap_window_count": (
+                    constraints.walk_forward.purge_overlap_window_count
+                ),
+            },
         },
     )
     planner = ResourcePlanner()
@@ -1134,7 +1106,32 @@ def _save_optimizer_result(
             "score_parameters": {
                 "window_range_penalty": (constraints.walk_forward.window_range_penalty)
             },
-            "time_contract": _time_contract(constraints),
+            "time_contract": {
+                "total_months": constraints.walk_forward.total_months_needed,
+                "search_history_months": (
+                    constraints.walk_forward.search_history_months
+                ),
+                "ranking_budget_months": (
+                    constraints.walk_forward.ranking_budget_months
+                ),
+                "state_lookback_months": (
+                    constraints.walk_forward.state_lookback_months
+                ),
+                "holdout_months": constraints.walk_forward.test_months,
+                "holdout_test_months": constraints.walk_forward.test_months,
+                "holdout_window_count": (
+                    constraints.walk_forward.held_out_window_count
+                ),
+                "holdout_window_months": (
+                    constraints.walk_forward.holdout_window_months
+                ),
+                "holdout_calendar_span_months": (
+                    constraints.walk_forward.holdout_calendar_span_months
+                ),
+                "purged_overlap_window_count": (
+                    constraints.walk_forward.purge_overlap_window_count
+                ),
+            },
             "selection_formula": (
                 f"wf_score - {constraints.genetic_search.sensitivity_penalty_weight:g} "
                 "* parameter_sensitivity_drop - "

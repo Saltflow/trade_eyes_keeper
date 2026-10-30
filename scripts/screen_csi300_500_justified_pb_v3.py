@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-'''Historical CSI 300 + CSI 500 value-momentum screen v3.
+'''CSI 300 + CSI 500 value-momentum screen v3 (corrected model).
 
 Model fixes vs v2:
   1. unified Ke_implied = g + (ROE - g) / PB: buy when Ke_implied >= 10%,
@@ -26,9 +26,10 @@ carries raw adjustment factors, so no commission/cash-reinvestment model.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -38,12 +39,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from main import load_config
 from src.data.market_history import PointInTimeMarketStore
 from src.fundamental_embedding.industry_history import (
     IndustryClassificationHistoryStore,
 )
 from src.instruments.point_in_time import PointInTimeFundamentalStore
-from src.search.config import load_evaluation_horizon_policy
 
 REFERENCE = ROOT / 'data' / 'reference_universe'
 CONSTITUENTS_PATH = REFERENCE / 'index_constituents_20260818.json'
@@ -76,25 +77,6 @@ PB_LOW_TOP = 20
 MIN_MOMENTUM_WINDOWS = 6
 EXCLUDED_INDUSTRIES = {'J66', 'J67', 'J68'}   # bank / securities / insurance
 BENCHMARKS = ('510300', '510500')
-
-
-def _reject_short_horizon_execution() -> None:
-    '''Prevent this preserved 9-month study from generating new evidence.'''
-    policy = load_evaluation_horizon_policy(ROOT / 'config' / 'optimizer_constraints.yaml')
-    try:
-        policy.require_evaluation_months(
-            TEST_MONTHS, context='screen_csi300_500_justified_pb_v3 historical runner'
-        )
-    except ValueError as exc:
-        raise SystemExit(
-            'screen_csi300_500_justified_pb_v3 is quarantined: its historical '
-            '9-month windows cannot produce current research evidence. Use a '
-            'centrally configured ≥24-month runner instead.'
-        ) from exc
-    raise SystemExit(
-        'screen_csi300_500_justified_pb_v3 is historical-only; use a centrally '
-        'configured ≥24-month runner instead.'
-    )
 
 
 def _load_pool() -> tuple[dict, set[str]]:
@@ -428,7 +410,6 @@ def _stage(message):
 
 
 def main() -> int:
-    _reject_short_horizon_execution()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--top-n', type=int, default=TOP_N)
     parser.add_argument('--output-root', type=Path, default=

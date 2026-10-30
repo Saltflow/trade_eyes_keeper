@@ -37,45 +37,38 @@ def _history(rows=520):
     )
 
 
-@pytest.mark.parametrize(
-    ("walk_forward", "message"),
-    [
-        (
-            {
-                "state_lookback_months": 6,
-                "test_months": 23,
-                "step_months": 23,
-                "num_windows": 2,
-                "validation_windows": 1,
-            },
-            "at least 24 months",
-        ),
-        (
-            {
-                "state_lookback_months": 6,
-                "test_months": 24,
-                "step_months": 24,
-                "num_windows": 0,
-                "validation_windows": 0,
-            },
-            "exactly one continuous held-out",
-        ),
-    ],
-)
-def test_run_optimizer_rejects_noncurrent_evidence_contract(
-    tmp_path, walk_forward, message
+@pytest.mark.parametrize("num_windows", [22, 6])
+def test_run_optimizer_accepts_nine_month_contract_before_data_readiness(
+    tmp_path, monkeypatch, num_windows
 ):
-    constraints = StrategyConstraints({"walk_forward": walk_forward})
+    import src.backtest.engine as engine
 
-    with pytest.raises(ValueError, match=message):
-        run_optimizer(
-            get_strategy("percentile"),
-            {},
-            [],
-            group="a_share",
-            _constraints=constraints,
-            output_dir=tmp_path,
-        )
+    constraints = StrategyConstraints({"walk_forward": {
+        "state_lookback_months": 12, "test_months": 9,
+        "step_months": 3, "num_windows": num_windows,
+        "validation_windows": 4 if num_windows == 22 else 1,
+        "purge_overlapping_windows": True,
+    }})
+    observed = []
+
+    class NoReadyWindows:
+        def __init__(self, stocks, actual_constraints, codes, **kwargs):
+            observed.append(actual_constraints.walk_forward)
+
+        def iter_windows(self):
+            return []
+
+    monkeypatch.setattr(engine, "WalkForwardManager", NoReadyWindows)
+    results, resolved = run_optimizer(
+        get_strategy("percentile"), {}, [], group="a_share",
+        _constraints=constraints, output_dir=tmp_path,
+    )
+    assert results == []
+    assert resolved is constraints
+    assert observed == [constraints.walk_forward]
+    assert observed[0].test_months == 9
+    assert observed[0].num_windows == num_windows
+    assert not list(tmp_path.iterdir())
 
 
 def test_run_optimizer_uses_configured_solver_and_persists_contracts(tmp_path):
@@ -86,8 +79,8 @@ def test_run_optimizer_uses_configured_solver_and_persists_contracts(tmp_path):
         },
         "walk_forward": {
             "train_months": 6,
-            "test_months": 24,
-            "step_months": 24,
+            "test_months": 9,
+            "step_months": 3,
             "num_windows": 2,
             "validation_windows": 1,
             "purge_overlapping_windows": False,
@@ -118,7 +111,7 @@ def test_run_optimizer_uses_configured_solver_and_persists_contracts(tmp_path):
             "fx_rates": {"a_share": 1.0},
         },
     }
-    history = _history(1_200)
+    history = _history(800)
     results, _constraints = run_optimizer(
         get_strategy("percentile"),
         {"510880": history},
@@ -166,8 +159,8 @@ def test_process_candidate_workers_match_scalar_results(tmp_path):
             },
             "walk_forward": {
                 "train_months": 6,
-                "test_months": 24,
-                "step_months": 24,
+                "test_months": 9,
+                "step_months": 3,
                 "num_windows": 2,
                 "validation_windows": 1,
                 "purge_overlapping_windows": False,
@@ -202,7 +195,7 @@ def test_process_candidate_workers_match_scalar_results(tmp_path):
                 "fx_rates": {"a_share": 1.0},
             },
         }
-        history = _history(1_200)
+        history = _history(800)
         results, _constraints = run_optimizer(
             get_strategy("percentile"),
             {"510880": history},

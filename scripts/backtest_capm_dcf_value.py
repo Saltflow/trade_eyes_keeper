@@ -163,18 +163,6 @@ def main() -> int:
 
     constraints = get_constraints()
     constraints.set_group(args.market)
-    policy = constraints.evaluation_horizon
-    evaluation_start = pd.Timestamp(trade_plan.dates[0])
-    evaluation_end = pd.Timestamp(trade_plan.dates[-1])
-    minimum_end = evaluation_start + pd.DateOffset(
-        months=policy.minimum_evaluation_months
-    ) - pd.Timedelta(days=1)
-    if evaluation_end < minimum_end:
-        raise ValueError(
-            "CAPM-DCF backtest requires at least "
-            f"{policy.minimum_evaluation_months} calendar months; got "
-            f"{evaluation_start.date()} through {evaluation_end.date()}"
-        )
     benchmark_dir = Path(args.benchmark_dir)
     benchmark_data = {
         symbol: _benchmark_frame(
@@ -206,7 +194,6 @@ def main() -> int:
         "date_range": {
             "start": trade_plan.dates[0],
             "end": trade_plan.dates[-1],
-            "minimum_evaluation_months": policy.minimum_evaluation_months,
         },
         "context": {
             "contract": context.contract,

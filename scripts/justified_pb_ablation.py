@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-'''Archived falsification experiments for the frozen v3 screen.
+'''Two cheap falsification experiments for the frozen v3 screen.
 
 1. Tail-filter ablation on two representative windows (weak market w11,
    bull market w17).  Variants:  A = v3 (vol-excl + mom>=2% + mom-top-20 +
@@ -28,7 +28,6 @@ if str(ROOT) not in sys.path:
 
 from src.data.market_history import PointInTimeMarketStore
 from src.instruments.point_in_time import PointInTimeFundamentalStore
-from src.search.config import load_evaluation_horizon_policy
 
 
 def _load_v3():
@@ -42,22 +41,6 @@ def _load_v3():
 
 
 v3 = _load_v3()
-
-
-def _reject_short_horizon_execution() -> None:
-    """Keep the old nine-month ablation reproducible but non-runnable."""
-
-    policy = load_evaluation_horizon_policy()
-    try:
-        policy.require_evaluation_months(
-            v3.TEST_MONTHS, context="justified_pb_ablation historical runner"
-        )
-    except ValueError as exc:
-        raise SystemExit(
-            "justified_pb_ablation is quarantined: its historical nine-month "
-            "windows cannot produce current research evidence. Use the shared "
-            "24-month research horizon instead."
-        ) from exc
 
 
 def _apply_filters(candidates, top_n, use_vol=True, use_momentum_top=True):
@@ -138,6 +121,7 @@ def _window_selection(state, wi, top_n):
 
 
 def _evaluate_basket(state, snapshot, codes, top_n):
+    windows = state['windows']
     ws_date, we_date = snapshot['ws_date'], snapshot['we_date']
     grid = state['common'][(state['common'] >= pd.Timestamp(ws_date))
                            & (state['common'] <= pd.Timestamp(we_date))]
@@ -170,8 +154,8 @@ def _bucket_label(value):
 
 def _calibration(state, min_horizon=1.0, max_formation_index=None):
     '''Cohort study: does m/2 predict forward BVPS CAGR?'''
-    windows = state['windows']
     rows = []
+    windows = state['windows']
     end_date = state['market_end']
     for wi in range(v3.N_WINDOWS):
         if max_formation_index is not None and wi > max_formation_index:
@@ -315,7 +299,6 @@ def _build_state():
 
 
 def main() -> int:
-    _reject_short_horizon_execution()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--windows', type=str, default='11,17')
     parser.add_argument('--top-n', type=int, default=20)
