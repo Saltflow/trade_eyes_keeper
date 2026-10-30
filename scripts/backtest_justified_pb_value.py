@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Evaluate the justified_pb_value strategy over the 84-month A-share horizon.
+"""Evaluate justified_pb_value over the configured A-share evidence horizon.
 
 Pipeline: PIT store (market bundles + statements) -> quarterly fundamental
 dataset -> historical enricher -> WalkForwardManager -> fixed-parameter
 evaluation.  Reports the full-period metrics (return / max drawdown / Sharpe /
-benchmarks) and the authoritative 22-window walk-forward table, and writes
+benchmarks) and the authoritative configured walk-forward table, and writes
 JSON/CSV artifacts.  This script never touches production configuration.
 """
 
@@ -64,7 +64,6 @@ def _a_share_configured_codes(config: dict) -> list[str]:
 
 
 def _statement_codes(root: Path) -> list[str]:
-    store = PointInTimeFundamentalStore(root)
     codes = []
     for path in sorted((root / "fundamentals").glob("*.statements.json")):
         code = path.name.split(".statements.json")[0]
@@ -74,16 +73,19 @@ def _statement_codes(root: Path) -> list[str]:
 
 
 def _full_window(manager: WalkForwardManager, constraints) -> WindowSlice:
-    """One pseudo window covering the newest 84 calendar months."""
+    """One pseudo window covering the configured full evidence horizon."""
+    horizon_months = constraints.walk_forward.total_months_needed
     end_exclusive = pd.to_datetime(manager.dates[-1]).normalize()
     end_exclusive = end_exclusive + pd.Timedelta(days=1)
     horizon_start = end_exclusive - pd.DateOffset(
-        months=constraints.walk_forward.total_months_needed,
+        months=horizon_months,
     )
     test_start = int(manager.dates.searchsorted(horizon_start, side="left"))
     test_start = max(1, test_start)
     if test_start >= len(manager.dates):
-        raise RuntimeError("84-month horizon exceeds available market data")
+        raise RuntimeError(
+            f"{horizon_months}-month horizon exceeds available market data"
+        )
     return WindowSlice(
         train_start=0,
         train_end=test_start,
@@ -182,7 +184,10 @@ def main() -> int:
         print("[warn] coverage exclusions: %s" % "; ".join(coverage_errors))
     universe = [code for code in universe if code in bundles]
     if not universe:
-        raise SystemExit("no universe codes survive the 84-month coverage check")
+        raise SystemExit(
+            "no universe codes survive the configured evidence-horizon "
+            "coverage check"
+        )
     print("evaluated universe: %s" % ", ".join(universe))
 
     benchmark_bundles = _load_optimizer_benchmark_bundles(
@@ -251,6 +256,9 @@ def main() -> int:
             "ranking": len(ranking_indexes),
             "purged": len(purged_indexes),
             "holdout": len(holdout_indexes),
+            "total_months": constraints.walk_forward.total_months_needed,
+            "test_months": constraints.walk_forward.test_months,
+            "step_months": constraints.walk_forward.step_months,
         },
         "benchmarks": sorted(set(benchmark_bundles)),
         "context": {
@@ -273,7 +281,7 @@ def main() -> int:
                 "last": periods[-1] if periods else None,
             }
 
-    # ── full-period evaluation (84 months) ──
+    # ── full-period evaluation (configured evidence horizon) ──
     full_report = None
     if args.mode in ("full", "both"):
         full_window = _full_window(manager, constraints)
@@ -412,7 +420,14 @@ def _print_report(report: dict, universe: list[str]) -> None:
     full = report.get("full_period")
     if full:
         print()
-        print("── 84 个月整段回测 %s → %s ──" % (full["test_start"], full["test_end"]))
+        print(
+            "── %d 个月整段回测 %s → %s ──"
+            % (
+                report["readiness"]["windows"]["total_months"],
+                full["test_start"],
+                full["test_end"],
+            )
+        )
         print("收益: %+.2f%% | 最大回撤: %.2f%% | Sharpe: %.4f" % (
             full["return_pct"], full["max_drawdown_pct"], full["sharpe_ratio"],
         ))
@@ -436,7 +451,13 @@ def _print_report(report: dict, universe: list[str]) -> None:
     wf = report.get("walk_forward")
     if wf and wf["windows"]:
         print()
-        print("── 22 窗口 walk-forward ──")
+        print(
+            "── %d 窗口 walk-forward（每窗 %d 个月）──"
+            % (
+                report["readiness"]["windows"]["expected"],
+                report["readiness"]["windows"]["test_months"],
+            )
+        )
         print("%-4s %-9s %-12s %-12s %9s %8s %8s" % (
             "win", "partition", "test_start", "test_end", "return%", "maxdd%", "sharpe"
         ))

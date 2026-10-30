@@ -1315,8 +1315,17 @@ class StockWebCrawler:
             #   [6]=成交量 [30]=时间戳 [31]=涨跌额 [32]=涨跌幅%
             #   [33]=最高 [34]=最低 [37]=成交额 [38]=换手率 [43]=振幅
 
+            from .quote_time import parse_quote_time
+
+            quote_time = parse_quote_time(items[30], str(stock_code), market=raw_market)
+            if quote_time is None:
+                logger.warning("QQ 实时行情 %s 缺少有效源时间戳", stock_code)
+                return None
+
             result = {
-                "date": datetime.now().strftime("%Y-%m-%d"),
+                "date": quote_time.date().isoformat(),
+                "quote_time": quote_time.isoformat(),
+                "prev_close": _safe_float(items[4]),
                 "open": _safe_float(items[5]),
                 "close": _safe_float(items[3]),
                 "high": _safe_float(items[33]),

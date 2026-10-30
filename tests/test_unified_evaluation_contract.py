@@ -1,6 +1,5 @@
 """Authoritative contracts for unified strategy evaluation."""
 
-from types import SimpleNamespace
 
 import random
 
@@ -46,40 +45,48 @@ def test_every_registered_strategy_returns_trade_plan():
         assert not np.any(plan.buy_signals & plan.sell_signals)
 
 
-def test_calendar_walk_forward_is_exactly_14_windows_and_60_months():
+def test_calendar_walk_forward_is_exactly_five_windows_and_84_months():
     manager = WalkForwardManager.__new__(WalkForwardManager)
     manager.dates = pd.bdate_range("2019-01-01", "2026-01-30")
     manager.T = len(manager.dates)
     manager.wf_config = WalkForwardConfig(
         {
-            "train_months": 12,
-            "test_months": 9,
-            "step_months": 3,
-            "num_windows": 14,
+            "state_lookback_months": 12,
+            "test_months": 24,
+            "step_months": 12,
+            "num_windows": 5,
             "validation_windows": 1,
-            "purge_overlapping_windows": False,
-            "data_years": 5,
+            "purge_overlapping_windows": True,
+            "data_years": 8,
         }
     )
     windows = manager.iter_windows()
-    assert len(windows) == 14
-    assert pd.Timestamp(windows[0].train_start_date) + pd.DateOffset(months=12) == pd.Timestamp(windows[0].test_start_date)
-    assert pd.Timestamp(windows[0].test_start_date) + pd.DateOffset(months=9) - pd.Timedelta(days=1) == pd.Timestamp(windows[0].test_end_date)
-    assert pd.Timestamp(windows[-1].test_end_date) - pd.Timestamp(windows[0].train_start_date) < pd.Timedelta(days=1830)
+    first_window = windows[0]
+    last_window = windows[-1]
+    assert len(windows) == 5
+    assert pd.Timestamp(first_window.train_start_date) + pd.DateOffset(
+        months=12
+    ) == pd.Timestamp(first_window.test_start_date)
+    assert pd.Timestamp(first_window.test_start_date) + pd.DateOffset(
+        months=24
+    ) - pd.Timedelta(days=1) == pd.Timestamp(first_window.test_end_date)
+    assert pd.Timestamp(last_window.test_end_date) - pd.Timestamp(
+        first_window.train_start_date
+    ) < pd.Timedelta(days=2560)
 
     constraints = StrategyConstraints(
         {
             "walk_forward": {
-                "num_windows": 14,
+                "num_windows": 5,
                 "validation_windows": 1,
-                "purge_overlapping_windows": False,
+                "purge_overlapping_windows": True,
             }
         }
     )
     ranking, purged, holdout = _partition_window_indexes(windows, constraints)
-    assert ranking == list(range(13))
-    assert purged == []
-    assert holdout == [13]
+    assert ranking == [0, 1, 2]
+    assert purged == [3]
+    assert holdout == [4]
 
 
 def test_weekly_ohlc_keeps_short_and_single_day_weeks():

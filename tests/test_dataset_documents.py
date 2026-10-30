@@ -435,6 +435,104 @@ def test_download_stops_at_size_cap_and_rejects_partial_body(monkeypatch, tmp_pa
             threading.Event(),
             lambda _: None,
         )
+
+
+def test_explicit_no_size_cap_streams_past_legacy_limit(monkeypatch, tmp_path):
+    monkeypatch.setattr(module, "MAX_DOCUMENT_BYTES", 5)
+    mock_peer(monkeypatch, Response(data=b"%PDF-large-original"))
+    output = tmp_path / "original.part"
+    result = download_document(
+        "https://static.cninfo.com.cn/a.pdf",
+        output,
+        time.monotonic() + 10,
+        threading.Event(),
+        lambda _: None,
+        max_bytes=None,
+    )
+    assert output.read_bytes() == b"%PDF-large-original"
+    assert result["bytes"] == len(output.read_bytes())
+
+
+def test_disk_reserve_does_not_turn_into_a_size_limit(monkeypatch, tmp_path):
+    mock_peer(monkeypatch, Response(data=b"%PDF-data"))
+    monkeypatch.setattr(module.shutil, "disk_usage", lambda _: Mock(free=10))
+    with pytest.raises(DocumentBlocked, match="disk_space"):
+        download_document(
+            "https://static.cninfo.com.cn/a.pdf",
+            tmp_path / "part",
+            time.monotonic() + 10,
+            threading.Event(),
+            lambda _: None,
+            max_bytes=None,
+            minimum_free_bytes=10,
+        )
+
+
+def test_three_downloads_share_atomic_request_rate(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    jobs = [
+        {
+            "job_id": f"doc-{i}",
+            "source_url": f"https://static.cninfo.com.cn/{i}.pdf",
+            "existing_paths": [],
+        }
+        for i in range(3)
+    ]
+    catalog = Catalog(tmp_path, jobs)
+    worker = DatasetDocumentWorker(catalog, max_document_bytes=None)
+    worker.min_interval = 0.06  # Fast test clock; production configuration remains 5s.
+    starts, active, peak = [], 0, 0
+    guard = threading.Lock()
+    all_started = threading.Barrier(3)
+
+    def archive(job, deadline):
+        nonlocal active, peak
+        worker._wait_request(deadline)
+        with guard:
+            starts.append(time.monotonic())
+            active += 1
+            peak = max(peak, active)
+        all_started.wait(5)
+        with guard:
+            active -= 1
+        return {"status": "text_extracted"}
+
+    monkeypatch.setattr(worker, "_archive", archive)
+    result = worker.run(max_documents=3, max_seconds=10, workers=3)
+    assert len(result["processed"]) == 3
+    assert peak == 3
+    assert all(b - a >= 0.05 for a, b in zip(sorted(starts), sorted(starts)[1:]))
+    # A later run does not repeat policy-blocked jobs with unchanged input.
+    worker._initialize()
+    worker.min_interval = 0.02
+    with ThreadPoolExecutor(3) as pool:
+        list(pool.map(lambda _: worker._wait_request(time.monotonic() + 3), range(3)))
+
+
+def test_size_policy_change_retries_size_block_only(catalog, monkeypatch):
+    limited = DatasetDocumentWorker(catalog, max_document_bytes=1024)
+    calls = []
+
+    def archive(job, deadline):
+        calls.append(job["job_id"])
+        raise DocumentBlocked("document_exceeds_size_limit")
+
+    monkeypatch.setattr(limited, "_archive", archive)
+    limited.run(max_seconds=10)
+    assert states(catalog)[0]["status"] == "blocked"
+    unlimited = DatasetDocumentWorker(catalog, max_document_bytes=None)
+    monkeypatch.setattr(unlimited, "_archive", lambda *a: {"status": "text_extracted"})
+    assert unlimited.run(max_seconds=10)["processed"][0]["status"] == "succeeded"
+    with sqlite3.connect(catalog.db_path) as db:
+        db.execute(
+            "UPDATE document_downloads SET status='blocked',error='source_http_404'"
+        )
+    assert unlimited.run(max_seconds=10)["processed"] == []
+    assert len(calls) == 1
+
+
+def test_download_rejects_incomplete_body(monkeypatch, tmp_path):
     mock_peer(monkeypatch, Response(data=b"123", headers={"Content-Length": "4"}))
     with pytest.raises(DocumentFailure, match="incomplete"):
         download_document(
@@ -444,6 +542,48 @@ def test_download_stops_at_size_cap_and_rejects_partial_body(monkeypatch, tmp_pa
             threading.Event(),
             lambda _: None,
         )
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 410])
+def test_permanent_http_response_is_not_transient(monkeypatch, tmp_path, status):
+    mock_peer(monkeypatch, Response(status=status))
+    with pytest.raises(DocumentBlocked, match=f"source_http_{status}"):
+        download_document(
+            "https://static.cninfo.com.cn/a.pdf",
+            tmp_path / "part",
+            time.monotonic() + 10,
+            threading.Event(),
+            lambda _: None,
+        )
+
+
+def test_sleeping_request_rechecks_extended_shared_cooldown(catalog, monkeypatch):
+    worker = DatasetDocumentWorker(catalog)
+    worker._initialize()
+    clock, waits = [1000.0], []
+    monkeypatch.setattr(module.time, "time", lambda: clock[0])
+    with worker._db() as db:
+        db.execute(
+            "INSERT OR REPLACE INTO document_download_rate VALUES (1,?)",
+            (1001.0,),
+        )
+
+    class ControlledWait:
+        def is_set(self):
+            return False
+
+        def wait(self, delay):
+            waits.append(delay)
+            if len(waits) == 1:
+                # A different requester extends Retry-After while this one sleeps.
+                with worker._db() as db:
+                    db.execute("UPDATE document_download_rate SET next_request_at=1010")
+            clock[0] += delay
+            return False
+
+    worker.stop = ControlledWait()
+    worker._wait_request(time.monotonic() + 30)
+    assert waits == [1.0, 9.0]
 
 
 def test_real_pdf_text_extraction_and_scanned_page_are_distinct(tmp_path):

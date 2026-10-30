@@ -276,6 +276,34 @@ def test_a_share_complete_primary_history_skips_fallback():
     assert fallback.calls == []
 
 
+def test_a_share_stale_primary_end_selects_current_fallback():
+    start = date(2020, 1, 1)
+    end = date(2026, 1, 1)
+    primary = _StaticMarketProvider(
+        _bundle("601398", dates=("2020-01-02", "2025-10-01"))
+    )
+    primary.bundle.source = "baostock"
+    fallback = _StaticMarketProvider(
+        _bundle("601398", dates=("2020-01-02", "2026-01-01"))
+    )
+    fallback.bundle.source = "yahoo_chart"
+    provider = MarketHistoryProvider(
+        {},
+        baostock_provider=primary,
+        yahoo_provider=fallback,
+    )
+
+    selected = provider.fetch("601398", start, end)
+
+    assert selected is fallback.bundle
+    assert len(primary.calls) == 1
+    assert len(fallback.calls) == 1
+    assert any(
+        "baostock=2020-01-02~2025-10-01" in item
+        for item in selected.diagnostics
+    )
+
+
 def test_a_share_rejects_yahoo_dividend_without_causal_publication_date():
     primary = _StaticMarketProvider(
         _bundle(
@@ -1024,6 +1052,32 @@ def test_market_only_fx_series_is_stored_without_company_statement_fetch(tmp_pat
     assert report["instruments"][0]["instrument_type"] == "fx"
     assert report["instruments"][0]["statements"]["status"] == "not_applicable"
     assert PointInTimeMarketStore(tmp_path).read("CNYHKD=X") is not None
+
+
+def test_backfill_marks_end_truncated_market_history_partial(tmp_path):
+    market = _StaticMarketProvider(
+        _bundle("601398", dates=("2017-09-18", "2025-12-15"))
+    )
+    statements = _StatementProvider(_statements())
+    service = PointInTimeBackfillService(
+        {
+            "point_in_time_data": {
+                "output_dir": str(tmp_path),
+                "official_statement_crawlers": False,
+                "market_history": {"coverage_tolerance_days": 31},
+            }
+        },
+        market_provider=market,
+        a_share_statements=statements,
+        market_store=PointInTimeMarketStore(tmp_path),
+        fundamental_store=PointInTimeFundamentalStore(tmp_path),
+    )
+
+    report = service.run(["601398"], evaluation_date=date(2026, 9, 18))
+
+    market_row = report["instruments"][0]["market_history"]
+    assert market_row["requested_window_coverage"] == "partial"
+    assert market_row["actual_end"] == "2025-12-15"
 
 
 def test_market_store_preserves_yahoo_quote_currency(tmp_path):

@@ -7,7 +7,12 @@ from copy import deepcopy
 import main
 import pytest
 
-from src.search.config import get_market_optimizer_config, get_market_optimizer_configs
+from src.search.config import (
+    get_market_optimizer_config,
+    get_market_optimizer_configs,
+    load_evaluation_horizon_policy,
+    load_research_horizon,
+)
 
 
 def _config():
@@ -95,6 +100,52 @@ def test_market_solver_overrides_are_independent():
     assert resolved["a_share"].search.solver_config()["budget"] != 77
     resolved["a_share"].constraints.benchmark_codes.append("MUTATION")
     assert "MUTATION" not in resolved["hk"].constraints.benchmark_codes
+
+
+def test_active_market_contracts_have_a_continuous_two_year_holdout():
+    policy = load_evaluation_horizon_policy()
+    assert policy.default_backtest_months >= policy.minimum_evaluation_months
+    assert (
+        policy.default_backtest_trading_days
+        >= policy.minimum_evaluation_trading_days
+    )
+    for resolved in get_market_optimizer_configs(_config()).values():
+        horizon = resolved.constraints.walk_forward
+        assert horizon.test_months >= policy.minimum_evaluation_months
+        assert horizon.held_out_window_count == 1
+        assert (
+            horizon.holdout_calendar_span_months
+            >= policy.minimum_evaluation_months
+        )
+        assert horizon.independent_ranking_window_count >= 1
+
+
+def test_short_market_or_research_horizon_fails_closed(tmp_path):
+    import yaml
+
+    raw = yaml.safe_load(open("config/optimizer_constraints.yaml", encoding="utf-8"))
+    raw["walk_forward_profiles"]["a_share_84m"]["test_months"] = 23
+    market_path = tmp_path / "short_market.yaml"
+    market_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid Walk-Forward profile"):
+        get_market_optimizer_config(
+            "a_share", application_config=_config(), constraints_path=market_path
+        )
+
+    raw["walk_forward_profiles"]["a_share_84m"]["test_months"] = 24
+    raw["research_horizon_profiles"]["existing_data_66m_24m"]["test_months"] = 23
+    research_path = tmp_path / "short_research.yaml"
+    research_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="at least 24 months"):
+        load_research_horizon(research_path)
+
+    raw["research_horizon_profiles"]["existing_data_66m_24m"]["test_months"] = 24
+    raw["research_horizon_profiles"]["existing_data_66m_24m"]["holdout_windows"] = 2
+    raw["research_horizon_profiles"]["existing_data_66m_24m"]["ranking_windows"] = 1
+    duplicate_holdout_path = tmp_path / "duplicate_holdout_research.yaml"
+    duplicate_holdout_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly one continuous"):
+        load_research_horizon(duplicate_holdout_path)
 
 
 def test_market_artifact_report_exposes_independent_contract():

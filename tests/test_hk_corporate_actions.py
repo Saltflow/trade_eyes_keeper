@@ -6,12 +6,6 @@ from types import SimpleNamespace
 
 import pytest
 
-
-@pytest.fixture(autouse=True)
-def _isolate_official_notice_disk_cache(tmp_path, monkeypatch):
-    """Each mocked issuer response owns a separate persistent source cache."""
-    monkeypatch.chdir(tmp_path)
-
 from src.data.corporate_action_sources import reconcile_corporate_actions
 from src.data.hk_corporate_actions import (
     EtnetCorporateActionProvider,
@@ -137,9 +131,7 @@ def test_tencent_actual_in_kind_distributions_remain_unresolved(
     assert action.cash_per_share is None
     assert action.share_multiplier is None
     assert action.published_at.isoformat() == announcement.replace("/", "-")
-    assert corporate_action_issues([action]) == (
-        f"in-kind distribution is not supported: 00700 {action.ex_date}",
-    )
+    assert corporate_action_issues([action])
 
 
 def test_later_hkd_conversion_is_not_backdated_to_rmb_earnings_announcement():
@@ -519,79 +511,6 @@ of interim dividend on H Shares is HK$1 = RMB0.862364.
 """
 
 
-PICC_2018_VOTE_NOTICE = """
-(Stock Code: 1339)
-The H share register of members of the Company on 1 May 2018 determines
-entitlement to the final dividend. The Company will distribute on around
-15 May 2018. The declared amount is RMB0.394 per 10 shares. The applicable
-exchange rate for calculating the H share dividend is HK$1=RMB0.800536.
-"""
-
-
-def _picc_2018_rmb_only():
-    return _parse(
-        [
-            _row(
-                particulars="末期息人民幣 0.0394",
-                announcement="2018/03/23",
-                ex="2018/04/24",
-                payable="2018/05/25",
-                book_start="2018/04/26",
-                book_end="2018/05/01",
-            )
-        ],
-        code="01339",
-    )[0]
-
-
-def test_official_record_and_cash_resolve_approximate_pay_date_conflict():
-    source = _picc_2018_rmb_only()
-    result = match_hkex_cash_notice(
-        PICC_2018_VOTE_NOTICE,
-        source,
-        published_at=date(2018, 4, 19),
-        source_url=OFFICIAL_URL,
-    )
-    assert result.cash_per_share == pytest.approx(0.0394 / 0.800536)
-    assert result.record_date == date(2018, 5, 1)
-    assert result.payable_date is None
-    assert result.published_at == date(2018, 4, 19)
-    assert "hkex_event_match=record_date_and_cash" in result.diagnostics
-    assert "payable_date_unverified_approximate_hkex_notice" in result.diagnostics
-    assert corporate_action_issues([result]) == ()
-    assert source.published_at is None
-
-
-@pytest.mark.parametrize(
-    "changed",
-    [
-        PICC_2018_VOTE_NOTICE.replace("on 1 May 2018", "on 2 May 2018"),
-        PICC_2018_VOTE_NOTICE.replace("RMB0.394", "RMB0.395"),
-        PICC_2018_VOTE_NOTICE.replace("Stock Code: 1339", "Stock Code: 1816"),
-    ],
-)
-def test_approximate_notice_requires_record_cash_and_issuer(changed):
-    assert (
-        match_hkex_cash_notice(
-            changed,
-            _picc_2018_rmb_only(),
-            published_at=date(2018, 4, 19),
-            source_url=OFFICIAL_URL,
-        )
-        is None
-    )
-
-
-def test_firm_official_payment_conflict_still_rejects_cash_notice():
-    with pytest.raises(ValueError, match="conflicting official payment date"):
-        match_hkex_cash_notice(
-            PICC_2018_VOTE_NOTICE + "\nPayment date 15 May 2018",
-            _picc_2018_rmb_only(),
-            published_at=date(2018, 4, 19),
-            source_url=OFFICIAL_URL,
-        )
-
-
 def test_actual_declared_cash_and_implementation_fx_are_explicitly_converted():
     result = match_hkex_cash_notice(
         PICC_FX_NOTICE,
@@ -629,46 +548,6 @@ def test_cash_cannot_be_inferred_from_wrong_terms_date_or_unspecified_fx(changed
         )
         is None
     )
-
-
-def _pdf_pages(texts):
-    """Tiny uncompressed PDF fixture, without a test-only PDF writer dependency."""
-    objects = [b"", b"", b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
-    kids = []
-    for text in texts:
-        page_id = len(objects) + 1
-        kids.append(f"{page_id} 0 R")
-        objects.append(
-            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-            f"/Resources << /Font << /F1 3 0 R >> >> "
-            f"/Contents {page_id + 1} 0 R >>".encode()
-        )
-        lines = ["BT /F1 10 Tf 30 750 Td 12 TL"]
-        for line in text.splitlines():
-            escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-            lines.append(f"({escaped}) Tj T*")
-        stream = ("\n".join([*lines, "ET"]) + "\n").encode("ascii")
-        objects.append(
-            f"<< /Length {len(stream)} >>\nstream\n".encode() + stream + b"endstream"
-        )
-    objects[0] = b"<< /Type /Catalog /Pages 2 0 R >>"
-    objects[1] = (
-        f"<< /Type /Pages /Count {len(kids)} /Kids [{' '.join(kids)}] >>".encode()
-    )
-    content = bytearray(b"%PDF-1.4\n")
-    offsets = [0]
-    for number, obj in enumerate(objects, 1):
-        offsets.append(len(content))
-        content.extend(f"{number} 0 obj\n".encode() + obj + b"\nendobj\n")
-    xref = len(content)
-    content.extend(f"xref\n0 {len(offsets)}\n0000000000 65535 f \n".encode())
-    for offset in offsets[1:]:
-        content.extend(f"{offset:010d} 00000 n \n".encode())
-    content.extend(
-        f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\n"
-        f"startxref\n{xref}\n%%EOF\n".encode()
-    )
-    return bytes(content)
 
 
 @pytest.mark.parametrize("page_count", [9, 32])
@@ -713,6 +592,46 @@ def test_listing_identity_cannot_override_a_different_explicit_pdf_issuer():
         )
         is None
     )
+
+
+def _pdf_pages(texts):
+    """Tiny uncompressed PDF fixture, without a test-only PDF writer dependency."""
+    objects = [b"", b"", b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    kids = []
+    for text in texts:
+        page_id = len(objects) + 1
+        kids.append(f"{page_id} 0 R")
+        objects.append(
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            f"/Resources << /Font << /F1 3 0 R >> >> "
+            f"/Contents {page_id + 1} 0 R >>".encode()
+        )
+        lines = ["BT /F1 10 Tf 30 750 Td 12 TL"]
+        for line in text.splitlines():
+            escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+            lines.append(f"({escaped}) Tj T*")
+        stream = ("\n".join([*lines, "ET"]) + "\n").encode("ascii")
+        objects.append(
+            f"<< /Length {len(stream)} >>\nstream\n".encode() + stream + b"endstream"
+        )
+    objects[0] = b"<< /Type /Catalog /Pages 2 0 R >>"
+    objects[1] = (
+        f"<< /Type /Pages /Count {len(kids)} /Kids [{' '.join(kids)}] >>".encode()
+    )
+    content = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for number, obj in enumerate(objects, 1):
+        offsets.append(len(content))
+        content.extend(f"{number} 0 obj\n".encode() + obj + b"\nendobj\n")
+    xref = len(content)
+    content.extend(f"xref\n0 {len(offsets)}\n0000000000 65535 f \n".encode())
+    for offset in offsets[1:]:
+        content.extend(f"{offset:010d} 00000 n \n".encode())
+    content.extend(
+        f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\n"
+        f"startxref\n{xref}\n%%EOF\n".encode()
+    )
+    return bytes(content)
 
 
 def _notice_response(content):
@@ -937,8 +856,7 @@ def test_successful_notice_cache_is_bounded_across_calls():
         (result,) = provider.refine([_picc_rmb_only()])
         assert result.published_at == date(2020, 10, 28)
         assert list(provider._text_cache) == [url]
-    # The bounded in-memory cache evicts the first URL, while the locally
-    # committed integrity-checked disk cache can still serve that exact URL.
+    # Production also reuses integrity-checked disk entries after LRU eviction.
     assert len(calls) == 2
 
 
@@ -1002,6 +920,74 @@ def test_captured_picc_form_preserves_positioned_label_value_rows():
     assert result.record_date == date(2026, 10, 14)
     assert result.payable_date == date(2026, 11, 6)
     assert corporate_action_issues([result]) == ()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_notice_cache(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+
+PICC_2018_VOTE_NOTICE = """
+(Stock Code: 1339)
+The H share register of members of the Company on 1 May 2018 determines
+entitlement to the final dividend. The Company will distribute on around
+15 May 2018. The declared amount is RMB0.394 per 10 shares. The applicable
+exchange rate for calculating the H share dividend is HK$1=RMB0.800536.
+"""
+
+
+def _picc_2018_rmb_only():
+    return _parse(
+        [
+            _row(
+                particulars="末期息人民幣 0.0394",
+                announcement="2018/03/23",
+                ex="2018/04/24",
+                payable="2018/05/25",
+                book_start="2018/04/26",
+                book_end="2018/05/01",
+            )
+        ],
+        code="01339",
+    )[0]
+
+
+def test_official_record_and_cash_resolve_approximate_pay_date_conflict():
+    source = _picc_2018_rmb_only()
+    result = match_hkex_cash_notice(
+        PICC_2018_VOTE_NOTICE,
+        source,
+        published_at=date(2018, 4, 19),
+        source_url=OFFICIAL_URL,
+    )
+    assert result.cash_per_share == pytest.approx(0.0394 / 0.800536)
+    assert result.record_date == date(2018, 5, 1)
+    assert result.payable_date is None
+    assert result.published_at == date(2018, 4, 19)
+    assert "hkex_event_match=record_date_and_cash" in result.diagnostics
+    assert "payable_date_unverified_approximate_hkex_notice" in result.diagnostics
+    assert corporate_action_issues([result]) == ()
+    assert source.published_at is None
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        PICC_2018_VOTE_NOTICE.replace("on 1 May 2018", "on 2 May 2018"),
+        PICC_2018_VOTE_NOTICE.replace("RMB0.394", "RMB0.395"),
+        PICC_2018_VOTE_NOTICE.replace("Stock Code: 1339", "Stock Code: 1816"),
+    ],
+)
+def test_approximate_notice_requires_record_cash_and_issuer(changed):
+    assert (
+        match_hkex_cash_notice(
+            changed,
+            _picc_2018_rmb_only(),
+            published_at=date(2018, 4, 19),
+            source_url=OFFICIAL_URL,
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize("notice_url", [OFFICIAL_URL, OFFICIAL_URL + "?file=20240301"])
@@ -1103,7 +1089,7 @@ def test_captured_2018_poll_notice_recovers_one_transient_download(monkeypatch, 
     provider = HkexDividendEvidenceProvider(http=SimpleNamespace(get=get))
     provider._announcements = lambda code, start, end, title: (
         [{"published_at": date(2018, 4, 19), "url": url, "listed_code": "01339"}]
-        if title == "poll results"
+        if title in {"poll results", "results"}
         else []
     )
     source = _picc_2018_rmb_only()

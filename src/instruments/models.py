@@ -90,6 +90,8 @@ class FinancialStatementSnapshot(BaseModel):
     lease_liabilities: Optional[float] = None
 
     revenue: Optional[float] = None
+    net_income_total: float | None = None
+    source_scope_correction: dict[str, Any] | None = None
     net_income_parent: Optional[float] = None
     adjusted_net_income_parent: Optional[float] = None
     basic_eps: Optional[float] = None

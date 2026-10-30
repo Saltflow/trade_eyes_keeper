@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Justified-PB screen v4: arithmetic-only, defensive, fixed-N retrieval.
+"""Historical Justified-PB screen v4, retained for artifact reproduction only.
 
 Design constraints (from the 2026-09 review session):
   1. four operations only -- no powers, no roots, no medians, no std.
@@ -76,6 +76,7 @@ from src.fundamental_embedding.industry_history import (
     IndustryClassificationHistoryStore,
 )
 from src.instruments.point_in_time import PointInTimeFundamentalStore
+from src.search.config import load_evaluation_horizon_policy
 
 REFERENCE = ROOT / "data" / "reference_universe"
 CONSTITUENTS_PATH = REFERENCE / "index_constituents_20260818.json"
@@ -98,6 +99,26 @@ STATE_BOUNDARY_MONTHS = 6
 N_WINDOWS = 20
 MIN_PRIOR_WINDOWS = 6
 EXCLUDED_INDUSTRIES = {"J66", "J67", "J68"}
+
+
+def _reject_short_horizon_execution() -> None:
+    """Do not let a preserved 9-month historical screen emit new evidence."""
+
+    policy = load_evaluation_horizon_policy(ROOT / "config" / "optimizer_constraints.yaml")
+    try:
+        policy.require_evaluation_months(
+            TEST_MONTHS, context="screen_justified_pb_v4 historical runner"
+        )
+    except ValueError as exc:
+        raise SystemExit(
+            "screen_justified_pb_v4 is quarantined: its historical 9-month "
+            "window cannot produce current research evidence. Use the centrally "
+            "configured ≥24-month research runners instead."
+        ) from exc
+    raise SystemExit(
+        "screen_justified_pb_v4 is historical-only; use the centrally configured "
+        "≥24-month research runners instead."
+    )
 
 
 def _load_universe() -> list[str]:
@@ -412,6 +433,7 @@ def _select(rows, top_n, max_per_industry, industry):
 
 
 def main() -> int:
+    _reject_short_horizon_execution()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--top-n", type=int, default=20)
     parser.add_argument("--pb-floor-pct", type=float, default=20.0,

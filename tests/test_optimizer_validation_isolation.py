@@ -198,35 +198,36 @@ def test_optimizer_history_preflight_requires_the_full_configured_horizon():
     constraints = StrategyConstraints(
         {
             "walk_forward": {
-                "train_months": 12,
-                "test_months": 9,
-                "step_months": 3,
-                "num_windows": 14,
+                "state_lookback_months": 12,
+                "test_months": 24,
+                "step_months": 12,
+                "num_windows": 5,
+                "validation_windows": 1,
             }
         }
     )
 
-    # The final (14th) window must include its complete test horizon, not
+    # The final (fifth) window must include its complete test horizon, not
     # merely reach its start.  Otherwise a short-history symbol can reduce a
-    # market to 12 ranking windows plus a partial held-out window.
-    assert constraints.walk_forward.total_months_needed == 60
-    assert constraints.walk_forward.search_history_months == 51
+    # market to ranking windows plus a partial two-year held-out window.
+    assert constraints.walk_forward.total_months_needed == 84
+    assert constraints.walk_forward.search_history_months == 60
     assert constraints.walk_forward.state_lookback_months == 12
-    assert _min_optimizer_history_rows(constraints) == 1260
+    assert _min_optimizer_history_rows(constraints) == 1764
     # The calendar lookback must retain margin beyond the exact WF horizon;
     # otherwise date intersections can leave a market a few trading days short.
-    assert _optimizer_lookback_days(constraints) == 2006
+    assert _optimizer_lookback_days(constraints) == 2736
 
 
-def test_legacy_optimizer_history_cannot_bypass_the_84_month_contract():
+def test_shorter_history_cannot_bypass_the_84_month_contract():
     constraints = StrategyConstraints(
         {
             "walk_forward": {
                 "state_lookback_months": 12,
-                "test_months": 9,
-                "step_months": 3,
-                "num_windows": 22,
-                "validation_windows": 4,
+                "test_months": 24,
+                "step_months": 12,
+                "num_windows": 5,
+                "validation_windows": 1,
             }
         }
     )
@@ -239,20 +240,28 @@ def test_legacy_optimizer_history_cannot_bypass_the_84_month_contract():
 
 def test_optimizer_lookback_honors_configured_history_years():
     constraints = StrategyConstraints(
-        {"walk_forward": {"num_windows": 14, "data_years": 7}}
+        {
+            "walk_forward": {
+                "state_lookback_months": 12,
+                "test_months": 24,
+                "step_months": 12,
+                "num_windows": 5,
+                "data_years": 8,
+            }
+        }
     )
 
-    assert _optimizer_lookback_days(constraints) == int(7 * 365.25) + 180
+    assert _optimizer_lookback_days(constraints) == int(8 * 365.25) + 180
 
 
 def test_walk_forward_holdout_is_anchored_to_the_newest_market_date():
     constraints = StrategyConstraints(
         {
             "walk_forward": {
-                "train_months": 12,
-                "test_months": 9,
-                "step_months": 3,
-                "num_windows": 14,
+                "state_lookback_months": 12,
+                "test_months": 24,
+                "step_months": 12,
+                "num_windows": 5,
                 "validation_windows": 1,
             }
         }
@@ -261,18 +270,18 @@ def test_walk_forward_holdout_is_anchored_to_the_newest_market_date():
     manager.wf_config = constraints.walk_forward
     # Includes extra rows for rolling indicators.  The newest held-out window
     # must still end at the most recent row, rather than before that buffer.
-    manager.T = 1_350
-    manager.dates = pd.bdate_range("2020-01-01", periods=manager.T)
+    manager.T = 2_500
+    manager.dates = pd.bdate_range("2016-01-01", periods=manager.T)
 
     windows = manager.iter_windows()
 
-    assert len(windows) == 14
+    assert len(windows) == 5
     assert windows[-1].test_end == manager.T
     assert pd.Timestamp(windows[0].train_start_date) + pd.DateOffset(
         months=12
     ) == pd.Timestamp(windows[0].test_start_date)
     assert pd.Timestamp(windows[-1].test_start_date) + pd.DateOffset(
-        months=9
+        months=24
     ) - pd.Timedelta(days=1) == pd.Timestamp(windows[-1].test_end_date)
 
 
@@ -280,22 +289,22 @@ def test_overlapping_windows_are_purged_from_strict_holdout_ranking():
     constraints = StrategyConstraints(
         {
             "walk_forward": {
-                "num_windows": 14,
+                "num_windows": 5,
                 "validation_windows": 1,
                 "purge_overlapping_windows": True,
             }
         }
     )
     windows = [
-        WindowSlice(0, 0, 301 + index * 63, 490 + index * 63, index)
-        for index in range(14)
+        WindowSlice(0, 0, 500 + index * 252, 1004 + index * 252, index)
+        for index in range(5)
     ]
 
     ranking, purged, validation = _partition_window_indexes(windows, constraints)
 
-    assert ranking == list(range(11))
-    assert purged == [11, 12]
-    assert validation == [13]
+    assert ranking == [0, 1, 2]
+    assert purged == [3]
+    assert validation == [4]
     validation_start = windows[validation[0]].test_start
     assert all(windows[index].test_end <= validation_start for index in ranking)
     assert all(windows[index].test_end > validation_start for index in purged)

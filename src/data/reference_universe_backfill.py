@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from .baostock_access import BaostockAccessBlocked, BaostockTransientError
 from .point_in_time_backfill import PointInTimeBackfillService
 
 logger = logging.getLogger(__name__)
@@ -52,8 +53,7 @@ def load_reference_manifest(path: str | Path) -> dict[str, Any]:
         raise ValueError("reference manifest must be a JSON object")
     if payload.get("contract") != REFERENCE_MANIFEST_CONTRACT:
         raise ValueError(
-            "reference manifest contract must be "
-            f"{REFERENCE_MANIFEST_CONTRACT!r}"
+            f"reference manifest contract must be {REFERENCE_MANIFEST_CONTRACT!r}"
         )
     companies = payload.get("companies")
     if not isinstance(companies, list) or not companies:
@@ -81,13 +81,16 @@ def load_reference_manifest(path: str | Path) -> dict[str, Any]:
 
 def _worker_error_row(code: str, exc: BaseException) -> dict[str, Any]:
     reason = f"{type(exc).__name__}: {exc}"
-    return {
+    row = {
         "code": code,
         "market": "a_share",
         "instrument_type": "equity",
         "market_history": {"status": "failed", "reason": reason},
         "statements": {"status": "failed", "reason": reason},
     }
+    if isinstance(exc, (BaostockAccessBlocked, BaostockTransientError)):
+        row["source_access"] = exc.to_dict()
+    return row
 
 
 def run_reference_company_worker(payload: dict[str, Any]) -> dict[str, Any]:
@@ -96,10 +99,16 @@ def run_reference_company_worker(payload: dict[str, Any]) -> dict[str, Any]:
     started = time.perf_counter()
     try:
         service = PointInTimeBackfillService(payload["config"])
-        row = service._backfill_one(
+        arguments = (
             code,
             date.fromisoformat(payload["start"]),
             date.fromisoformat(payload["end"]),
+        )
+        previous_market = payload.get("previous_market")
+        row = (
+            service._backfill_one(*arguments, previous_market=previous_market)
+            if previous_market is not None
+            else service._backfill_one(*arguments)
         )
     except BaseException as exc:  # The parent must always receive a checkpointable row.
         logger.exception("Reference-company worker crashed for %s", code)
@@ -112,6 +121,7 @@ def _row_succeeded(row: dict[str, Any]) -> bool:
     return (
         row.get("market_history", {}).get("status") == "success"
         and row.get("statements", {}).get("status") == "success"
+        and not row.get("source_access", {}).get("blocked")
     )
 
 
@@ -140,11 +150,13 @@ class ReferenceUniverseBackfillService:
         self.config = self._worker_config(config)
         self.history_years = max(
             1,
-            int(
-                self.config.get("point_in_time_data", {}).get(
-                    "history_years", 6
-                )
-            ),
+            int(self.config.get("point_in_time_data", {}).get("history_years", 6)),
+        )
+        market_settings = (
+            self.config.get("point_in_time_data", {}).get("market_history", {}) or {}
+        )
+        self.market_coverage_tolerance_days = max(
+            0, int(market_settings.get("coverage_tolerance_days", 31))
         )
 
     def _worker_config(self, config: dict[str, Any]) -> dict[str, Any]:
@@ -163,9 +175,7 @@ class ReferenceUniverseBackfillService:
             "official_statement_crawlers": settings.get(
                 "official_statement_crawlers", True
             ),
-            "official_pdf_recent_years": settings.get(
-                "official_pdf_recent_years", 3
-            ),
+            "official_pdf_recent_years": settings.get("official_pdf_recent_years", 3),
             "market_history": settings.get("market_history", {}),
         }
         fingerprint = _sha256(
@@ -208,13 +218,36 @@ class ReferenceUniverseBackfillService:
         except (OSError, ValueError, TypeError):
             return None
         if (
-            payload.get("contract") != REFERENCE_BATCH_CONTRACT
+            not isinstance(payload, dict)
+            or payload.get("contract") != REFERENCE_BATCH_CONTRACT
             or payload.get("batch_id") != batch_id
             or payload.get("fingerprint") != fingerprint
             or not isinstance(payload.get("row"), dict)
+            or payload.get("code") != path.stem
+            or payload["row"].get("code") != path.stem
+            or not all(
+                isinstance(payload["row"].get(key), dict)
+                for key in ("market_history", "statements")
+            )
+            or not isinstance(payload["row"].get("source_access", {}), dict)
         ):
             return None
         return payload
+
+    def _checkpoint_covers_evaluation_end(
+        self, checkpoint: dict[str, Any], end: date
+    ) -> bool:
+        """Do not reuse a success checkpoint whose market data ended too early."""
+
+        row = checkpoint.get("row", {})
+        market = row.get("market_history", {}) if isinstance(row, dict) else {}
+        if not isinstance(market, dict) or market.get("status") != "success":
+            return False
+        try:
+            actual_end = date.fromisoformat(str(market["actual_end"]))
+        except (KeyError, TypeError, ValueError):
+            return False
+        return actual_end >= end - timedelta(days=self.market_coverage_tolerance_days)
 
     @staticmethod
     def _progress(
@@ -230,10 +263,8 @@ class ReferenceUniverseBackfillService:
         successes = sum(
             item.get("status") == "success" for item in checkpoints.values()
         )
-        failed = sum(
-            item.get("status") == "failed" for item in checkpoints.values()
-        )
-        return {
+        failed = sum(item.get("status") == "failed" for item in checkpoints.values())
+        result = {
             "contract": REFERENCE_BATCH_CONTRACT,
             "batch_id": batch_id,
             "fingerprint": fingerprint,
@@ -247,6 +278,19 @@ class ReferenceUniverseBackfillService:
             "pending": max(0, total - len(checkpoints)),
             "last_code": last_code,
         }
+        blocked = next(
+            (
+                item["row"]["source_access"]
+                for item in checkpoints.values()
+                if item["row"].get("source_access", {}).get("blocked")
+            ),
+            None,
+        )
+        if blocked is not None:
+            result["source_access"] = copy.deepcopy(blocked)
+            if state == "running":
+                result["state"] = "blocked"
+        return result
 
     def _write_result(
         self,
@@ -292,6 +336,8 @@ class ReferenceUniverseBackfillService:
             except BaseException as exc:
                 row = _worker_error_row(str(payload["code"]), exc)
             on_result(row)
+            if row.get("source_access", {}).get("blocked"):
+                break
 
     def _run_parallel(
         self,
@@ -301,6 +347,7 @@ class ReferenceUniverseBackfillService:
         iterator = iter(payloads)
         in_flight: dict[Future, str] = {}
         maximum_in_flight = self.workers * 2
+        blocked = False
         with ProcessPoolExecutor(max_workers=self.workers) as executor:
             while len(in_flight) < maximum_in_flight:
                 try:
@@ -318,13 +365,19 @@ class ReferenceUniverseBackfillService:
                     except BaseException as exc:
                         row = _worker_error_row(code, exc)
                     on_result(row)
+                    if row.get("source_access", {}).get("blocked"):
+                        blocked = True
+                if blocked:
+                    for pending_future in list(in_flight):
+                        if pending_future.cancel():
+                            in_flight.pop(pending_future)
+                    continue
+                while len(in_flight) < maximum_in_flight:
                     try:
                         payload = next(iterator)
                     except StopIteration:
-                        continue
-                    replacement = executor.submit(
-                        run_reference_company_worker, payload
-                    )
+                        break
+                    replacement = executor.submit(run_reference_company_worker, payload)
                     in_flight[replacement] = str(payload["code"])
 
     def run(
@@ -352,6 +405,7 @@ class ReferenceUniverseBackfillService:
         progress_path = batch_dir / "progress.json"
         started_at = datetime.now().isoformat()
         checkpoints: dict[str, dict[str, Any]] = {}
+        market_checkpoints: dict[str, dict[str, Any]] = {}
         pending = []
         for company in companies:
             code = company["code"]
@@ -360,14 +414,20 @@ class ReferenceUniverseBackfillService:
                 batch_id=batch_id,
                 fingerprint=fingerprint,
             )
-            reusable = (
-                not force
-                and checkpoint is not None
-                and (
-                    checkpoint.get("status") == "success"
-                    or not retry_failures
-                )
-            )
+            if checkpoint is not None:
+                market_row = checkpoint["row"].get("market_history", {})
+                if (
+                    market_row.get("status") == "success"
+                    and market_row.get("requested_start") == start.isoformat()
+                    and market_row.get("requested_end") == end.isoformat()
+                ):
+                    market_checkpoints[code] = copy.deepcopy(market_row)
+            reusable = False
+            if not force and checkpoint is not None:
+                if checkpoint.get("status") == "success":
+                    reusable = self._checkpoint_covers_evaluation_end(checkpoint, end)
+                else:
+                    reusable = not retry_failures
             if reusable:
                 checkpoints[code] = checkpoint
             else:
@@ -390,6 +450,11 @@ class ReferenceUniverseBackfillService:
                 "start": start.isoformat(),
                 "end": end.isoformat(),
                 "config": self.config,
+                **(
+                    {"previous_market": market_checkpoints[code]}
+                    if code in market_checkpoints
+                    else {}
+                ),
             }
             for code in pending
         ]
@@ -430,6 +495,8 @@ class ReferenceUniverseBackfillService:
         state = (
             "interrupted"
             if interrupted
+            else "blocked"
+            if summary.get("source_access", {}).get("blocked")
             else "complete"
             if len(checkpoints) == len(companies) and not failed_codes
             else "partial"
@@ -449,6 +516,11 @@ class ReferenceUniverseBackfillService:
                 "checkpoint_count": len(checkpoints),
                 "reused_checkpoint_count": len(companies) - len(pending),
                 "failed_codes": failed_codes,
+                "pending_codes": [
+                    item["code"]
+                    for item in companies
+                    if item["code"] not in checkpoints
+                ],
                 "batch_dir": str(batch_dir),
             }
         )

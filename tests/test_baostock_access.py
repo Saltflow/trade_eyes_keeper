@@ -6,7 +6,9 @@ import importlib
 import json
 import multiprocessing
 import socket
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -598,6 +600,38 @@ def test_new_blacklist_prevents_a_previously_successful_cursor_from_requesting_n
 
     assert sdk.calls == ["login", "query_history_k_data_plus:1"]
     assert sdk.socket.close_calls >= 1
+
+
+def test_three_company_threads_never_overlap_sdk_sessions(
+    access, tmp_path, monkeypatch
+):
+    sdk = _SdkTransport(monkeypatch)
+    controller = _controller(access, _config(tmp_path), _Clock())
+    barrier, guard = threading.Barrier(3), threading.Lock()
+    active, peak = 0, 0
+    previous_timeout = socket.getdefaulttimeout()
+
+    def company(_):
+        nonlocal active, peak
+        barrier.wait(5)
+        with access.guarded_baostock_session(
+            sdk.module, 7, controller=controller
+        ) as module:
+            with guard:
+                active += 1
+                peak = max(peak, active)
+            _query(module)
+            time.sleep(0.03)
+            with guard:
+                active -= 1
+
+    with ThreadPoolExecutor(3) as pool:
+        list(pool.map(company, range(3)))
+    assert peak == 1
+    assert sdk.connect_calls == 3
+    assert sdk.calls.count("login") == sdk.calls.count("logout") == 3
+    assert controller.status()["request_count"] == 9
+    assert socket.getdefaulttimeout() == previous_timeout
 
 
 def _hold_session_lock(config, acquired):

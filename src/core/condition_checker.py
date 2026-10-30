@@ -4,6 +4,7 @@
 """
 
 import logging
+
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -17,20 +18,16 @@ class ConditionChecker:
         self.use_multi_alert = config.get("alerts", {}).get("enabled", False)
 
         if self.use_multi_alert:
-            try:
-                from ..alerting.alert_processor import AlertProcessor
-                from config import get_alerts_config
+            from config import get_alerts_config
 
-                alerts_config = get_alerts_config(
-                    config.get("alerts", {}).get("config_path")
-                )
-                cache_dir = config.get("storage", {}).get("cache_dir", "./cache")
-                self.alert_processor = AlertProcessor(alerts_config, cache_dir)
-                logger.info("多层级警报系统已启用")
-            except Exception as e:
-                logger.error(f"多层级警报系统初始化失败: {e}")
-                self.use_multi_alert = False
-                self.alert_processor = None
+            from ..alerting.alert_processor import AlertProcessor
+
+            alerts_config = get_alerts_config(
+                config.get("alerts", {}).get("config_path")
+            )
+            cache_dir = config.get("storage", {}).get("cache_dir", "./cache")
+            self.alert_processor = AlertProcessor(alerts_config, cache_dir)
+            logger.info("多层级警报系统已启用")
         else:
             self.alert_processor = None
 
@@ -78,7 +75,8 @@ class ConditionChecker:
             logger.info(f"多层级检查完成: {len(result)} 个警报")
             return result
 
-        except Exception as e:
+        # Keep the legacy single-tier fallback if multi-tier checks fail.
+        except Exception as e:  # noqa: BLE001
             logger.error(f"多层级检查失败: {e}")
             return self._check_single(stock_data)
 

@@ -34,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Compare registered strategies under one ranking-only candidate "
-            "budget and the authoritative 22/16/2/4 window contract."
+            "budget and the authoritative 84m/24m/12m/5-window contract."
         )
     )
     parser.add_argument(

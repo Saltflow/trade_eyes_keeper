@@ -7,9 +7,9 @@
 import os
 import sys
 
-import numpy as np
-import pandas as pd
 import pytest
+
+pytestmark = pytest.mark.integration
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 os.environ.setdefault("LOG_LEVEL", "ERROR")
@@ -36,8 +36,8 @@ def _load_real_data():
             df = ds.fetch_stock_data(code, days=730)
             if df is not None and not df.empty and "close" in df.columns:
                 stocks_data[code] = df
-        except Exception:
-            pass
+        except Exception as exc:
+            pytest.skip(f"真实数据源不可用: {type(exc).__name__}")
 
     if len(stocks_data) < 2:
         pytest.skip("网络不可用或数据不足")

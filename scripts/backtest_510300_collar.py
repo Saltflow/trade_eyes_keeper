@@ -32,6 +32,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.data.option_data import SinaOptionDataSource
+from src.search.config import load_evaluation_horizon_policy
 
 
 SSE_RISK_URL = "https://query.sse.com.cn/commonQuery.do"
@@ -59,6 +60,21 @@ OPTION_LISTING_STARTS = {
     "510500": "2022-09-19",
 }
 LOGGER = logging.getLogger(__name__)
+
+
+def _default_test_days() -> int:
+    """Read the shared CLI default instead of embedding a test duration."""
+
+    return load_evaluation_horizon_policy().default_backtest_trading_days
+
+
+def _require_minimum_test_days(test_days: int) -> None:
+    policy = load_evaluation_horizon_policy()
+    if int(test_days) < policy.minimum_evaluation_trading_days:
+        raise ValueError(
+            "--test-days must cover at least "
+            f"{policy.minimum_evaluation_months} calendar months"
+        )
 
 
 @dataclass(frozen=True)
@@ -92,7 +108,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-call", type=float, default=1.05)
     parser.add_argument("--cost-rate", type=float, default=0.002)
     parser.add_argument("--optimize", action="store_true")
-    parser.add_argument("--test-days", type=int, default=756)
+    parser.add_argument("--test-days", type=int, default=_default_test_days())
     parser.add_argument("--put-grid", default="0.90,0.95,1.00")
     parser.add_argument("--call-grid", default="1.05,1.10,1.15")
     parser.add_argument("--workers", type=int, default=8)
@@ -112,6 +128,7 @@ def parse_args() -> argparse.Namespace:
     args.output_dir = args.output_dir or (
         f"cache/analysis/option_collar_{args.underlying_code}"
     )
+    _require_minimum_test_days(args.test_days)
     return args
 
 

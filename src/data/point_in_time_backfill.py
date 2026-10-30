@@ -359,7 +359,8 @@ class PointInTimeBackfillService:
         return row
 
     def _backfill_one(
-        self, code: str, start: date, end: date, *, previous_market: dict | None = None
+        self, code: str, start: date, end: date, *, previous_market: dict | None = None,
+        include_market_history: bool = True,
     ) -> dict[str, Any]:
         configured = (self.config.get("instrument_catalog", {}) or {}).get(
             str(code), {}
@@ -386,38 +387,43 @@ class PointInTimeBackfillService:
             "market_history": {"status": "pending"},
             "statements": {"status": "not_applicable"},
         }
-        try:
-            cached = self._cached_market(code, start, end, previous_market)
-            if cached is not None:
-                row["market_history"] = cached
-            else:
-                bundle = self.market_provider.fetch(code, start, end)
-                paths = self.market_store.write(bundle)
-                row["market_history"] = self._market_row(
-                    bundle, start, end, paths["prices"]
-                )
-                try:
-                    validated, hashes = self._validated_market_snapshot(
-                        code, start, end, row["market_history"]
+        if not include_market_history:
+            # Fundamental research needs statements, not years of price/action
+            # backfill. Keep the default path unchanged for backtests.
+            row["market_history"] = {"status": "not_requested"}
+        else:
+            try:
+                cached = self._cached_market(code, start, end, previous_market)
+                if cached is not None:
+                    row["market_history"] = cached
+                else:
+                    bundle = self.market_provider.fetch(code, start, end)
+                    paths = self.market_store.write(bundle)
+                    row["market_history"] = self._market_row(
+                        bundle, start, end, paths["prices"]
                     )
-                    self._write_market_receipt(code, validated, hashes)
-                except (OSError, ValueError, TypeError, KeyError) as exc:
-                    logger.warning(
-                        "Market cache receipt not created for %s: %s", code, exc
-                    )
-        except BaostockAccessBlocked as exc:
-            row["source_access"] = exc.to_dict()
-            row["market_history"] = {"status": "blocked", "reason": str(exc)}
-            row["statements"] = {"status": "blocked", "reason": "source access blocked"}
-            return row
-        except Exception as exc:
-            logger.exception("Market-history backfill failed for %s", code)
-            row["market_history"] = {
-                "status": "failed",
-                "reason": str(exc),
-            }
-            if isinstance(exc, BaostockTransientError):
+                    try:
+                        validated, hashes = self._validated_market_snapshot(
+                            code, start, end, row["market_history"]
+                        )
+                        self._write_market_receipt(code, validated, hashes)
+                    except (OSError, ValueError, TypeError, KeyError) as exc:
+                        logger.warning(
+                            "Market cache receipt not created for %s: %s", code, exc
+                        )
+            except BaostockAccessBlocked as exc:
                 row["source_access"] = exc.to_dict()
+                row["market_history"] = {"status": "blocked", "reason": str(exc)}
+                row["statements"] = {"status": "blocked", "reason": "source access blocked"}
+                return row
+            except Exception as exc:
+                logger.exception("Market-history backfill failed for %s", code)
+                row["market_history"] = {
+                    "status": "failed",
+                    "reason": str(exc),
+                }
+                if isinstance(exc, BaostockTransientError):
+                    row["source_access"] = exc.to_dict()
 
         if is_fx or is_market_only or instrument_type != InstrumentType.EQUITY:
             return row

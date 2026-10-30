@@ -7,11 +7,11 @@
 
 import logging
 import warnings
-import yaml
-import os
 from typing import Dict, Optional, Any
 import pandas as pd
 import numpy as np
+
+from config import get_alerts_config
 
 logger = logging.getLogger(__name__)
 
@@ -41,23 +41,10 @@ class TechnicalIndicators:
         )
 
     def _load_config(self, config_path: Optional[str]) -> Dict[str, Any]:
-        """加载指标配置文件"""
-        if config_path is None:
-            # 默认配置路径：项目根 config/alerts.yaml
-            # __file__ = src/data/technical_indicators.py
-            # 往上三层到项目根: src/data → src → 项目根
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            config_path = os.path.join(project_root, "config", "alerts.yaml")
-
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f)
-            logger.debug(f"成功加载指标配置: {config_path}")
-            return config or {}
-        except Exception as e:
-            logger.warning(f"加载指标配置失败，使用默认配置: {e}")
-            # 默认配置
-            return {"anchors": [{"name": "ma60", "type": "daily_ma", "window": 60}]}
+        """Use the same validated alert rules as ConditionChecker."""
+        alerts_config = get_alerts_config(config_path)
+        logger.debug(f"成功加载指标配置: {alerts_config.path}")
+        return alerts_config.to_dict()
 
     def _get_stock_data(self, stock_code: str):
         """从 Session 获取股票数据"""

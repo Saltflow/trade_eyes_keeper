@@ -29,7 +29,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.backtest_510300_collar import (
-    Contract,
     Roll,
     _active_roll_index,
     _build_rolls,
@@ -45,6 +44,7 @@ from scripts.backtest_510300_collar import (
     _with_entry_prices,
     _simulate,
 )
+from src.search.config import load_evaluation_horizon_policy
 
 
 LISTING_STARTS = {
@@ -62,11 +62,24 @@ COMPONENTS = (
 )
 
 
+def _default_test_days() -> int:
+    return load_evaluation_horizon_policy().default_backtest_trading_days
+
+
+def _require_minimum_test_days(test_days: int) -> None:
+    policy = load_evaluation_horizon_policy()
+    if int(test_days) < policy.minimum_evaluation_trading_days:
+        raise ValueError(
+            "--test-days must cover at least "
+            f"{policy.minimum_evaluation_months} calendar months"
+        )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--codes", default="510300,510500")
     parser.add_argument("--end", default="2026-09-01")
-    parser.add_argument("--test-days", type=int, default=756)
+    parser.add_argument("--test-days", type=int, default=_default_test_days())
     parser.add_argument("--cost-rate", type=float, default=0.002)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument(
@@ -79,6 +92,7 @@ def parse_args() -> argparse.Namespace:
         raise ValueError(f"Unsupported ETF option code(s): {unknown}")
     if args.cost_rate < 0:
         raise ValueError("--cost-rate must be non-negative")
+    _require_minimum_test_days(args.test_days)
     return args
 
 

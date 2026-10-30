@@ -5,11 +5,14 @@
 绝不使用模拟数据进行投资决策
 """
 
+from __future__ import annotations
+
 import logging
-import pandas as pd
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, cast
+from typing import Dict, Optional, cast
+
+import pandas as pd
 
 from ..data.technical_indicators import TechnicalIndicators
 
@@ -28,10 +31,6 @@ class StockDataFetcher:
         """
         self.config = config
         self.stocks = config.get("stocks", [])
-        # 数据源类型，已移除akshare，只支持web_crawler
-        data_source_type = config.get("data_source", {}).get("type", "web_crawler")
-        if data_source_type == "akshare":
-            logger.warning("akshare数据源已移除，将使用web_crawler作为替代")
         # data_source 通过 @property 延迟初始化 DataSource 实例
         self._data_source = None
         self._web_crawler = None
@@ -46,7 +45,9 @@ class StockDataFetcher:
 
         # 初始化技术指标计算器（用于多锚点警报）
         # 注意：需要在 fetch_to_session 中设置 session_context
-        self.technical_indicators = TechnicalIndicators()
+        self.technical_indicators = TechnicalIndicators(
+            config_path=config.get("alerts", {}).get("config_path")
+        )
 
     @property
     def data_source(self):
@@ -105,7 +106,8 @@ class StockDataFetcher:
             stock_data.to_csv(csv_file, index=False, encoding="utf-8-sig")
             logger.info(f"股票 {stock_code} 数据已保存到: {csv_file}")
 
-        except Exception as e:
+        # CSV export is optional; preserve fetched market data on failure.
+        except Exception as e:  # noqa: BLE001
             logger.error(f"保存股票 {stock_code} 数据到CSV失败: {e}")
 
     @staticmethod
@@ -141,8 +143,10 @@ class StockDataFetcher:
             logger.info(f"使用网页爬虫获取股票 {stock_code} 真实数据")
 
             # 计算需要的历史天数
-            start_dt = datetime.strptime(start_date, "%Y%m%d")
-            end_dt = datetime.strptime(end_date, "%Y%m%d")
+            # Calendar-only input: retain naive dates for validation/day differences.
+            start_dt = datetime.strptime(start_date, "%Y%m%d")  # noqa: DTZ007
+            # Calendar-only input: retain naive dates for validation/day differences.
+            end_dt = datetime.strptime(end_date, "%Y%m%d")  # noqa: DTZ007
             days = (end_dt - start_dt).days + 30  # 多取一些天数
 
             # 获取数据
@@ -178,7 +182,7 @@ class StockDataFetcher:
             dict: 包含基本面数据的字典
         """
         # 初始化结果字典 (值类型为 Optional[float])
-        fundamental_data: Dict[str, Optional[float]] = {
+        fundamental_data: dict[str, float | None] = {
             "dividend_per_share": None,  # 过去1年每股分红（元）
             "dividend_yield": None,  # 当前价年化股息率（%）
             "pe_ratio": None,  # 市盈率 (PE)
@@ -213,7 +217,7 @@ class StockDataFetcher:
 
         return fundamental_data
 
-    def _fetch_dividend_from_web_crawler(self, stock_code: str) -> Optional[float]:
+    def _fetch_dividend_from_web_crawler(self, stock_code: str) -> float | None:
         """获取分红数据，优先使用LLM提取结果，其次使用网页爬虫"""
         logger.info(f"开始获取股票 {stock_code} 的分红数据")
         # 1. 尝试从LLM提取缓存获取分红数据
@@ -230,7 +234,8 @@ class StockDataFetcher:
                         f"股票 {stock_code} 从LLM提取缓存获取分红数据: {dividend:.3f}元"
                     )
                     return dividend
-        except Exception as e:
+        # An unreadable extraction cache must fall back to the live source.
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"从LLM提取缓存获取股票 {stock_code} 分红数据失败: {e}")
 
         # 2. 如果LLM提取缓存没有，尝试网页爬虫作为备选
@@ -242,18 +247,20 @@ class StockDataFetcher:
                     f"股票 {stock_code} 从网页爬虫获取分红数据: {dividend:.3f}元"
                 )
                 return dividend
-        except Exception as e:
+        # Dividend-source failures preserve the existing unavailable result.
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"获取股票 {stock_code} 分红数据失败: {e}")
         return None
 
     def _fetch_valuation_from_web_crawler(
         self, stock_code: str
-    ) -> Optional[Dict[str, Optional[float]]]:
+    ) -> dict[str, float | None] | None:
         """从网页爬虫获取估值指标数据"""
         valuation_data = None
         try:
             valuation_data = self.web_crawler.fetch_valuation_data(stock_code)
-        except Exception as e:
+        # Valuation-source failures preserve the existing unavailable result.
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"获取股票 {stock_code} 估值指标失败: {e}")
             return None
 
@@ -280,7 +287,7 @@ class StockDataFetcher:
         session,
         session_manager=None,
         realtime_mode=False,
-        history_days: Optional[int] = None,
+        history_days: int | None = None,
     ):
         """
         获取股票数据并存入Session（新数据流）
@@ -330,11 +337,15 @@ class StockDataFetcher:
                     try:
                         stock_data = self._add_extended_indicators(stock_data)
                         logger.debug(f"股票 {stock_code} 技术指标计算完成")
-                    except Exception as e:
+                    # Optional indicator failures must not discard the fetched history.
+                    except Exception as e:  # noqa: BLE001
                         logger.warning(f"股票 {stock_code} 技术指标计算跳过: {e}")
 
                     # 只保留最新一天的数据
                     latest_data = stock_data.iloc[-1:].copy()
+                    if realtime_mode:
+                        latest_data["quote_time"] = None
+                        latest_data["prev_close"] = None
 
                     # 检查数据日期
                     if not latest_data.empty:
@@ -358,6 +369,8 @@ class StockDataFetcher:
                                         )
                                         # 更新 latest_data 的价格字段
                                         for field in (
+                                            "prev_close",
+                                            "quote_time",
                                             "open",
                                             "close",
                                             "high",
@@ -419,7 +432,8 @@ class StockDataFetcher:
                     # 暂存完整历史 DataFrame 供图表模块使用
                     session._historical[stock_code] = stock_data
 
-            except Exception as e:
+            # Isolate each stock failure so the remaining configured pool runs.
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"获取股票 {stock_code} 数据失败: {e}")
                 session.errors.append(f"获取股票 {stock_code} 数据失败: {e}")
 

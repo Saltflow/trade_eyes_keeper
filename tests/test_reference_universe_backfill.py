@@ -35,7 +35,7 @@ def _config() -> dict:
     }
 
 
-def _success(code: str) -> dict:
+def _success(code: str, *, actual_end: str = "2026-08-18") -> dict:
     return {
         "code": code,
         "market": "a_share",
@@ -43,6 +43,7 @@ def _success(code: str) -> dict:
         "market_history": {
             "status": "success",
             "requested_window_coverage": "full",
+            "actual_end": actual_end,
         },
         "statements": {
             "status": "success",
@@ -97,6 +98,29 @@ def test_batch_overrides_all_output_roots_and_caps_workers(tmp_path):
         )
 
 
+def test_official_report_depth_changes_isolated_batch_identity(tmp_path):
+    default_service = ReferenceUniverseBackfillService(
+        _config(),
+        _manifest(),
+        output_dir=tmp_path / "dataset",
+        workers=1,
+        worker=lambda payload: _success(payload["code"]),
+    )
+    deeper_config = _config()
+    deeper_config["point_in_time_data"]["official_pdf_recent_years"] = 6
+    deeper_service = ReferenceUniverseBackfillService(
+        deeper_config,
+        _manifest(),
+        output_dir=tmp_path / "dataset",
+        workers=1,
+        worker=lambda payload: _success(payload["code"]),
+    )
+
+    assert default_service._batch_identity(date(2026, 8, 18)) != (
+        deeper_service._batch_identity(date(2026, 8, 18))
+    )
+
+
 def test_successful_checkpoints_are_reused_without_calling_worker(tmp_path):
     calls = []
 
@@ -136,6 +160,35 @@ def test_successful_checkpoints_are_reused_without_calling_worker(tmp_path):
         "failed": 0,
         "pending": 0,
     }
+
+
+def test_success_checkpoint_with_stale_market_end_is_retried(tmp_path):
+    calls: list[str] = []
+
+    def fetch(payload):
+        code = payload["code"]
+        calls.append(code)
+        return _success(
+            code,
+            actual_end="2025-12-15" if len(calls) == 1 else "2026-08-18",
+        )
+
+    service = ReferenceUniverseBackfillService(
+        _config(),
+        {**_manifest(), "companies": [{"code": "000001"}]},
+        output_dir=tmp_path,
+        workers=1,
+        worker=fetch,
+    )
+
+    first = service.run(evaluation_date=date(2026, 8, 18))
+    second = service.run(evaluation_date=date(2026, 8, 18))
+
+    assert first["state"] == "complete"
+    assert second["state"] == "complete"
+    assert first["reused_checkpoint_count"] == 0
+    assert second["reused_checkpoint_count"] == 0
+    assert calls == ["000001", "000001"]
 
 
 def test_failed_checkpoint_is_retried_but_success_is_reused(tmp_path):

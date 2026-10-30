@@ -3,14 +3,10 @@
 """
 
 import pytest
-import pandas as pd
-import numpy as np
-from datetime import datetime
 
 from src.markets import (
     _detect_stock_group,
     _detect_fine_group,
-    _get_lot_size,
     get_skip_search,
     get_skip_signals,
 )
@@ -32,12 +28,6 @@ class TestStockGroupDetection:
         assert _detect_fine_group("601728") == "a_share"
         assert _detect_fine_group("00883") == "hk"
         assert _detect_fine_group("GOOG") == "us"
-
-    def test_lot_size(self):
-        assert _get_lot_size("601728") == 100
-        assert _get_lot_size("GOOG") == 1
-        assert _get_lot_size("00883") == 100
-        assert _get_lot_size("C38U.SI") == 1
 
 
 class TestSkipSettings:

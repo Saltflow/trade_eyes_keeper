@@ -12,7 +12,10 @@ from scripts.backtest_510300_collar import (
     _simulate,
     _spot_benchmark,
     _strike_from_contract_id,
+    _default_test_days,
+    _require_minimum_test_days,
 )
+from src.search.config import load_evaluation_horizon_policy
 from scripts.backtest_collar_nav_sizing import (
     _neutralize_relative_months,
     _simulate_nav_resized,
@@ -37,6 +40,14 @@ def test_strike_and_expiry_parsing():
 
 def test_parse_grid_deduplicates_and_sorts_targets():
     assert _parse_grid("1.10, 0.95, 1.10") == [0.95, 1.10]
+
+
+def test_collar_backtests_use_the_shared_minimum_duration_policy():
+    policy = load_evaluation_horizon_policy()
+
+    assert _default_test_days() == policy.default_backtest_trading_days
+    with pytest.raises(ValueError, match="at least"):
+        _require_minimum_test_days(policy.minimum_evaluation_trading_days - 1)
 
 
 def test_selects_earliest_expiry_and_nearest_strikes():

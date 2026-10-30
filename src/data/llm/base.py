@@ -10,29 +10,6 @@ from datetime import datetime
 import requests
 from ..cache_manager import CacheManager
 
-# 猴子补丁：确保JSON序列化使用UTF-8编码，不转义非ASCII字符
-_original_json_dumps = json.dumps
-
-
-def _patched_json_dumps(obj, *args, **kwargs):
-    """确保所有JSON序列化使用UTF-8编码"""
-    kwargs["ensure_ascii"] = False
-    return _original_json_dumps(obj, *args, **kwargs)
-
-
-json.dumps = _patched_json_dumps
-
-_original_json_dump = json.dump
-
-
-def _patched_json_dump(obj, fp, *args, **kwargs):
-    """确保所有JSON序列化使用UTF-8编码"""
-    kwargs["ensure_ascii"] = False
-    return _original_json_dump(obj, fp, *args, **kwargs)
-
-
-json.dump = _patched_json_dump
-
 logger = logging.getLogger(__name__)
 
 

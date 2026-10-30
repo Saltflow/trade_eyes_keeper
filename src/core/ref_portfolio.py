@@ -1,8 +1,8 @@
 """参考持仓管理模块。
 
 持久化参考持仓（Ref Portfolio），用于日报/简报展示系统持续运行的仓位状态。
-- 只在简报时间（09:50 / 14:30）按量化信号调仓
-- 禁止盘后交易（美股 24h 除外，但周末休市不交易）
+- 由简报入口按绑定策略的统一 TradePlan 调仓
+- 周末默认不交易，显式 force 调用可覆盖
 - 仅手动 reset 时重置，否则永远接上一期仓位
 
 数据持久化到 data/ref_portfolio.yaml。
@@ -23,12 +23,6 @@ logger = logging.getLogger(__name__)
 # ── 常量 ──────────────────────────────────────────────────────
 DEFAULT_INITIAL_CAPITAL = 100000.0
 DEFAULT_COMMISSION_RATE = 0.005
-DEFAULT_BUY_AMOUNT = 5000.0  # 每次买入最大金额（已废弃）
-BUY_CASH_FRACTION = 0.20  # 每次买入占现金的比例
-MAX_BUY_AMOUNT = 50000.0  # 单次买入金额上限
-REF_MONTHLY_LIMIT = 50000.0  # 参考持仓月度买入上限（比搜参宽松）
-DEFAULT_SELL_FRACTION = 0.25  # 每次卖出最大比例
-BRIEF_WINDOWS = ("09:50", "14:30")  # 允许调仓的时间窗口
 DATA_DIR = Path("data")
 PORTFOLIO_FILE = DATA_DIR / "ref_portfolio.yaml"
 
@@ -37,7 +31,8 @@ def _parse_date(value: object) -> date | None:
     if not value:
         return None
     try:
-        return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+        # Calendar-only input: retain naive dates for validation/day differences.
+        return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()  # noqa: DTZ007
     except ValueError:
         return None
 
@@ -225,7 +220,7 @@ class RefPortfolio:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "RefPortfolio":
+    def from_dict(cls, d: dict) -> RefPortfolio:
         """从 dict 反序列化。"""
         pf = cls(
             inception_date=d.get("inception_date", ""),
@@ -294,7 +289,8 @@ class RefPortfolioManager:
             data = yaml.safe_load(raw) or {}
             pf_data = data.get("ref_portfolio", {}) or {}
             return RefPortfolio.from_dict(pf_data)
-        except Exception as e:
+        # Keep the documented empty-portfolio fallback for corrupt storage.
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"加载参考持仓失败: {e}，返回空持仓")
             return RefPortfolio()
 
@@ -312,7 +308,8 @@ class RefPortfolioManager:
             )
             tmp.replace(self._file)
             logger.debug(f"参考持仓已保存: {self._file}")
-        except Exception as e:
+        # Preserve atomic-save cleanup and re-raise every storage failure.
+        except Exception as e:  # noqa: BLE001
             logger.error(f"保存参考持仓失败: {e}")
             if tmp.exists():
                 try:
@@ -348,8 +345,10 @@ class RefPortfolioManager:
             重置后的空 RefPortfolio（已自动保存）
         """
         if inception_date is None:
-            inception_date = date.today().strftime("%Y-%m-%d")
-        now_str = date.today().strftime("%Y-%m-%d")
+            # Portfolio inception/reset uses the existing local calendar date.
+            inception_date = date.today().strftime("%Y-%m-%d")  # noqa: DTZ011
+        # Portfolio inception/reset uses the existing local calendar date.
+        now_str = date.today().strftime("%Y-%m-%d")  # noqa: DTZ011
         pf = RefPortfolio(
             inception_date=inception_date,
             cash=initial_capital,
@@ -371,300 +370,6 @@ class RefPortfolioManager:
         return pf
 
     # ── 调仓 ──
-
-    @staticmethod
-    def _alert_value(alert, key: str, default=""):
-        if isinstance(alert, dict):
-            return alert.get(key, default)
-        return getattr(alert, key, default)
-
-    def rebalance(
-        self,
-        pf: RefPortfolio,
-        alerts: list,
-        prices: dict[str, float],
-        trade_date: str,
-        monthly_buy_limit: float = REF_MONTHLY_LIMIT,
-        commission_rate: float = DEFAULT_COMMISSION_RATE,
-        lot_size: int = 100,
-        fx_rate: float = 1.0,
-        label: str = "",
-        force: bool = False,
-    ) -> tuple[RefPortfolio, list[Trade]]:
-        """根据策略信号和当前价格调仓。
-
-        Args:
-            pf: 当前参考持仓
-            alerts: StrategyAlert 列表（来自 SignalScanner）
-            prices: {stock_code: current_price} 现价表（原始货币）
-            trade_date: 调仓日期 YYYY-MM-DD
-            lot_size: 每手股数（A股=100, 美股=1）
-            commission_rate: 手续费率
-            monthly_buy_limit: 当日买入上限（CNY）
-            fx_rate: 汇率乘数（A股=1.0, 港股=0.9, 美股=7.0）
-            label: 分组标识（用于日志）
-
-        Returns:
-            (更新后的 RefPortfolio, 本次产生的 Trade 列表)
-        """
-        tag = f"[{label}]" if label else ""
-        logger.info(
-            f"参考持仓{tag} 调仓开始: {len(alerts)} 条信号, "
-            f"cash={pf.cash:,.0f}, 持仓={len(pf.holdings)}只, "
-            f"lot={lot_size}, fx={fx_rate}"
-        )
-
-        # ── 前置校验：周末不交易（force 模式跳过）──
-        try:
-            dt = datetime.strptime(trade_date, "%Y-%m-%d")
-            if not force and dt.weekday() >= 5:
-                logger.info(f"参考持仓{tag} 跳过调仓: {trade_date} 是周末")
-                return pf, []
-        except ValueError:
-            logger.warning(f"参考持仓{tag} 无法解析日期 {trade_date}")
-            return pf, []
-
-        # ── 分类信号 ──
-        buy_signals = []  # (stock_code, rule_id)
-        sell_signals = []  # (stock_code, rule_id)
-        skipped_alerts = 0
-
-        for alert in alerts:
-            code = str(self._alert_value(alert, "stock_code", ""))
-            rid = str(self._alert_value(alert, "rule_id", ""))
-            side = str(self._alert_value(alert, "side", "")).lower()
-            rtype = str(self._alert_value(alert, "type", ""))
-            rlabel = str(
-                self._alert_value(
-                    alert,
-                    "rule_label",
-                    self._alert_value(alert, "label", ""),
-                )
-            )
-            if not code:
-                skipped_alerts += 1
-                continue
-
-            is_buy = (
-                side == "buy"
-                or rtype == "strategy_buy"
-                or "buy" in rid.lower()
-            )
-            is_sell = (
-                side == "sell"
-                or rtype == "strategy_sell"
-                or "sell" in rid.lower()
-            )
-
-            if is_buy and not is_sell:
-                buy_signals.append((code, rid))
-                logger.debug(
-                    f"参考持仓{tag} 买入信号: {code} | {rlabel[:30]} | "
-                    f"type={rtype} rid={rid}"
-                )
-            elif is_sell and not is_buy:
-                sell_signals.append((code, rid))
-                logger.debug(
-                    f"参考持仓{tag} 卖出信号: {code} | {rlabel[:30]} | "
-                    f"type={rtype} rid={rid}"
-                )
-            else:
-                skipped_alerts += 1
-                logger.debug(
-                    f"参考持仓{tag} 跳过模糊信号: {code} "
-                    f"is_buy={is_buy} is_sell={is_sell} type={rtype} rid={rid}"
-                )
-
-        logger.info(
-            f"参考持仓{tag} 信号分类: 买{buy_signals} 卖{sell_signals} "
-            f"跳过{skipped_alerts}"
-        )
-
-        # ── 同日互斥 ──
-        buy_codes = {c for c, _ in buy_signals}
-        sell_codes = {c for c, _ in sell_signals}
-        conflict_codes = buy_codes & sell_codes
-        if conflict_codes:
-            logger.info(f"参考持仓{tag} 同日互斥取消: {conflict_codes}")
-            buy_signals = [(c, r) for c, r in buy_signals if c not in conflict_codes]
-            sell_signals = [(c, r) for c, r in sell_signals if c not in conflict_codes]
-
-        trades: list[Trade] = []
-        new_pf = RefPortfolio(
-            inception_date=pf.inception_date,
-            cash=pf.cash,
-            initial_capital=pf.initial_capital,
-            trading_days=pf.trading_days,
-            last_rebalance_date=pf.last_rebalance_date,
-            last_reset_date=pf.last_reset_date,
-            processed_events=list(pf.processed_events),
-            market_group=pf.market_group,
-            strategy_run_id=pf.strategy_run_id,
-            strategy_id=pf.strategy_id,
-            strategy_timestamp=pf.strategy_timestamp,
-            params_hash=pf.params_hash,
-            execution_hash=pf.execution_hash,
-            gross_dividend_cash=pf.gross_dividend_cash,
-            dividend_tax_cost=pf.dividend_tax_cost,
-            net_dividend_cash=pf.net_dividend_cash,
-            holdings={
-                k: Holding(v.code, v.shares, v.avg_cost, v.last_buy_date)
-                for k, v in pf.holdings.items()
-            },
-            trade_log=list(pf.trade_log),
-        )
-        day_buy_total = 0.0
-
-        # ── 1. 先执行卖出（释放现金）──
-        for code, rid in sell_signals:
-            h = new_pf.holdings.get(code)
-            if not h or h.shares <= 0:
-                logger.debug(f"参考持仓{tag} 卖出跳过 {code}: 无持仓")
-                continue
-            raw_price = prices.get(code, 0)
-            if raw_price <= 0:
-                logger.debug(f"参考持仓{tag} 卖出跳过 {code}: 无价格")
-                continue
-            price = raw_price * fx_rate  # → CNY
-
-            raw_shares = int(h.shares * DEFAULT_SELL_FRACTION)
-            sell_shares = (raw_shares // lot_size) * lot_size
-            if sell_shares <= 0:
-                logger.debug(
-                    f"参考持仓{tag} 卖出跳过 {code}: "
-                    f"不足一手 (持仓{h.shares}, 25%={raw_shares}, lot={lot_size})"
-                )
-                continue
-
-            gross = sell_shares * price
-            commission = gross * commission_rate
-            net = gross - commission
-
-            h.shares -= sell_shares
-            new_pf.cash += net
-
-            if h.shares <= 0:
-                del new_pf.holdings[code]
-
-            trade = Trade(
-                date=trade_date,
-                code=code,
-                action="sell",
-                shares=sell_shares,
-                price=round(price, 4),
-                cost=-gross,
-                reason=rid,
-                commission=commission,
-            )
-            trades.append(trade)
-            new_pf.trade_log.append(trade)
-            logger.info(
-                f"参考持仓{tag} 卖出: {code} {sell_shares}股 "
-                f"@CNY{price:.2f} 净收入 {net:.2f}"
-            )
-
-        # ── 2. 再执行买入 ──
-        for code, rid in buy_signals:
-            raw_price = prices.get(code, 0)
-            if raw_price <= 0:
-                logger.debug(f"参考持仓{tag} 买入跳过 {code}: 无价格")
-                continue
-            price = raw_price * fx_rate  # → CNY
-            price_cny = price
-
-            max_amount = min(
-                new_pf.cash * BUY_CASH_FRACTION, MAX_BUY_AMOUNT, new_pf.cash
-            )
-            if max_amount <= 0:
-                logger.debug(f"参考持仓{tag} 买入跳过 {code}: 现金不足")
-                continue
-
-            raw_shares = int(max_amount / price_cny)
-            buy_shares = (raw_shares // lot_size) * lot_size
-            if buy_shares <= 0:
-                logger.debug(
-                    f"参考持仓{tag} 买入跳过 {code}: "
-                    f"不足一手 (金额{max_amount:.0f}, 价CNY{price_cny:.2f}, "
-                    f"算得{raw_shares}股, lot={lot_size})"
-                )
-                continue
-
-            gross = buy_shares * price_cny
-            commission = gross * commission_rate
-            total_cost = gross + commission
-
-            if total_cost > new_pf.cash:
-                buy_shares = max(0, buy_shares - lot_size)
-                if buy_shares <= 0:
-                    logger.debug(
-                        f"参考持仓{tag} 买入跳过 {code}: "
-                        f"减一手后仍不足 (cost={total_cost:.0f} > cash={new_pf.cash:.0f})"
-                    )
-                    continue
-                gross = buy_shares * price_cny
-                commission = gross * commission_rate
-                total_cost = gross + commission
-
-            if total_cost > new_pf.cash:
-                logger.debug(
-                    f"参考持仓{tag} 买入跳过 {code}: "
-                    f"资金不足 (cost={total_cost:.0f} > cash={new_pf.cash:.0f})"
-                )
-                continue
-
-            if day_buy_total + gross > monthly_buy_limit:
-                logger.info(
-                    f"参考持仓{tag} 买入跳过 {code}: 当日买入超限 "
-                    f"({day_buy_total:.0f}+{gross:.0f}>{monthly_buy_limit})"
-                )
-                continue
-
-            new_pf.cash -= total_cost
-            day_buy_total += gross
-
-            if code in new_pf.holdings:
-                h = new_pf.holdings[code]
-                total_cost_basis = h.shares * h.avg_cost + total_cost
-                h.shares += buy_shares
-                h.avg_cost = total_cost_basis / h.shares if h.shares > 0 else price_cny
-                h.last_buy_date = trade_date
-            else:
-                new_pf.holdings[code] = Holding(
-                    code=code,
-                    shares=buy_shares,
-                    avg_cost=price_cny,
-                    last_buy_date=trade_date,
-                )
-
-            trade = Trade(
-                date=trade_date,
-                code=code,
-                action="buy",
-                shares=buy_shares,
-                price=round(price_cny, 4),
-                cost=gross,
-                reason=rid,
-                commission=commission,
-            )
-            trades.append(trade)
-            new_pf.trade_log.append(trade)
-            logger.info(
-                f"参考持仓{tag} 买入: {code} {buy_shares}股 "
-                f"@CNY{price_cny:.2f} 成本 {total_cost:.2f}"
-            )
-
-        # ── 更新统计 ──
-        if trades:
-            new_pf.last_rebalance_date = trade_date
-            new_pf.trading_days = pf.trading_days + (
-                1 if (pf.last_rebalance_date or "")[:10] != trade_date[:10] else 0
-            )
-
-        logger.info(
-            f"参考持仓{tag} 调仓结束: {len(trades)}笔交易, "
-            f"持仓{len(new_pf.holdings)}只, cash={new_pf.cash:,.0f}"
-        )
-        return new_pf, trades
 
     @staticmethod
     def _copy_portfolio(pf: RefPortfolio) -> RefPortfolio:
@@ -716,7 +421,8 @@ class RefPortfolioManager:
             cutoff = (
                 as_of_date
                 if isinstance(as_of_date, date)
-                else datetime.strptime(str(as_of_date)[:10], "%Y-%m-%d").date()
+                # Calendar-only input: retain naive dates for validation/day differences.
+                else datetime.strptime(str(as_of_date)[:10], "%Y-%m-%d").date()  # noqa: DTZ007
             )
         except ValueError as exc:
             raise ValueError(f"invalid corporate-action cutoff: {as_of_date}") from exc
@@ -751,7 +457,9 @@ class RefPortfolioManager:
             multiplier = getattr(action, "share_multiplier", None)
             rights_price = getattr(action, "rights_price", None)
             if rights_price is not None:
-                raise ValueError(f"unsupported reference rights issue: {code} {ex_date}")
+                raise ValueError(
+                    f"unsupported reference rights issue: {code} {ex_date}"
+                )
             if cash_per_share is None and multiplier is None:
                 raise ValueError(
                     f"unresolved reference corporate action: {code} {ex_date}"
@@ -773,7 +481,9 @@ class RefPortfolioManager:
                     )
                 per_share = float(cash_per_share) * scale
                 if not np.isfinite(per_share) or per_share < 0.0:
-                    raise ValueError(f"invalid reference cash dividend: {code} {ex_date}")
+                    raise ValueError(
+                        f"invalid reference cash dividend: {code} {ex_date}"
+                    )
                 gross = holding.shares * per_share
                 tax = gross * rate
                 net = gross - tax
@@ -910,8 +620,10 @@ class RefPortfolioManager:
             if holding is not None and holding.last_buy_date:
                 try:
                     held_days = (
-                        datetime.strptime(plan_date, "%Y-%m-%d")
-                        - datetime.strptime(holding.last_buy_date, "%Y-%m-%d")
+                        # Calendar-only input: retain naive dates for validation/day differences.
+                        datetime.strptime(plan_date, "%Y-%m-%d")  # noqa: DTZ007
+                        # Calendar-only input: retain naive dates for validation/day differences.
+                        - datetime.strptime(holding.last_buy_date, "%Y-%m-%d")  # noqa: DTZ007
                     ).days
                 except ValueError:
                     held_days = 10**9
@@ -990,11 +702,7 @@ class RefPortfolioManager:
         for column, code in enumerate(symbols):
             holding = new_pf.holdings.get(code)
             close = close_cny[column]
-            if (
-                holding is not None
-                and np.isfinite(close)
-                and close > 0
-            ):
+            if holding is not None and np.isfinite(close) and close > 0:
                 nav_before += holding.shares * close
 
         # Do not reduce young ordinary holdings merely to finance a new event.
@@ -1013,8 +721,10 @@ class RefPortfolioManager:
             if holding.last_buy_date:
                 try:
                     held_days = (
-                        datetime.strptime(plan_date, "%Y-%m-%d")
-                        - datetime.strptime(holding.last_buy_date, "%Y-%m-%d")
+                        # Calendar-only input: retain naive dates for validation/day differences.
+                        datetime.strptime(plan_date, "%Y-%m-%d")  # noqa: DTZ007
+                        # Calendar-only input: retain naive dates for validation/day differences.
+                        - datetime.strptime(holding.last_buy_date, "%Y-%m-%d")  # noqa: DTZ007
                     ).days
                 except ValueError:
                     held_days = 10**9
@@ -1025,9 +735,7 @@ class RefPortfolioManager:
             sell_price = float(lows[row, column]) * fx_rate
             if not np.isfinite(sell_price) or sell_price <= 0:
                 continue
-            quantity = int(
-                (current_value - target_value) / sell_price / lot
-            ) * lot
+            quantity = int((current_value - target_value) / sell_price / lot) * lot
             quantity = min(quantity, int(holding.shares / lot) * lot)
             if quantity > 0:
                 sell(
@@ -1124,7 +832,8 @@ class RefPortfolioManager:
             )
             return pf, []
         try:
-            parsed_trade_date = datetime.strptime(trade_date[:10], "%Y-%m-%d")
+            # Calendar-only input: retain naive dates for validation/day differences.
+            parsed_trade_date = datetime.strptime(trade_date[:10], "%Y-%m-%d")  # noqa: DTZ007
         except ValueError:
             logger.warning("参考持仓%s 无法解析日期 %s", tag, trade_date)
             return pf, []
@@ -1295,9 +1004,8 @@ class RefPortfolioManager:
                 if holding is None:
                     continue
                 buy_row = date_to_row.get(holding.last_buy_date)
-                if (
-                    buy_row is not None
-                    and row - buy_row < max(0, int(min_holding_days))
+                if buy_row is not None and row - buy_row < max(
+                    0, int(min_holding_days)
                 ):
                     continue
                 price = float(lows[row, column]) * scale
@@ -1325,9 +1033,7 @@ class RefPortfolioManager:
                 if not np.isfinite(price) or price <= 0 or new_pf.cash <= 0:
                     continue
                 budget = min(float(trade_plan.buy_cash_limit), new_pf.cash)
-                quantity = int(
-                    budget / (price * (1.0 + fee_rate)) / lot
-                ) * lot
+                quantity = int(budget / (price * (1.0 + fee_rate)) / lot) * lot
                 buy(int(column), quantity, "trade_plan_buy", eid)
         else:
             raise ValueError(f"Unsupported TradePlan execution model: {model}")
@@ -1380,7 +1086,8 @@ class RefPortfolioManager:
         if shares % lot_size:
             raise ValueError(f"shares must be a multiple of lot size {lot_size}")
         try:
-            datetime.strptime(trade_date, "%Y-%m-%d")
+            # Calendar-only input: retain naive dates for validation/day differences.
+            datetime.strptime(trade_date, "%Y-%m-%d")  # noqa: DTZ007
         except ValueError as exc:
             raise ValueError("trade_date must use YYYY-MM-DD") from exc
         price = float(price)
@@ -1410,9 +1117,7 @@ class RefPortfolioManager:
         else:
             target_shares = current_shares - shares
         if target_shares < 0:
-            raise ValueError(
-                f"sell shares exceed {code} holding ({current_shares})"
-            )
+            raise ValueError(f"sell shares exceed {code} holding ({current_shares})")
 
         delta = target_shares - current_shares
         new_pf = self._copy_portfolio(pf)

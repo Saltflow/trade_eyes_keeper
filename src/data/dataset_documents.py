@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import timezone
 from email.utils import parsedate_to_datetime
@@ -29,6 +30,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
 MAX_TEXT_BYTES = 8 * 1024 * 1024
 MAX_PDF_PAGES = 1000
+_DEFAULT_SIZE = object()
 PUBLIC_SOURCE_DOMAINS = (
     "cninfo.com.cn",
     "sse.com.cn",
@@ -161,10 +163,17 @@ def _retry_after(value: str | None) -> float:
 
 
 def download_document(
-    url, destination, deadline, stop, wait_request, *, max_bytes=None
+    url,
+    destination,
+    deadline,
+    stop,
+    wait_request,
+    *,
+    max_bytes=_DEFAULT_SIZE,
+    minimum_free_bytes=0,
 ):
-    """Stream with bounded size, time and validated IP-pinned redirects."""
-    max_bytes = MAX_DOCUMENT_BYTES if max_bytes is None else max_bytes
+    """Stream to disk; explicit None removes only the per-document size cap."""
+    max_bytes = MAX_DOCUMENT_BYTES if max_bytes is _DEFAULT_SIZE else max_bytes
     current = url
     for redirect in range(4):
         if stop.is_set() or time.monotonic() >= deadline:
@@ -193,6 +202,8 @@ def download_document(
                 current = urljoin(current, location)
                 continue
             if response.status != 200:
+                if response.status in {400, 401, 403, 404, 410}:
+                    raise DocumentBlocked(f"source_http_{response.status}")
                 raise DocumentFailure(
                     f"source_http_{response.status}",
                     _retry_after(response.getheader("Retry-After")),
@@ -201,7 +212,7 @@ def download_document(
             if encoding != "identity":
                 raise DocumentBlocked("compressed_http_body_not_supported")
             length = response.getheader("Content-Length")
-            if length and int(length) > max_bytes:
+            if max_bytes is not None and length and int(length) > max_bytes:
                 raise DocumentBlocked("document_exceeds_size_limit")
             size = 0
             with Path(destination).open("wb") as output:
@@ -211,12 +222,18 @@ def download_document(
                         raise DocumentFailure("download_interrupted_or_timed_out")
                     if connection.sock is not None:
                         connection.sock.settimeout(min(30, max(0.1, remaining)))
-                    block = response.read1(min(65536, max_bytes + 1 - size))
+                    block = response.read1(
+                        65536 if max_bytes is None else min(65536, max_bytes + 1 - size)
+                    )
                     if not block:
                         break
                     size += len(block)
-                    if size > max_bytes:
+                    if max_bytes is not None and size > max_bytes:
                         raise DocumentBlocked("document_exceeds_size_limit")
+                    if minimum_free_bytes and shutil.disk_usage(
+                        Path(destination).parent
+                    ).free < minimum_free_bytes + len(block):
+                        raise DocumentBlocked("disk_space_reserve_reached")
                     output.write(block)
                 output.flush()
                 os.fsync(output.fileno())
@@ -388,6 +405,8 @@ class DatasetDocumentWorker:
         min_interval=3.0,
         max_document_bytes=MAX_DOCUMENT_BYTES,
         max_pdf_pages=MAX_PDF_PAGES,
+        minimum_free_bytes=0,
+        document_timeout_seconds=120,
     ):
         if not 3 <= min_interval <= 3600:
             raise ValueError("min_interval must be between 3 and 3600 seconds")
@@ -399,12 +418,22 @@ class DatasetDocumentWorker:
             raise ValueError("document worker requires the project's fixed catalog DB")
         self.stop = stop or threading.Event()
         self.min_interval = float(min_interval)
-        if not 1024 <= max_document_bytes <= 50 * 1024 * 1024:
-            raise ValueError("max_document_bytes must be 1 KiB..50 MiB")
+        if max_document_bytes is not None and (
+            type(max_document_bytes) is not int or max_document_bytes < 1024
+        ):
+            raise ValueError("max_document_bytes must be None or an integer >= 1 KiB")
+        if type(minimum_free_bytes) is not int or minimum_free_bytes < 0:
+            raise ValueError("minimum_free_bytes must be a nonnegative integer")
+        if not 1 <= document_timeout_seconds <= 86400:
+            raise ValueError("document_timeout_seconds must be 1..86400")
         if type(max_pdf_pages) is not int or not 1 <= max_pdf_pages <= MAX_PDF_PAGES:
             raise ValueError("max_pdf_pages is out of range")
         self.max_document_bytes = max_document_bytes
         self.max_pdf_pages = max_pdf_pages
+        self.minimum_free_bytes = minimum_free_bytes
+        self.document_timeout_seconds = document_timeout_seconds
+        self._archive_locks = {}
+        self._archive_locks_guard = threading.Lock()
         self.lock_path = self.output / ".worker.lock"
 
     @contextmanager
@@ -462,7 +491,10 @@ class DatasetDocumentWorker:
                 continue
             try:
                 path = self._safe_path(value)
-                if path.is_file() and path.stat().st_size <= self.max_document_bytes:
+                if path.is_file() and (
+                    self.max_document_bytes is None
+                    or path.stat().st_size <= self.max_document_bytes
+                ):
                     with path.open("rb") as handle:
                         if handle.read(8).startswith(b"%PDF-"):
                             return True
@@ -527,19 +559,24 @@ class DatasetDocumentWorker:
         return path
 
     def _wait_request(self, deadline):
-        with self._db() as db:
-            row = db.execute(
-                "SELECT next_request_at FROM document_download_rate WHERE id=1"
-            ).fetchone()
-        delay = max(0, (row[0] if row else 0) - time.time())
-        remaining = deadline - time.monotonic()
-        if delay >= remaining or self.stop.wait(delay):
-            raise DocumentFailure("rate_wait_interrupted_or_timed_out")
-        with self._db() as db:
-            db.execute(
-                "INSERT OR REPLACE INTO document_download_rate VALUES (1,?)",
-                (time.time() + self.min_interval,),
-            )
+        # Claim a current slot atomically; sleepers recheck provider Retry-After.
+        while not self.stop.is_set():
+            with self._db() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT next_request_at FROM document_download_rate WHERE id=1"
+                ).fetchone()
+                now = time.time()
+                delay = max(0, (row[0] if row else 0) - now)
+                if delay == 0:
+                    db.execute(
+                        "INSERT OR REPLACE INTO document_download_rate VALUES (1,?)",
+                        (now + self.min_interval,),
+                    )
+                    return
+            if delay >= deadline - time.monotonic() or self.stop.wait(delay):
+                break
+        raise DocumentFailure("rate_wait_interrupted_or_timed_out")
 
     def _set(self, job_id, status, *, error="", result=None, next_attempt_at=0):
         with self._db() as db:
@@ -563,7 +600,9 @@ class DatasetDocumentWorker:
             for prefix in ("pdf", "text"):
                 path = self._safe_path(result[f"{prefix}_path"])
                 maximum = self.max_document_bytes if prefix == "pdf" else MAX_TEXT_BYTES
-                if not path.is_file() or path.stat().st_size > maximum:
+                if not path.is_file() or (
+                    maximum is not None and path.stat().st_size > maximum
+                ):
                     return False
                 if (
                     hashlib.sha256(path.read_bytes()).hexdigest()
@@ -678,7 +717,10 @@ class DatasetDocumentWorker:
         temporary = directory / "download.part"
         try:
             if original is not None:
-                if original.stat().st_size > self.max_document_bytes:
+                if (
+                    self.max_document_bytes is not None
+                    and original.stat().st_size > self.max_document_bytes
+                ):
                     raise DocumentBlocked("cached_document_exceeds_size_limit")
                 if original != pdf:
                     shutil.copyfile(original, self._safe_path(pdf))
@@ -691,6 +733,8 @@ class DatasetDocumentWorker:
                     if self.max_document_bytes != MAX_DOCUMENT_BYTES
                     else {}
                 )
+                if self.minimum_free_bytes:
+                    download_arguments["minimum_free_bytes"] = self.minimum_free_bytes
                 result["download"] = download_document(
                     job["source_url"],
                     self._safe_path(temporary),
@@ -750,7 +794,106 @@ class DatasetDocumentWorker:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def run(self, *, max_documents=20, max_seconds=300, job_ids=None):
+    def _claim_job(self, job):
+        job_id = job["job_id"]
+        with self._db() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO document_downloads(job_id,status,updated) VALUES (?,'pending',?)",
+                (job_id, time.time()),
+            )
+            row = db.execute(
+                "SELECT * FROM document_downloads WHERE job_id=?", (job_id,)
+            ).fetchone()
+            if row["status"] == "succeeded" and not self._result_intact(row):
+                db.execute(
+                    "UPDATE document_downloads SET status='pending',error='archived_document_missing_or_changed',next_attempt_at=0 WHERE job_id=?",
+                    (job_id,),
+                )
+                row = db.execute(
+                    "SELECT * FROM document_downloads WHERE job_id=?", (job_id,)
+                ).fetchone()
+            fingerprint = hashlib.sha256(
+                json.dumps(
+                    [job.get("source_url"), job.get("existing_paths", [])],
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+            if row["status"] == "blocked" and (
+                row["input_fingerprint"] != fingerprint
+                or (
+                    self.max_document_bytes is None
+                    and row["error"]
+                    in {
+                        "document_exceeds_size_limit",
+                        "cached_document_exceeds_size_limit",
+                    }
+                )
+            ):
+                db.execute(
+                    "UPDATE document_downloads SET status='pending',error='',next_attempt_at=0 WHERE job_id=?",
+                    (job_id,),
+                )
+                row = db.execute(
+                    "SELECT * FROM document_downloads WHERE job_id=?", (job_id,)
+                ).fetchone()
+            if (
+                row["status"] in {"succeeded", "blocked"}
+                or row["next_attempt_at"] > time.time()
+            ):
+                return None
+            db.execute(
+                "UPDATE document_downloads SET status='running',attempts=attempts+1,updated=?,input_fingerprint=? WHERE job_id=?",
+                (time.time(), fingerprint, job_id),
+            )
+        return dict(row)
+
+    def _execute_job(self, job, row, deadline):
+        # One archive per URL even when catalog aliases refer to the same PDF.
+        with self._archive_locks_guard:
+            archive_lock = self._archive_locks.setdefault(
+                job.get("source_url") or job["job_id"], threading.Lock()
+            )
+        with archive_lock:
+            return self._execute_archive(job, row, deadline)
+
+    def _execute_archive(self, job, row, deadline):
+        job_id = job["job_id"]
+        try:
+            result = self._archive(
+                job, min(deadline, time.monotonic() + self.document_timeout_seconds)
+            )
+            status = (
+                "succeeded" if result.get("status") == "text_extracted" else "blocked"
+            )
+            self._set(
+                job_id,
+                status,
+                result=result,
+                error=""
+                if status == "succeeded"
+                else result.get("status", "incomplete_document"),
+            )
+        except DocumentBlocked as exc:
+            status = "blocked"
+            self._set(job_id, status, error=str(exc))
+        except Exception as exc:  # noqa: BLE001 - persist failure of one source
+            status = "failed"
+            # Exceptions may contain URLs or provider response bodies.
+            error = str(exc) if isinstance(exc, DocumentFailure) else type(exc).__name__
+            retry = max(
+                60 * 2 ** min(row["attempts"], 8),
+                getattr(exc, "retry_after", 0),
+            )
+            self._set(job_id, status, error=error, next_attempt_at=time.time() + retry)
+            if getattr(exc, "retry_after", 0):
+                with self._db() as db:
+                    db.execute(
+                        "INSERT INTO document_download_rate VALUES (1,?) ON CONFLICT(id) DO UPDATE SET next_request_at=MAX(next_request_at,excluded.next_request_at)",
+                        (time.time() + exc.retry_after,),
+                    )
+        return {"job_id": job_id, "status": status}
+
+    def run(self, *, max_documents=20, max_seconds=300, job_ids=None, workers=1):
         if type(max_documents) is not int or not 1 <= max_documents <= 10000:
             raise ValueError("max_documents must be 1..10000")
         if type(max_seconds) not in {int, float} or not 1 <= max_seconds <= 86400:
@@ -761,10 +904,12 @@ class DatasetDocumentWorker:
             or any(not isinstance(value, str) for value in job_ids)
         ):
             raise ValueError("job_ids must contain 1..100 strings")
+        if type(workers) is not int or workers not in {1, 2, 3}:
+            raise ValueError("workers must be 1, 2 or 3")
         filters = {"job_ids": job_ids} if job_ids is not None else {}
         self._initialize()
         deadline = time.monotonic() + max_seconds
-        processed = []
+        processed, selected = [], []
         with document_worker_lock(self.lock_path) as acquired:
             if not acquired:
                 raise RuntimeError("A document backfill worker already holds the lock")
@@ -802,94 +947,27 @@ class DatasetDocumentWorker:
                 if (
                     self.stop.is_set()
                     or time.monotonic() >= deadline
-                    or len(processed) >= max_documents
+                    or len(processed) + len(selected) >= max_documents
                 ):
                     break
                 if not job.get("source_url") and not self._has_cached_pdf(job):
                     continue
-                job_id = job["job_id"]
-                with self._db() as db:
-                    db.execute(
-                        "INSERT OR IGNORE INTO document_downloads(job_id,status,updated) VALUES (?,'pending',?)",
-                        (job_id, time.time()),
+                row = self._claim_job(job)
+                if row is None:
+                    continue
+                if workers == 1:
+                    processed.append(self._execute_job(job, row, deadline))
+                else:
+                    selected.append((job, row))
+            if workers > 1:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = [
+                        pool.submit(self._execute_job, job, row, deadline)
+                        for job, row in selected
+                    ]
+                    processed.extend(
+                        future.result() for future in as_completed(futures)
                     )
-                    row = db.execute(
-                        "SELECT * FROM document_downloads WHERE job_id=?", (job_id,)
-                    ).fetchone()
-                    if row["status"] == "succeeded" and not self._result_intact(row):
-                        db.execute(
-                            "UPDATE document_downloads SET status='pending',error='archived_document_missing_or_changed',next_attempt_at=0 WHERE job_id=?",
-                            (job_id,),
-                        )
-                        row = db.execute(
-                            "SELECT * FROM document_downloads WHERE job_id=?", (job_id,)
-                        ).fetchone()
-                    fingerprint = hashlib.sha256(
-                        json.dumps(
-                            [job.get("source_url"), job.get("existing_paths", [])],
-                            sort_keys=True,
-                        ).encode()
-                    ).hexdigest()
-                    if (
-                        row["status"] == "blocked"
-                        and row["input_fingerprint"] != fingerprint
-                    ):
-                        db.execute(
-                            "UPDATE document_downloads SET status='pending',error='',next_attempt_at=0 WHERE job_id=?",
-                            (job_id,),
-                        )
-                        row = db.execute(
-                            "SELECT * FROM document_downloads WHERE job_id=?", (job_id,)
-                        ).fetchone()
-                    if (
-                        row["status"] in {"succeeded", "blocked"}
-                        or row["next_attempt_at"] > time.time()
-                    ):
-                        continue
-                    db.execute(
-                        "UPDATE document_downloads SET status='running',attempts=attempts+1,updated=?,input_fingerprint=? WHERE job_id=?",
-                        (time.time(), fingerprint, job_id),
-                    )
-                try:
-                    result = self._archive(job, min(deadline, time.monotonic() + 120))
-                    status = (
-                        "succeeded"
-                        if result.get("status") == "text_extracted"
-                        else "blocked"
-                    )
-                    self._set(
-                        job_id,
-                        status,
-                        result=result,
-                        error=""
-                        if status == "succeeded"
-                        else result.get("status", "incomplete_document"),
-                    )
-                except DocumentBlocked as exc:
-                    status = "blocked"
-                    self._set(job_id, status, error=str(exc))
-                except Exception as exc:  # noqa: BLE001 - persist failure of one source
-                    status = "failed"
-                    # Exceptions may contain URLs or provider response bodies.
-                    error = (
-                        str(exc)
-                        if isinstance(exc, DocumentFailure)
-                        else type(exc).__name__
-                    )
-                    retry = max(
-                        60 * 2 ** min(row["attempts"], 8),
-                        getattr(exc, "retry_after", 0),
-                    )
-                    self._set(
-                        job_id, status, error=error, next_attempt_at=time.time() + retry
-                    )
-                    if getattr(exc, "retry_after", 0):
-                        with self._db() as db:
-                            db.execute(
-                                "INSERT INTO document_download_rate VALUES (1,?) ON CONFLICT(id) DO UPDATE SET next_request_at=MAX(next_request_at,excluded.next_request_at)",
-                                (time.time() + exc.retry_after,),
-                            )
-                processed.append({"job_id": job_id, "status": status})
         with self._db() as db:
             counts = {
                 row["status"]: row["count"]

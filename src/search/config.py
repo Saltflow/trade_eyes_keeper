@@ -23,7 +23,7 @@ import os
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional as _Optional
+from typing import Mapping, Optional as _Optional
 
 import numpy as np
 import pandas as _pd
@@ -49,6 +49,148 @@ MARKET_CONFIG_FIELDS = (
     "execution_profile",
     "benchmark_profile",
 )
+
+
+@dataclass(frozen=True)
+class EvaluationHorizonPolicy:
+    """One fail-closed horizon policy for production and research evidence.
+
+    Unit-test fixtures may construct ``StrategyConstraints`` directly with a
+    tiny synthetic calendar.  Every runnable market optimizer and research
+    CLI, however, resolves this policy from the central YAML contract before
+    it can emit an evaluative result.
+    """
+
+    contract: str = "minimum-two-year-evaluation/1"
+    minimum_evaluation_months: int = 24
+    daily_portfolio_history_months: int = 36
+    default_backtest_months: int = 36
+    default_research_horizon_profile: str = "existing_data_66m_24m"
+
+    @classmethod
+    def from_mapping(
+        cls,
+        raw: Mapping[str, object] | None,
+        *,
+        required: bool = False,
+    ) -> "EvaluationHorizonPolicy":
+        if raw is None:
+            if required:
+                raise ValueError("evaluation_horizon_policy is required")
+            return cls()
+        if not isinstance(raw, Mapping):
+            raise ValueError("evaluation_horizon_policy must be a mapping")
+        try:
+            policy = cls(
+                contract=str(raw.get("contract", cls.contract)).strip(),
+                minimum_evaluation_months=int(
+                    raw.get("minimum_evaluation_months", cls.minimum_evaluation_months)
+                ),
+                daily_portfolio_history_months=int(
+                    raw.get(
+                        "daily_portfolio_history_months",
+                        cls.daily_portfolio_history_months,
+                    )
+                ),
+                default_backtest_months=int(
+                    raw.get("default_backtest_months", cls.default_backtest_months)
+                ),
+                default_research_horizon_profile=str(
+                    raw.get(
+                        "default_research_horizon_profile",
+                        cls.default_research_horizon_profile,
+                    )
+                ).strip(),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid evaluation_horizon_policy") from exc
+        if not policy.contract:
+            raise ValueError("evaluation_horizon_policy.contract cannot be empty")
+        if policy.minimum_evaluation_months < 24:
+            raise ValueError(
+                "evaluation_horizon_policy.minimum_evaluation_months must be "
+                "at least 24"
+            )
+        if policy.daily_portfolio_history_months < policy.minimum_evaluation_months:
+            raise ValueError(
+                "daily_portfolio_history_months must cover the minimum "
+                "evaluation horizon"
+            )
+        if policy.default_backtest_months < policy.minimum_evaluation_months:
+            raise ValueError(
+                "default_backtest_months must cover the minimum evaluation horizon"
+            )
+        if not policy.default_research_horizon_profile:
+            raise ValueError(
+                "evaluation_horizon_policy.default_research_horizon_profile "
+                "cannot be empty"
+            )
+        return policy
+
+    def require_evaluation_months(self, months: int, *, context: str) -> None:
+        if int(months) < self.minimum_evaluation_months:
+            raise ValueError(
+                f"{context} uses {int(months)} months; the central policy requires "
+                f"at least {self.minimum_evaluation_months} months"
+            )
+
+    @property
+    def minimum_evaluation_trading_days(self) -> int:
+        """Conservative trading-day equivalent for the minimum calendar span."""
+
+        return max(2, self.minimum_evaluation_months * 21)
+
+    @property
+    def default_backtest_trading_days(self) -> int:
+        """Configured CLI default, expressed in daily observations."""
+
+        return max(2, self.default_backtest_months * 21)
+
+    def to_contract(self) -> dict[str, object]:
+        return {
+            "contract": self.contract,
+            "minimum_evaluation_months": self.minimum_evaluation_months,
+            "daily_portfolio_history_months": self.daily_portfolio_history_months,
+            "default_backtest_months": self.default_backtest_months,
+            "default_research_horizon_profile": self.default_research_horizon_profile,
+        }
+
+
+@dataclass(frozen=True)
+class ResearchHorizon:
+    """A centrally declared window geometry for offline research CLIs."""
+
+    profile_id: str
+    state_boundary_months: int
+    test_months: int
+    step_months: int
+    total_windows: int
+    warmup_windows: int
+    ranking_windows: int
+    purged_windows: int
+    holdout_windows: int
+
+    @property
+    def total_months_needed(self) -> int:
+        return (
+            self.state_boundary_months
+            + self.test_months
+            + (self.total_windows - 1) * self.step_months
+        )
+
+    def to_contract(self) -> dict[str, int | str]:
+        return {
+            "profile": self.profile_id,
+            "state_boundary_months": self.state_boundary_months,
+            "test_months": self.test_months,
+            "step_months": self.step_months,
+            "total_windows": self.total_windows,
+            "warmup_windows": self.warmup_windows,
+            "ranking_windows": self.ranking_windows,
+            "purged_windows": self.purged_windows,
+            "holdout_windows": self.holdout_windows,
+            "total_months_needed": self.total_months_needed,
+        }
 
 # ═══════════════════════════════════════════════════════════════
 # 执行配置
@@ -92,9 +234,12 @@ class WalkForwardConfig:
         # Compatibility alias for old artifacts/tests. This period initializes
         # indicators and signal state; it never contains Solver observations.
         self.train_months: int = self.state_lookback_months
-        self.test_months: int = data.get("test_months", 9)
-        self.step_months: int = data.get("step_months", 3)
-        self.num_windows: int = data.get("num_windows", 6)
+        # Safe defaults mirror the one central evidence policy. Production
+        # configs still name every field explicitly, but an omitted field must
+        # never silently resurrect the retired nine-month contract.
+        self.test_months: int = data.get("test_months", 24)
+        self.step_months: int = data.get("step_months", 12)
+        self.num_windows: int = data.get("num_windows", 5)
         self.window_weights: list[float] = data.get(
             "window_weights", [1.0] * self.num_windows
         )
@@ -112,12 +257,12 @@ class WalkForwardConfig:
         # The newest N windows are held out.  They are for the daily report
         # validation only and must never be used to rank, filter, mutate, or
         # otherwise select a search candidate.
-        self.validation_windows: int = max(0, int(data.get("validation_windows", 0)))
-        # A 9-month test window advanced every 3 months overlaps the next two
-        # windows.  When enabled, those overlapping historical windows are
-        # purged before ranking so a daily-report hold-out is truly unseen.
+        self.validation_windows: int = max(1, int(data.get("validation_windows", 1)))
+        # A test span longer than its step overlaps preceding windows. When
+        # enabled, those overlapping historical windows are purged before
+        # ranking so the continuous holdout is not used indirectly.
         self.purge_overlapping_windows: bool = bool(
-            data.get("purge_overlapping_windows", False)
+            data.get("purge_overlapping_windows", True)
         )
 
     @property
@@ -199,7 +344,7 @@ class WalkForwardConfig:
 
     @property
     def test_months_calendar_days(self) -> int:
-        return 273 if self.test_months == 9 else max(self.test_months * 30, 1)
+        return max(int(np.ceil(self.test_months * 365.2425 / 12.0)), 1)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -216,15 +361,12 @@ class GeneticSearchConfig:
         self.offspring_size: int = data.get("offspring_size", 5000)
         self.crossover_rate: float = data.get("crossover_rate", 0.70)
         self.mutation_rate: float = data.get("mutation_rate", 0.30)
-        self.mutation_builder_rate: float = data.get("mutation_builder_rate", 0.20)
-        self.mutation_threshold_step: int = data.get("mutation_threshold_step", 2)
         self.random_seed: int | None = (
             int(data["random_seed"]) if data.get("random_seed") is not None else None
         )
         self.sensitivity_top_candidates: int = max(
             1, int(data.get("sensitivity_top_candidates", 500))
         )
-        self.sensitivity_samples: int = max(1, int(data.get("sensitivity_samples", 10)))
         self.sensitivity_penalty_weight: float = max(
             0.0, float(data.get("sensitivity_penalty_weight", 1.0))
         )
@@ -464,6 +606,9 @@ class StrategyConstraints:
         sc = raw_config.get("soft_constraints", {})
         self.min_sharpe: float = sc.get("min_sharpe", 0.5)
         self.sharpe_penalty_weight: float = sc.get("sharpe_penalty_weight", 0.3)
+        self.evaluation_horizon = EvaluationHorizonPolicy.from_mapping(
+            raw_config.get("evaluation_horizon_policy"), required=False
+        )
         self.walk_forward = WalkForwardConfig(raw_config.get("walk_forward", {}))
         self.search = SearchRuntimeConfig(
             raw_config.get("search", {}), raw_config.get("genetic_search", {})
@@ -593,6 +738,7 @@ class MarketOptimizerConfig:
             "walk_forward_profile": self.walk_forward_profile,
             "execution_profile": self.execution_profile,
             "benchmark_profile": self.benchmark_profile,
+            "evaluation_horizon": self.constraints.evaluation_horizon.to_contract(),
             "config_hash": self.config_hash,
         }
 
@@ -610,7 +756,7 @@ class WindowStats:
         avg_position_pct: float = 0.0,
         sharpe_ratio: float = 0.0,
         total_trades: int = 0,
-        test_months: int = 9,
+        test_months: int = 24,
         benchmark_returns: dict[str, float] | None = None,
         strategy_return: float = 0.0,
         initial_asset: float = 0.0,
@@ -790,6 +936,114 @@ def _load_yaml_mapping(path: Path) -> dict:
     return raw
 
 
+def load_evaluation_horizon_policy(
+    path: Path | str | None = None,
+) -> EvaluationHorizonPolicy:
+    """Load the one authoritative minimum-duration policy.
+
+    This intentionally has no silent nine-month fallback: runnable research
+    and production entry points must name a valid central configuration.
+    """
+
+    config_path = Path(path) if path else DEFAULT_PATH
+    raw = _load_yaml_mapping(config_path)
+    return EvaluationHorizonPolicy.from_mapping(
+        raw.get("evaluation_horizon_policy"), required=True
+    )
+
+
+def load_research_horizon(
+    path: Path | str | None = None,
+    profile_id: str | None = None,
+) -> ResearchHorizon:
+    """Resolve one centrally configured ≥24-month offline research geometry."""
+
+    config_path = Path(path) if path else DEFAULT_PATH
+    raw = _load_yaml_mapping(config_path)
+    policy = EvaluationHorizonPolicy.from_mapping(
+        raw.get("evaluation_horizon_policy"), required=True
+    )
+    profiles = raw.get("research_horizon_profiles")
+    if not isinstance(profiles, Mapping):
+        raise ValueError("research_horizon_profiles must be a mapping")
+    selected = str(profile_id or policy.default_research_horizon_profile).strip()
+    item = profiles.get(selected)
+    if not isinstance(item, Mapping):
+        raise ValueError(f"unknown research horizon profile: {selected!r}")
+    required = (
+        "state_boundary_months",
+        "test_months",
+        "step_months",
+        "total_windows",
+        "warmup_windows",
+        "ranking_windows",
+        "purged_windows",
+        "holdout_windows",
+    )
+    missing = [key for key in required if key not in item]
+    if missing:
+        raise ValueError(
+            f"research horizon profile {selected!r} is missing fields: {missing}"
+        )
+    try:
+        horizon = ResearchHorizon(
+            profile_id=selected,
+            state_boundary_months=int(item["state_boundary_months"]),
+            test_months=int(item["test_months"]),
+            step_months=int(item["step_months"]),
+            total_windows=int(item["total_windows"]),
+            warmup_windows=int(item["warmup_windows"]),
+            ranking_windows=int(item["ranking_windows"]),
+            purged_windows=int(item["purged_windows"]),
+            holdout_windows=int(item["holdout_windows"]),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid research horizon profile: {selected!r}") from exc
+    if horizon.state_boundary_months < 0:
+        raise ValueError("research state_boundary_months cannot be negative")
+    if horizon.step_months <= 0 or horizon.total_windows <= 0:
+        raise ValueError(
+            "research horizon step_months and total_windows must be positive"
+        )
+    policy.require_evaluation_months(
+        horizon.test_months, context=f"research horizon {selected!r}"
+    )
+    counts = (
+        horizon.warmup_windows
+        + horizon.ranking_windows
+        + horizon.purged_windows
+        + horizon.holdout_windows
+    )
+    if (
+        min(
+            horizon.warmup_windows,
+            horizon.ranking_windows,
+            horizon.purged_windows,
+            horizon.holdout_windows,
+        )
+        < 0
+        or counts != horizon.total_windows
+    ):
+        raise ValueError(
+            f"research horizon {selected!r} partition must sum to total_windows"
+        )
+    if horizon.holdout_windows != 1:
+        raise ValueError(
+            "research horizon requires exactly one continuous held-out window"
+        )
+    if horizon.ranking_windows < 1:
+        raise ValueError("research horizon requires at least one ranking window")
+    required_purged_windows = max(
+        0, int(np.ceil(horizon.test_months / horizon.step_months)) - 1
+    )
+    if horizon.purged_windows < required_purged_windows:
+        raise ValueError(
+            "research horizon must purge every ranking window that overlaps "
+            "the holdout"
+        )
+    return horizon
+
+
 def _profile_mapping(raw: dict, section: str, profile_id: str, group: str) -> dict:
     profiles = raw.get(section)
     if not isinstance(profiles, dict):
@@ -897,6 +1151,9 @@ def _resolved_market_raw(
         raw, "execution_profiles", execution_profile, group
     )
     walk_forward = raw["walk_forward"]
+    horizon_policy = EvaluationHorizonPolicy.from_mapping(
+        constraints_raw.get("evaluation_horizon_policy"), required=True
+    )
     required_wf_fields = (
         "state_lookback_months",
         "test_months",
@@ -925,6 +1182,36 @@ def _resolved_market_raw(
             raise ValueError("Walk-Forward lengths and data_years must be positive")
         if float(walk_forward["validation_windows"]) < 0:
             raise ValueError("validation_windows cannot be negative")
+        horizon_policy.require_evaluation_months(
+            int(walk_forward["test_months"]),
+            context=f"{group}: {walk_forward_profile}",
+        )
+        if int(walk_forward["validation_windows"]) < 1:
+            raise ValueError(
+                f"{group}: {walk_forward_profile} requires at least one "
+                "24-month holdout"
+            )
+        resolved_horizon = WalkForwardConfig(walk_forward)
+        if resolved_horizon.held_out_window_count != 1:
+            raise ValueError(
+                "Walk-Forward requires exactly one continuous held-out window"
+            )
+        if (
+            resolved_horizon.holdout_calendar_span_months
+            < horizon_policy.minimum_evaluation_months
+        ):
+            raise ValueError(
+                "Walk-Forward holdout is shorter than the central evaluation horizon"
+            )
+        if (
+            resolved_horizon.step_months < resolved_horizon.test_months
+            and not resolved_horizon.purge_overlapping_windows
+        ):
+            raise ValueError("overlapping Walk-Forward windows require a purge")
+        if resolved_horizon.independent_ranking_window_count < 1:
+            raise ValueError(
+                "Walk-Forward requires at least one independent ranking window"
+            )
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{group}: invalid Walk-Forward profile") from exc
 

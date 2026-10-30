@@ -155,14 +155,14 @@ def test_workflow_saves_solver_gate_contracts_even_when_all_candidates_fail(tmp_
         "benchmarks": {"a_share": ["510880", "510300", "risk_free"]},
         "walk_forward": {
             "train_months": 6,
-            "test_months": 3,
-            "step_months": 2,
-            "num_windows": 3,
+            "test_months": 24,
+            "step_months": 24,
+            "num_windows": 2,
             "validation_windows": 1,
             "purge_overlapping_windows": False,
-            "window_weights": [1, 1],
+            "window_weights": [1],
         },
-        "genetic_search": {"sensitivity_top_candidates": 1, "sensitivity_samples": 2},
+        "genetic_search": {"sensitivity_top_candidates": 1},
         "search": {
             "solver_id": "random",
             "gate_profile": "reject_all",
@@ -187,7 +187,7 @@ def test_workflow_saves_solver_gate_contracts_even_when_all_candidates_fail(tmp_
     }
     history = pd.DataFrame(
         {
-            "date": pd.date_range("2023-01-02", periods=520, freq="B"),
+            "date": pd.date_range("2023-01-02", periods=1_200, freq="B"),
             "open": 10.0,
             "high": 11.0,
             "low": 9.0,

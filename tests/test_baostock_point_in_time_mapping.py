@@ -175,7 +175,6 @@ def test_baostock_socket_timeout_is_bounded_and_restored(tmp_path):
     with pytest.raises(RuntimeError, match="timed out"):
         provider.fetch("601398", date(2020, 1, 1), date(2026, 1, 1))
 
-    # A rejected login must not spend another provider request on logout.
     assert module.observed_timeouts == [7.0]
     assert not module.logout_called
     assert socket.getdefaulttimeout() == previous

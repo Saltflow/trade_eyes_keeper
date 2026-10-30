@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 import yaml
 
 import src.search.evaluator as evaluator_module
@@ -36,6 +37,47 @@ def _history(rows=520):
     )
 
 
+@pytest.mark.parametrize(
+    ("walk_forward", "message"),
+    [
+        (
+            {
+                "state_lookback_months": 6,
+                "test_months": 23,
+                "step_months": 23,
+                "num_windows": 2,
+                "validation_windows": 1,
+            },
+            "at least 24 months",
+        ),
+        (
+            {
+                "state_lookback_months": 6,
+                "test_months": 24,
+                "step_months": 24,
+                "num_windows": 0,
+                "validation_windows": 0,
+            },
+            "exactly one continuous held-out",
+        ),
+    ],
+)
+def test_run_optimizer_rejects_noncurrent_evidence_contract(
+    tmp_path, walk_forward, message
+):
+    constraints = StrategyConstraints({"walk_forward": walk_forward})
+
+    with pytest.raises(ValueError, match=message):
+        run_optimizer(
+            get_strategy("percentile"),
+            {},
+            [],
+            group="a_share",
+            _constraints=constraints,
+            output_dir=tmp_path,
+        )
+
+
 def test_run_optimizer_uses_configured_solver_and_persists_contracts(tmp_path):
     raw = {
         "benchmarks": {
@@ -44,16 +86,15 @@ def test_run_optimizer_uses_configured_solver_and_persists_contracts(tmp_path):
         },
         "walk_forward": {
             "train_months": 6,
-            "test_months": 3,
-            "step_months": 2,
-            "num_windows": 3,
+            "test_months": 24,
+            "step_months": 24,
+            "num_windows": 2,
             "validation_windows": 1,
             "purge_overlapping_windows": False,
-            "window_weights": [1, 1],
+            "window_weights": [1],
         },
         "genetic_search": {
             "sensitivity_top_candidates": 1,
-            "sensitivity_samples": 2,
             "evaluation_workers": 1,
         },
         "search": {
@@ -77,7 +118,7 @@ def test_run_optimizer_uses_configured_solver_and_persists_contracts(tmp_path):
             "fx_rates": {"a_share": 1.0},
         },
     }
-    history = _history()
+    history = _history(1_200)
     results, _constraints = run_optimizer(
         get_strategy("percentile"),
         {"510880": history},
@@ -125,16 +166,15 @@ def test_process_candidate_workers_match_scalar_results(tmp_path):
             },
             "walk_forward": {
                 "train_months": 6,
-                "test_months": 3,
-                "step_months": 2,
-                "num_windows": 3,
+                "test_months": 24,
+                "step_months": 24,
+                "num_windows": 2,
                 "validation_windows": 1,
                 "purge_overlapping_windows": False,
-                "window_weights": [1, 1],
+                "window_weights": [1],
             },
             "genetic_search": {
                 "sensitivity_top_candidates": 1,
-                "sensitivity_samples": 2,
                 "evaluation_workers": workers,
             },
             "search": {
@@ -162,7 +202,7 @@ def test_process_candidate_workers_match_scalar_results(tmp_path):
                 "fx_rates": {"a_share": 1.0},
             },
         }
-        history = _history()
+        history = _history(1_200)
         results, _constraints = run_optimizer(
             get_strategy("percentile"),
             {"510880": history},

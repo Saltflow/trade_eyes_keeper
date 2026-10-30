@@ -329,56 +329,6 @@ def _retry_delay(exc: Exception, attempt: int, now: datetime) -> float | None:
     return None
 
 
-def _planned_source(code: str, purpose: str) -> str:
-    if purpose != "optimizer":
-        return "market_provider"
-    market = detect_market(code)
-    if market == "us":
-        return "nasdaq_disclosed"
-    if market == "a_share" and code.startswith(("0", "3", "6")):
-        return "baostock_disclosed_actions"
-    return "tencent_disclosed_actions"
-
-
-def _retry_delay(exc: Exception, attempt: int, now: datetime) -> float | None:
-    """Return a safe delay only for transient transport/service failures."""
-    if isinstance(exc, BaostockAccessBlocked):
-        return None
-    if isinstance(exc, BaostockTransientError):
-        retry_at = exc.retry_at
-        if retry_at:
-            try:
-                retry_time = datetime.fromisoformat(retry_at)
-                if retry_time.tzinfo is None:
-                    retry_time = retry_time.replace(tzinfo=timezone.utc)
-                return max(0.0, (retry_time - now).total_seconds())
-            except ValueError:
-                return None
-        return min(60.0, 2.0 ** max(0, attempt - 1))
-    if isinstance(exc, requests.HTTPError):
-        response = exc.response
-        status = getattr(response, "status_code", None)
-        if status == 403 or status not in (429, 500, 502, 503, 504):
-            return None
-        headers = getattr(response, "headers", {}) or {}
-        value = headers.get("Retry-After")
-        if value:
-            try:
-                return max(0.0, float(value))
-            except (TypeError, ValueError):
-                try:
-                    retry_time = email.utils.parsedate_to_datetime(value)
-                    if retry_time.tzinfo is None:
-                        retry_time = retry_time.replace(tzinfo=timezone.utc)
-                    return max(0.0, (retry_time - now).total_seconds())
-                except (TypeError, ValueError, OverflowError):
-                    pass
-        return min(60.0, 2.0 ** max(0, attempt - 1))
-    if isinstance(exc, (requests.Timeout, requests.ConnectionError, TimeoutError)):
-        return min(60.0, 2.0 ** max(0, attempt - 1))
-    return None
-
-
 def prepare_backtest_data(
     config: dict,
     codes: Iterable[object],

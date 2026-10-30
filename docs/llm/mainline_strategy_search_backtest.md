@@ -148,7 +148,7 @@ A 股默认控制基准为 `510880`、`510300` 和 `risk_free`，多数基准收
 - 标的顺序不变性检查；
 - 最新 4 个 holdout 窗口验证。
 
-实现上的注意点：当前 `ValidationController` 使用 `ParameterSchema.local_perturbations()` 枚举确定性的一阶参数邻域；配置中的 `sensitivity_samples` 目前没有参与这条实际验证路径。
+`ValidationController` 使用 `ParameterSchema.local_perturbations()` 枚举确定性的一阶参数邻域，无效的随机采样数配置已删除。逆序和留一检查与搜索排名共用完整执行合同，保留原始 OHLC、全部公司行动矩阵和基准数据；缺失执行数据时拒绝验证。
 
 ## 6. 买入、卖出与成交价
 
@@ -304,5 +304,3 @@ active manifest 为 schema v4，只保存各市场独立 entry 的 run、artifac
 - Gate 与稳健性验证：`src/search/gates.py`、`src/search/validation.py`
 - 成交价格和公司行动：`src/backtest/execution.py`
 - 统一模拟与基准：`src/backtest/engine.py`
-
-旧的 `config/optimizer.yaml` 保留了历史 Builder/Bayesian 配置说明，但不属于当前 `main.py` 主链路的权威搜参配置；当前主链路应以 `config/optimizer_constraints.yaml` 和策略插件声明为准。

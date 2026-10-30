@@ -415,16 +415,18 @@ def test_optimizer_report_exposes_all_roles_and_holdout_aggregate():
                 "sharpe_ratio": 0.7,
             },
             "search": {
-                "total_window_count": 22,
-                "ranking_window_count": 16,
-                "purged_overlap_window_count": 2,
-                "validation_window_count": 4,
+                "total_window_count": 5,
+                "ranking_window_count": 3,
+                "purged_overlap_window_count": 1,
+                "validation_window_count": 1,
                 "time_contract": {
                     "total_months": 84,
                     "state_lookback_months": 12,
-                    "holdout_window_count": 4,
-                    "holdout_window_months": 9,
-                    "holdout_test_months": 9,
+                    "holdout_window_count": 1,
+                    "holdout_window_months": 24,
+                    "holdout_test_months": 24,
+                    "holdout_calendar_span_months": 24,
+                    "minimum_evaluation_months": 24,
                 },
             },
             "ranking_windows": [
@@ -457,15 +459,14 @@ def test_optimizer_report_exposes_all_roles_and_holdout_aggregate():
         }
     )
 
-    assert "22" in report
-    assert "16" in report
+    assert "5" in report
+    assert "3" in report
     assert "Purged" in report
     assert "Holdout" in report
-    assert "Holdout 4 × 9 个月窗口" in report
+    assert "Holdout 1 × 24 个月窗口" in report
     assert "2019-01-01" in report
     assert "4.00%" in report
     assert "1.50%" in report
     assert "分红税前" in report
     assert "100.00" in report
-    assert "12-24月" not in report
-    assert "2 年历史" not in report
+    assert "最低评估期 24 个月" in report

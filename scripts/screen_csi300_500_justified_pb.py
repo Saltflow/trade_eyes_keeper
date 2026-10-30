@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-'''CSI 300 + CSI 500 justified-PB screen and out-of-sample evaluation.
+'''Archived CSI 300 + CSI 500 justified-PB screen, retained for reproduction.
 
 Universe: current constituents of CSI 300 and CSI 500 (index reference
 universe, 2026-08-18) with point-in-time market bundles and quarterly
-fundamentals in the reference dataset.  The reference PIT history covers
-2020-08 -> 2026-08 (72 months), so the walk-forward contract is adapted
-to 20 overlapping 9-month test windows (3-month step, 6-month boundary):
-windows 0-15 (first 16) select the top 20, windows 16-19 (last four) are
-evaluated out-of-sample.
+fundamentals in the reference dataset. Its short-window methodology is
+quarantined: this entry point cannot produce current evidence under the
+shared two-year minimum evaluation policy.
 '''
 
 from __future__ import annotations
@@ -25,8 +23,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from main import load_config
-from src.backtest.engine import FastEvaluator, WalkForwardManager, WindowSlice
 from src.data.market_history import PointInTimeMarketStore
 from src.fundamental_embedding.dataset import QuarterlyPricingDatasetBuilder
 from src.fundamental_embedding.industry_history import (
@@ -38,9 +34,8 @@ from src.instruments.point_in_time import (
     PointInTimeFundamentalStore,
     adjust_statement_shares,
 )
-from src.search.config import get_constraints
-from src.search.workflow import _prepare_wf_evaluation_contexts
-from src.strategy.api import StrategyMarketData, TradePlan
+from src.search.config import load_evaluation_horizon_policy
+from src.strategy.api import TradePlan
 
 REFERENCE = ROOT / 'data' / 'reference_universe'
 CONSTITUENTS_PATH = REFERENCE / 'index_constituents_20260818.json'
@@ -68,6 +63,25 @@ PER_SYMBOL_CAP = 0.20
 TOTAL_EXPOSURE_CAP = 1.0
 EXCLUDED_INDUSTRIES = {"J66", "J67", "J68"}   # 银行/证券/保险
 BENCHMARKS = ('510300', '510500')
+
+
+def _reject_short_horizon_execution() -> None:
+    '''Prevent this preserved 9-month study from generating new evidence.'''
+    policy = load_evaluation_horizon_policy(ROOT / 'config' / 'optimizer_constraints.yaml')
+    try:
+        policy.require_evaluation_months(
+            TEST_MONTHS, context='screen_csi300_500_justified_pb historical runner'
+        )
+    except ValueError as exc:
+        raise SystemExit(
+            'screen_csi300_500_justified_pb is quarantined: its historical '
+            '9-month windows cannot produce current research evidence. Use a '
+            'centrally configured ≥24-month runner instead.'
+        ) from exc
+    raise SystemExit(
+        'screen_csi300_500_justified_pb is historical-only; use a centrally '
+        'configured ≥24-month runner instead.'
+    )
 
 
 def _load_pool() -> tuple[dict, set[str]]:
@@ -216,7 +230,6 @@ def _holdout_plan(fmd, window, g_by_code, universe):
     ss, se = window.test_start, window.test_end
     N = len(universe)
     T = se - ss
-    prices = np.asarray(fmd.prices, dtype=np.float64)[ss:se]
     tradable = np.asarray(fmd.tradable, dtype=bool)[ss:se]
     names = tuple(fmd.fundamental_feature_names)
     ri = names.index('roe_ttm')
@@ -381,7 +394,6 @@ def _qfq_window_simulation(top_codes, top, bundles, dataset, growth, ws_date, we
         growth_value = growth.get(code, 0.0)
         entry_price = None
         exit_price = None
-        entered = False
         for day_index, day in enumerate(common_dates):
             price = float(qfq.iloc[day_index])
             pb_daily = None
@@ -401,7 +413,6 @@ def _qfq_window_simulation(top_codes, top, bundles, dataset, growth, ws_date, we
                 continue
             if entry_price is None:
                 entry_price = price
-                entered = True
             if exit_price is None and pb_daily is not None and j2 is not None and pb_daily > j2:
                 exit_price = price
                 trades += 1
@@ -438,6 +449,7 @@ def _qfq_window_simulation(top_codes, top, bundles, dataset, growth, ws_date, we
 
 
 def main() -> int:
+    _reject_short_horizon_execution()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--top-n', type=int, default=TOP_N)
     parser.add_argument('--output-root', type=Path, default=

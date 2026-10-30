@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from copy import copy
 from dataclasses import dataclass, field
 import math
+
+import numpy as np
+
+from ..backtest.execution import CorporateActionSlice
 
 from .gates import aggregate_ranking_metrics
 from .workflow import _evaluate_params_wf, _partition_window_indexes
@@ -200,20 +205,62 @@ class ValidationController:
         return Params(values=dict(selected.parameters), _engine=self.strategy.name)
 
     def _subset_manager(self, indexes: list[int]):
+        """Slice the full execution contract without rebuilding market inputs.
+
+        The benchmark universe and strategy context do not change when one
+        traded symbol is removed. Window caches do change and must be fresh.
+        """
         codes = list(self.wf_manager.stock_codes)
-        manager = type("SubsetWalkForwardData", (), {})()
-        manager.indicator_matrix = self.wf_manager.indicator_matrix[:, indexes]
-        manager.price_matrix = self.wf_manager.price_matrix[:, indexes]
-        manager.price_high_matrix = self.wf_manager.price_high_matrix[:, indexes]
-        manager.price_low_matrix = self.wf_manager.price_low_matrix[:, indexes]
-        manager.stock_codes = [codes[index] for index in indexes]
-        manager.dates = self.wf_manager.dates
-        manager.benchmark_series = self.wf_manager.benchmark_series
-        manager.benchmark_high_series = self.wf_manager.benchmark_high_series
-        manager.market_group = getattr(self.wf_manager, "market_group", "a_share")
-        manager.market_data_enricher = getattr(
-            self.wf_manager, "market_data_enricher", None
+        if (
+            not indexes
+            or len(set(indexes)) != len(indexes)
+            or any(index < 0 or index >= len(codes) for index in indexes)
+        ):
+            raise ValueError("validation subset requires distinct valid symbol indexes")
+        manager = copy(self.wf_manager)
+        expected = self.wf_manager.price_matrix.shape
+        for name in (
+            "indicator_matrix",
+            "price_matrix",
+            "price_high_matrix",
+            "price_low_matrix",
+            "raw_price_matrix",
+            "raw_price_high_matrix",
+            "raw_price_low_matrix",
+        ):
+            values = getattr(self.wf_manager, name, None)
+            if values is None or np.asarray(values).shape[:2] != expected:
+                raise ValueError(f"validation requires aligned execution input {name}")
+            setattr(manager, name, values[:, indexes].copy())
+        for name in ("price_open_matrix", "execution_tradable_matrix"):
+            values = getattr(self.wf_manager, name, None)
+            if values is not None:
+                if np.asarray(values).shape != expected:
+                    raise ValueError(
+                        f"validation requires aligned execution input {name}"
+                    )
+                setattr(manager, name, values[:, indexes].copy())
+        actions = getattr(self.wf_manager, "action_schedule", None)
+        if (
+            not isinstance(actions, CorporateActionSlice)
+            or actions.cash_dividends.shape != expected
+        ):
+            raise ValueError("validation requires an aligned corporate action schedule")
+        manager.action_schedule = CorporateActionSlice(
+            cash_dividends=actions.cash_dividends[:, indexes].copy(),
+            share_multipliers=actions.share_multipliers[:, indexes].copy(),
+            share_rounding_up=actions.share_rounding_up[:, indexes].copy(),
+            gross_cash_dividends=actions.gross_cash_dividends[:, indexes].copy(),
+            dividend_tax_costs=actions.dividend_tax_costs[:, indexes].copy(),
         )
+        manager.stock_codes = [codes[index] for index in indexes]
+        if hasattr(manager, "market_bundles"):
+            manager.market_bundles = {
+                code: bundle
+                for code, bundle in manager.market_bundles.items()
+                if code in manager.stock_codes
+            }
+        manager._evaluation_context_cache = {}
         return manager
 
     def _universe_robustness(

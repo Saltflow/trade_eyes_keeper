@@ -34,8 +34,8 @@ class TestQQRealtimeQuote:
         return "v_sh{}=".format(code) + "~".join(fields)
 
     @patch("requests.get")
-    def test_returns_dict_with_today_date(self, mock_get):
-        """Mock QQ API → 返回 dict，date 字段为今天"""
+    def test_returns_source_date_and_previous_close(self, mock_get):
+        """抓取旧行情时保留源日期，不把旧报价改成今天。"""
         mock_get.return_value.text = self._mock_qq_response()
         mock_get.return_value.raise_for_status = lambda: None
 
@@ -45,7 +45,9 @@ class TestQQRealtimeQuote:
         result = crawler.fetch_realtime_quote("601728")
 
         assert result is not None
-        assert result["date"] == datetime.now().strftime("%Y-%m-%d")
+        assert result["date"] == "2026-05-29"
+        assert result["quote_time"] == "2026-05-29T16:14:19+08:00"
+        assert result["prev_close"] == 5.97
         assert result["close"] == 6.05
         assert result["open"] == 5.96
         assert result["high"] == 6.07
@@ -118,6 +120,8 @@ class TestRealtimeModeInSession:
             "volume": 10000,
             "amount": 61500,
             "name": "中国电信",
+            "prev_close": 5.97,
+            "quote_time": "2026-05-29T09:50:00+08:00",
         }
         fetcher = self._make_fetcher(stocks=["601728"])
 
@@ -145,6 +149,9 @@ class TestRealtimeModeInSession:
 
         mock_qq.assert_called_once_with("601728")
         assert session_manager.update_stock_from_dataframe.called
+        latest = session_manager.update_stock_from_dataframe.call_args.args[2]
+        assert latest.iloc[0]["prev_close"] == 5.97
+        assert latest.iloc[0]["quote_time"] == "2026-05-29T09:50:00+08:00"
 
     @patch("src.core.data_fetcher.datetime")
     @patch("src.data.web_crawler.StockWebCrawler.fetch_realtime_quote")

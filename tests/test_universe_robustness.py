@@ -58,19 +58,16 @@ def test_market_robustness_reuses_market_budget_and_never_activates(monkeypatch)
                 "worst_drawdown_pct": -float(count),
                 "mean_sharpe": 0.5,
                 "total_trades": count * 2,
-                "window_count": 4,
+                "window_count": 1,
             },
             "full_window_counts": {
-                "total": 22,
-                "ranking": 16,
-                "purged": 2,
-                "holdout": 4,
+                "total": 5,
+                "ranking": 3,
+                "purged": 1,
+                "holdout": 1,
             },
             "windows": [
-                {"global_index": 19, "role": "holdout", "period": {}},
-                {"global_index": 20, "role": "holdout", "period": {}},
-                {"global_index": 21, "role": "holdout", "period": {}},
-                {"global_index": 22, "role": "holdout", "period": {}},
+                {"global_index": 5, "role": "holdout", "period": {}},
             ],
         }
 
@@ -99,7 +96,22 @@ def test_market_robustness_reuses_market_budget_and_never_activates(monkeypatch)
         if item["variant_id"] == "leave_one_out__AAA"
     )
     assert result["status"] == "completed"
-    assert baseline["holdout"]["window_count"] == 4
+    assert baseline["holdout"]["window_count"] == 1
+    assert result["market_contract"]["walk_forward"] == {
+        "total_months": 84,
+        "state_lookback_months": 12,
+        "test_months": 24,
+        "step_months": 12,
+        "window_partition": {
+            "total": 5,
+            "ranking": 3,
+            "purged": 1,
+            "holdout": 1,
+        },
+        "holdout_calendar_span_months": 24,
+        "minimum_evaluation_months": 24,
+        "holdout_used_for_selection": False,
+    }
     assert leave_one_out["delta_vs_baseline"]["return_pct"] == -1.0
     assert all(call["search_depth"] == required_budget for call in calls)
     assert all(call["solver_id"] == market_config.solver_id for call in calls)
@@ -132,6 +144,21 @@ def test_robustness_artifacts_escape_codes_and_preserve_non_activation(tmp_path)
     payload = {
         "created_at": "2026-09-19T00:00:00Z",
         "activation": {"attempted": False, "changed": False},
+        "contract": {
+            "markets": {
+                "hk": {
+                    "total_months": 84,
+                    "test_months": 24,
+                    "holdout_calendar_span_months": 24,
+                    "window_partition": {
+                        "total": 5,
+                        "ranking": 3,
+                        "purged": 1,
+                        "holdout": 1,
+                    },
+                }
+            }
+        },
         "markets": [
             {
                 "market": "hk",
@@ -163,6 +190,7 @@ def test_robustness_artifacts_escape_codes_and_preserve_non_activation(tmp_path)
     assert "&lt;unsafe&gt;" in html
     assert "<unsafe>" not in html
     assert "不会激活策略" in html
+    assert "5 个窗口（3 Ranking / 1 Purged / 1 个连续 24 个月 Holdout" in html
     saved = json.loads((tmp_path / "universe_robustness.json").read_text("utf-8"))
     assert saved["activation"] == {"attempted": False, "changed": False}
     assert all(path for path in paths.values())

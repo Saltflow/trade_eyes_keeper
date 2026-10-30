@@ -4,16 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
 
-
 ROOT = Path(__file__).resolve().parents[1]
+SHANGHAI_TZ = timezone(timedelta(hours=8))
 sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / "config" / ".env")
 
@@ -21,6 +22,28 @@ from src.data.reference_universe_backfill import (
     ReferenceUniverseBackfillService,
     load_reference_manifest,
 )
+
+
+def scoped_config(
+    config: dict,
+    *,
+    history_years: int | None = None,
+    official_pdf_recent_years: int | None = None,
+) -> dict:
+    """Apply batch-local overrides without mutating the production config."""
+    prepared = copy.deepcopy(config)
+    settings = prepared.setdefault("point_in_time_data", {})
+    if not isinstance(settings, dict):
+        raise TypeError("point_in_time_data must be a mapping")
+    for name, value in (
+        ("history_years", history_years),
+        ("official_pdf_recent_years", official_pdf_recent_years),
+    ):
+        if value is not None:
+            if value < 1:
+                raise ValueError(f"--{name.replace('_', '-')} must be positive")
+            settings[name] = int(value)
+    return prepared
 
 
 def main() -> int:
@@ -46,9 +69,24 @@ def main() -> int:
         help="worker processes (default: 2; intentionally capped at 4)",
     )
     parser.add_argument(
+        "--history-years",
+        type=int,
+        default=None,
+        help="override history depth for this batch without changing config.yaml",
+    )
+    parser.add_argument(
+        "--official-pdf-recent-years",
+        type=int,
+        default=None,
+        help=(
+            "override official annual-report depth for this isolated batch only; "
+            "does not modify config/config.yaml"
+        ),
+    )
+    parser.add_argument(
         "--evaluation-date",
         type=date.fromisoformat,
-        default=date.today(),
+        default=datetime.now(SHANGHAI_TZ).date(),
         help="point-in-time window end, YYYY-MM-DD (default: today)",
     )
     parser.add_argument(
@@ -59,7 +97,10 @@ def main() -> int:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="ignore matching checkpoints and fetch every selected code again",
+        help=(
+            "retry every selected company; validated market history for the "
+            "same request window is still reused"
+        ),
     )
     parser.add_argument(
         "--no-retry-failures",
@@ -69,6 +110,14 @@ def main() -> int:
     args = parser.parse_args()
     with Path(args.config).open("r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle) or {}
+    try:
+        config = scoped_config(
+            config,
+            history_years=args.history_years,
+            official_pdf_recent_years=args.official_pdf_recent_years,
+        )
+    except (TypeError, ValueError) as exc:
+        parser.error(str(exc))
     manifest = load_reference_manifest(args.manifest)
     report = ReferenceUniverseBackfillService(
         config,

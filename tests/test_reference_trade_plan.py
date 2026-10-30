@@ -237,32 +237,59 @@ def test_unbound_legacy_portfolio_cannot_trade():
     assert trades == []
 
 
-def test_legacy_alert_adapter_accepts_strategy_scan_dicts():
+@pytest.mark.parametrize(
+    "cash,lot,fee", [(100000, 100, 0.001), (1000, 100, 0.005), (10000, 1, 0.002)]
+)
+def test_cash_plan_respects_available_cash_lots_and_configured_fees(cash, lot, fee):
     manager = RefPortfolioManager()
-    portfolio = RefPortfolio(
-        inception_date=DATES[0],
-        cash=10000.0,
-        initial_capital=10000.0,
-    )
+    original = _bound(float(cash))
+    market = _market(["601088"], np.full((3, 1), 10.0))
+    plan = _plan(["601088"], np.array([[False], [False], [True]]))
 
-    updated, trades = manager.rebalance(
-        portfolio,
-        [
-            {
-                "stock_code": "601088",
-                "side": "buy",
-                "label": "技术策略买入",
-            }
-        ],
-        {"601088": 10.0},
+    updated, trades = manager.rebalance_plan(
+        original,
+        plan,
+        market,
         DATES[-1],
-        lot_size=1,
-        commission_rate=0.0,
-        force=True,
+        run_id="run-1",
+        strategy_id="percentile",
+        lot_size=lot,
+        commission_rate=fee,
     )
 
-    assert len(trades) == 1
-    assert updated.holdings["601088"].shares > 0
+    expected_shares = int(min(5000, cash) / (10 * (1 + fee)) / lot) * lot
+    assert original.cash == cash
+    assert original.holdings == {}
+    if expected_shares == 0:
+        assert trades == []
+        assert updated.cash == cash
+    else:
+        assert len(trades) == 1
+        assert trades[0].shares == expected_shares
+        assert trades[0].commission == pytest.approx(expected_shares * 10 * fee)
+        assert updated.cash == pytest.approx(cash - expected_shares * 10 * (1 + fee))
+        assert updated.cash >= 0
+        assert updated.trade_log == trades
+        assert updated.trading_days == 1
+
+
+def test_cash_plan_does_not_trade_on_weekends_without_force():
+    manager = RefPortfolioManager()
+    original = _bound()
+    market = _market(["601088"], np.full((3, 1), 10.0))
+    plan = _plan(["601088"], np.array([[False], [False], [True]]))
+
+    updated, trades = manager.rebalance_plan(
+        original,
+        plan,
+        market,
+        "2026-08-01",
+        run_id="run-1",
+        strategy_id="percentile",
+    )
+
+    assert updated is original
+    assert trades == []
 
 
 def test_live_scan_reads_last_row_from_full_market_trade_plan(monkeypatch):

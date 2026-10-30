@@ -163,22 +163,16 @@ class BaostockStatementProvider:
         roe = _float(row.get("roeAvg"))
         eps_ttm = _float(row.get("epsTTM"))
         roe_pct = None
-        average_equity = None
         if roe is not None:
             # Baostock normally returns a decimal ratio.  Be tolerant of feeds
             # that serialize it as a percentage number.
             roe_ratio = roe / 100.0 if abs(roe) > 1.0 else roe
             roe_pct = roe_ratio * 100.0
-            if net_income is not None and abs(roe_ratio) > 1e-9:
-                average_equity = net_income / roe_ratio
         diagnostics = [
             "baostock_profit_values_are_cumulative_ytd",
             "parent_equity_not_available_in_baostock_profit_feed",
+            "baostock_netProfit_is_consolidated_not_parent",
         ]
-        if average_equity is not None:
-            diagnostics.append(
-                "average_equity_derived_from_net_profit_and_reported_roe"
-            )
         if eps_ttm is not None:
             diagnostics.append("diluted_eps_contains_baostock_ttm_eps")
         return FinancialStatementSnapshot(
@@ -191,9 +185,10 @@ class BaostockStatementProvider:
             source="baostock_profit",
             total_shares=total_shares,
             common_shares_outstanding=total_shares,
-            average_parent_equity=average_equity,
+            average_parent_equity=None,
             revenue=revenue,
-            net_income_parent=net_income,
+            net_income_total=net_income,
+            net_income_parent=None,
             diluted_eps=eps_ttm,
             reported_roe=roe_pct,
             diagnostics=diagnostics,
@@ -2138,6 +2133,7 @@ STATEMENT_VALUE_FIELDS = (
     "lease_liabilities",
     "revenue",
     "net_income_parent",
+    "net_income_total",
     "adjusted_net_income_parent",
     "basic_eps",
     "diluted_eps",
@@ -2288,7 +2284,9 @@ class PointInTimeFundamentalStore:
         rows = payload if isinstance(payload, list) else payload.get("statements", [])
         statements = []
         for item in rows:
-            statement = FinancialStatementSnapshot(**item)
+            from .statement_scope import normalize_statement_scope
+
+            statement = FinancialStatementSnapshot(**normalize_statement_scope(item))
             if (
                 {"cninfo_annual_report", "cninfo_interim_report"}
                 .intersection(statement.source.split("+"))
@@ -2385,6 +2383,7 @@ class PointInTimeFundamentalStore:
                 "average_parent_equity",
                 "revenue",
                 "net_income_parent",
+                "net_income_total",
                 "adjusted_net_income_parent",
                 "operating_cash_flow",
                 "capital_expenditures",

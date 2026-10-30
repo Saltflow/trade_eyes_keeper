@@ -106,3 +106,52 @@ def resolve_market_data_cutoff(
         session_close=close.to_pydatetime(),
         as_of=observed.to_pydatetime(),
     )
+
+
+@dataclass(frozen=True)
+class MarketSession:
+    open: datetime
+    close: datetime
+    break_start: datetime | None = None
+    break_end: datetime | None = None
+
+    def is_open(self, as_of: datetime) -> bool:
+        if as_of.tzinfo is None:
+            raise ValueError("market session as_of must include a timezone")
+        observed = as_of.astimezone(timezone.utc)
+        return self.open <= observed < self.close and not (
+            self.break_start is not None
+            and self.break_end is not None
+            and self.break_start <= observed < self.break_end
+        )
+
+
+def resolve_market_session(
+    code: str, *, as_of: datetime
+) -> MarketSession | None:
+    """Today's actual regular session, including holidays, breaks and half days."""
+    if as_of.tzinfo is None:
+        raise ValueError("market session as_of must include a timezone")
+    market = detect_market(code)
+    name, zone = _CALENDARS[market]
+    day = pd.Timestamp(as_of).tz_convert(zone).date()
+    try:
+        calendar, _ = _load_calendar(name, day.year)
+        label = pd.Timestamp(day)
+        if label not in calendar.schedule.index:
+            return None
+        row = calendar.schedule.loc[label]
+
+        def clock(field):
+            value = row.get(field)
+            return None if pd.isna(value) else pd.Timestamp(value).to_pydatetime()
+
+        opening, closing = clock("open"), clock("close")
+        if opening is None or closing is None:
+            raise ValueError("exchange session has no opening or closing time")
+        return MarketSession(
+            open=opening, close=closing,
+            break_start=clock("break_start"), break_end=clock("break_end"),
+        )
+    except Exception as exc:
+        raise ValueError(f"{name} session unavailable for {day}: {exc}") from exc
