@@ -69,6 +69,8 @@ logs/
 data/*.csv
 data/email_archive/
 data/runtime/
+data/feishu_research/
+data/assistant_builds/
 
 # Backups
 *.backup
@@ -124,6 +126,8 @@ test_cache/
 # provider-specific for the public source repository.
 data/point_in_time/
 data/reference_universe/
+data/server_imports/
+data/provider_state/
 
 # Formal research: local execution evidence and disposable test workspaces.
 /.tmp/
@@ -134,3 +138,20 @@ data/reference_universe/
 
 # Generated build provenance is runtime state, never a source release.
 /data/deployment/
+
+# Local runtime dependencies, source archives, state and generated products.
+# Reproducible source fixtures belong under tests/fixtures/, not data/.
+/.runtime/
+/tmp/
+/reports/
+/data/*
+!/data/fundamental_quant/
+/data/fundamental_quant/*
+!/data/fundamental_quant/tokenizer/
+
+# Captured audit payloads are local evidence; keep narrative Markdown reports.
+/docs/development/audits/**/run/
+/docs/development/audits/**/*.json
+/docs/development/audits/**/*.html
+/docs/development/audits/**/*.pdf
+/docs/development/audits/**/*.png
