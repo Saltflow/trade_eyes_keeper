@@ -1,6 +1,7 @@
 """Scoped deployment must preserve production files and reject stale baselines."""
 
 import base64
+import itertools
 import json
 import os
 import shutil
@@ -44,6 +45,8 @@ def test_assistant_sources_and_docker_context_are_allowlisted():
     for path in (
         "src/interactive/assistant/service.py",
         "tools/feishu-pi/bridge.mjs",
+        "tools/feishu-pi/shared-runtime.mjs",
+        "tools/feishu-pi/framing.mjs",
         "src/interactive/feishu_app.py",
         "docker/feishu-research/Dockerfile",
         "scripts/check_feishu_research.py",
@@ -155,6 +158,80 @@ def test_source_root_rejects_junction_or_symlink(candidate, monkeypatch):
     monkeypatch.setattr(Path, "lstat", redirected)
     with pytest.raises(ValueError, match="symlink or junction"):
         deploy.source_root(root)
+
+
+PI_FILES = {
+    "tools/feishu-pi/bridge.mjs",
+    "tools/feishu-pi/shared-runtime.mjs",
+    "tools/feishu-pi/framing.mjs",
+}
+PI_SUBSETS = [
+    list(paths)
+    for size in (1, 2)
+    for paths in itertools.combinations(sorted(PI_FILES), size)
+]
+
+
+@pytest.mark.parametrize("paths", PI_SUBSETS)
+@pytest.mark.parametrize("mode", ["check", "apply"])
+def test_partial_pi_bundle_is_rejected_before_any_remote_access(candidate, paths, mode):
+    _, root, _, manifest, calls = candidate
+    for path in paths:
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"reviewed Pi source\n")
+    if mode == "check":
+        args = ["--check", "--source-root", str(root)]
+        for path in paths:
+            args.extend(["--file", path])
+    else:
+        saved = json.loads(manifest.read_text())
+        saved["files"] = [
+            {"path": path, "source_sha256": deploy.digest((root / path).read_bytes())}
+            for path in paths
+        ]
+        manifest.write_text(json.dumps(saved))
+        args = ["--apply", "--manifest", str(manifest)]
+    with pytest.raises(ValueError, match="incomplete Pi runtime bundle"):
+        deploy.main(args)
+    assert calls == []
+
+
+def pi_preflight(root, manifest):
+    args = ["--check", "--source-root", str(root), "--manifest", str(manifest)]
+    for path in sorted(PI_FILES):
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(path.encode())
+        args.extend(["--file", path])
+    deploy.main(args)
+
+
+def test_complete_pi_bundle_binds_every_source_and_sends_exact_contents(candidate):
+    _, root, _, manifest, calls = candidate
+    pi_preflight(root, manifest)
+    calls.clear()
+    saved = json.loads(manifest.read_text())
+    assert {item["path"] for item in saved["files"]} == PI_FILES
+    deploy.main(["--apply", "--manifest", str(manifest)])
+    assert len(calls) == 1
+    for item in calls[0]["files"]:
+        assert base64.b64decode(item["content"]) == (root / item["path"]).read_bytes()
+
+
+@pytest.mark.parametrize("path", sorted(PI_FILES))
+@pytest.mark.parametrize("change", ["modify", "delete"])
+def test_pi_dependency_drift_after_check_cannot_reach_apply(candidate, path, change):
+    _, root, _, manifest, calls = candidate
+    pi_preflight(root, manifest)
+    calls.clear()
+    if change == "modify":
+        (root / path).write_bytes(b"unreviewed runtime\n")
+    else:
+        (root / path).unlink()
+    with pytest.raises(ValueError, match="source changed|missing or unsafe"):
+        deploy.main(["--apply", "--manifest", str(manifest)])
+    assert calls == []
 
 
 @pytest.fixture

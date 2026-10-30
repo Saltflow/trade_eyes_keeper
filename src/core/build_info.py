@@ -23,6 +23,17 @@ logger = logging.getLogger(__name__)
 _LOCK = threading.RLock()
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
+# Executable support outside src belongs to the same release identity. These
+# are exact public source paths; runtime settings and secrets remain excluded.
+_SUPPORT_SOURCE_FILES = (
+    "config/__init__.py",
+    "requirements.txt",
+    "tools/feishu-pi/bridge.mjs",
+    "tools/feishu-pi/shared-runtime.mjs",
+    "tools/feishu-pi/framing.mjs",
+    "tools/feishu-pi/package.json",
+    "tools/feishu-pi/package-lock.json",
+)
 
 
 def _version(root: Path) -> str:
@@ -48,6 +59,10 @@ def _source_hashes(root: Path) -> dict[str, str]:
     if (root / "src").is_symlink() or not (root / "src").is_dir():
         raise ValueError("invalid_source_directory")
     paths = [root / "main.py", root / "pyproject.toml"]
+    for name in _SUPPORT_SOURCE_FILES:
+        path = root / name
+        if path.exists() or path.is_symlink():
+            paths.append(path)
     for path in (root / "src").rglob("*"):
         if "__pycache__" in path.parts:
             continue
@@ -59,7 +74,13 @@ def _source_hashes(root: Path) -> dict[str, str]:
             paths.append(path)
     result = {}
     for path in sorted(paths):
-        if path.is_symlink() or not path.resolve().is_relative_to(root):
+        if any(
+            parent.is_symlink()
+            for parent in (path, *path.parents)
+            if parent != root and parent.is_relative_to(root)
+        ):
+            raise ValueError("source_symlink")
+        if not path.resolve().is_relative_to(root):
             raise ValueError("source_path_escape")
         result[path.relative_to(root).as_posix()] = hashlib.sha256(
             path.read_bytes()

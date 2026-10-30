@@ -26,6 +26,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import ci_cd_deploy as deploy
 
+PI_RUNTIME_FILES = frozenset(
+    {
+        "tools/feishu-pi/bridge.mjs",
+        "tools/feishu-pi/shared-runtime.mjs",
+        "tools/feishu-pi/framing.mjs",
+    }
+)
+
 EXACT_FILES = {
     "src/interactive/feishu_app.py",
     "src/interactive/feishu_handler.py",
@@ -40,7 +48,7 @@ EXACT_FILES = {
     "scripts/feishu_assistant_preflight.py",
     "scripts/feishu_research_worker.py",
     "scripts/check_feishu_research.py",
-    "tools/feishu-pi/bridge.mjs",
+    *PI_RUNTIME_FILES,
     "docker/feishu-research/Dockerfile",
     "docker/feishu-research/requirements.txt",
     "docker/feishu-research/.dockerignore",
@@ -66,6 +74,14 @@ def safe_relative_path(value: str) -> str:
     if any(part.startswith(".") for part in path.parts) and value not in EXACT_FILES:
         raise ValueError("hidden source paths cannot be deployed")
     return value
+
+
+def validate_runtime_bundle(paths: list[str]) -> None:
+    """Require an explicit, hash-bound Pi bundle instead of a partial overlay."""
+    selected = set(paths)
+    if selected & PI_RUNTIME_FILES and not PI_RUNTIME_FILES <= selected:
+        missing = ", ".join(sorted(PI_RUNTIME_FILES - selected))
+        raise ValueError(f"incomplete Pi runtime bundle; include --file for: {missing}")
 
 
 def is_redirect(path: Path) -> bool:
@@ -367,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("--check requires an explicit --file list")
         root = source_root(args.source_root)
         paths = sorted({safe_relative_path(value) for value in args.file})
+        validate_runtime_bundle(paths)
         files = [
             {
                 "path": path,
@@ -437,6 +454,9 @@ def main(argv: list[str] | None = None) -> int:
         files = []
         if not isinstance(manifest.get("files"), list) or not manifest["files"]:
             raise ValueError("manifest must contain an explicit source file list")
+        validate_runtime_bundle(
+            [safe_relative_path(item["path"]) for item in manifest["files"]]
+        )
         seen = set()
         for item in manifest["files"]:
             if item["path"] in seen:

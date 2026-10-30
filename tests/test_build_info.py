@@ -149,6 +149,65 @@ def test_runtime_state_and_credentials_are_outside_bundle(source, monkeypatch):
     assert publish(source)["source_sha256"] == before["source_sha256"]
 
 
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "config/__init__.py",
+        "requirements.txt",
+        "tools/feishu-pi/bridge.mjs",
+        "tools/feishu-pi/shared-runtime.mjs",
+        "tools/feishu-pi/framing.mjs",
+        "tools/feishu-pi/package.json",
+        "tools/feishu-pi/package-lock.json",
+    ],
+)
+@pytest.mark.parametrize("change", ["modify", "add", "delete"])
+def test_release_identity_covers_public_support_sources(source, relative, change):
+    target = source / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if change != "add":
+        target.write_bytes(b"reviewed source\n")
+    before = publish(source)
+    if change == "delete":
+        target.unlink()
+    else:
+        target.write_bytes(b"different source\n")
+    info = builds.get_build_info(source)
+    assert info["state"] == "mismatch" and not info["verified"]
+    after = publish(source)
+    assert before["source_sha256"] != after["source_sha256"]
+
+
+def test_public_config_source_is_hashed_without_reading_runtime_settings(
+    source, monkeypatch
+):
+    (source / "config").mkdir()
+    (source / "config/__init__.py").write_text("# public alert loader", "utf-8")
+    (source / "config/.env").write_text("SECRET=fixture", "utf-8")
+    (source / "config/config.yaml").write_text("runtime: fixture", "utf-8")
+    original = Path.read_bytes
+
+    def guarded(path):
+        assert path.name not in {".env", "config.yaml"}
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded)
+    assert "config/__init__.py" in publish(source)["files"]
+
+
+def test_support_source_parent_symlink_is_rejected(source, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "bridge.mjs").write_text("# redirected", "utf-8")
+    (source / "tools").mkdir()
+    try:
+        (source / "tools/feishu-pi").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("OS does not permit test symlink creation")
+    with pytest.raises(ValueError, match="symlink"):
+        publish(source)
+
+
 def test_symlink_sources_never_verify(source):
     try:
         (source / "src/linked.py").symlink_to(source / "main.py")
