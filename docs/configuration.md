@@ -1,6 +1,6 @@
 # 配置参考
 
-主 CLI、运行服务和 Bot 的主配置由 `ConfigStore` 读取。所有 Bot 修改先在跨进程锁内重读原始 YAML，再按字段更新并原子替换；运行态的环境密钥不会写回文件。
+当前运行配置由 `ConfigStore` 统一读取。所有 Bot 修改先在跨进程锁内重读原始 YAML，再按字段更新并原子替换；运行态的环境密钥不会写回文件。
 
 ## 文件与职责
 
@@ -14,11 +14,7 @@
 | `config/promotion_policy.yaml` | 候选相对活动策略的晋升要求 |
 | `pyproject.toml` / `pytest.ini` | Python 包、Ruff、测试设置，不属于交易运行配置 |
 
-数据源按代码内的 provider 合同降级；本次服务迁移保留现有数据、行情和策略配置。PIT 行情使用 `point_in_time_data.market_history`。
-
-优化启动时，`prepare_backtest_data(purpose="optimizer")` 先复用经原价、复权价、公司行动和覆盖区间校验的本地数据包，再按市场调用已核验的披露来源。优化专用路由会自动启用披露数据源，不要求在主配置中手动打开；普通回测继续使用原有路由。短历史标的需要官方上市日证据，上市前无价格也不可交易；无法核实上市日或公司行动时仍标为未就绪，不会缩短窗口或删掉配置标的。
-
-`point_in_time_data.market_history.optimizer_auto_backfill.max_attempts` 默认 2，最多 2 次；只对可恢复错误重试，403 不在同一来源重试。`market_budget_seconds` 默认且最多 3600 秒，限制每个市场本轮补数总时长。每次优化的 `data/optimizer/runs/<run_id>/data_readiness.json` 记录 `ready_codes`、`reused_codes`、`fetched_codes`、`fetch_attempts`、`listing_dates` 和分类后的 `issues`。完整字段见[配置模板](../config/config.yaml.example)。
+数据源按代码内的 provider 合同降级；旧 `data_source.primary/secondary`、顶层 `baostock`、`historical_cache`、`portfolio_strategy` 已退休。PIT 行情仍使用 `point_in_time_data.market_history`，其中 Baostock 超时配置继续有效。
 
 ## 主配置
 
@@ -33,10 +29,12 @@ alerts:
   enabled: true
 ```
 
+指标计算器与告警检查器读取同一指定规则文件。自定义路径不存在或内容损坏时会报错，不会静默使用默认锚点；不再使用跨路径的全局规则单例。
+
 | 配置段 | 有效配置与作用 |
 | --- | --- |
 | `announcements` | `enable`、`days`、`dividend_days`、正文/PDF提取、LLM 调用额度；详见模板 |
-| `financial_reports` | `max_llm_calls_per_run` 供 LLM 额度使用；其他字段保持现有版本 |
+| `financial_reports` | `max_llm_calls_per_run` 仍供 LLM 额度使用；旧财报开关和股票数量限制已删除 |
 | `sina_options` | `enabled`、`timeout_seconds`、`quote_batch_size`，供新浪期权数据源使用 |
 | `point_in_time_data` | 原价/复权价、公司行动、披露日财报的目录、历史覆盖和 provider 设置 |
 | `instrument_audit` / `instrument_catalog` | 标的画像输出及按代码指定的官方发行人/持仓资料 |
@@ -105,9 +103,9 @@ HTTP/HTTPS health server、管理页面、OTP 和报告临时链接已整体下�
 
 每个 `optimizer.markets.<market>` 必须显式声明 `strategy`、`solver_id`、`gate_profile`、`walk_forward_profile`、`execution_profile` 和 `benchmark_profile`。默认值和 profile 定义统一放在 `optimizer_constraints.yaml`，不再支持全局策略兜底。
 
-本次发布不改变搜索、执行和评估周期合同。
+搜索排名、逆序验证、留一验证均保留 raw OHLC、现金分红（含税前/税额）、拆股和基准执行数据。前复权价格用于信号；缺少执行数据或 Numba 依赖时明确失败，不能生成零资产伪结果。
 
-主搜参资源配置使用 `search.workers`（可由 `SEARCH_WORKERS` 覆盖）和 `search.evaluation_backend`；`genetic_search.evaluation_workers` 保留给研究接口。
+主搜参资源配置使用 `search.workers`（可由 `SEARCH_WORKERS` 覆盖）和 `search.evaluation_backend`；`genetic_search.evaluation_workers` 保留给研究接口。无消费者的两项旧 mutation 参数和随机敏感性采样参数已删除，敏感性验证枚举确定性邻域。
 
 ## 环境变量和优先级
 

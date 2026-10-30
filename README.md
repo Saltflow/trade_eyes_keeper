@@ -1,21 +1,23 @@
 # 股票量化系统 (Stock Quant)
 
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://python.org)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://python.org)
 [![Status](https://img.shields.io/badge/status-active-blue)]()
 
 > **English**: A cross-market quantitative monitoring system for A-shares, US stocks, and HK stocks. Features solver-neutral strategy optimization, a single unified backtester, intrinsic-value and instrument audits, daily xelatex PDF reports, and multi-channel notifications.
 
-A股 / 美股 / 港股量化监控系统。策略搜索优化器生成待验证候选，只有通过门槛并人工激活后才用于交易信号；每日 xelatex LaTeX PDF 日报含信号扫描 + 回测分析 + 公式方法论附录，支持 HTML 报告存档与 Telegram/飞书多渠道通知。
+A股 / 美股 / 港股量化监控系统。策略搜索优化器自动发现最优交易信号，每日 xelatex LaTeX PDF 日报含信号扫描 + 回测分析 + 公式方法论附录，支持 HTML 报告存档与 Telegram/飞书多渠道通知。
 
 ## 核心功能
 
-旧基本面研究执行引擎已退役。`src/fundamental_quant` 仅保留只读历史读取能力；原始报告、数据库和数据流程产物保留。
+财报流程统一从 `python scripts/financial_pipeline.py <阶段>` 启动；提取、离线整合、摘要准备/执行及第三阶段输入交接的参数见[启动指南](docs/guide/financial_pipeline.md)。第一、二阶段业务实现保持冻结。
+旧基本面研究执行、补修、发布和调度入口已退役；
+`--fundamental-quant-status`、`--fundamental-quant-report`及`/fundamental`只读历史记录和已有报告路径。
+清理范围与当前入口见[研究退役说明](docs/development/research_retirement_20261024.md)。技术策略、回测和行情系统保持独立。
 
 | 功能 | 说明 |
 |------|------|
 | **策略搜索优化器** | 按市场独立执行 22 窗 Walk-Forward，16 窗排名、2 窗隔离、4 窗留出 |
-| **优化数据就绪** | 启动时复用有效行情包，缺口按市场有界补齐并记录来源、上市日证据与阻断原因 |
 | **信号扫描器** | 加载单一活动策略参数，直接读取统一 TradePlan 最后有效日事件 |
 | **回测分析** | 统一 Backtester、成交价策略与无风险/510300/同池等权三重基准比较 |
 | **标的画像审计** | 公司财务推导、利润增长、ETF 前十大穿透及 REIT/商品/债券类型化画像 |
@@ -31,14 +33,12 @@ A股 / 美股 / 港股量化监控系统。策略搜索优化器生成待验证�
 
 部署环境从外部活动指针按市场加载已验证策略和参数；public README 只记录
 公开的运行合同，不记录生产运行号、当前活动策略、服务器地址或收件人。
-所有通知、今日扫描和参考持仓都从同一个活动指针读取，不在通知层重新计算收益或胜率。
+日报与今日扫描按市场读取活动策略；已初始化参考持仓绑定其运行、参数和执行合同，不随活动指针自动换版。通知层不重新计算收益或胜率。
 
 晋升比较使用统一的无风险、配置基准和同池等权基准；框架允许额外的
 `universe_equal_weight` 基准，因此门槛配置的是“至少 3 个基准”，而不是“只能有 3 个”。
-候选仍需通过完整性、留出和安全门槛后才可激活；每个市场独立比较和切换，使用
-`python main.py --activate-run RUN_ID --group MARKET`。
-补数无法核实的标的或基准仍会阻断对应市场；港股 00700 的跨股票实物分派
-目前不在统一回测账本支持范围内，不能折算为普通现金分红。
+候选必须通过产物完整性与激活资格检查；同市场相对晋升通过且配置允许时自动激活，或使用
+`python main.py --activate-run RUN_ID --group MARKET` 显式激活。相对晋升与绝对留出的具体路径见[晋升合同](docs/llm/relative_strategy_promotion.md)。
 
 ## 日报预览
 
@@ -60,7 +60,7 @@ cp config/config.yaml.example config/config.yaml # 填入完整标的和运行�
 python main.py --once                # 单次收盘日报
 python main.py --brief               # 单次早盘简报
 python main.py --optimize            # 对配置活动策略执行统一搜参
-python main.py --activate-run RUN_ID --group MARKET # 按市场人工激活留出通过的候选
+python main.py --activate-run RUN_ID --group MARKET # 按市场显式校验并激活候选
 python main.py --audit-instruments   # 全量标的画像 JSON + HTML 审计
 python scripts/benchmark_technical_strategies.py --solver random --depth 1000 --market-workers 12 --evaluation-workers 1  # 五策略统一基准
 python scripts/benchmark_search_throughput.py --candidates 1000  # 标量/批量吞吐验收
@@ -85,14 +85,16 @@ src/
 ├── backtest/          # 唯一成交、资金仿真和评价引擎
 ├── experiments/       # 跨策略 benchmark 与搜索深度实验，不进入生产激活链
 ├── markets.py         # 市场分组、手数和跳过配置
-├── core/              # 数据拉取、条件检查、调度管理
+├── core/              # 公共执行器、宿主、唯一调度、报表适配与数据检查
 ├── data/              # 多源行情、公告与 LLM 数据提取
 ├── alerting/          # 多层报警引擎 + 状态管理
 ├── session/           # 当前日报运行上下文（待后续收敛命名）
 ├── models/            # 当前日报 Pydantic 模型（待后续收敛命名）
 ├── instruments/       # 类型化标的、财务推导、基金穿透和审计报告
 ├── notification/      # 邮件通知 + 图表生成
-├── interactive/       # 飞书长连接 / Telegram 轮询，共享命令入口
+├── interactive/       # 飞书长连接 / Telegram 轮询，会话与受控工具
+├── personal_monitor/  # 个人持仓、提醒、版本与投递 outbox
+├── fundamental_data/  # 财报提取、跨年整合、摘要和研究交接
 ├── utils/             # CJK 字体, ETF 检测
 └── templates/         # HTML/CSS 模板
 ```
@@ -105,7 +107,7 @@ src/
 | `python main.py --once` | 单次收盘日报 |
 | `python main.py --brief [id]` | 早盘/收盘简报 (`morning_snapshot` / `afternoon_snapshot`) |
 | `python main.py --optimize` | 按市场独立执行 Walk-Forward 搜参 |
-| `python main.py --activate-run RUN_ID --group MARKET` | 原子激活指定市场中留出与稳健性均通过的候选 |
+| `python main.py --activate-run RUN_ID --group MARKET` | 检查完整性及激活资格后原子切换指定市场候选 |
 | `python main.py --audit-instruments` | 对全量配置标的生成类型化 JSON 与详细 HTML 审计 |
 | `python scripts/benchmark_technical_strategies.py --solver random --depth 1000 --market-workers 12 --evaluation-workers 1` | 冻结各市场行情快照，并行比较五个注册技术策略；可切换 GA/随机/退火，只写诊断产物 |
 | `python scripts/benchmark_search_throughput.py --candidates 1000` | 用完整 A 股冻结输入比较同一候选的标量与 CPU 批量评价吞吐、RSS 和一致性 |
@@ -129,9 +131,12 @@ HTTP/HTTPS health server、管理页面与报告临时链接已整体下线。�
 
 ## 文档
 
+[完整文档索引](docs/README.md) · [架构图独立页](docs/architecture_overview.md)
+
 | 文档 | 说明 |
 |------|------|
 | [设计决策](docs/llm/proj4llm.md) | 关键架构设计 + 技术路线 |
+| [全项目架构总览](docs/architecture_overview.md) | 总图与飞书路由、公共层、告警、搜参、财报研究放大图，配置开关、本机/线上对照及源码导航 |
 | [架构说明](docs/architecture.md) | 分层架构、数据流、模块职责 |
 | [部署指南](docs/deployment.md) | 服务器部署 + CI/CD |
 | [配置参考](docs/configuration.md) | config.yaml 详细说明 |
@@ -147,23 +152,24 @@ pytest tests/test_import_smoke.py       # 模块导入完整性
 pytest tests/test_security.py           # 安全测试
 ```
 
-## Roadmap（当前，2026-10-03）
+## 功能进展与验收边界
 
 | 方向 | 状态 | 内容 |
 |------|------|------|
 | **发布安全门禁** | ✅ 已完成 | 部署前执行 Ruff `F/E/S110`、导入烟测、核心路径测试、远端严格配置校验与 systemd/本地心跳检查；不因无关的历史格式债务阻塞发布 |
 | **统一策略评估** | ✅ 已完成 | 单一 `--optimize` 入口；84 个月 `12/9/3/22` 滚动窗口（16 ranking、2 purge、4 holdout）；统一 TradePlan、Backtester 与 EvaluationReport |
-| **优化启动补数** | ✅ 已上线，港股有阻断项 | 有效缓存优先、披露来源切换、有界重试和官方上市日证据；全池港股仍因 00700 实物分派停止，见[开发待办](docs/development/todo_backlog.md) |
 | **Solver 解耦** | ✅ 已完成 | `SearchController` 与 Genetic / Random / Simulated Annealing / Local Genetic 插件分离；新增算法不改策略和评价层 |
 | **报告与通知** | ✅ 已完成 | HTML、PDF、邮件、飞书和 Telegram 共享报告合同；移动端日报展示决策板、完整行情矩阵、估值/待派息事件，正文不再堆叠持仓或周 NAV 箱线图 |
 | **可配置回测区间** | ✅ 已完成 | `/backtest 代码 起 止` 自动准备指标预热、raw/qfq、公司行为与基准，缺失时补数后执行严格校验 |
 | **标的画像与审计** | 🔄 进行中 | 公司财务推导、ETF/REIT/商品/债券类型化画像，以及带发布日期和防前视约束的 point-in-time 数据回填 |
 | **港股税后现金分红** | ✅ 已完成（P1） | `hk: 20%` 账户层保守预扣率进入 raw 成交/qfq 信号/显式现金流合同；策略、静态基准、外部基准与参考持仓均记录税前、税额与税后现金，缺少因果公告日的分红 fail closed |
 | **股票池稳健性** | ✅ 已实现（P3，待全量运行） | `--universe-robustness` 逐市场以当前 Solver/预算跑基线、leave-one-out、确定性比例删减和排序不变性变体，写入 JSON/CSV/HTML；诊断绝不变更监控池或 active pointer |
-| **基本面 embedding / DCF** | ⏸ 暂缓（P4） | 保持研究状态；CAPM-DCF 不进入生产策略，等待广域逐时点训练与三市场 Holdout 基准 |
+| **旧基本面量化实验** | 已终止（2026-10-30） | MOE训练、旧估值/行业评分/消融及Ke研究因效果始终未正删除，后续不再尝试；[终止记录](docs/development/failed_quant_experiments_retirement_20261030.md)。仍用的估值适配及新财报研究链路保留 |
 | **周粒度降载** | ⏸ 暂缓（P5） | 默认日粒度；只在压测证明服务器超出负载阈值后评估周聚合、周高买入/周低卖出方案 |
 
-研究性功能默认不改变活动策略；只有通过统一门槛、完整性和留出验证的候选，才允许人工激活。
+研究性功能默认不改变活动策略。优化候选按同市场晋升配置自动切换或显式激活，均需满足产物合同与激活资格。
+
+公共运行层已于 2026-10-28 按限定文件覆盖部署；本机测试任务随后主动停用，旧测试源码阶段二退役及部分真实链路补验尚未完成。状态与历史证据见[迁移记录](docs/development/shared_runtime_migration.md)。
 
 ## 许可
 

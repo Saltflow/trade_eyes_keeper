@@ -40,5 +40,8 @@ EvaluationService -> TradingStrategy -> TradePlan -> Backtester -> raw metrics
 See [strategy/README.md](strategy/README.md) and
 [search/README.md](search/README.md) for extension instructions. The detailed
 [architecture audit](../docs/architecture.md) also records the remaining
-transitional dependency cycles and the two active scheduler implementations;
-those files are not interchangeable duplicates.
+transitional dependency cycles. RuntimeService hosts the single ScheduleManager
+and shared SQLite executor for reports, Feishu conversations and personal-monitor
+tasks. Optimization and financial-research batches retain their own execution
+contracts. See the [standalone architecture diagrams](../docs/architecture_overview.md)
+and [documentation index](../docs/README.md) for the other subsystems.

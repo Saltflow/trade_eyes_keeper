@@ -23,7 +23,7 @@ Individual test files:
 pytest tests/test_rule_engine.py -v
 pytest tests/test_portfolio_strategy.py -v
 pytest tests/test_import_smoke.py -v
-pytest tests/test_security.py -v  # security tests (sandbox, OTP, rate-limit)
+pytest tests/test_security.py -v  # expression sandbox and input security
 ```
 
 ## Code Style
@@ -57,18 +57,26 @@ chore:    Build/config/maintenance
 
 ```
 src/
-  analysis/     Strategy optimizer, signal scanner, indicators
-  health_server/ HTTP health check and management server
-  core/         Data fetcher, condition checker, scheduler
+  strategy/     TradingStrategy, TradePlan and strategy plugins
+  search/       Solver plugins, evaluation, validation and promotion
+  backtest/     Unified execution and portfolio simulation
+  core/         RuntimeService, shared executor, single scheduler and reports
   data/         Web crawler, data source, cache manager
   alerting/     Multi-layer alert engine
   session/      Session manager
   models/       Pydantic data models
   notification/ Email notifier, chart generator
+  interactive/  Feishu/Telegram, authenticated conversations and tools
+  personal_monitor/ Accounts, reminders and delivery outbox
+  fundamental_data/ Financial extraction, context and explicit handoffs
   utils/        CJK fonts, ETF detector
 ```
 
 ## Security
+
+HTTP management, OTP and the old research execution modules have been retired.
+See the [documentation index](docs/README.md) and
+[architecture diagrams](docs/architecture_overview.md) for current entrypoints.
 
 - Never commit API keys, passwords, or SSH keys
 - Use `config/.env` for secrets (gitignored)
