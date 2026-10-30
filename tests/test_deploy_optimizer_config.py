@@ -99,6 +99,11 @@ def deployment(monkeypatch, tmp_path, server_config):
     monkeypatch.setattr(ci_cd_deploy, "_check_prerequisites", lambda: None)
     monkeypatch.setattr(ci_cd_deploy, "_pre_deploy_checks", lambda dry_run: True)
     monkeypatch.setattr(ci_cd_deploy, "_ensure_remote_repo", lambda: True)
+    # Build provenance resolves the local source commit before transport. Keep
+    # this distinct from the SCP-only mock and never inspect the real checkout.
+    monkeypatch.setattr(
+        ci_cd_deploy.subprocess, "check_output", lambda *a, **kw: "a" * 40 + "\n"
+    )
     monkeypatch.chdir(server_config.root)
 
     def fake_push():
@@ -158,6 +163,7 @@ def deployment(monkeypatch, tmp_path, server_config):
             "Get git version": "test-version\n",
             "Send deployment notification": "[NOTIFY_OK]\n",
             "Verify local service readiness": "[SERVICE_READY]\n",
+            "Register deployed build version": '{"verified": true}\n',
         }
         return True, responses.get(description, ""), ""
 

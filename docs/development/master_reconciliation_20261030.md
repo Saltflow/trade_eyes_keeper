@@ -38,3 +38,13 @@ merge. Overlapping local files are preserved rather than blindly checking
 out the merged tree over them. The local audit and restoration receipts live
 in `.tmp/merge_audit_20261030/`; this disposable evidence is not committed.
 There is no push, deployment, service restart or active-strategy change.
+
+Restoration validation additionally found three older dirty function bodies
+overriding the published log filter, unsupported-action classification and
+selected deployment source-ref behavior. Only those functions were reconciled
+to the merged baseline; surrounding local changes remain. The deployment
+acceptance fixture now mocks the local build-commit lookup and successful
+build-registration receipt, independently of its SCP mock. The 59 tests for
+deployment configuration, readiness reporting and optimizer failure notices
+then passed. The original 24 restoration failures and their repair results
+remain in the local audit directory.
