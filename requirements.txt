@@ -25,6 +25,11 @@ beautifulsoup4>=4.14.0
 lxml>=4.9.0
 # PDF解析
 pdfplumber==0.11.4
+pypdfium2>=4.18
+reportlab>=4.2,<5
+svglib>=1.5,<2
+pypdf>=5,<7
+tokenizers>=0.20,<1  # Persistent PDF session text-token accounting; tokenizer is pinned separately.
 # 进度指示
 tqdm>=4.65.0
 # LLM API调用
@@ -33,6 +38,8 @@ openai>=1.0.0  # 兼容DeepSeek API
 matplotlib>=3.4.0
 # 文本处理
 markdown>=3.5
+bleach>=6,<7
+jsonschema>=4.18,<5
 # 数据模型
 pydantic>=1.10.0,<2.0.0
 # 策略优化
@@ -40,7 +47,3 @@ numba>=0.57.0
 scikit-optimize>=0.9.0
 joblib>=1.3.0
 scipy>=1.10.0
-
-exchange-calendars>=4.13.1,<5
-
-tokenizers>=0.20,<1

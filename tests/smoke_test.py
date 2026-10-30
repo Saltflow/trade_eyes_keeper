@@ -65,8 +65,8 @@ def test_ref_portfolio():
     # cleanup
     try:
         os.remove("/tmp/_smoke_test_pf.yaml")
-    except Exception:
-        pass
+    except FileNotFoundError:
+        return
 
 
 # ── 3. 关键函数签名检查 ──

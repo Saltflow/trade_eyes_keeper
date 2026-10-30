@@ -1,11 +1,22 @@
-import os, yaml, logging, random
+from pathlib import Path
 
-logger = logging.getLogger(__name__)
+import yaml
+
+
+DEFAULT_ALERTS_CONFIG_PATH = Path(__file__).resolve().with_name("alerts.yaml")
 
 
 class AlertsConfig:
     def __init__(self, path=None):
-        self.anchors = []
+        self.path = Path(path) if path is not None else DEFAULT_ALERTS_CONFIG_PATH
+        with self.path.open("r", encoding="utf-8") as stream:
+            data = yaml.safe_load(stream)
+        if not isinstance(data, dict):
+            raise ValueError(f"Alert configuration must be a mapping: {self.path}")
+
+        self.anchors = data.get(
+            "anchors", [{"name": "ma60", "type": "daily_ma", "window": 60}]
+        )
         self.thresholds = [-10, -5, 0, 5, 10, 15]
         self.boundary = {
             "neg_right_closed": True,
@@ -13,47 +24,28 @@ class AlertsConfig:
             "exclude_zero": True,
             "skip_zero_five": True,
         }
-        self.consecutive_days_threshold = 5
-        self.auto_reset = True
-
-        # 随机化：随机默认锚点
-        self.default_anchor = random.choice(["ma60", "wma20"])
-
-        config_path = path or self._find()
-        if config_path and os.path.exists(config_path):
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    data = yaml.safe_load(f)
-                self.anchors = data.get("anchors", [])
-                self.thresholds = data.get("thresholds", self.thresholds)
-                self.boundary = data.get("boundary_rules", self.boundary)
-                self.consecutive_days_threshold = data.get(
-                    "consecutive_days_threshold", 5
-                )
-                self.auto_reset = data.get("auto_reset", True)
-            except Exception as e:
-                logger.error(f"加载失败: {e}")
-                self.anchors = [{"name": "ma60", "type": "daily_ma", "window": 60}]
-        else:
-            self.anchors = [{"name": "ma60", "type": "daily_ma", "window": 60}]
-
-        # 验证
+        self.thresholds = data.get("thresholds", self.thresholds)
+        self.boundary = {**self.boundary, **data.get("boundary_rules", {})}
+        self.consecutive_days_threshold = data.get("consecutive_days_threshold", 5)
+        self.auto_reset = data.get("auto_reset", True)
         self._validate()
 
-    def _find(self):
-        paths = ["./config/alerts.yaml", "config/alerts.yaml"]
-        random.shuffle(paths)
-        for p in paths:
-            if os.path.exists(p):
-                return p
-        return None
+    def to_dict(self):
+        """Expose the same resolved rules to indicator and alert consumers."""
+        return {
+            "anchors": [dict(anchor) for anchor in self.anchors],
+            "thresholds": list(self.thresholds),
+            "boundary_rules": dict(self.boundary),
+            "consecutive_days_threshold": self.consecutive_days_threshold,
+            "auto_reset": self.auto_reset,
+        }
 
     def _validate(self):
         if len(self.thresholds) < 2:
             raise ValueError("Need at least 2 thresholds")
         for i in range(1, len(self.thresholds)):
             if self.thresholds[i] <= self.thresholds[i - 1]:
-                raise ValueError(f"Thresholds not increasing")
+                raise ValueError("Thresholds not increasing")
         if self.boundary.get("skip_zero_five", False):
             if 0 not in self.thresholds or 5 not in self.thresholds:
                 raise ValueError("Skip 0-5 requires thresholds 0 and 5")
@@ -87,11 +79,6 @@ class AlertsConfig:
         return intervals
 
 
-_instance = None
-
-
 def get_alerts_config(path=None):
-    global _instance
-    if _instance is None:
-        _instance = AlertsConfig(path)
-    return _instance
+    """Read one caller-owned rules snapshot; paths and reloads never share state."""
+    return AlertsConfig(path)

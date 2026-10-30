@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 股票量化系统主程序
 功能：
@@ -22,14 +21,15 @@ if __name__ == "__main__" and any(
 
     raise SystemExit(report_cli_main(sys.argv[1:]))
 
-import yaml
 import logging
-import pandas as pd
-import numpy as np
 from datetime import datetime
 from pathlib import Path
 from time import monotonic
 from typing import Callable
+
+import numpy as np
+import pandas as pd
+import yaml
 from dotenv import load_dotenv
 
 # 加载环境变量
@@ -37,15 +37,11 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "config", ".env"
 # 添加src目录到Python路径
 logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent / "src"))
-from src.core.data_fetcher import StockDataFetcher
-from src.core.condition_checker import ConditionChecker
-from src.notification.manager import NotifierManager
-from src.core.config_store import load_config as load_runtime_config
-from src.data.announcement_fetcher import AnnouncementFetcher
-from src.session.session_manager import SessionManager
 from src.backtest import build_trade_plan, evaluate_all_groups
-from src.search import get_market_optimizer_config, get_market_optimizer_configs
-from src.markets import _detect_fine_group, get_skip_search, get_skip_signals
+from src.core.condition_checker import ConditionChecker
+from src.core.config_store import load_config as load_runtime_config
+from src.core.data_fetcher import StockDataFetcher
+from src.core.process_lock import exclusive_process_lock
 from src.core.ref_portfolio import (
     RefPortfolio,
     RefPortfolioManager,
@@ -53,13 +49,21 @@ from src.core.ref_portfolio import (
     reference_execution_contract,
     reference_valuation_price,
 )
-from src.core.process_lock import exclusive_process_lock
-from src.search import run_optimizer
-from src.strategy import Params
+from src.data.announcement_fetcher import AnnouncementFetcher
+from src.data.backtest_data import prepare_backtest_data
+from src.instruments import InstrumentAuditService
+from src.instruments.audit import load_latest_audit
+from src.markets import _detect_fine_group, get_skip_search, get_skip_signals
+from src.notification.manager import NotifierManager
+from src.search import (
+    get_market_optimizer_config,
+    get_market_optimizer_configs,
+    run_optimizer,
+)
 from src.search.artifacts import (
-    activate_run,
     OptimizerGroupSummary,
     OptimizerRunSummary,
+    activate_run,
     load_latest_strategy_run,
     load_strategy_run,
     new_run_id,
@@ -67,40 +71,42 @@ from src.search.artifacts import (
     prune_optimizer_runs,
     publish_complete_run,
 )
+from src.search.config import load_evaluation_horizon_policy
 from src.search.contracts import stable_hash
-from src.search.run_diagnostics import persist_run_summary, summarize_ranking_archive
 from src.search.promotion import (
     PromotionDecision,
     PromotionPolicy,
     compare_with_incumbent,
     record_promotion_decision,
 )
-from src.instruments import InstrumentAuditService
-from src.instruments.audit import load_latest_audit
-from src.data.backtest_data import prepare_backtest_data
-
+from src.search.run_diagnostics import persist_run_summary, summarize_ranking_archive
+from src.session.session_manager import SessionManager
+from src.strategy import Params
 
 OPTIMIZER_GROUPS = ("a_share", "hk", "us")
 DEFAULT_OPTIMIZER_GROUPS = OPTIMIZER_GROUPS
 DAILY_REPORT_FREQUENCIES = {"daily", "weekly", "off"}
-# Keep the existing three-year daily decision-history chart.
-DAILY_PORTFOLIO_HISTORY_MONTHS = 36
+# The daily email's normalized NAV chart is a decision-history view.  Its
+# duration is centrally configured and must exceed the minimum two-year
+# evidence horizon.
 DAILY_PORTFOLIO_HISTORY_BUFFER_DAYS = 35
 
 
+def _daily_portfolio_history_months() -> int:
+    return load_evaluation_horizon_policy().daily_portfolio_history_months
 
 
 def _daily_portfolio_history_days() -> int:
-    """Return the fetch horizon needed for an exact 36-calendar-month chart."""
-    return int(DAILY_PORTFOLIO_HISTORY_MONTHS * 30.4375) + (
+    """Return the fetch horizon for the configured decision-history span."""
+    return int(_daily_portfolio_history_months() * 30.4375) + (
         DAILY_PORTFOLIO_HISTORY_BUFFER_DAYS
     )
 
 
 def _daily_portfolio_evaluation_start(end_date: pd.Timestamp) -> pd.Timestamp:
-    """Anchor the daily NAV overview to a calendar, rather than a 9m holdout."""
+    """Anchor daily NAV to the centrally configured evidence horizon."""
     return pd.Timestamp(end_date).normalize() - pd.DateOffset(
-        months=DAILY_PORTFOLIO_HISTORY_MONTHS
+        months=_daily_portfolio_history_months()
     )
 
 
@@ -208,7 +214,10 @@ def _optimizer_evaluation_budget(constraints) -> int:
 
 def _optimizer_validation_start(constraints) -> str:
     """Legacy fallback when an artifact predates persisted WF boundaries."""
-    months = max(1, int(constraints.walk_forward.holdout_calendar_span_months))
+    months = max(
+        constraints.evaluation_horizon.minimum_evaluation_months,
+        int(constraints.walk_forward.holdout_calendar_span_months),
+    )
     return (pd.Timestamp.now().normalize() - pd.DateOffset(months=months)).strftime(
         "%Y-%m-%d"
     )
@@ -259,7 +268,8 @@ def _load_optimizer_benchmarks(data_source, constraints, group: str, days: int) 
             continue
         try:
             data = data_source.fetch_stock_data(code, days=days)
-        except Exception as exc:
+        # One provider must not abort all baselines.
+        except Exception as exc:  # noqa: BLE001
             logging.getLogger(__name__).warning(
                 "Unable to load %s baseline for %s validation: %s", code, group, exc
             )
@@ -361,7 +371,7 @@ def _load_optimizer_market_bundles_with_errors(
                 [code],
             )
             bundles[code] = bundle
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Preserve per-symbol readiness errors.
             errors.append(f"{code}: {exc}")
     return bundles, errors
 
@@ -417,7 +427,8 @@ def _reference_portfolio_prices(
                 prices[code] = price * fx
             else:
                 logger.warning("参考持仓 %s 无有效补充行情，估值不完整", code)
-        except Exception as exc:
+        # An unavailable quote leaves valuation partial.
+        except Exception as exc:  # noqa: BLE001
             logger.warning("参考持仓 %s 补充行情失败，估值不完整: %s", code, exc)
     return prices
 
@@ -476,7 +487,7 @@ def rebuild_active_optimizer_summary(config: dict) -> OptimizerRunSummary | None
     optimizer_root = Path("data/optimizer")
     active_manifest = None
     if active.run_ids_by_group:
-        from src.search.artifacts import _load_active_manifest, _artifact_path
+        from src.search.artifacts import _artifact_path, _load_active_manifest
 
         found_manifest = _load_active_manifest(optimizer_root)
         if found_manifest is not None:
@@ -602,7 +613,8 @@ def rebuild_active_optimizer_summary(config: dict) -> OptimizerRunSummary | None
                 validation = reports.get(group)
                 if validation is not None:
                     summary.validation = _optimizer_validation_snapshot(validation)
-        except Exception as exc:
+        # Optional summary rebuild stays nonfatal.
+        except Exception as exc:  # noqa: BLE001
             logging.getLogger(__name__).warning(
                 "%s summary rebuild skipped: %s", group, exc
             )
@@ -651,7 +663,8 @@ def _run_optimization_group(
     run_strategy_name = strategy.name
     run_strategy_label = strategy.label
 
-    started_at = datetime.now()
+    # Existing optimizer artifact timestamps and run IDs use local naive time.
+    started_at = datetime.now()  # noqa: DTZ005
     started = monotonic()
     run_id = new_run_id(run_strategy_name, started_at, group=group)
     run_dir = Path("data/optimizer") / "runs" / run_id
@@ -830,7 +843,8 @@ def _run_optimization_group(
     )
 
     completed: dict[str, int] = {}
-    for group, codes in groups.items():
+    # The final loop key is consumed by the legacy summary below this loop.
+    for group, codes in groups.items():  # noqa: PLR1704
         strategy = strategies_by_group[group]
         summaries[group].strategy_name = strategy.name
         summaries[group].strategy_label = strategy.label
@@ -1338,10 +1352,12 @@ def _report_result(status: str, reason: str, session=None, *, deliveries=None):
         status=status, reason=reason, artifacts=artifacts, deliveries=deliveries or {}
     )
 
+
 def _report_data_readiness(session):
     from src.notification.report_builders import report_data_readiness
 
     return report_data_readiness(session)
+
 
 def _report_delivery_result(delivery, session, skip_reason: str = ""):
     if delivery is None and skip_reason:
@@ -1392,7 +1408,7 @@ def should_send_daily_report(
             report_weekday = 4
         if report_weekday not in range(7):
             report_weekday = 4
-        return (now or datetime.now()).weekday() == report_weekday
+        return (now or datetime.now().astimezone()).weekday() == report_weekday
     return True
 
 
@@ -1410,13 +1426,12 @@ def run_daily_task(
     logger.info("开始执行每日任务")
     # 加载配置
     config = config if config is not None else load_config()
+    today = datetime.now().astimezone().date()
 
     # 周末跳过（仅定时）
-    if not force:
-        today = datetime.now().date()
-        if today.weekday() >= 5:
-            logger.info(f"今天是周末 ({today})，跳过日报")
-            return _report_result("skipped", "weekend")
+    if not force and today.weekday() >= 5:
+        logger.info(f"今天是周末 ({today})，跳过日报")
+        return _report_result("skipped", "weekend")
 
     try:
         if progress:
@@ -1428,9 +1443,18 @@ def run_daily_task(
 
         # 1. 获取公告信息（可选） - 提前获取以填充股息数据缓存
         announcement_config = config.get("announcements", {})
+        daily_triggers = (config.get("scheduler", {}) or {}).get(
+            "daily_report_triggers", {}
+        )
+        from src.notification.report_triggers import required_report_data_roots
+
+        daily_trigger_roots = required_report_data_roots(daily_triggers)
+        event_triggers_need_announcements = bool(
+            daily_trigger_roots & {"announcements", "dividend_events"}
+        )
         # 创建公告抓取器用于公告信息获取
         announcement_fetcher = AnnouncementFetcher(config)
-        if announcement_config.get("enable", False):
+        if announcement_config.get("enable", False) or event_triggers_need_announcements:
             try:
                 logger.info("开始获取股票公告信息")
                 days = announcement_config.get("days", 7)
@@ -1443,7 +1467,8 @@ def run_daily_task(
                 logger.info(
                     f"公告获取完成，共获取{sum(len(v) for v in announcements.values())}条重要公告"
                 )
-            except Exception as e:
+            # Announcements are optional report context.
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"获取公告信息失败: {e}")
                 session.errors.append(f"获取公告信息失败: {e}")
 
@@ -1460,16 +1485,18 @@ def run_daily_task(
                     p = crawler.fetch_placement_data(code_str)
                     if p and p.get("is_locked"):
                         placements[code_str] = p
-                except Exception as e:
+                # One placement provider may fail.
+                except Exception as e:  # noqa: BLE001
                     logger.debug(f"定增数据获取失败 {code_str}: {e}")
             session.placements = placements
             logger.info(f"定增数据获取完成，{len(placements)} 只标的有未解禁定增")
-        except Exception as e:
+        # Optional placement context stays nonfatal.
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"定增数据获取失败 (非致命): {e}")
 
+        # 2. 获取股票数据并存入Session
         if progress:
             progress("daily_stock_data")
-        # 2. 获取股票数据并存入Session
         logger.info("开始获取股票数据")
         fetcher = StockDataFetcher(config)
         fetcher.fetch_to_session(
@@ -1491,7 +1518,8 @@ def run_daily_task(
                 session.get_all_dataframe(),
             )
             logger.info("日报待处理分红/分派: %s 条", len(session.dividend_events))
-        except Exception as exc:
+        # Optional event context stays nonfatal.
+        except Exception as exc:  # noqa: BLE001
             logger.warning("日报分红/分派事件准备失败（非致命）: %s", exc)
 
         # Current instrument profiles are reporting-only. Loading the latest
@@ -1509,9 +1537,9 @@ def run_daily_task(
                     len(audit.profiles),
                 )
 
+        # 3. 检查条件并存入Session
         if progress:
             progress("daily_evaluation")
-        # 3. 检查条件并存入Session
         logger.info("开始检查交易条件")
         checker = ConditionChecker(config)
         checker.check_from_session(session, session_manager)
@@ -1534,7 +1562,8 @@ def run_daily_task(
                 session.signal_scan.group_outcomes,
                 len(session.signal_scan.alerts),
             )
-        except Exception as e:
+        # Signal scan failure must not abort reporting.
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"策略信号扫描失败 (非致命): {e}")
             session.signal_scan = None
 
@@ -1653,8 +1682,8 @@ def run_daily_task(
                     )
                 else:
                     logger.warning("无可用回测结果，跳过投资组合分析")
-        except Exception as e:
-            logger.error(f"投资组合策略分析失败: {e}", exc_info=True)
+        except Exception:
+            logger.exception("投资组合策略分析失败")
 
         # ── 参考持仓状态（只读，日报不做调仓，三分仓）──
 
@@ -1690,7 +1719,8 @@ def run_daily_task(
                     fx_rate=market_config.execution.fx_rates.get(group_key, 1.0),
                 )
                 mgr.save(pf)
-            except Exception as exc:
+            # Failed corporate actions keep old holdings.
+            except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "参考持仓%s 公司行为未应用，日报仅展示原状态: %s",
                     label,
@@ -1715,12 +1745,32 @@ def run_daily_task(
             )
         object.__setattr__(session, "ref_portfolio_status", all_statuses)
 
+        # Optional trigger mode gates the scheduled report as a whole. Manual
+        # runs keep their historical behavior, and an empty trigger list is a no-op.
+        trigger_mode = bool(daily_triggers) and not force
         if progress:
             progress("daily_notifications")
         delivery = None
-        skip_reason = "daily_frequency_not_met"
-        # 8. 发送邮件（无论是否有满足条件的股票都发送日报）
-        if session.alerts:
+        skip_reason = "daily_frequency_or_trigger_not_met"
+        if trigger_mode:
+            from src.notification.report_triggers import evaluate_report_triggers
+
+            evaluation = evaluate_report_triggers(session, daily_triggers)
+            if evaluation.matched:
+                logger.info(
+                    "日报触发条件满足: %s",
+                    ", ".join(map(str, evaluation.matched_conditions)),
+                )
+                skip_reason = ""
+                delivery = notifier.send_daily_report_from_session(session)
+            else:
+                logger.info("日报触发条件未满足，跳过发送: %s", daily_triggers)
+                if session.alerts:
+                    # Preserve the existing standalone alert channel; trigger
+                    # rules gate reports, not ordinary price/signal alerts.
+                    skip_reason = ""
+                    delivery = notifier.send_from_session(session)
+        elif session.alerts:
             logger.info(f"发现{len(session.alerts)}个满足条件的警报")
             skip_reason = ""
             delivery = notifier.send_from_session(session)
@@ -1765,12 +1815,24 @@ def run_brief_report(
     logger.info(f"开始执行简报任务: {report_id}")
 
     config = config if config is not None else load_config()
-    today = datetime.now().date()
+    from datetime import timezone
 
-    # 周末跳过（仅定时）
-    if not force and today.weekday() >= 5:
-        logger.info(f"今天是周末 ({today})，跳过简报")
-        return _report_result("skipped", "weekend")
+    from zoneinfo import ZoneInfo
+
+    from src.notification.brief_market import (
+        active_brief_codes,
+        has_open_brief_market,
+    )
+
+    observed = datetime.now(timezone.utc)
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=timezone.utc)
+    today = observed.astimezone(ZoneInfo(
+        config.get("scheduler", {}).get("timezone", "Asia/Shanghai")
+    )).date()
+    if not force and not has_open_brief_market(config.get("stocks", []), observed):
+        logger.info("配置市场尚未开盘或已休市，跳过定时简报")
+        return _report_result("skipped", "market_closed")
 
     try:
         if progress:
@@ -1789,15 +1851,24 @@ def run_brief_report(
         session = session_manager.create_session(config)
         logger.info(f"简报Session创建: {session.session_id}")
 
+        # 只获取股票数据，跳过 LLM/财报/回测/投资组合（使用实时行情模式）
         if progress:
             progress("brief_stock_data")
-        # 只获取股票数据，跳过 LLM/财报/回测/投资组合（使用实时行情模式）
         fetcher = StockDataFetcher(config)
         fetcher.fetch_to_session(session, session_manager, realtime_mode=True)
 
         if not session.stocks_data:
             logger.warning("简报：Session 中无股票数据")
             return _report_result("failed", "stock_data_unavailable", session)
+
+        if not force:
+            eligible = active_brief_codes(
+                session.get_all_dataframe(), datetime.now(timezone.utc)
+            )
+            if not eligible:
+                logger.info("无本次开市时段的有效报价，跳过简报")
+                return _report_result("skipped", "no_active_quotes", session)
+            object.__setattr__(session, "brief_active_codes", eligible)
 
         logger.info(f"简报：获取到 {len(session.stocks_data)} 只股票数据")
 
@@ -1820,12 +1891,27 @@ def run_brief_report(
                 skip_codes=brief_skipped_signals,
             )
             logger.info("简报策略信号扫描结果: %s", session.signal_scan.group_outcomes)
-        except Exception as e:
+        # Optional scan failure leaves the brief partial.
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"简报策略信号扫描失败 (非致命): {e}")
 
+        brief_triggers = report_config.get("triggers", {})
+        from src.notification.report_triggers import required_report_data_roots
+
+        brief_trigger_roots = required_report_data_roots(brief_triggers)
+        if brief_trigger_roots & {
+            "dividend_events", "placements", "announcements"
+        }:
+            try:
+                _populate_brief_event_context(
+                    session, config, report_config, brief_trigger_roots
+                )
+            except Exception as exc:  # noqa: BLE001 - Trigger preparation fails closed.
+                logger.warning("简报事件触发数据准备失败，按未满足处理: %s", exc)
+
+        # ── 参考持仓三分仓调仓（A股/港股/美股各自独立资金池）──
         if progress:
             progress("brief_reference_portfolio")
-        # ── 参考持仓三分仓调仓（A股/港股/美股各自独立资金池）──
 
         market_configs = get_market_optimizer_configs(
             config, groups=OPTIMIZER_GROUPS
@@ -1879,7 +1965,8 @@ def run_brief_report(
                     fx_rate=pool["fx"],
                 )
                 mgr.save(new_pf)
-            except Exception as exc:
+            # Corporate action failure blocks trades.
+            except Exception as exc:  # noqa: BLE001
                 trading_blocked_reason = "公司行为数据不就绪"
                 logger.error(
                     "参考持仓%s 无法应用公司行为；跳过交易: %s",
@@ -2019,12 +2106,35 @@ def run_brief_report(
         # 合并附到 session
         object.__setattr__(session, "ref_portfolio_status", all_statuses)
 
+        # Trigger rules only gate scheduled sends. Manual /brief stays explicit.
+        if not force and brief_triggers:
+            from src.notification.report_triggers import evaluate_report_triggers
+
+            evaluation = evaluate_report_triggers(session, brief_triggers)
+            if not evaluation.matched:
+                logger.info("简报触发条件未满足，跳过发送: %s", brief_triggers)
+                return _report_result("skipped", "brief_trigger_not_met", session)
+            logger.info(
+                "简报触发条件满足，命中条件编号: %s",
+                ", ".join(map(str, evaluation.matched_conditions)),
+            )
+
+        if not force:
+            eligible = active_brief_codes(
+                session.get_all_dataframe(), datetime.now(timezone.utc)
+            )
+            if not eligible:
+                logger.info("无本次开市时段的有效报价，跳过简报")
+                return _report_result("skipped", "no_active_quotes", session)
+            object.__setattr__(session, "brief_active_codes", eligible)
+
+        # 休市检测：数据指纹比较（仅定时，按简报类型区分文件）
         if progress:
             progress("brief_notifications")
-        # 休市检测：数据指纹比较（仅定时，按简报类型区分文件）
         if not force:
+            from src.notification.report_builders import get_brief_dataframe
             from src.utils.market_status import is_market_closed, mark_pushed
-            stock_data_df = session.get_all_dataframe()
+            stock_data_df = get_brief_dataframe(session)
             last_pushed_file = Path(f"cache/last_pushed_{report_id}.txt")
             if is_market_closed(stock_data_df, last_pushed_file):
                 logger.info("数据未更新（疑似休市），跳过简报推送")
@@ -2034,7 +2144,8 @@ def run_brief_report(
             notifier = NotifierManager(config)
             delivery = notifier.send_brief_report(session, report_config)
 
-            # Partial/unknown means a send was attempted; retain duplicate protection.
+            # Unknown/partial is an attempted side effect, not a retry license.
+            # Keep the existing fingerprint protection against duplicate sends.
             if not isinstance(delivery, dict) or delivery.get("status") != "failed":
                 mark_pushed(last_pushed_file, stock_data_df)
         else:
@@ -2048,6 +2159,65 @@ def run_brief_report(
     except Exception as e:
         logger.exception("简报任务失败 (%s)", report_id)
         return _report_result("failed", f"brief_task:{type(e).__name__}")
+
+
+def _populate_brief_event_context(
+    session, config: dict, report_config: dict, required_roots: set[str]
+) -> None:
+    """Load report data roots referenced by configured trigger predicates."""
+    configured_codes = report_config.get("stocks") or config.get("stocks", [])
+    codes = []
+    for item in configured_codes:
+        if isinstance(item, dict):
+            item = item.get("code", item.get("stock_code", ""))
+        codes.append(str(item))
+    codes = [code for code in codes if code]
+    if not codes:
+        return
+
+    if required_roots & {"announcements", "dividend_events"}:
+        from src.data.announcement_fetcher import AnnouncementFetcher
+
+        announcement_config = config.get("announcements", {}) or {}
+        fetcher = AnnouncementFetcher(config)
+        try:
+            session.announcements = fetcher.get_recent_important_announcements(
+                codes,
+                days=announcement_config.get("days", 7),
+                dividend_days=announcement_config.get("dividend_days", 420),
+            )
+        # Missing announcements leave triggers unmet.
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).warning("简报公告事件查询失败: %s", exc)
+    if "dividend_events" in required_roots:
+        from src.data.dividend_events import DailyDividendEventResolver
+
+        try:
+            session.dividend_events = DailyDividendEventResolver(config).resolve(
+                session.announcements,
+                session.get_all_dataframe(),
+            )
+        # Missing dividends leave triggers unmet.
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).warning("简报分红事件解析失败: %s", exc)
+    if "placements" in required_roots:
+        from src.data.web_crawler import StockWebCrawler
+
+        crawler = StockWebCrawler(config)
+        placements = {}
+        for code in codes:
+            if not (code.isdigit() and len(code) == 6):
+                continue
+            try:
+                item = crawler.fetch_placement_data(code)
+                if item and item.get("is_locked"):
+                    placements[code] = item
+            # Isolate each optional placement source.
+            except Exception as exc:  # noqa: BLE001
+                logging.getLogger(__name__).warning(
+                    "简报解禁事件查询失败 %s: %s", code, exc
+                )
+        session.placements = placements
 
 
 def _fetch_benchmarks(config, session) -> dict:
@@ -2085,8 +2255,11 @@ def _fetch_benchmarks(config, session) -> dict:
             if df is not None and not df.empty:
                 bench_data[bc] = df
                 historical[bc] = df
-        except Exception:
-            pass
+        # Optional benchmarks never abort signal scans; retain a debug traceback.
+        except Exception as exc:
+            logging.getLogger(__name__).debug(
+                "Signal benchmark %s unavailable: %s", bc, exc, exc_info=True
+            )
     return bench_data
 
 
@@ -2134,7 +2307,7 @@ def _scan_group(
     top_n: int = 5,
     skip_codes: set[str] | None = None,
     config: dict | None = None,
-    scan_outcomes: "dict | None" = None,
+    scan_outcomes: dict | None = None,
 ):
     """Derive today's alerts from the canonical full-market TradePlan."""
     outcome = {"status": "not_run", "reason": "扫描尚未执行"}
@@ -2306,7 +2479,7 @@ def _scan_group(
 
 
 def _eval_opt_lookback() -> int:
-    """读 optimizer_constraints.yaml 的 walk_forward.test_months，返回日历天数。
+    """读中心合同的 walk_forward.test_months，返回日历天数。
 
     fetch_stock_data(days=N) 的 N 是日历天，不是交易日。
     """
@@ -2314,10 +2487,16 @@ def _eval_opt_lookback() -> int:
         import yaml
         with open("config/optimizer_constraints.yaml", "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
-        months = int((raw.get("walk_forward", {}) or {}).get("test_months", 9))
-        return int(months * 30.4375)  # 9 个月 ≈ 274 日历天
-    except Exception:
-        return 274
+        policy = load_evaluation_horizon_policy()
+        months = int(
+            (raw.get("walk_forward", {}) or {}).get(
+                "test_months", policy.minimum_evaluation_months
+            )
+        )
+        policy.require_evaluation_months(months, context="main._eval_opt_lookback")
+        return int(months * 30.4375)
+    except Exception:  # noqa: BLE001 - Retain the legacy parser/policy fallback.
+        return 730
 
 
 def _send_restart_notification(config: dict, service):
@@ -2367,12 +2546,23 @@ def _build_argument_parser() -> argparse.ArgumentParser:
         "--universe-robustness",
         action="store_true",
         help=(
-            "run the non-activating 84-month universe robustness benchmark "
-            "for configured market pools"
+            "run the non-activating configured-horizon universe robustness "
+            "benchmark for configured market pools"
         ),
     )
     mode.add_argument("--service", action="store_true", help="run scheduler and outbound Bots")
     mode.add_argument("--status", action="store_true", help="read local service status")
+    for flag, description in (
+        ("--fundamental-materials", "retired mixed materials pipeline (returns an error)"),
+        (
+            "--fundamental-quant",
+            "retired research entrypoint; returns an explicit error",
+        ),
+        ("--fundamental-quant-status", "read historical research metadata (read-only)"),
+        ("--fundamental-quant-report", "list existing historical report paths (read-only)"),
+        ("--fundamental-quant-notify", "retired research notification entry (returns an error)"),
+    ):
+        mode.add_argument(flag, action="store_true", help=description)
     mode.add_argument("--interactive", action="store_true", help="run configured outbound Bots")
     mode.add_argument(
         "--report-worker", choices=("daily", "brief"), help=argparse.SUPPRESS
@@ -2380,10 +2570,6 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--report-payload", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--report-result", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--config", type=Path, help="use an isolated configuration file")
-    parser.add_argument(
-        "--notify-start", action="store_true",
-        help="explicitly send a notification after the service starts",
-    )
     parser.add_argument(
         "--group",
         dest="market_group",
@@ -2423,6 +2609,39 @@ def main(argv: list[str] | None = None):
             environment,
         )
     config = load_config(args.config) if args.config else load_config()
+    if args.fundamental_materials:
+        import json
+
+        print(json.dumps({
+            "status": "blocked",
+            "error_codes": ["mixed_materials_pipeline_retired"],
+            "entrypoint": "scripts/financial_pipeline.py",
+            "paid_model_calls": 0,
+        }, ensure_ascii=False))
+        return 1
+    fundamental_action = next(
+        (method for flag, method in (
+            (args.fundamental_quant, "run"),
+            (args.fundamental_quant_status, "status"),
+            (args.fundamental_quant_report, "report"),
+            (args.fundamental_quant_notify, "notify_weekly"),
+        ) if flag), None,
+    )
+    if fundamental_action:
+        import json
+
+        from src.fundamental_quant.service import FundamentalQuantService
+
+        result = getattr(FundamentalQuantService(config), fundamental_action)()
+        print(json.dumps(result, ensure_ascii=False, allow_nan=False))
+        retired = any(
+            error.get("code") in {
+                "legacy_fundamental_workflow_retired", "pdf_research_workflow_retired",
+                "model_led_research_retired"
+            }
+            for error in result.get("errors", [])
+        )
+        return 1 if retired or result.get("status") in {"failed", "error"} else 0
     if args.status:
         import json
 
@@ -2520,10 +2739,7 @@ def main(argv: list[str] | None = None):
 
         service = RuntimeService(config, scheduling=not args.interactive)
         logger.info("Starting scheduler/Bot service with no HTTP listener")
-        on_started = (
-            lambda: _send_restart_notification(config, service)
-        ) if args.notify_start else None
-        service.run(on_started=on_started)
+        service.run(on_started=lambda: _send_restart_notification(config, service))
     return 0
 
 
