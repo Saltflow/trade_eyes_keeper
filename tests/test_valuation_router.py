@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from src.fundamental_embedding.valuation_router import (
     ValuationModel,
     residual_income_per_share,

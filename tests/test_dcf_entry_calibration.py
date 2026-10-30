@@ -24,6 +24,24 @@ from src.fundamental_embedding.dcf_entry_calibration import (
     risk_adjusted_growth,
 )
 from src.instruments.models import FinancialStatementSnapshot
+from src.search.config import load_evaluation_horizon_policy
+
+
+def test_dcf_calibration_label_covers_the_shared_two_year_minimum():
+    policy = load_evaluation_horizon_policy()
+    config = CapmDcfEntryConfig()
+
+    assert (
+        config.hit_horizon_trading_days + config.outcome_horizon_trading_days
+        >= policy.minimum_evaluation_trading_days
+    )
+    with pytest.raises(ValueError, match="entry-plus-outcome label"):
+        CapmDcfEntryConfig(
+            hit_horizon_trading_days=1,
+            outcome_horizon_trading_days=(
+                policy.minimum_evaluation_trading_days - 2
+            ),
+        )
 
 
 def _parameters(fraction: float = 0.95) -> CapmDcfEntryParameters:
