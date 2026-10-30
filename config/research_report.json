@@ -1,27 +1,27 @@
 {
-  "version": "research-report-v5-actual-years-local-known-price",
+  "version": "research-report-v6-input-driven-scope",
   "prompts": [
-    "config/prompts/research_basis_v3.md",
-    "config/prompts/research_valuation_v5.md",
+    "config/prompts/research_basis_v4.md",
+    "config/prompts/research_valuation_v6.md",
     "config/prompts/research_visuals.md",
-    "docs/design/research_report_example.md"
+    "docs/design/research_report_example_v6.md"
   ],
   "rounds": [
     {
       "id": "draft",
-      "prompt": "config/prompts/research_draft_v5.md",
+      "prompt": "config/prompts/research_draft_v6.md",
       "max_tokens": 131072,
       "output_planning_tokens": 48000
     },
     {
       "id": "review",
-      "prompt": "config/prompts/research_audit_v5.md",
+      "prompt": "config/prompts/research_audit_v6.md",
       "max_tokens": 131072,
       "output_planning_tokens": 48000
     },
     {
       "id": "write",
-      "prompt": "config/prompts/research_final_v5.md",
+      "prompt": "config/prompts/research_final_v6.md",
       "max_tokens": 131072,
       "output_planning_tokens": 40000
     }

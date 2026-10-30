@@ -1,0 +1,5779 @@
+{
+  "notice": "全部数字、公司和证券代码均为虚构规范样例；不是任何真实报告数据。所有主题范围以task_details为准，示例节选不能缩窄全量明细提取。未展示主题的not_found只演示缺失原因，禁止照抄。原文保留字段与固定身份码并存；目录外照常提取。",
+  "blocks": {
+    "notes_foundation": {
+      "schema_version": "4.0",
+      "tables": [
+        {
+          "kind": "attributes",
+          "module": "common",
+          "topic": "consolidation",
+          "title": "示例子公司资料",
+          "part": null,
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "context": {
+            "period": {
+              "kind": "instant",
+              "start": null,
+              "end": "2025-12-31",
+              "coverage": "not_applicable"
+            }
+          },
+          "columns": {
+            "c1": {
+              "label": "注册地",
+              "value_type": "text",
+              "context": {}
+            },
+            "c2": {
+              "label": "主营业务",
+              "value_type": "text",
+              "context": {}
+            },
+            "c3": {
+              "label": "持股比例",
+              "value_type": "ratio",
+              "context": {
+                "unit": "%",
+                "currency": null,
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                }
+              }
+            }
+          },
+          "rows": [
+            {
+              "path": [
+                "示例子公司甲"
+              ],
+              "values": {
+                "c1": "示例地区",
+                "c2": "示例业务",
+                "c3": "100%"
+              },
+              "missing_reasons": {},
+              "cell_context": {},
+              "issues": []
+            }
+          ],
+          "issues": [],
+          "accounting_basis_code": "CAS",
+          "identity_code": "NOTE_SUBSIDIARIES"
+        }
+      ],
+      "policies": [
+        {
+          "module": "common",
+          "topic": "reporting_basis",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例政策（虚构）：设备直线折旧，预计年限10—45年；新增类别采用15年；残值率5%。",
+          "issues": []
+        }
+      ],
+      "changes": [
+        {
+          "module": "common",
+          "topic": "reporting_basis",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "text": "示例政策变化（虚构）：新增设备类别采用15年，不代表所有设备统一调整。"
+        }
+      ],
+      "issues": [
+        {
+          "target": "topics/subsequent_distributions",
+          "reason": "not_found",
+          "detail": "虚构样例未提供该主题材料，不代表真实报告未披露"
+        }
+      ]
+    },
+    "notes_operations": {
+      "schema_version": "4.0",
+      "tables": [
+        {
+          "kind": "numeric",
+          "role": "note",
+          "identity_code": "NOTE_REVENUE_BREAKDOWN",
+          "module": "common",
+          "topic": "revenue_contracts",
+          "title": "虚构样例：主营业务收入成本构成（原宽表分类转行）",
+          "part": null,
+          "scope": {
+            "kind": "group",
+            "entity": "虚构示例集团",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "accounting_basis_code": "CAS",
+          "columns": {
+            "c1": {
+              "label": "2024年度",
+              "identity_code": "VALUE",
+              "period": {
+                "kind": "duration",
+                "start": "2024-01-01",
+                "end": "2024-12-31",
+                "coverage": "full_year"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null
+            },
+            "c2": {
+              "label": "2025年度",
+              "identity_code": "VALUE",
+              "period": {
+                "kind": "duration",
+                "start": "2025-01-01",
+                "end": "2025-12-31",
+                "coverage": "full_year"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "identity_code": "REVENUE",
+              "path": [
+                "主营业务",
+                "工程服务",
+                "营业收入"
+              ],
+              "dimensions": [
+                {
+                  "axis": "PRODUCT",
+                  "member": "工程服务"
+                },
+                {
+                  "axis": "GEOGRAPHY",
+                  "member": "境内"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {},
+              "values": {
+                "c1": "240",
+                "c2": "280"
+              },
+              "missing_reasons": {},
+              "issues": []
+            },
+            {
+              "row_kind": "detail",
+              "identity_code": "COST",
+              "path": [
+                "主营业务",
+                "工程服务",
+                "营业成本"
+              ],
+              "dimensions": [
+                {
+                  "axis": "PRODUCT",
+                  "member": "工程服务"
+                },
+                {
+                  "axis": "GEOGRAPHY",
+                  "member": "境内"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {},
+              "values": {
+                "c1": "160",
+                "c2": "190"
+              },
+              "missing_reasons": {},
+              "issues": []
+            },
+            {
+              "row_kind": "detail",
+              "identity_code": "REVENUE",
+              "path": [
+                "主营业务",
+                "工程服务",
+                "营业收入"
+              ],
+              "dimensions": [
+                {
+                  "axis": "PRODUCT",
+                  "member": "工程服务"
+                },
+                {
+                  "axis": "GEOGRAPHY",
+                  "member": "境外"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {},
+              "values": {
+                "c1": "60",
+                "c2": "70"
+              },
+              "missing_reasons": {},
+              "issues": []
+            },
+            {
+              "row_kind": "detail",
+              "identity_code": "COST",
+              "path": [
+                "主营业务",
+                "工程服务",
+                "营业成本"
+              ],
+              "dimensions": [
+                {
+                  "axis": "PRODUCT",
+                  "member": "工程服务"
+                },
+                {
+                  "axis": "GEOGRAPHY",
+                  "member": "境外"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {},
+              "values": {
+                "c1": "42",
+                "c2": "49"
+              },
+              "missing_reasons": {},
+              "issues": []
+            },
+            {
+              "row_kind": "detail",
+              "identity_code": "GROSS_MARGIN",
+              "path": [
+                "主营业务",
+                "工程服务",
+                "已披露毛利率"
+              ],
+              "dimensions": [
+                {
+                  "axis": "PRODUCT",
+                  "member": "工程服务"
+                },
+                {
+                  "axis": "GEOGRAPHY",
+                  "member": "境内"
+                }
+              ],
+              "unit": "%",
+              "unit_code": "PERCENT",
+              "currency": null,
+              "statistic": {
+                "kind": "period_measure",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {},
+              "values": {
+                "c1": "33.33%",
+                "c2": "32.14%"
+              },
+              "missing_reasons": {},
+              "issues": []
+            },
+            {
+              "row_kind": "total",
+              "identity_code": "REVENUE",
+              "path": [
+                "主营业务",
+                "合计"
+              ],
+              "dimensions": [
+                {
+                  "axis": "PRODUCT",
+                  "member": "TOTAL"
+                },
+                {
+                  "axis": "GEOGRAPHY",
+                  "member": "TOTAL"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {},
+              "values": {
+                "c1": "300",
+                "c2": "350"
+              },
+              "missing_reasons": {},
+              "issues": []
+            }
+          ],
+          "issues": []
+        },
+        {
+          "kind": "numeric",
+          "role": "note",
+          "identity_code": "NOTE_SEGMENT_PERFORMANCE",
+          "module": "common",
+          "topic": "segments_geographies",
+          "title": "虚构样例：经营分部财务信息",
+          "part": null,
+          "scope": {
+            "kind": "group",
+            "entity": "虚构示例集团",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "accounting_basis_code": "CAS",
+          "columns": {
+            "c1": {
+              "label": "2024年度",
+              "identity_code": "VALUE",
+              "period": {
+                "kind": "duration",
+                "start": "2024-01-01",
+                "end": "2024-12-31",
+                "coverage": "full_year"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null
+            },
+            "c2": {
+              "label": "2025年度",
+              "identity_code": "VALUE",
+              "period": {
+                "kind": "duration",
+                "start": "2025-01-01",
+                "end": "2025-12-31",
+                "coverage": "full_year"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "identity_code": "REVENUE",
+              "path": [
+                "分部收入",
+                "批发业务"
+              ],
+              "dimensions": [
+                {
+                  "axis": "BUSINESS_SEGMENT",
+                  "member": "批发业务"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {},
+              "values": {
+                "c1": "200",
+                "c2": "230"
+              },
+              "missing_reasons": {},
+              "issues": []
+            },
+            {
+              "row_kind": "detail",
+              "identity_code": "REVENUE",
+              "path": [
+                "分部收入",
+                "零售业务"
+              ],
+              "dimensions": [
+                {
+                  "axis": "BUSINESS_SEGMENT",
+                  "member": "零售业务"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {},
+              "values": {
+                "c1": "120",
+                "c2": "140"
+              },
+              "missing_reasons": {},
+              "issues": []
+            },
+            {
+              "row_kind": "subtotal",
+              "identity_code": "REVENUE",
+              "path": [
+                "分部收入",
+                "分部合计"
+              ],
+              "dimensions": [
+                {
+                  "axis": "BUSINESS_SEGMENT",
+                  "member": "TOTAL"
+                },
+                {
+                  "axis": "AGGREGATION_LEVEL",
+                  "member": "分部合计"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {},
+              "values": {
+                "c1": "320",
+                "c2": "370"
+              },
+              "missing_reasons": {},
+              "issues": []
+            },
+            {
+              "row_kind": "detail",
+              "identity_code": "REVENUE",
+              "path": [
+                "分部收入",
+                "抵销"
+              ],
+              "dimensions": [
+                {
+                  "axis": "BUSINESS_SEGMENT",
+                  "member": "ELIMINATIONS"
+                },
+                {
+                  "axis": "AGGREGATION_LEVEL",
+                  "member": "抵销"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {},
+              "values": {
+                "c1": "(20)",
+                "c2": "(20)"
+              },
+              "missing_reasons": {},
+              "issues": []
+            },
+            {
+              "row_kind": "total",
+              "identity_code": "REVENUE",
+              "path": [
+                "分部收入",
+                "集团合计"
+              ],
+              "dimensions": [
+                {
+                  "axis": "BUSINESS_SEGMENT",
+                  "member": "TOTAL"
+                },
+                {
+                  "axis": "AGGREGATION_LEVEL",
+                  "member": "集团合计"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {},
+              "values": {
+                "c1": "300",
+                "c2": "350"
+              },
+              "missing_reasons": {},
+              "issues": []
+            },
+            {
+              "row_kind": "detail",
+              "identity_code": "SEGMENT_RESULT",
+              "path": [
+                "分部业绩",
+                "批发业务"
+              ],
+              "dimensions": [
+                {
+                  "axis": "BUSINESS_SEGMENT",
+                  "member": "批发业务"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {},
+              "values": {
+                "c1": "40",
+                "c2": "48"
+              },
+              "missing_reasons": {},
+              "issues": []
+            },
+            {
+              "row_kind": "detail",
+              "identity_code": "SEGMENT_ASSETS",
+              "path": [
+                "分部资产",
+                "批发业务"
+              ],
+              "dimensions": [
+                {
+                  "axis": "BUSINESS_SEGMENT",
+                  "member": "批发业务"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {
+                "c1": {
+                  "kind": "instant",
+                  "start": null,
+                  "end": "2024-12-31",
+                  "coverage": "not_applicable"
+                },
+                "c2": {
+                  "kind": "instant",
+                  "start": null,
+                  "end": "2025-12-31",
+                  "coverage": "not_applicable"
+                }
+              },
+              "values": {
+                "c1": "800",
+                "c2": "920"
+              },
+              "missing_reasons": {},
+              "issues": []
+            },
+            {
+              "row_kind": "detail",
+              "identity_code": "SEGMENT_LIABILITIES",
+              "path": [
+                "分部负债",
+                "批发业务"
+              ],
+              "dimensions": [
+                {
+                  "axis": "BUSINESS_SEGMENT",
+                  "member": "批发业务"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {
+                "c1": {
+                  "kind": "instant",
+                  "start": null,
+                  "end": "2024-12-31",
+                  "coverage": "not_applicable"
+                },
+                "c2": {
+                  "kind": "instant",
+                  "start": null,
+                  "end": "2025-12-31",
+                  "coverage": "not_applicable"
+                }
+              },
+              "values": {
+                "c1": "500",
+                "c2": "570"
+              },
+              "missing_reasons": {},
+              "issues": []
+            }
+          ],
+          "issues": []
+        },
+        {
+          "kind": "numeric",
+          "role": "note",
+          "identity_code": "NOTE_EMPLOYEE_BENEFITS",
+          "module": "common",
+          "topic": "employees_incentives",
+          "title": "虚构样例：应付职工薪酬",
+          "part": null,
+          "scope": {
+            "kind": "group",
+            "entity": "虚构示例集团",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "accounting_basis_code": "CAS",
+          "columns": {
+            "c1": {
+              "label": "2024年度",
+              "identity_code": "VALUE",
+              "period": {
+                "kind": "duration",
+                "start": "2024-01-01",
+                "end": "2024-12-31",
+                "coverage": "full_year"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null
+            },
+            "c2": {
+              "label": "2025年度",
+              "identity_code": "VALUE",
+              "period": {
+                "kind": "duration",
+                "start": "2025-01-01",
+                "end": "2025-12-31",
+                "coverage": "full_year"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "identity_code": "EMPLOYEE_OPENING_BALANCE",
+              "path": [
+                "短期薪酬",
+                "年初余额"
+              ],
+              "dimensions": [
+                {
+                  "axis": "EMPLOYEE_CLASS",
+                  "member": "短期薪酬"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {
+                "c1": {
+                  "kind": "instant",
+                  "start": null,
+                  "end": "2024-01-01",
+                  "coverage": "not_applicable"
+                },
+                "c2": {
+                  "kind": "instant",
+                  "start": null,
+                  "end": "2025-01-01",
+                  "coverage": "not_applicable"
+                }
+              },
+              "values": {
+                "c1": "10",
+                "c2": "12"
+              },
+              "missing_reasons": {},
+              "issues": []
+            },
+            {
+              "row_kind": "detail",
+              "identity_code": "EMPLOYEE_ADDITION",
+              "path": [
+                "短期薪酬",
+                "本期增加"
+              ],
+              "dimensions": [
+                {
+                  "axis": "EMPLOYEE_CLASS",
+                  "member": "短期薪酬"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {},
+              "values": {
+                "c1": "100",
+                "c2": "110"
+              },
+              "missing_reasons": {},
+              "issues": []
+            },
+            {
+              "row_kind": "detail",
+              "identity_code": "EMPLOYEE_REDUCTION",
+              "path": [
+                "短期薪酬",
+                "本期减少"
+              ],
+              "dimensions": [
+                {
+                  "axis": "EMPLOYEE_CLASS",
+                  "member": "短期薪酬"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {},
+              "values": {
+                "c1": "98",
+                "c2": "108"
+              },
+              "missing_reasons": {},
+              "issues": []
+            },
+            {
+              "row_kind": "detail",
+              "identity_code": "EMPLOYEE_CLOSING_BALANCE",
+              "path": [
+                "短期薪酬",
+                "年末余额"
+              ],
+              "dimensions": [
+                {
+                  "axis": "EMPLOYEE_CLASS",
+                  "member": "短期薪酬"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {
+                "c1": {
+                  "kind": "instant",
+                  "start": null,
+                  "end": "2024-12-31",
+                  "coverage": "not_applicable"
+                },
+                "c2": {
+                  "kind": "instant",
+                  "start": null,
+                  "end": "2025-12-31",
+                  "coverage": "not_applicable"
+                }
+              },
+              "values": {
+                "c1": "12",
+                "c2": "14"
+              },
+              "missing_reasons": {},
+              "issues": []
+            },
+            {
+              "row_kind": "detail",
+              "identity_code": "EMPLOYEE_CLOSING_BALANCE",
+              "path": [
+                "其他福利",
+                "未定期间余额"
+              ],
+              "dimensions": [
+                {
+                  "axis": "EMPLOYEE_CLASS",
+                  "member": "其他福利"
+                }
+              ],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {
+                "c1": null,
+                "c2": null
+              },
+              "values": {
+                "c1": "3.5",
+                "c2": "4.0"
+              },
+              "missing_reasons": {},
+              "issues": [
+                {
+                  "target": "period_overrides",
+                  "reason": "context_uncertain",
+                  "detail": "虚构样例原表未确定余额日期，保留值；null明确未知，禁止继承全年默认"
+                }
+              ]
+            }
+          ],
+          "issues": []
+        },
+        {
+          "kind": "numeric",
+          "role": "note",
+          "identity_code": "NOTE_OTHER_GAINS",
+          "module": "common",
+          "topic": "other_gains",
+          "title": "虚构样例：政府补助及其他损益",
+          "part": null,
+          "scope": {
+            "kind": "group",
+            "entity": "虚构示例集团",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "accounting_basis_code": "CAS",
+          "columns": {
+            "c1": {
+              "label": "2024年度",
+              "identity_code": "VALUE",
+              "period": {
+                "kind": "duration",
+                "start": "2024-01-01",
+                "end": "2024-12-31",
+                "coverage": "full_year"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null
+            },
+            "c2": {
+              "label": "2025年度",
+              "identity_code": "VALUE",
+              "period": {
+                "kind": "duration",
+                "start": "2025-01-01",
+                "end": "2025-12-31",
+                "coverage": "full_year"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "identity_code": "GOVERNMENT_GRANT",
+              "path": [
+                "政府补助",
+                "项目甲"
+              ],
+              "dimensions": [],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {},
+              "values": {
+                "c1": "8",
+                "c2": "9"
+              },
+              "missing_reasons": {},
+              "issues": []
+            },
+            {
+              "row_kind": "detail",
+              "identity_code": "NONRECURRING_GAIN",
+              "path": [
+                "非经常性损益",
+                "资产处置"
+              ],
+              "dimensions": [],
+              "unit": "百万元",
+              "unit_code": "CURRENCY_1E6",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "period_overrides": {},
+              "values": {
+                "c1": "2",
+                "c2": "1"
+              },
+              "missing_reasons": {},
+              "issues": []
+            }
+          ],
+          "issues": []
+        }
+      ],
+      "policies": [],
+      "changes": [],
+      "issues": []
+    },
+    "notes_assets": {
+      "schema_version": "4.0",
+      "tables": [
+        {
+          "kind": "numeric",
+          "role": "note",
+          "module": "common",
+          "topic": "tangible_assets",
+          "title": "示例其他资产明细",
+          "part": null,
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "columns": {
+            "c1": {
+              "label": "FY2025",
+              "period": {
+                "kind": "duration",
+                "start": "2025-01-01",
+                "end": "2025-12-31",
+                "coverage": "full_year"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "path": [
+                "资产",
+                "其他"
+              ],
+              "dimensions": [],
+              "unit": "年",
+              "currency": null,
+              "statistic": {
+                "kind": "period_measure",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "10—45"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": null,
+              "unit_code": "YEAR",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "资产",
+                "说明"
+              ],
+              "dimensions": [],
+              "unit": null,
+              "currency": null,
+              "statistic": {
+                "kind": "period_measure",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "按合同约定结算"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": null,
+              "unit_code": null,
+              "period_overrides": {}
+            }
+          ],
+          "issues": [],
+          "accounting_basis_code": "CAS",
+          "identity_code": null
+        }
+      ],
+      "policies": [],
+      "changes": [],
+      "issues": [
+        {
+          "target": "topics/receivables_impairment",
+          "reason": "not_found",
+          "detail": "虚构样例未提供该主题材料，不代表真实报告未披露"
+        },
+        {
+          "target": "topics/inventory",
+          "reason": "not_found",
+          "detail": "虚构样例未提供该主题材料，不代表真实报告未披露"
+        },
+        {
+          "target": "topics/intangibles_goodwill",
+          "reason": "not_found",
+          "detail": "虚构样例未提供该主题材料，不代表真实报告未披露"
+        },
+        {
+          "target": "topics/investments_instruments",
+          "reason": "not_found",
+          "detail": "虚构样例未提供该主题材料，不代表真实报告未披露"
+        }
+      ]
+    },
+    "notes_financing": {
+      "schema_version": "4.0",
+      "tables": [
+        {
+          "kind": "attributes",
+          "module": "common",
+          "topic": "debt_leases",
+          "title": "示例融资条款",
+          "part": null,
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "context": {
+            "period": {
+              "kind": "instant",
+              "start": null,
+              "end": "2025-12-31",
+              "coverage": "not_applicable"
+            }
+          },
+          "columns": {
+            "c1": {
+              "label": "币种",
+              "value_type": "text",
+              "context": {}
+            },
+            "c2": {
+              "label": "本金",
+              "value_type": "amount",
+              "context": {
+                "unit": "百万元",
+                "currency": "CNY"
+              }
+            },
+            "c3": {
+              "label": "利率",
+              "value_type": "ratio",
+              "context": {
+                "unit": "%",
+                "currency": null,
+                "statistic": {
+                  "kind": "period_measure",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "yes"
+                }
+              }
+            },
+            "c4": {
+              "label": "期限",
+              "value_type": "quantity",
+              "context": {
+                "unit": "年",
+                "currency": null
+              }
+            }
+          },
+          "rows": [
+            {
+              "path": [
+                "示例融资甲"
+              ],
+              "values": {
+                "c1": "人民币",
+                "c2": "1,000",
+                "c3": "2.11%—9.50%",
+                "c4": "3"
+              },
+              "missing_reasons": {},
+              "cell_context": {},
+              "issues": []
+            },
+            {
+              "path": [
+                "示例融资乙"
+              ],
+              "values": {
+                "c1": "港币",
+                "c2": "500",
+                "c3": "浮动利率",
+                "c4": "5"
+              },
+              "missing_reasons": {},
+              "cell_context": {
+                "c2": {
+                  "unit": "万元",
+                  "currency": "HKD"
+                }
+              },
+              "issues": []
+            }
+          ],
+          "issues": [],
+          "accounting_basis_code": "CAS",
+          "identity_code": "NOTE_BORROWING_TERMS"
+        }
+      ],
+      "policies": [],
+      "changes": [],
+      "issues": [
+        {
+          "target": "topics/income_tax",
+          "reason": "not_found",
+          "detail": "虚构样例未提供该主题材料，不代表真实报告未披露"
+        },
+        {
+          "target": "topics/cash_flows",
+          "reason": "not_found",
+          "detail": "虚构样例未提供该主题材料，不代表真实报告未披露"
+        },
+        {
+          "target": "topics/equity_instruments",
+          "reason": "not_found",
+          "detail": "虚构样例未提供该主题材料，不代表真实报告未披露"
+        }
+      ]
+    },
+    "notes_risk": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "common",
+          "topic": "risk_measurement",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例风险口径（虚构）：分组披露信用风险，不补算拨备比率。",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": [
+        {
+          "target": "topics/related_concentration",
+          "reason": "not_found",
+          "detail": "虚构样例未提供该主题材料，不代表真实报告未披露"
+        },
+        {
+          "target": "topics/commitments_contingencies",
+          "reason": "not_found",
+          "detail": "虚构样例未提供该主题材料，不代表真实报告未披露"
+        }
+      ]
+    },
+    "statements": {
+      "schema_version": "4.0",
+      "company": {
+        "name": "示例集团（虚构）",
+        "code": "TEST000"
+      },
+      "report_period": "FY2025",
+      "tables": [
+        {
+          "kind": "numeric",
+          "role": "BS",
+          "module": "common",
+          "topic": "BS",
+          "title": "示例合并资产负债表",
+          "part": null,
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "columns": {
+            "c1": {
+              "label": "期末2024",
+              "period": {
+                "kind": "instant",
+                "start": null,
+                "end": "2024-12-31",
+                "coverage": "not_applicable"
+              },
+              "adjustment": {
+                "status": "original",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            },
+            "c2": {
+              "label": "期末2025",
+              "period": {
+                "kind": "instant",
+                "start": null,
+                "end": "2025-12-31",
+                "coverage": "not_applicable"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "heading",
+              "path": [
+                "资产"
+              ],
+              "dimensions": [],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {},
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": null,
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "资产",
+                "流动资产",
+                "货币资金"
+              ],
+              "dimensions": [],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "100",
+                "c2": "120"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "BS_CASH",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "资产",
+                "流动资产",
+                "其他"
+              ],
+              "dimensions": [],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "3",
+                "c2": "4"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": null,
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "subtotal",
+              "path": [
+                "资产",
+                "流动资产",
+                "合计"
+              ],
+              "dimensions": [],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "103",
+                "c2": "124"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "BS_CURRENT_ASSETS",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "负债",
+                "其他"
+              ],
+              "dimensions": [],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "7",
+                "c2": "9"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": null,
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "subtotal",
+              "path": [
+                "负债",
+                "合计"
+              ],
+              "dimensions": [],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "7",
+                "c2": "9"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "BS_LIABILITIES",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            }
+          ],
+          "issues": [],
+          "accounting_basis_code": "CAS",
+          "identity_code": "BS"
+        },
+        {
+          "kind": "numeric",
+          "role": "IS",
+          "module": "common",
+          "topic": "IS",
+          "title": "示例合并利润表",
+          "part": null,
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "columns": {
+            "c1": {
+              "label": "FY2024",
+              "period": {
+                "kind": "duration",
+                "start": "2024-01-01",
+                "end": "2024-12-31",
+                "coverage": "full_year"
+              },
+              "adjustment": {
+                "status": "original",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            },
+            "c2": {
+              "label": "FY2025",
+              "period": {
+                "kind": "duration",
+                "start": "2025-01-01",
+                "end": "2025-12-31",
+                "coverage": "full_year"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "path": [
+                "营业收入"
+              ],
+              "dimensions": [],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "500",
+                "c2": "600"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "IS_REVENUE",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "营业利润"
+              ],
+              "dimensions": [],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "(15.00)",
+                "c2": "25.00"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "IS_OPERATING_PROFIT",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            }
+          ],
+          "issues": [],
+          "accounting_basis_code": "CAS",
+          "identity_code": "IS"
+        },
+        {
+          "kind": "numeric",
+          "role": "CFS",
+          "module": "common",
+          "topic": "CFS",
+          "title": "示例合并现金流量表",
+          "part": null,
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "columns": {
+            "c1": {
+              "label": "FY2024",
+              "period": {
+                "kind": "duration",
+                "start": "2024-01-01",
+                "end": "2024-12-31",
+                "coverage": "full_year"
+              },
+              "adjustment": {
+                "status": "original",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            },
+            "c2": {
+              "label": "FY2025",
+              "period": {
+                "kind": "duration",
+                "start": "2025-01-01",
+                "end": "2025-12-31",
+                "coverage": "full_year"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "path": [
+                "经营活动",
+                "现金流量净额"
+              ],
+              "dimensions": [],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "10",
+                "c2": "20"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "CFS_NET_OPERATING",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "投资活动",
+                "现金流量净额"
+              ],
+              "dimensions": [],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "—",
+                "c2": "-12"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "CFS_NET_INVESTING",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            }
+          ],
+          "issues": [],
+          "accounting_basis_code": "CAS",
+          "identity_code": "CFS"
+        }
+      ],
+      "issues": []
+    },
+    "capital": {
+      "schema_version": "4.0",
+      "tables": [
+        {
+          "kind": "numeric",
+          "role": "capital",
+          "module": "common",
+          "topic": "per_share_returns",
+          "title": "示例股本与每股指标",
+          "part": "期末时点指标",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "columns": {
+            "c1": {
+              "label": "期末2025",
+              "period": {
+                "kind": "instant",
+                "start": null,
+                "end": "2025-12-31",
+                "coverage": "not_applicable"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "path": [
+                "期末总股数"
+              ],
+              "dimensions": [],
+              "unit": "股",
+              "currency": null,
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "1,000"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "requested_item": "期末总股数",
+              "identity_code": "CAP_TOTAL_SHARES",
+              "unit_code": "SHARE_1",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "股本金额"
+              ],
+              "dimensions": [],
+              "unit": "元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "1,000"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "requested_item": "股本金额",
+              "identity_code": "CAP_SHARE_CAPITAL",
+              "unit_code": "CURRENCY_1",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "BVPS"
+              ],
+              "dimensions": [],
+              "unit": "元/股",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "10.00"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "requested_item": "BVPS",
+              "identity_code": "CAP_BVPS",
+              "unit_code": "CURRENCY_PER_SHARE",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "归母净资产"
+              ],
+              "dimensions": [],
+              "unit": "元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "10,000"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "requested_item": "归母净资产",
+              "identity_code": "CAP_PARENT_EQUITY",
+              "unit_code": "CURRENCY_1",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "已披露归母普通股权益"
+              ],
+              "dimensions": [],
+              "unit": "元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": null
+              },
+              "missing_reasons": {
+                "c1": {
+                  "reason": "not_found",
+                  "detail": "本次未找到该独立披露项"
+                }
+              },
+              "issues": [],
+              "requested_item": "已披露归母普通股权益",
+              "identity_code": "CAP_COMMON_PARENT_EQUITY",
+              "unit_code": "CURRENCY_1",
+              "period_overrides": {}
+            }
+          ],
+          "issues": [],
+          "accounting_basis_code": "CAS",
+          "identity_code": "CAPITAL_POINT"
+        },
+        {
+          "kind": "numeric",
+          "role": "capital",
+          "module": "common",
+          "topic": "per_share_returns",
+          "title": "示例股本与每股指标",
+          "part": "全年每股与收益指标",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "columns": {
+            "c1": {
+              "label": "FY2025",
+              "period": {
+                "kind": "duration",
+                "start": "2025-01-01",
+                "end": "2025-12-31",
+                "coverage": "full_year"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "path": [
+                "基本EPS加权股数"
+              ],
+              "dimensions": [],
+              "unit": "股",
+              "currency": null,
+              "statistic": {
+                "kind": "period_average",
+                "method": {
+                  "state": "stated",
+                  "text": "按报告披露日权数加权"
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "1,000"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "requested_item": "基本EPS加权股数",
+              "identity_code": "CAP_BASIC_WEIGHTED_SHARES",
+              "unit_code": "SHARE_1",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "稀释EPS加权股数"
+              ],
+              "dimensions": [],
+              "unit": "股",
+              "currency": null,
+              "statistic": {
+                "kind": "period_average",
+                "method": {
+                  "state": "stated",
+                  "text": "按报告披露日权数加权"
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "1,050"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "requested_item": "稀释EPS加权股数",
+              "identity_code": "CAP_DILUTED_WEIGHTED_SHARES",
+              "unit_code": "SHARE_1",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "基本EPS"
+              ],
+              "dimensions": [],
+              "unit": "元/股",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_measure",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "no"
+              },
+              "definition": null,
+              "values": {
+                "c1": "1.25"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "requested_item": "基本EPS",
+              "identity_code": "CAP_BASIC_EPS",
+              "unit_code": "CURRENCY_PER_SHARE",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "稀释EPS"
+              ],
+              "dimensions": [],
+              "unit": "元/股",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_measure",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "no"
+              },
+              "definition": null,
+              "values": {
+                "c1": "1.19"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "requested_item": "稀释EPS",
+              "identity_code": "CAP_DILUTED_EPS",
+              "unit_code": "CURRENCY_PER_SHARE",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "扣非基本EPS"
+              ],
+              "dimensions": [],
+              "unit": "元/股",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_measure",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "no"
+              },
+              "definition": null,
+              "values": {
+                "c1": null
+              },
+              "missing_reasons": {
+                "c1": {
+                  "reason": "not_disclosed",
+                  "detail": "报告明确表示该项未披露"
+                }
+              },
+              "issues": [],
+              "requested_item": "扣非基本EPS",
+              "identity_code": "CAP_ADJUSTED_BASIC_EPS",
+              "unit_code": "CURRENCY_PER_SHARE",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "扣非稀释EPS"
+              ],
+              "dimensions": [],
+              "unit": "元/股",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_measure",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "no"
+              },
+              "definition": null,
+              "values": {
+                "c1": null
+              },
+              "missing_reasons": {
+                "c1": {
+                  "reason": "not_applicable",
+                  "detail": "报告明确该项不适用"
+                }
+              },
+              "issues": [],
+              "requested_item": "扣非稀释EPS",
+              "identity_code": "CAP_ADJUSTED_DILUTED_EPS",
+              "unit_code": "CURRENCY_PER_SHARE",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "加权平均ROE"
+              ],
+              "dimensions": [],
+              "unit": "%",
+              "currency": null,
+              "statistic": {
+                "kind": "period_measure",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "no"
+              },
+              "definition": null,
+              "values": {
+                "c1": "12.50%"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "requested_item": "加权平均ROE",
+              "identity_code": "CAP_ROE",
+              "unit_code": "PERCENT",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "扣非ROE"
+              ],
+              "dimensions": [],
+              "unit": "%",
+              "currency": null,
+              "statistic": {
+                "kind": "period_measure",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "no"
+              },
+              "definition": null,
+              "values": {
+                "c1": "12.00%"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "requested_item": "扣非ROE",
+              "identity_code": "CAP_ADJUSTED_ROE",
+              "unit_code": "PERCENT",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "每股经营现金流"
+              ],
+              "dimensions": [],
+              "unit": "元/股",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_measure",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "no"
+              },
+              "definition": null,
+              "values": {
+                "c1": null
+              },
+              "missing_reasons": {
+                "c1": {
+                  "reason": "context_uncertain",
+                  "detail": "发现原始值但无法确定对应股类"
+                }
+              },
+              "issues": [
+                {
+                  "target": "values.c1",
+                  "reason": "context_uncertain",
+                  "detail": "保留不能定位的原值",
+                  "retained_value": "2.00"
+                }
+              ],
+              "requested_item": "每股经营现金流",
+              "identity_code": "CAP_OPERATING_CASH_PER_SHARE",
+              "unit_code": "CURRENCY_PER_SHARE",
+              "period_overrides": {}
+            }
+          ],
+          "issues": [],
+          "accounting_basis_code": "CAS",
+          "identity_code": "CAPITAL_PERIOD"
+        }
+      ],
+      "events": [
+        {
+          "event_type": "dividend",
+          "phase": "proposal",
+          "date": {
+            "value": "2025-12",
+            "precision": "month"
+          },
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "description": "示例分派方案（虚构），不等同实付",
+          "terms": null,
+          "issues": []
+        }
+      ],
+      "issues": []
+    },
+    "metadata": {
+      "schema_version": "4.0",
+      "metadata": [
+        {
+          "period": {
+            "kind": "duration",
+            "start": "2025-01-01",
+            "end": "2025-12-31",
+            "coverage": "full_year"
+          },
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "industry_classifications": [
+            {
+              "system": "报告披露的示例分类体系",
+              "label": "示例综合业务",
+              "code": null
+            }
+          ],
+          "businesses": [
+            "工程承包（虚构）"
+          ],
+          "products_services": [
+            "工程服务（虚构）"
+          ],
+          "operating_model": [
+            "项目承包（虚构）"
+          ],
+          "customers": [
+            "企业客户（虚构）"
+          ],
+          "geographies": [
+            "境内（虚构）"
+          ],
+          "share_classes": [
+            "普通股（虚构）"
+          ],
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "fiscal_year_end": "12-31",
+          "issues": [
+            {
+              "target": "industry_classifications.0.code",
+              "reason": "not_found",
+              "detail": "本次未取得行业代码"
+            }
+          ]
+        }
+      ],
+      "management": [
+        {
+          "topic": "经营变化",
+          "kind": "management_explanation",
+          "text": "示例管理层解释（虚构）：交付节奏影响收入确认。",
+          "period": {
+            "kind": "duration",
+            "start": "2025-01-01",
+            "end": "2025-12-31",
+            "coverage": "full_year"
+          },
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "issues": []
+        }
+      ],
+      "issues": []
+    },
+    "notes_agriculture": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "agriculture",
+          "topic": "agriculture_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：生物资产",
+          "issues": []
+        },
+        {
+          "module": "agriculture",
+          "topic": "agriculture_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：农产品",
+          "issues": []
+        },
+        {
+          "module": "agriculture",
+          "topic": "agriculture_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：生产周期",
+          "issues": []
+        },
+        {
+          "module": "agriculture",
+          "topic": "agriculture_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：相关成本补助",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_extractives": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "extractives",
+          "topic": "extractives_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：储量资源",
+          "issues": []
+        },
+        {
+          "module": "extractives",
+          "topic": "extractives_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：勘探开发",
+          "issues": []
+        },
+        {
+          "module": "extractives",
+          "topic": "extractives_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：产销量",
+          "issues": []
+        },
+        {
+          "module": "extractives",
+          "topic": "extractives_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：资源及恢复义务",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_manufacturing": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "manufacturing",
+          "topic": "manufacturing_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：产品构成",
+          "issues": []
+        },
+        {
+          "module": "manufacturing",
+          "topic": "manufacturing_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：产销存",
+          "issues": []
+        },
+        {
+          "module": "manufacturing",
+          "topic": "manufacturing_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：产能",
+          "issues": []
+        },
+        {
+          "module": "manufacturing",
+          "topic": "manufacturing_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：成本",
+          "issues": []
+        },
+        {
+          "module": "manufacturing",
+          "topic": "manufacturing_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：研发",
+          "issues": []
+        },
+        {
+          "module": "manufacturing",
+          "topic": "manufacturing_6",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：资产投入",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_food_beverage": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "food_beverage",
+          "topic": "food_beverage_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：产品档次",
+          "issues": []
+        },
+        {
+          "module": "food_beverage",
+          "topic": "food_beverage_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：渠道地区",
+          "issues": []
+        },
+        {
+          "module": "food_beverage",
+          "topic": "food_beverage_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：经销商",
+          "issues": []
+        },
+        {
+          "module": "food_beverage",
+          "topic": "food_beverage_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：基酒及储存",
+          "issues": []
+        },
+        {
+          "module": "food_beverage",
+          "topic": "food_beverage_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：消费税",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_textile_light": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "textile_light",
+          "topic": "textile_light_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：品牌渠道",
+          "issues": []
+        },
+        {
+          "module": "textile_light",
+          "topic": "textile_light_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：门店",
+          "issues": []
+        },
+        {
+          "module": "textile_light",
+          "topic": "textile_light_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：订单",
+          "issues": []
+        },
+        {
+          "module": "textile_light",
+          "topic": "textile_light_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：库存",
+          "issues": []
+        },
+        {
+          "module": "textile_light",
+          "topic": "textile_light_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：代工结构",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_chemicals_materials": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "chemicals_materials",
+          "topic": "chemicals_materials_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：产品原料",
+          "issues": []
+        },
+        {
+          "module": "chemicals_materials",
+          "topic": "chemicals_materials_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：产能产销",
+          "issues": []
+        },
+        {
+          "module": "chemicals_materials",
+          "topic": "chemicals_materials_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：能源成本",
+          "issues": []
+        },
+        {
+          "module": "chemicals_materials",
+          "topic": "chemicals_materials_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：环保义务",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_equipment_automotive": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "equipment_automotive",
+          "topic": "equipment_automotive_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：订单交付",
+          "issues": []
+        },
+        {
+          "module": "equipment_automotive",
+          "topic": "equipment_automotive_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：产品结构",
+          "issues": []
+        },
+        {
+          "module": "equipment_automotive",
+          "topic": "equipment_automotive_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：质保",
+          "issues": []
+        },
+        {
+          "module": "equipment_automotive",
+          "topic": "equipment_automotive_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：融资销售",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_electronics_energy": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "electronics_energy",
+          "topic": "electronics_energy_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：产品结构",
+          "issues": []
+        },
+        {
+          "module": "electronics_energy",
+          "topic": "electronics_energy_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：产能利用",
+          "issues": []
+        },
+        {
+          "module": "electronics_energy",
+          "topic": "electronics_energy_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：研发",
+          "issues": []
+        },
+        {
+          "module": "electronics_energy",
+          "topic": "electronics_energy_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：技术设备投入",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_pharma_medtech": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "pharma_medtech",
+          "topic": "pharma_medtech_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：产品",
+          "issues": []
+        },
+        {
+          "module": "pharma_medtech",
+          "topic": "pharma_medtech_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：研发项目",
+          "issues": []
+        },
+        {
+          "module": "pharma_medtech",
+          "topic": "pharma_medtech_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：授权合作",
+          "issues": []
+        },
+        {
+          "module": "pharma_medtech",
+          "topic": "pharma_medtech_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：销售渠道",
+          "issues": []
+        },
+        {
+          "module": "pharma_medtech",
+          "topic": "pharma_medtech_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：监管披露",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_construction": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "construction",
+          "topic": "construction_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：订单",
+          "issues": []
+        },
+        {
+          "module": "construction",
+          "topic": "construction_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：合同资产负债",
+          "issues": []
+        },
+        {
+          "module": "construction",
+          "topic": "construction_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：结算回款",
+          "issues": []
+        },
+        {
+          "module": "construction",
+          "topic": "construction_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：项目",
+          "issues": []
+        },
+        {
+          "module": "construction",
+          "topic": "construction_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：PPP及特许经营",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_real_estate": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "real_estate",
+          "topic": "real_estate_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：土地项目",
+          "issues": []
+        },
+        {
+          "module": "real_estate",
+          "topic": "real_estate_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：开发销售",
+          "issues": []
+        },
+        {
+          "module": "real_estate",
+          "topic": "real_estate_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：预收",
+          "issues": []
+        },
+        {
+          "module": "real_estate",
+          "topic": "real_estate_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：存货减值",
+          "issues": []
+        },
+        {
+          "module": "real_estate",
+          "topic": "real_estate_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：合作项目",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_utilities": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "utilities",
+          "topic": "utilities_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：装机处理能力",
+          "issues": []
+        },
+        {
+          "module": "utilities",
+          "topic": "utilities_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：产销量",
+          "issues": []
+        },
+        {
+          "module": "utilities",
+          "topic": "utilities_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：价格机制",
+          "issues": []
+        },
+        {
+          "module": "utilities",
+          "topic": "utilities_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：燃料",
+          "issues": []
+        },
+        {
+          "module": "utilities",
+          "topic": "utilities_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：特许经营",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_commerce": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "commerce",
+          "topic": "commerce_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：自营平台",
+          "issues": []
+        },
+        {
+          "module": "commerce",
+          "topic": "commerce_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：门店渠道",
+          "issues": []
+        },
+        {
+          "module": "commerce",
+          "topic": "commerce_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：商品结构",
+          "issues": []
+        },
+        {
+          "module": "commerce",
+          "topic": "commerce_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：库存",
+          "issues": []
+        },
+        {
+          "module": "commerce",
+          "topic": "commerce_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：供应链",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_transport_logistics": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "transport_logistics",
+          "topic": "transport_logistics_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：运力",
+          "issues": []
+        },
+        {
+          "module": "transport_logistics",
+          "topic": "transport_logistics_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：业务量",
+          "issues": []
+        },
+        {
+          "module": "transport_logistics",
+          "topic": "transport_logistics_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：线路区域",
+          "issues": []
+        },
+        {
+          "module": "transport_logistics",
+          "topic": "transport_logistics_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：运价",
+          "issues": []
+        },
+        {
+          "module": "transport_logistics",
+          "topic": "transport_logistics_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：租赁",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_hospitality": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "hospitality",
+          "topic": "hospitality_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：门店项目",
+          "issues": []
+        },
+        {
+          "module": "hospitality",
+          "topic": "hospitality_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：经营模式",
+          "issues": []
+        },
+        {
+          "module": "hospitality",
+          "topic": "hospitality_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：出租入住",
+          "issues": []
+        },
+        {
+          "module": "hospitality",
+          "topic": "hospitality_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：经营指标",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_software_telecom": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "software_telecom",
+          "topic": "software_telecom_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：产品服务",
+          "issues": []
+        },
+        {
+          "module": "software_telecom",
+          "topic": "software_telecom_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：订阅合同",
+          "issues": []
+        },
+        {
+          "module": "software_telecom",
+          "topic": "software_telecom_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：用户客户",
+          "issues": []
+        },
+        {
+          "module": "software_telecom",
+          "topic": "software_telecom_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：网络",
+          "issues": []
+        },
+        {
+          "module": "software_telecom",
+          "topic": "software_telecom_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：研发",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_business_services": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "business_services",
+          "topic": "business_services_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：合同项目",
+          "issues": []
+        },
+        {
+          "module": "business_services",
+          "topic": "business_services_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：收费模式",
+          "issues": []
+        },
+        {
+          "module": "business_services",
+          "topic": "business_services_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：租赁资产",
+          "issues": []
+        },
+        {
+          "module": "business_services",
+          "topic": "business_services_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：人力",
+          "issues": []
+        },
+        {
+          "module": "business_services",
+          "topic": "business_services_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：研发",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_environment": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "environment",
+          "topic": "environment_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：项目",
+          "issues": []
+        },
+        {
+          "module": "environment",
+          "topic": "environment_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：处理量",
+          "issues": []
+        },
+        {
+          "module": "environment",
+          "topic": "environment_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：收费机制",
+          "issues": []
+        },
+        {
+          "module": "environment",
+          "topic": "environment_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：特许经营",
+          "issues": []
+        },
+        {
+          "module": "environment",
+          "topic": "environment_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：修复义务",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_social_services": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "social_services",
+          "topic": "social_services_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：网点设施",
+          "issues": []
+        },
+        {
+          "module": "social_services",
+          "topic": "social_services_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：服务量",
+          "issues": []
+        },
+        {
+          "module": "social_services",
+          "topic": "social_services_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：收费",
+          "issues": []
+        },
+        {
+          "module": "social_services",
+          "topic": "social_services_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：人员",
+          "issues": []
+        },
+        {
+          "module": "social_services",
+          "topic": "social_services_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：资质",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_culture_sports": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "culture_sports",
+          "topic": "culture_sports_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：内容项目",
+          "issues": []
+        },
+        {
+          "module": "culture_sports",
+          "topic": "culture_sports_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：版权",
+          "issues": []
+        },
+        {
+          "module": "culture_sports",
+          "topic": "culture_sports_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：渠道",
+          "issues": []
+        },
+        {
+          "module": "culture_sports",
+          "topic": "culture_sports_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：递延收入",
+          "issues": []
+        },
+        {
+          "module": "culture_sports",
+          "topic": "culture_sports_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：减值",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_holding": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "holding",
+          "topic": "holding_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：业务分部",
+          "issues": []
+        },
+        {
+          "module": "holding",
+          "topic": "holding_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：投资结构",
+          "issues": []
+        },
+        {
+          "module": "holding",
+          "topic": "holding_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：控股",
+          "issues": []
+        },
+        {
+          "module": "holding",
+          "topic": "holding_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：资金安排",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_bank_1": {
+      "schema_version": "4.0",
+      "tables": [
+        {
+          "kind": "numeric",
+          "role": "note",
+          "module": "bank",
+          "topic": "bank_3",
+          "title": "虚构样例：贷款及信用损失阶段明细",
+          "part": "贷款本金及损失准备分别列行",
+          "scope": {
+            "kind": "group",
+            "entity": "虚构示例金融集团",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "columns": {
+            "c1": {
+              "label": "2024年末",
+              "period": {
+                "kind": "instant",
+                "start": null,
+                "end": "2024-12-31",
+                "coverage": "not_applicable"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            },
+            "c2": {
+              "label": "2025年末",
+              "period": {
+                "kind": "instant",
+                "start": null,
+                "end": "2025-12-31",
+                "coverage": "not_applicable"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "path": [
+                "贷款",
+                "本金余额"
+              ],
+              "dimensions": [
+                {
+                  "axis": "LOAN_CLASS",
+                  "member": "公司贷款"
+                },
+                {
+                  "axis": "CREDIT_STAGE",
+                  "member": "第一阶段"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "1,200",
+                "c2": "1,350"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "LOAN_PRINCIPAL",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "贷款",
+                "损失准备"
+              ],
+              "dimensions": [
+                {
+                  "axis": "LOAN_CLASS",
+                  "member": "公司贷款"
+                },
+                {
+                  "axis": "CREDIT_STAGE",
+                  "member": "第一阶段"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "12",
+                "c2": "14"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "ECL_ALLOWANCE",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "贷款",
+                "本金余额"
+              ],
+              "dimensions": [
+                {
+                  "axis": "LOAN_CLASS",
+                  "member": "公司贷款"
+                },
+                {
+                  "axis": "CREDIT_STAGE",
+                  "member": "第二阶段"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "180",
+                "c2": "160"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "LOAN_PRINCIPAL",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "贷款",
+                "损失准备"
+              ],
+              "dimensions": [
+                {
+                  "axis": "LOAN_CLASS",
+                  "member": "公司贷款"
+                },
+                {
+                  "axis": "CREDIT_STAGE",
+                  "member": "第二阶段"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "18",
+                "c2": "20"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "ECL_ALLOWANCE",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "贷款",
+                "本金余额"
+              ],
+              "dimensions": [
+                {
+                  "axis": "LOAN_CLASS",
+                  "member": "个人贷款"
+                },
+                {
+                  "axis": "CREDIT_STAGE",
+                  "member": "第三阶段"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "75",
+                "c2": "68"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "LOAN_PRINCIPAL",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "贷款",
+                "损失准备"
+              ],
+              "dimensions": [
+                {
+                  "axis": "LOAN_CLASS",
+                  "member": "个人贷款"
+                },
+                {
+                  "axis": "CREDIT_STAGE",
+                  "member": "第三阶段"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "30",
+                "c2": "28"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "ECL_ALLOWANCE",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            }
+          ],
+          "issues": [],
+          "accounting_basis_code": "CAS",
+          "identity_code": "NOTE_LOANS_ECL"
+        }
+      ],
+      "policies": [
+        {
+          "module": "bank",
+          "topic": "bank_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：存贷款结构",
+          "issues": []
+        },
+        {
+          "module": "bank",
+          "topic": "bank_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：贷款质量迁徙",
+          "issues": []
+        },
+        {
+          "module": "bank",
+          "topic": "bank_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：信用损失拨备",
+          "issues": []
+        },
+        {
+          "module": "bank",
+          "topic": "bank_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：净息差利差",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_bank_2": {
+      "schema_version": "4.0",
+      "tables": [
+        {
+          "kind": "numeric",
+          "role": "note",
+          "module": "bank",
+          "topic": "bank_7",
+          "title": "示例流动性覆盖率",
+          "part": "季度平均",
+          "scope": {
+            "kind": "regulatory",
+            "entity": "示例监管并表（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "columns": {
+            "c1": {
+              "label": "2025Q4平均",
+              "period": {
+                "kind": "duration",
+                "start": "2025-10-01",
+                "end": "2025-12-31",
+                "coverage": "single_quarter"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "path": [
+                "流动性覆盖率"
+              ],
+              "dimensions": [],
+              "unit": "%",
+              "currency": null,
+              "statistic": {
+                "kind": "period_average",
+                "method": {
+                  "state": "stated",
+                  "text": "季度内每日数值简单算术平均"
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "175.51%"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "LIQUIDITY_COVERAGE_RATIO",
+              "unit_code": "PERCENT",
+              "period_overrides": {}
+            }
+          ],
+          "issues": [],
+          "accounting_basis_code": "CAS",
+          "identity_code": "NOTE_LIQUIDITY_COVERAGE"
+        },
+        {
+          "kind": "numeric",
+          "role": "note",
+          "module": "bank",
+          "topic": "bank_7",
+          "title": "示例流动性覆盖率",
+          "part": "季末时点",
+          "scope": {
+            "kind": "regulatory",
+            "entity": "示例监管并表（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "columns": {
+            "c1": {
+              "label": "期末2025",
+              "period": {
+                "kind": "instant",
+                "start": null,
+                "end": "2025-12-31",
+                "coverage": "not_applicable"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "path": [
+                "流动性覆盖率"
+              ],
+              "dimensions": [],
+              "unit": "%",
+              "currency": null,
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "200.03%"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "LIQUIDITY_COVERAGE_RATIO",
+              "unit_code": "PERCENT",
+              "period_overrides": {}
+            }
+          ],
+          "issues": [],
+          "accounting_basis_code": "CAS",
+          "identity_code": "NOTE_LIQUIDITY_COVERAGE"
+        }
+      ],
+      "policies": [
+        {
+          "module": "bank",
+          "topic": "bank_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：金融投资衍生工具",
+          "issues": []
+        },
+        {
+          "module": "bank",
+          "topic": "bank_6",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：资本杠杆",
+          "issues": []
+        },
+        {
+          "module": "bank",
+          "topic": "bank_7",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：流动性",
+          "issues": []
+        },
+        {
+          "module": "bank",
+          "topic": "bank_8",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：理财及表外业务",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_insurance_1": {
+      "schema_version": "4.0",
+      "tables": [
+        {
+          "kind": "numeric",
+          "role": "note",
+          "module": "insurance",
+          "topic": "insurance_2",
+          "title": "虚构样例：保险及再保险合同服务边际变动",
+          "part": "年初余额（时点）",
+          "scope": {
+            "kind": "group",
+            "entity": "虚构示例金融集团",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "columns": {
+            "c1": {
+              "label": "2025年初",
+              "period": {
+                "kind": "instant",
+                "start": null,
+                "end": "2025-01-01",
+                "coverage": "not_applicable"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "path": [
+                "合同服务边际",
+                "年初余额"
+              ],
+              "dimensions": [
+                {
+                  "axis": "CONTRACT_CLASS",
+                  "member": "签发保险合同"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "80"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "INSURANCE_CSM",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "合同服务边际",
+                "年初余额"
+              ],
+              "dimensions": [
+                {
+                  "axis": "CONTRACT_CLASS",
+                  "member": "持有再保险合同"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "20"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "INSURANCE_CSM",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            }
+          ],
+          "issues": [],
+          "accounting_basis_code": "CAS",
+          "identity_code": "NOTE_INSURANCE_CSM"
+        },
+        {
+          "kind": "numeric",
+          "role": "note",
+          "module": "insurance",
+          "topic": "insurance_2",
+          "title": "虚构样例：保险及再保险合同服务边际变动",
+          "part": "本期变动（期间）",
+          "scope": {
+            "kind": "group",
+            "entity": "虚构示例金融集团",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "columns": {
+            "c1": {
+              "label": "2025全年",
+              "period": {
+                "kind": "duration",
+                "start": "2025-01-01",
+                "end": "2025-12-31",
+                "coverage": "full_year"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "path": [
+                "合同服务边际",
+                "本期变动",
+                "新增合同"
+              ],
+              "dimensions": [
+                {
+                  "axis": "CONTRACT_CLASS",
+                  "member": "签发保险合同"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "15"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "INSURANCE_CSM",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "合同服务边际",
+                "本期变动",
+                "计入保险服务业绩"
+              ],
+              "dimensions": [
+                {
+                  "axis": "CONTRACT_CLASS",
+                  "member": "签发保险合同"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "(7)"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "INSURANCE_CSM",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "合同服务边际",
+                "本期变动",
+                "新增合同"
+              ],
+              "dimensions": [
+                {
+                  "axis": "CONTRACT_CLASS",
+                  "member": "持有再保险合同"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "3"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "INSURANCE_CSM",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "合同服务边际",
+                "本期变动",
+                "计入再保险服务业绩"
+              ],
+              "dimensions": [
+                {
+                  "axis": "CONTRACT_CLASS",
+                  "member": "持有再保险合同"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "period_total",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "(4)"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "INSURANCE_CSM",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            }
+          ],
+          "issues": [],
+          "accounting_basis_code": "CAS",
+          "identity_code": "NOTE_INSURANCE_CSM"
+        },
+        {
+          "kind": "numeric",
+          "role": "note",
+          "module": "insurance",
+          "topic": "insurance_2",
+          "title": "虚构样例：保险及再保险合同服务边际变动",
+          "part": "年末余额（时点）",
+          "scope": {
+            "kind": "group",
+            "entity": "虚构示例金融集团",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "columns": {
+            "c1": {
+              "label": "2025年末",
+              "period": {
+                "kind": "instant",
+                "start": null,
+                "end": "2025-12-31",
+                "coverage": "not_applicable"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "path": [
+                "合同服务边际",
+                "年末余额"
+              ],
+              "dimensions": [
+                {
+                  "axis": "CONTRACT_CLASS",
+                  "member": "签发保险合同"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "88"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "INSURANCE_CSM",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "合同服务边际",
+                "年末余额"
+              ],
+              "dimensions": [
+                {
+                  "axis": "CONTRACT_CLASS",
+                  "member": "持有再保险合同"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "19"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "INSURANCE_CSM",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            }
+          ],
+          "issues": [],
+          "accounting_basis_code": "CAS",
+          "identity_code": "NOTE_INSURANCE_CSM"
+        }
+      ],
+      "policies": [
+        {
+          "module": "insurance",
+          "topic": "insurance_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：保险及再保险合同",
+          "issues": []
+        },
+        {
+          "module": "insurance",
+          "topic": "insurance_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：合同服务边际及风险调整",
+          "issues": []
+        },
+        {
+          "module": "insurance",
+          "topic": "insurance_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：保险服务业绩",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_insurance_2": {
+      "schema_version": "4.0",
+      "tables": [
+        {
+          "kind": "numeric",
+          "role": "note",
+          "module": "insurance",
+          "topic": "insurance_5",
+          "title": "虚构样例：资产负债期限风险",
+          "part": "期末按期限分别披露资产及义务",
+          "scope": {
+            "kind": "group",
+            "entity": "虚构示例金融集团",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "columns": {
+            "c1": {
+              "label": "2025年末",
+              "period": {
+                "kind": "instant",
+                "start": null,
+                "end": "2025-12-31",
+                "coverage": "not_applicable"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "path": [
+                "期限风险",
+                "投资资产"
+              ],
+              "dimensions": [
+                {
+                  "axis": "MATURITY_BUCKET",
+                  "member": "一年以内"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "600"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "INVESTMENT_ASSETS",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "期限风险",
+                "保险合同义务"
+              ],
+              "dimensions": [
+                {
+                  "axis": "MATURITY_BUCKET",
+                  "member": "一年以内"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "420"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "INSURANCE_OBLIGATION",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "期限风险",
+                "投资资产"
+              ],
+              "dimensions": [
+                {
+                  "axis": "MATURITY_BUCKET",
+                  "member": "一年以上"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "850"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "INVESTMENT_ASSETS",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            }
+          ],
+          "issues": [],
+          "accounting_basis_code": "CAS",
+          "identity_code": "NOTE_INSURANCE_MATURITY"
+        }
+      ],
+      "policies": [
+        {
+          "module": "insurance",
+          "topic": "insurance_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：投资及减值",
+          "issues": []
+        },
+        {
+          "module": "insurance",
+          "topic": "insurance_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：资产负债期限风险",
+          "issues": []
+        },
+        {
+          "module": "insurance",
+          "topic": "insurance_6",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：偿付能力",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_securities": {
+      "schema_version": "4.0",
+      "tables": [
+        {
+          "kind": "numeric",
+          "role": "note",
+          "module": "securities",
+          "topic": "securities_9",
+          "title": "示例净资本",
+          "part": null,
+          "scope": {
+            "kind": "regulatory",
+            "entity": "示例证券监管口径（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "columns": {
+            "c1": {
+              "label": "期末2025",
+              "period": {
+                "kind": "instant",
+                "start": null,
+                "end": "2025-12-31",
+                "coverage": "not_applicable"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "path": [
+                "风险指标",
+                "净资本"
+              ],
+              "dimensions": [],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "80"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "REGULATORY_NET_CAPITAL",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            }
+          ],
+          "issues": [],
+          "accounting_basis_code": "CAS",
+          "identity_code": "NOTE_REGULATORY_CAPITAL"
+        },
+        {
+          "kind": "numeric",
+          "role": "note",
+          "module": "securities",
+          "topic": "securities_5",
+          "title": "虚构样例：融资融券及担保品明细",
+          "part": "信用业务金额与比例分行",
+          "scope": {
+            "kind": "group",
+            "entity": "虚构示例金融集团",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "columns": {
+            "c1": {
+              "label": "2024年末",
+              "period": {
+                "kind": "instant",
+                "start": null,
+                "end": "2024-12-31",
+                "coverage": "not_applicable"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            },
+            "c2": {
+              "label": "2025年末",
+              "period": {
+                "kind": "instant",
+                "start": null,
+                "end": "2025-12-31",
+                "coverage": "not_applicable"
+              },
+              "adjustment": {
+                "status": "not_specified",
+                "label": null
+              },
+              "comparison": null,
+              "identity_code": "VALUE"
+            }
+          },
+          "rows": [
+            {
+              "row_kind": "detail",
+              "path": [
+                "信用业务",
+                "余额"
+              ],
+              "dimensions": [
+                {
+                  "axis": "PRODUCT",
+                  "member": "融资业务"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "320",
+                "c2": "350"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "SECURITIES_CREDIT_BALANCE",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "信用业务",
+                "余额"
+              ],
+              "dimensions": [
+                {
+                  "axis": "PRODUCT",
+                  "member": "融券业务"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "22",
+                "c2": "25"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "SECURITIES_CREDIT_BALANCE",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "担保品",
+                "公允价值"
+              ],
+              "dimensions": [
+                {
+                  "axis": "COLLATERAL_CLASS",
+                  "member": "股票"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "710",
+                "c2": "750"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "COLLATERAL_FAIR_VALUE",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "担保品",
+                "构成比例"
+              ],
+              "dimensions": [
+                {
+                  "axis": "COLLATERAL_CLASS",
+                  "member": "股票"
+                }
+              ],
+              "unit": "%",
+              "currency": null,
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "65.00%",
+                "c2": "63.50%"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "COLLATERAL_PROPORTION",
+              "unit_code": "PERCENT",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "担保品",
+                "公允价值"
+              ],
+              "dimensions": [
+                {
+                  "axis": "COLLATERAL_CLASS",
+                  "member": "债券"
+                }
+              ],
+              "unit": "百万元",
+              "currency": "CNY",
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "180",
+                "c2": "210"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "COLLATERAL_FAIR_VALUE",
+              "unit_code": "CURRENCY_1E6",
+              "period_overrides": {}
+            },
+            {
+              "row_kind": "detail",
+              "path": [
+                "担保品",
+                "构成比例"
+              ],
+              "dimensions": [
+                {
+                  "axis": "COLLATERAL_CLASS",
+                  "member": "债券"
+                }
+              ],
+              "unit": "%",
+              "currency": null,
+              "statistic": {
+                "kind": "point",
+                "method": {
+                  "state": "not_applicable",
+                  "text": null
+                },
+                "annualized": "not_applicable"
+              },
+              "definition": null,
+              "values": {
+                "c1": "16.50%",
+                "c2": "17.80%"
+              },
+              "missing_reasons": {},
+              "issues": [],
+              "identity_code": "COLLATERAL_PROPORTION",
+              "unit_code": "PERCENT",
+              "period_overrides": {}
+            }
+          ],
+          "issues": [],
+          "accounting_basis_code": "CAS",
+          "identity_code": "NOTE_SECURITIES_CREDIT"
+        }
+      ],
+      "policies": [
+        {
+          "module": "securities",
+          "topic": "securities_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：经纪",
+          "issues": []
+        },
+        {
+          "module": "securities",
+          "topic": "securities_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：投行",
+          "issues": []
+        },
+        {
+          "module": "securities",
+          "topic": "securities_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：资管",
+          "issues": []
+        },
+        {
+          "module": "securities",
+          "topic": "securities_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：自营",
+          "issues": []
+        },
+        {
+          "module": "securities",
+          "topic": "securities_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：融资融券及信用",
+          "issues": []
+        },
+        {
+          "module": "securities",
+          "topic": "securities_6",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：回购质押",
+          "issues": []
+        },
+        {
+          "module": "securities",
+          "topic": "securities_7",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：衍生工具",
+          "issues": []
+        },
+        {
+          "module": "securities",
+          "topic": "securities_8",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：客户资金",
+          "issues": []
+        },
+        {
+          "module": "securities",
+          "topic": "securities_9",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：净资本风险指标",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_futures": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "futures",
+          "topic": "futures_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：经纪风险管理",
+          "issues": []
+        },
+        {
+          "module": "futures",
+          "topic": "futures_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：保证金",
+          "issues": []
+        },
+        {
+          "module": "futures",
+          "topic": "futures_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：客户资金",
+          "issues": []
+        },
+        {
+          "module": "futures",
+          "topic": "futures_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：衍生工具",
+          "issues": []
+        },
+        {
+          "module": "futures",
+          "topic": "futures_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：风险指标",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_asset_management": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "asset_management",
+          "topic": "asset_management_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：管理规模",
+          "issues": []
+        },
+        {
+          "module": "asset_management",
+          "topic": "asset_management_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：产品收费",
+          "issues": []
+        },
+        {
+          "module": "asset_management",
+          "topic": "asset_management_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：受托自有资产",
+          "issues": []
+        },
+        {
+          "module": "asset_management",
+          "topic": "asset_management_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：结构化主体",
+          "issues": []
+        },
+        {
+          "module": "asset_management",
+          "topic": "asset_management_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：风险承担",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_trust": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "trust",
+          "topic": "trust_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：信托业务及固有业务",
+          "issues": []
+        },
+        {
+          "module": "trust",
+          "topic": "trust_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：资产项目分类",
+          "issues": []
+        },
+        {
+          "module": "trust",
+          "topic": "trust_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：报酬",
+          "issues": []
+        },
+        {
+          "module": "trust",
+          "topic": "trust_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：风险承担",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_financial_leasing": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "financial_leasing",
+          "topic": "financial_leasing_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：租赁资产应收款",
+          "issues": []
+        },
+        {
+          "module": "financial_leasing",
+          "topic": "financial_leasing_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：行业地区",
+          "issues": []
+        },
+        {
+          "module": "financial_leasing",
+          "topic": "financial_leasing_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：期限",
+          "issues": []
+        },
+        {
+          "module": "financial_leasing",
+          "topic": "financial_leasing_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：减值",
+          "issues": []
+        },
+        {
+          "module": "financial_leasing",
+          "topic": "financial_leasing_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：融资",
+          "issues": []
+        },
+        {
+          "module": "financial_leasing",
+          "topic": "financial_leasing_6",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：残值风险",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_credit_finance": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "credit_finance",
+          "topic": "credit_finance_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：信贷资金结构",
+          "issues": []
+        },
+        {
+          "module": "credit_finance",
+          "topic": "credit_finance_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：客户",
+          "issues": []
+        },
+        {
+          "module": "credit_finance",
+          "topic": "credit_finance_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：质量",
+          "issues": []
+        },
+        {
+          "module": "credit_finance",
+          "topic": "credit_finance_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：减值",
+          "issues": []
+        },
+        {
+          "module": "credit_finance",
+          "topic": "credit_finance_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：利息费用",
+          "issues": []
+        },
+        {
+          "module": "credit_finance",
+          "topic": "credit_finance_6",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：期限",
+          "issues": []
+        },
+        {
+          "module": "credit_finance",
+          "topic": "credit_finance_7",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：监管指标",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_amc_guarantee": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "amc_guarantee",
+          "topic": "amc_guarantee_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：收购处置资产",
+          "issues": []
+        },
+        {
+          "module": "amc_guarantee",
+          "topic": "amc_guarantee_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：受偿回收",
+          "issues": []
+        },
+        {
+          "module": "amc_guarantee",
+          "topic": "amc_guarantee_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：担保责任",
+          "issues": []
+        },
+        {
+          "module": "amc_guarantee",
+          "topic": "amc_guarantee_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：代偿",
+          "issues": []
+        },
+        {
+          "module": "amc_guarantee",
+          "topic": "amc_guarantee_5",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：准备",
+          "issues": []
+        },
+        {
+          "module": "amc_guarantee",
+          "topic": "amc_guarantee_6",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：融资",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    },
+    "notes_financial_infrastructure": {
+      "schema_version": "4.0",
+      "tables": [],
+      "policies": [
+        {
+          "module": "financial_infrastructure",
+          "topic": "financial_infrastructure_1",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：业务量收费",
+          "issues": []
+        },
+        {
+          "module": "financial_infrastructure",
+          "topic": "financial_infrastructure_2",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：客户结算资金",
+          "issues": []
+        },
+        {
+          "module": "financial_infrastructure",
+          "topic": "financial_infrastructure_3",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：自有资金区分",
+          "issues": []
+        },
+        {
+          "module": "financial_infrastructure",
+          "topic": "financial_infrastructure_4",
+          "scope": {
+            "kind": "group",
+            "entity": "示例集团（虚构）",
+            "entity_code": "group"
+          },
+          "accounting_basis": "中国企业会计准则（虚构样例）",
+          "text": "示例行业口径（虚构）：结算风险承担",
+          "issues": []
+        }
+      ],
+      "changes": [],
+      "issues": []
+    }
+  }
+}

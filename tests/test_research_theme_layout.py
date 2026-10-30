@@ -85,7 +85,7 @@ def test_full_theme_example_and_prompts_reach_all_three_requests(tmp_path):
     plan = inputs.prepare(sources, folder, CONFIG, budget=2)
     replies, calls = bodies(), []
     config = run.io.load(CONFIG)
-    example = (inputs.REPO / "docs/design/research_report_example.md").read_text(
+    example = (inputs.REPO / config["prompts"][-1]).read_text(
         encoding="utf8"
     )
 
@@ -97,7 +97,8 @@ def test_full_theme_example_and_prompts_reach_all_three_requests(tmp_path):
         assert (inputs.REPO / config["rounds"][index]["prompt"]).read_text(
             encoding="utf8"
         ) in system
-        assert "同一指标" in system and "工程两家深入" in system
+        assert "同一指标" in system and "本轮公司清单" in system
+        assert "工程两家深入" not in system
         content = value["messages"][1]["content"]
         images = (
             []

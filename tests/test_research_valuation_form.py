@@ -110,7 +110,7 @@ def test_all_rounds_receive_complete_seven_year_valuation_example_and_actual_png
     folder = tmp_path / "valuation_form"
     plan = inputs.prepare(sources, folder, CONFIG, budget=2)
     replies, calls = bodies(), []
-    example = (inputs.REPO / "docs/design/research_report_example.md").read_text(
+    example = (inputs.REPO / run.io.load(CONFIG)["prompts"][-1]).read_text(
         encoding="utf8"
     )
     valuation_prompt = (inputs.REPO / run.io.load(CONFIG)["prompts"][1]).read_text(

@@ -1,0 +1,1831 @@
+{
+  "notice": "无效样例用于离线检查，禁止作为真实模型返回或财务事实。",
+  "cases": [
+    {
+      "name": "unknown_column_key",
+      "stage": "statements",
+      "expected": "semantic:unknown column key",
+      "data": {
+        "schema_version": "3.0",
+        "company": {
+          "name": "示例集团（虚构）",
+          "code": "TEST000"
+        },
+        "report_period": "FY2025",
+        "tables": [
+          {
+            "kind": "numeric",
+            "role": "BS",
+            "module": "common",
+            "topic": "BS",
+            "title": "示例合并资产负债表",
+            "part": null,
+            "scope": {
+              "kind": "group",
+              "entity": "示例集团（虚构）"
+            },
+            "accounting_basis": "示例会计基础（虚构）",
+            "columns": {
+              "c1": {
+                "label": "期末2024",
+                "period": {
+                  "kind": "instant",
+                  "start": null,
+                  "end": "2024-12-31",
+                  "coverage": "not_applicable"
+                },
+                "adjustment": {
+                  "status": "original",
+                  "label": null
+                },
+                "comparison": null
+              },
+              "c2": {
+                "label": "期末2025",
+                "period": {
+                  "kind": "instant",
+                  "start": null,
+                  "end": "2025-12-31",
+                  "coverage": "not_applicable"
+                },
+                "adjustment": {
+                  "status": "not_specified",
+                  "label": null
+                },
+                "comparison": null
+              }
+            },
+            "rows": [
+              {
+                "row_kind": "heading",
+                "path": [
+                  "资产"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {},
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "资产",
+                  "流动资产",
+                  "货币资金"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "100",
+                  "c2": "120",
+                  "c9": "999"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "资产",
+                  "流动资产",
+                  "其他"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "3",
+                  "c2": "4"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "subtotal",
+                "path": [
+                  "资产",
+                  "流动资产",
+                  "合计"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "103",
+                  "c2": "124"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "负债",
+                  "其他"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "7",
+                  "c2": "9"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "subtotal",
+                "path": [
+                  "负债",
+                  "合计"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "7",
+                  "c2": "9"
+                },
+                "missing_reasons": {},
+                "issues": []
+              }
+            ],
+            "issues": []
+          },
+          {
+            "kind": "numeric",
+            "role": "IS",
+            "module": "common",
+            "topic": "IS",
+            "title": "示例合并利润表",
+            "part": null,
+            "scope": {
+              "kind": "group",
+              "entity": "示例集团（虚构）"
+            },
+            "accounting_basis": "示例会计基础（虚构）",
+            "columns": {
+              "c1": {
+                "label": "FY2024",
+                "period": {
+                  "kind": "duration",
+                  "start": "2024-01-01",
+                  "end": "2024-12-31",
+                  "coverage": "full_year"
+                },
+                "adjustment": {
+                  "status": "original",
+                  "label": null
+                },
+                "comparison": null
+              },
+              "c2": {
+                "label": "FY2025",
+                "period": {
+                  "kind": "duration",
+                  "start": "2025-01-01",
+                  "end": "2025-12-31",
+                  "coverage": "full_year"
+                },
+                "adjustment": {
+                  "status": "not_specified",
+                  "label": null
+                },
+                "comparison": null
+              }
+            },
+            "rows": [
+              {
+                "row_kind": "detail",
+                "path": [
+                  "营业收入"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "period_total",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "500",
+                  "c2": "600"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "营业利润"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "period_total",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "(15.00)",
+                  "c2": "25.00"
+                },
+                "missing_reasons": {},
+                "issues": []
+              }
+            ],
+            "issues": []
+          },
+          {
+            "kind": "numeric",
+            "role": "CFS",
+            "module": "common",
+            "topic": "CFS",
+            "title": "示例合并现金流量表",
+            "part": null,
+            "scope": {
+              "kind": "group",
+              "entity": "示例集团（虚构）"
+            },
+            "accounting_basis": "示例会计基础（虚构）",
+            "columns": {
+              "c1": {
+                "label": "FY2024",
+                "period": {
+                  "kind": "duration",
+                  "start": "2024-01-01",
+                  "end": "2024-12-31",
+                  "coverage": "full_year"
+                },
+                "adjustment": {
+                  "status": "original",
+                  "label": null
+                },
+                "comparison": null
+              },
+              "c2": {
+                "label": "FY2025",
+                "period": {
+                  "kind": "duration",
+                  "start": "2025-01-01",
+                  "end": "2025-12-31",
+                  "coverage": "full_year"
+                },
+                "adjustment": {
+                  "status": "not_specified",
+                  "label": null
+                },
+                "comparison": null
+              }
+            },
+            "rows": [
+              {
+                "row_kind": "detail",
+                "path": [
+                  "经营活动",
+                  "现金流量净额"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "period_total",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "10",
+                  "c2": "20"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "投资活动",
+                  "现金流量净额"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "period_total",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "—",
+                  "c2": "-12"
+                },
+                "missing_reasons": {},
+                "issues": []
+              }
+            ],
+            "issues": []
+          }
+        ],
+        "issues": []
+      }
+    },
+    {
+      "name": "null_without_reason",
+      "stage": "capital",
+      "expected": "semantic:null requires missing reason",
+      "data": {
+        "schema_version": "3.0",
+        "tables": [
+          {
+            "kind": "numeric",
+            "role": "capital",
+            "module": "common",
+            "topic": "per_share_returns",
+            "title": "示例股本与每股指标",
+            "part": "期末时点指标",
+            "scope": {
+              "kind": "group",
+              "entity": "示例集团（虚构）"
+            },
+            "accounting_basis": "示例会计基础（虚构）",
+            "columns": {
+              "c1": {
+                "label": "期末2025",
+                "period": {
+                  "kind": "instant",
+                  "start": null,
+                  "end": "2025-12-31",
+                  "coverage": "not_applicable"
+                },
+                "adjustment": {
+                  "status": "not_specified",
+                  "label": null
+                },
+                "comparison": null
+              }
+            },
+            "rows": [
+              {
+                "row_kind": "detail",
+                "path": [
+                  "期末总股数"
+                ],
+                "dimensions": [],
+                "unit": "股",
+                "currency": null,
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "1,000"
+                },
+                "missing_reasons": {},
+                "issues": [],
+                "requested_item": "期末总股数"
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "股本金额"
+                ],
+                "dimensions": [],
+                "unit": "元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "1,000"
+                },
+                "missing_reasons": {},
+                "issues": [],
+                "requested_item": "股本金额"
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "BVPS"
+                ],
+                "dimensions": [],
+                "unit": "元/股",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "10.00"
+                },
+                "missing_reasons": {},
+                "issues": [],
+                "requested_item": "BVPS"
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "归母净资产"
+                ],
+                "dimensions": [],
+                "unit": "元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "10,000"
+                },
+                "missing_reasons": {},
+                "issues": [],
+                "requested_item": "归母净资产"
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "已披露归母普通股权益"
+                ],
+                "dimensions": [],
+                "unit": "元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": null
+                },
+                "missing_reasons": {},
+                "issues": [],
+                "requested_item": "已披露归母普通股权益"
+              }
+            ],
+            "issues": []
+          },
+          {
+            "kind": "numeric",
+            "role": "capital",
+            "module": "common",
+            "topic": "per_share_returns",
+            "title": "示例股本与每股指标",
+            "part": "全年每股与收益指标",
+            "scope": {
+              "kind": "group",
+              "entity": "示例集团（虚构）"
+            },
+            "accounting_basis": "示例会计基础（虚构）",
+            "columns": {
+              "c1": {
+                "label": "FY2025",
+                "period": {
+                  "kind": "duration",
+                  "start": "2025-01-01",
+                  "end": "2025-12-31",
+                  "coverage": "full_year"
+                },
+                "adjustment": {
+                  "status": "not_specified",
+                  "label": null
+                },
+                "comparison": null
+              }
+            },
+            "rows": [
+              {
+                "row_kind": "detail",
+                "path": [
+                  "基本EPS加权股数"
+                ],
+                "dimensions": [],
+                "unit": "股",
+                "currency": null,
+                "statistic": {
+                  "kind": "period_average",
+                  "method": {
+                    "state": "stated",
+                    "text": "按报告披露日权数加权"
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "1,000"
+                },
+                "missing_reasons": {},
+                "issues": [],
+                "requested_item": "基本EPS加权股数"
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "稀释EPS加权股数"
+                ],
+                "dimensions": [],
+                "unit": "股",
+                "currency": null,
+                "statistic": {
+                  "kind": "period_average",
+                  "method": {
+                    "state": "stated",
+                    "text": "按报告披露日权数加权"
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "1,050"
+                },
+                "missing_reasons": {},
+                "issues": [],
+                "requested_item": "稀释EPS加权股数"
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "基本EPS"
+                ],
+                "dimensions": [],
+                "unit": "元/股",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "period_measure",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "no"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "1.25"
+                },
+                "missing_reasons": {},
+                "issues": [],
+                "requested_item": "基本EPS"
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "稀释EPS"
+                ],
+                "dimensions": [],
+                "unit": "元/股",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "period_measure",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "no"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "1.19"
+                },
+                "missing_reasons": {},
+                "issues": [],
+                "requested_item": "稀释EPS"
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "扣非基本EPS"
+                ],
+                "dimensions": [],
+                "unit": "元/股",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "period_measure",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "no"
+                },
+                "definition": null,
+                "values": {
+                  "c1": null
+                },
+                "missing_reasons": {
+                  "c1": {
+                    "reason": "not_disclosed",
+                    "detail": "报告明确表示该项未披露"
+                  }
+                },
+                "issues": [],
+                "requested_item": "扣非基本EPS"
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "扣非稀释EPS"
+                ],
+                "dimensions": [],
+                "unit": "元/股",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "period_measure",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "no"
+                },
+                "definition": null,
+                "values": {
+                  "c1": null
+                },
+                "missing_reasons": {
+                  "c1": {
+                    "reason": "not_applicable",
+                    "detail": "报告明确该项不适用"
+                  }
+                },
+                "issues": [],
+                "requested_item": "扣非稀释EPS"
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "加权平均ROE"
+                ],
+                "dimensions": [],
+                "unit": "%",
+                "currency": null,
+                "statistic": {
+                  "kind": "period_measure",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "no"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "12.50%"
+                },
+                "missing_reasons": {},
+                "issues": [],
+                "requested_item": "加权平均ROE"
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "扣非ROE"
+                ],
+                "dimensions": [],
+                "unit": "%",
+                "currency": null,
+                "statistic": {
+                  "kind": "period_measure",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "no"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "12.00%"
+                },
+                "missing_reasons": {},
+                "issues": [],
+                "requested_item": "扣非ROE"
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "每股经营现金流"
+                ],
+                "dimensions": [],
+                "unit": "元/股",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "period_measure",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "no"
+                },
+                "definition": null,
+                "values": {
+                  "c1": null
+                },
+                "missing_reasons": {
+                  "c1": {
+                    "reason": "context_uncertain",
+                    "detail": "发现原始值但无法确定对应股类"
+                  }
+                },
+                "issues": [
+                  {
+                    "target": "values.c1",
+                    "reason": "context_uncertain",
+                    "detail": "保留不能定位的原值",
+                    "retained_value": "2.00"
+                  }
+                ],
+                "requested_item": "每股经营现金流"
+              }
+            ],
+            "issues": []
+          }
+        ],
+        "events": [
+          {
+            "event_type": "dividend",
+            "phase": "proposal",
+            "date": {
+              "value": "2025-12",
+              "precision": "month"
+            },
+            "scope": {
+              "kind": "group",
+              "entity": "示例集团（虚构）"
+            },
+            "description": "示例分派方案（虚构），不等同实付",
+            "terms": null,
+            "issues": []
+          }
+        ],
+        "issues": []
+      }
+    },
+    {
+      "name": "model_reported_in",
+      "stage": "statements",
+      "expected": "schema:derived-only field",
+      "data": {
+        "schema_version": "3.0",
+        "company": {
+          "name": "示例集团（虚构）",
+          "code": "TEST000"
+        },
+        "report_period": "FY2025",
+        "tables": [
+          {
+            "kind": "numeric",
+            "role": "BS",
+            "module": "common",
+            "topic": "BS",
+            "title": "示例合并资产负债表",
+            "part": null,
+            "scope": {
+              "kind": "group",
+              "entity": "示例集团（虚构）"
+            },
+            "accounting_basis": "示例会计基础（虚构）",
+            "columns": {
+              "c1": {
+                "label": "期末2024",
+                "period": {
+                  "kind": "instant",
+                  "start": null,
+                  "end": "2024-12-31",
+                  "coverage": "not_applicable"
+                },
+                "adjustment": {
+                  "status": "original",
+                  "label": null
+                },
+                "comparison": null,
+                "reported_in": {
+                  "report_id": "forbidden",
+                  "report_period": "FY2024"
+                }
+              },
+              "c2": {
+                "label": "期末2025",
+                "period": {
+                  "kind": "instant",
+                  "start": null,
+                  "end": "2025-12-31",
+                  "coverage": "not_applicable"
+                },
+                "adjustment": {
+                  "status": "not_specified",
+                  "label": null
+                },
+                "comparison": null
+              }
+            },
+            "rows": [
+              {
+                "row_kind": "heading",
+                "path": [
+                  "资产"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {},
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "资产",
+                  "流动资产",
+                  "货币资金"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "100",
+                  "c2": "120"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "资产",
+                  "流动资产",
+                  "其他"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "3",
+                  "c2": "4"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "subtotal",
+                "path": [
+                  "资产",
+                  "流动资产",
+                  "合计"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "103",
+                  "c2": "124"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "负债",
+                  "其他"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "7",
+                  "c2": "9"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "subtotal",
+                "path": [
+                  "负债",
+                  "合计"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "7",
+                  "c2": "9"
+                },
+                "missing_reasons": {},
+                "issues": []
+              }
+            ],
+            "issues": []
+          },
+          {
+            "kind": "numeric",
+            "role": "IS",
+            "module": "common",
+            "topic": "IS",
+            "title": "示例合并利润表",
+            "part": null,
+            "scope": {
+              "kind": "group",
+              "entity": "示例集团（虚构）"
+            },
+            "accounting_basis": "示例会计基础（虚构）",
+            "columns": {
+              "c1": {
+                "label": "FY2024",
+                "period": {
+                  "kind": "duration",
+                  "start": "2024-01-01",
+                  "end": "2024-12-31",
+                  "coverage": "full_year"
+                },
+                "adjustment": {
+                  "status": "original",
+                  "label": null
+                },
+                "comparison": null
+              },
+              "c2": {
+                "label": "FY2025",
+                "period": {
+                  "kind": "duration",
+                  "start": "2025-01-01",
+                  "end": "2025-12-31",
+                  "coverage": "full_year"
+                },
+                "adjustment": {
+                  "status": "not_specified",
+                  "label": null
+                },
+                "comparison": null
+              }
+            },
+            "rows": [
+              {
+                "row_kind": "detail",
+                "path": [
+                  "营业收入"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "period_total",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "500",
+                  "c2": "600"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "营业利润"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "period_total",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "(15.00)",
+                  "c2": "25.00"
+                },
+                "missing_reasons": {},
+                "issues": []
+              }
+            ],
+            "issues": []
+          },
+          {
+            "kind": "numeric",
+            "role": "CFS",
+            "module": "common",
+            "topic": "CFS",
+            "title": "示例合并现金流量表",
+            "part": null,
+            "scope": {
+              "kind": "group",
+              "entity": "示例集团（虚构）"
+            },
+            "accounting_basis": "示例会计基础（虚构）",
+            "columns": {
+              "c1": {
+                "label": "FY2024",
+                "period": {
+                  "kind": "duration",
+                  "start": "2024-01-01",
+                  "end": "2024-12-31",
+                  "coverage": "full_year"
+                },
+                "adjustment": {
+                  "status": "original",
+                  "label": null
+                },
+                "comparison": null
+              },
+              "c2": {
+                "label": "FY2025",
+                "period": {
+                  "kind": "duration",
+                  "start": "2025-01-01",
+                  "end": "2025-12-31",
+                  "coverage": "full_year"
+                },
+                "adjustment": {
+                  "status": "not_specified",
+                  "label": null
+                },
+                "comparison": null
+              }
+            },
+            "rows": [
+              {
+                "row_kind": "detail",
+                "path": [
+                  "经营活动",
+                  "现金流量净额"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "period_total",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "10",
+                  "c2": "20"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "投资活动",
+                  "现金流量净额"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "period_total",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "—",
+                  "c2": "-12"
+                },
+                "missing_reasons": {},
+                "issues": []
+              }
+            ],
+            "issues": []
+          }
+        ],
+        "issues": []
+      }
+    },
+    {
+      "name": "numeric_not_string",
+      "stage": "statements",
+      "expected": "schema:value must string or null",
+      "data": {
+        "schema_version": "3.0",
+        "company": {
+          "name": "示例集团（虚构）",
+          "code": "TEST000"
+        },
+        "report_period": "FY2025",
+        "tables": [
+          {
+            "kind": "numeric",
+            "role": "BS",
+            "module": "common",
+            "topic": "BS",
+            "title": "示例合并资产负债表",
+            "part": null,
+            "scope": {
+              "kind": "group",
+              "entity": "示例集团（虚构）"
+            },
+            "accounting_basis": "示例会计基础（虚构）",
+            "columns": {
+              "c1": {
+                "label": "期末2024",
+                "period": {
+                  "kind": "instant",
+                  "start": null,
+                  "end": "2024-12-31",
+                  "coverage": "not_applicable"
+                },
+                "adjustment": {
+                  "status": "original",
+                  "label": null
+                },
+                "comparison": null
+              },
+              "c2": {
+                "label": "期末2025",
+                "period": {
+                  "kind": "instant",
+                  "start": null,
+                  "end": "2025-12-31",
+                  "coverage": "not_applicable"
+                },
+                "adjustment": {
+                  "status": "not_specified",
+                  "label": null
+                },
+                "comparison": null
+              }
+            },
+            "rows": [
+              {
+                "row_kind": "heading",
+                "path": [
+                  "资产"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {},
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "资产",
+                  "流动资产",
+                  "货币资金"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": 100,
+                  "c2": "120"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "资产",
+                  "流动资产",
+                  "其他"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "3",
+                  "c2": "4"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "subtotal",
+                "path": [
+                  "资产",
+                  "流动资产",
+                  "合计"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "103",
+                  "c2": "124"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "负债",
+                  "其他"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "7",
+                  "c2": "9"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "subtotal",
+                "path": [
+                  "负债",
+                  "合计"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "7",
+                  "c2": "9"
+                },
+                "missing_reasons": {},
+                "issues": []
+              }
+            ],
+            "issues": []
+          },
+          {
+            "kind": "numeric",
+            "role": "IS",
+            "module": "common",
+            "topic": "IS",
+            "title": "示例合并利润表",
+            "part": null,
+            "scope": {
+              "kind": "group",
+              "entity": "示例集团（虚构）"
+            },
+            "accounting_basis": "示例会计基础（虚构）",
+            "columns": {
+              "c1": {
+                "label": "FY2024",
+                "period": {
+                  "kind": "duration",
+                  "start": "2024-01-01",
+                  "end": "2024-12-31",
+                  "coverage": "full_year"
+                },
+                "adjustment": {
+                  "status": "original",
+                  "label": null
+                },
+                "comparison": null
+              },
+              "c2": {
+                "label": "FY2025",
+                "period": {
+                  "kind": "duration",
+                  "start": "2025-01-01",
+                  "end": "2025-12-31",
+                  "coverage": "full_year"
+                },
+                "adjustment": {
+                  "status": "not_specified",
+                  "label": null
+                },
+                "comparison": null
+              }
+            },
+            "rows": [
+              {
+                "row_kind": "detail",
+                "path": [
+                  "营业收入"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "period_total",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "500",
+                  "c2": "600"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "营业利润"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "period_total",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "(15.00)",
+                  "c2": "25.00"
+                },
+                "missing_reasons": {},
+                "issues": []
+              }
+            ],
+            "issues": []
+          },
+          {
+            "kind": "numeric",
+            "role": "CFS",
+            "module": "common",
+            "topic": "CFS",
+            "title": "示例合并现金流量表",
+            "part": null,
+            "scope": {
+              "kind": "group",
+              "entity": "示例集团（虚构）"
+            },
+            "accounting_basis": "示例会计基础（虚构）",
+            "columns": {
+              "c1": {
+                "label": "FY2024",
+                "period": {
+                  "kind": "duration",
+                  "start": "2024-01-01",
+                  "end": "2024-12-31",
+                  "coverage": "full_year"
+                },
+                "adjustment": {
+                  "status": "original",
+                  "label": null
+                },
+                "comparison": null
+              },
+              "c2": {
+                "label": "FY2025",
+                "period": {
+                  "kind": "duration",
+                  "start": "2025-01-01",
+                  "end": "2025-12-31",
+                  "coverage": "full_year"
+                },
+                "adjustment": {
+                  "status": "not_specified",
+                  "label": null
+                },
+                "comparison": null
+              }
+            },
+            "rows": [
+              {
+                "row_kind": "detail",
+                "path": [
+                  "经营活动",
+                  "现金流量净额"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "period_total",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "10",
+                  "c2": "20"
+                },
+                "missing_reasons": {},
+                "issues": []
+              },
+              {
+                "row_kind": "detail",
+                "path": [
+                  "投资活动",
+                  "现金流量净额"
+                ],
+                "dimensions": [],
+                "unit": "百万元",
+                "currency": "CNY",
+                "statistic": {
+                  "kind": "period_total",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "—",
+                  "c2": "-12"
+                },
+                "missing_reasons": {},
+                "issues": []
+              }
+            ],
+            "issues": []
+          }
+        ],
+        "issues": []
+      }
+    },
+    {
+      "name": "method_stated_without_text",
+      "stage": "notes",
+      "expected": "semantic:stated method requires text",
+      "data": {
+        "schema_version": "3.0",
+        "tables": [
+          {
+            "kind": "numeric",
+            "role": "note",
+            "module": "bank",
+            "topic": "bank_7",
+            "title": "示例流动性覆盖率",
+            "part": "季度平均",
+            "scope": {
+              "kind": "regulatory",
+              "entity": "示例监管并表（虚构）"
+            },
+            "accounting_basis": "示例会计基础（虚构）",
+            "columns": {
+              "c1": {
+                "label": "2025Q4平均",
+                "period": {
+                  "kind": "duration",
+                  "start": "2025-10-01",
+                  "end": "2025-12-31",
+                  "coverage": "single_quarter"
+                },
+                "adjustment": {
+                  "status": "not_specified",
+                  "label": null
+                },
+                "comparison": null
+              }
+            },
+            "rows": [
+              {
+                "row_kind": "detail",
+                "path": [
+                  "流动性覆盖率"
+                ],
+                "dimensions": [],
+                "unit": "%",
+                "currency": null,
+                "statistic": {
+                  "kind": "period_average",
+                  "method": {
+                    "state": "stated",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "175.51%"
+                },
+                "missing_reasons": {},
+                "issues": []
+              }
+            ],
+            "issues": []
+          },
+          {
+            "kind": "numeric",
+            "role": "note",
+            "module": "bank",
+            "topic": "bank_7",
+            "title": "示例流动性覆盖率",
+            "part": "季末时点",
+            "scope": {
+              "kind": "regulatory",
+              "entity": "示例监管并表（虚构）"
+            },
+            "accounting_basis": "示例会计基础（虚构）",
+            "columns": {
+              "c1": {
+                "label": "期末2025",
+                "period": {
+                  "kind": "instant",
+                  "start": null,
+                  "end": "2025-12-31",
+                  "coverage": "not_applicable"
+                },
+                "adjustment": {
+                  "status": "not_specified",
+                  "label": null
+                },
+                "comparison": null
+              }
+            },
+            "rows": [
+              {
+                "row_kind": "detail",
+                "path": [
+                  "流动性覆盖率"
+                ],
+                "dimensions": [],
+                "unit": "%",
+                "currency": null,
+                "statistic": {
+                  "kind": "point",
+                  "method": {
+                    "state": "not_applicable",
+                    "text": null
+                  },
+                  "annualized": "not_applicable"
+                },
+                "definition": null,
+                "values": {
+                  "c1": "200.03%"
+                },
+                "missing_reasons": {},
+                "issues": []
+              }
+            ],
+            "issues": []
+          }
+        ],
+        "policies": [
+          {
+            "module": "bank",
+            "topic": "bank_5",
+            "scope": {
+              "kind": "group",
+              "entity": "示例集团（虚构）"
+            },
+            "accounting_basis": "示例会计基础（虚构）",
+            "text": "示例行业口径（虚构）：金融投资衍生工具",
+            "issues": []
+          },
+          {
+            "module": "bank",
+            "topic": "bank_6",
+            "scope": {
+              "kind": "group",
+              "entity": "示例集团（虚构）"
+            },
+            "accounting_basis": "示例会计基础（虚构）",
+            "text": "示例行业口径（虚构）：资本杠杆",
+            "issues": []
+          },
+          {
+            "module": "bank",
+            "topic": "bank_7",
+            "scope": {
+              "kind": "group",
+              "entity": "示例集团（虚构）"
+            },
+            "accounting_basis": "示例会计基础（虚构）",
+            "text": "示例行业口径（虚构）：流动性",
+            "issues": []
+          },
+          {
+            "module": "bank",
+            "topic": "bank_8",
+            "scope": {
+              "kind": "group",
+              "entity": "示例集团（虚构）"
+            },
+            "accounting_basis": "示例会计基础（虚构）",
+            "text": "示例行业口径（虚构）：理财及表外业务",
+            "issues": []
+          }
+        ],
+        "changes": [],
+        "issues": []
+      }
+    }
+  ]
+}
