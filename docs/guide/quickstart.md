@@ -82,7 +82,8 @@ chmod +x scripts/run.sh
 ## 5. 查看结果
 
 - **日志**：`logs/quant_system.log`
-- **健康面板**：浏览器访问 `http://localhost:1933`
+- **服务状态**：`python main.py --status`
+- **管理命令**：飞书长连接 / Telegram Bot，见 [配置指南](feishu_telegram_setup.md)
 - **邮件存档**：`data/email_archive/`
 
 ---

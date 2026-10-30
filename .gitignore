@@ -68,6 +68,7 @@ logs/
 **/data/*.csv
 data/*.csv
 data/email_archive/
+data/runtime/
 
 # Backups
 *.backup
@@ -106,6 +107,8 @@ data/ref_portfolio*.yaml
 # Config - sensitive (passwords, API keys, email config)
 config/config.yaml
 config/.env
+config/.*.lock
+config/.*.tmp
 
 # Local test scratch state
 temp_test_cache/
@@ -128,3 +131,6 @@ data/reference_universe/
 /data/fundamental_data/
 /data/fundamental_quant/*
 !/data/fundamental_quant/tokenizer/
+
+# Generated build provenance is runtime state, never a source release.
+/data/deployment/

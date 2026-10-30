@@ -44,6 +44,27 @@ except ImportError:
         return decorator
 
 
+@jit(nopython=True, cache=True, nogil=True)
+def _post_action_shares(quantity, multiplier, round_up):
+    adjusted = quantity * multiplier
+    if round_up:
+        nearest = np.rint(adjusted)
+        # Decimal disclosure ratios can land a few machine ulps above an integer.
+        if abs(adjusted - nearest) <= 8.0 * np.spacing(abs(adjusted)):
+            adjusted = nearest
+        adjusted = np.ceil(adjusted)
+    return adjusted
+
+
+def require_execution_backend() -> None:
+    """Reject execution when the required simulator backend is unavailable."""
+    if not HAS_NUMBA:
+        raise RuntimeError(
+            "Backtest execution requires numba; install the project dependencies "
+            "with 'python -m pip install -r requirements.txt'."
+        )
+
+
 # ═══════════════════════════════════════════════════════════════
 # 指标列索引常量（与 walk_forward 对齐）
 # ═══════════════════════════════════════════════════════════════
@@ -143,7 +164,11 @@ def buy_and_hold_nav(
                 cash += shares[column] * dividend_matrix[row, column]
                 multiplier = multiplier_matrix[row, column]
                 if multiplier != 1.0:
-                    shares[column] *= multiplier
+                    shares[column] = _post_action_shares(
+                        shares[column], multiplier,
+                        bool(corporate_actions.share_rounding_up[row, column])
+                        if corporate_actions is not None else False,
+                    )
         if row == 0:
             for column in range(columns):
                 execution_price = buys[0, column]
@@ -281,6 +306,7 @@ if HAS_NUMBA:
         gross_cash_dividends,
         dividend_tax_costs,
         share_multipliers,
+        share_rounding_up,
         initial_cash,
         buy_cash_limit,
         sell_cash_limit,
@@ -330,8 +356,11 @@ if HAS_NUMBA:
                     cash += shares[n] * cash_dividends[t, n]
                     multiplier = share_multipliers[t, n]
                     if multiplier != 1.0:
-                        shares[n] *= multiplier
-                        cost_basis[n] /= multiplier
+                        previous_shares = shares[n]
+                        shares[n] = _post_action_shares(
+                            previous_shares, multiplier, share_rounding_up[t, n]
+                        )
+                        cost_basis[n] *= previous_shares / shares[n]
             # Sell first.  Sort candidates by strength descending; the input
             # columns are lexically sorted codes, giving a stable tie-breaker.
             count = 0
@@ -490,6 +519,7 @@ if HAS_NUMBA:
         gross_cash_dividends,
         dividend_tax_costs,
         share_multipliers,
+        share_rounding_up,
         date_ordinals,
         initial_cash,
         per_symbol_cap,
@@ -547,8 +577,11 @@ if HAS_NUMBA:
                     cash += shares[column] * cash_dividends[row, column]
                     multiplier = share_multipliers[row, column]
                     if multiplier != 1.0:
-                        shares[column] *= multiplier
-                        cost_basis[column] /= multiplier
+                        previous_shares = shares[column]
+                        shares[column] = _post_action_shares(
+                            previous_shares, multiplier, share_rounding_up[row, column]
+                        )
+                        cost_basis[column] *= previous_shares / shares[column]
             state_changed = False
             # Explicit exits always happen before allocation.  The strategy
             # marks catastrophe exits separately so they bypass the 30-day
@@ -826,6 +859,7 @@ class FastEvaluator:
         exec_cfg,
         group: str = "a_share",
     ):
+        require_execution_backend()
         self.initial_cash = exec_cfg.initial_capital
         self.lot_size = exec_cfg.lot_sizes.get(group, 100)
         self.commission_rate = exec_cfg.commission_rate
@@ -836,8 +870,6 @@ class FastEvaluator:
         # default there; resolved production profiles still require this field.
         withholding_rates = getattr(exec_cfg, "withholding_rates", {}) or {}
         self.withholding_rate = float(withholding_rates.get(group, 0.0))
-        self.buy_confirmation_days = 3
-        self.sell_confirmation_days = 1
 
     def evaluate(
         self,
@@ -852,6 +884,7 @@ class FastEvaluator:
         tradable: np.ndarray | None = None,
     ) -> WindowStats:
         """Evaluate one TradePlan through its declared execution model."""
+        require_execution_backend()
         T, N = indicator_matrix.shape[:2]
         if N == 0 or T == 0:
             return WindowStats()
@@ -979,7 +1012,10 @@ class FastEvaluator:
                     action_schedule.dividend_tax_costs, dtype=np.float32
                 ),
                 np.ascontiguousarray(
-                    action_schedule.share_multipliers, dtype=np.float32
+                    action_schedule.share_multipliers, dtype=np.float64
+                ),
+                np.ascontiguousarray(
+                    action_schedule.share_rounding_up, dtype=np.bool_
                 ),
                 np.ascontiguousarray(date_ordinals, dtype=np.int64),
                 float(self.initial_cash),
@@ -1021,7 +1057,10 @@ class FastEvaluator:
                     action_schedule.dividend_tax_costs, dtype=np.float32
                 ),
                 np.ascontiguousarray(
-                    action_schedule.share_multipliers, dtype=np.float32
+                    action_schedule.share_multipliers, dtype=np.float64
+                ),
+                np.ascontiguousarray(
+                    action_schedule.share_rounding_up, dtype=np.bool_
                 ),
                 float(self.initial_cash), buy_cash_limit, sell_cash_limit,
                 int(self.lot_size), float(self.commission_rate),
@@ -1029,7 +1068,7 @@ class FastEvaluator:
                 np.zeros(T, dtype=np.bool_),
             )
         else:
-            return WindowStats()
+            raise RuntimeError("Backtest execution backend became unavailable")
 
         return _compute_stats(
             daily_values, valuation_prices, cash_baseline,
@@ -1190,7 +1229,11 @@ def selected_basket_hold_return(
                 )
                 multiplier = corporate_actions.share_multipliers[row, column]
                 if multiplier != 1.0:
-                    shares[column] *= multiplier
+                    shares[column] = _post_action_shares(
+                        shares[column], multiplier,
+                        bool(corporate_actions.share_rounding_up[row, column])
+                        if corporate_actions is not None else False,
+                    )
         candidates = [
             column
             for column in range(columns)
@@ -1391,6 +1434,7 @@ def simulate_portfolio(
     execution_prices: ExecutionPriceSlice | None = None,
 ) -> PortfolioTrace:
     """Execute the canonical strategy decision plan."""
+    require_execution_backend()
     if market_data.prices is None:
         raise ValueError("StrategyMarketData.prices is required for execution")
     price = np.asarray(market_data.prices, dtype=np.float32)
@@ -1530,7 +1574,10 @@ def simulate_portfolio(
                 action_schedule.dividend_tax_costs, dtype=np.float32
             ),
             np.ascontiguousarray(
-                action_schedule.share_multipliers, dtype=np.float32
+                action_schedule.share_multipliers, dtype=np.float64
+            ),
+            np.ascontiguousarray(
+                action_schedule.share_rounding_up, dtype=np.bool_
             ),
             np.ascontiguousarray(date_ordinals, dtype=np.int64),
             float(initial_cash),
@@ -1571,21 +1618,17 @@ def simulate_portfolio(
                 action_schedule.dividend_tax_costs, dtype=np.float32
             ),
             np.ascontiguousarray(
-                action_schedule.share_multipliers, dtype=np.float32
+                action_schedule.share_multipliers, dtype=np.float64
+            ),
+            np.ascontiguousarray(
+                action_schedule.share_rounding_up, dtype=np.bool_
             ),
             float(initial_cash), float(buy_cash_limit), float(sell_cash_limit),
             int(lot_size), float(commission_rate), int(min_holding_days),
             np.ascontiguousarray(snapshot_mask),
         )
     else:
-        return PortfolioTrace(
-            daily_values=np.zeros(T),
-            daily_dates=dates, total_trades=0,
-            avg_position_pct=0.0, max_drawdown_pct=0.0,
-            sharpe_ratio=0.0, total_return_pct=0.0,
-            final_position_pct=0.0, quarterly_holdings=[],
-            composition=stock_codes,
-        )
+        raise RuntimeError("Backtest execution backend became unavailable")
 
     # 季度持仓
     quarterly_holdings = []
@@ -1770,7 +1813,12 @@ class WalkForwardManager:
         if not dates_sets:
             self.T = 0
             return
-        common = sorted(dates_sets[0].intersection(*dates_sets[1:]))
+        # Use the market-wide trading-day union. Intersecting every symbol's
+        # dates made one recent IPO truncate the entire universe's history.
+        # Reindexing below leaves each instrument's pre-listing/holiday rows
+        # empty, and execution_tradable_matrix keeps those rows non-tradable.
+        calendar = set().union(*dates_sets)
+        common = sorted(calendar)
         if not common:
             self.T = 0
             return
@@ -2050,6 +2098,7 @@ class Backtester:
     """The single TradePlan execution and EvaluationReport engine."""
 
     def __init__(self, execution_config, group: str):
+        require_execution_backend()
         self.execution = execution_config
         self.group = group
 

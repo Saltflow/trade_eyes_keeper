@@ -42,6 +42,7 @@ def payload_hash(value) -> str:
 class ProposalStore:
     def __init__(self, path: Path):
         self.path = Path(path)
+        self._connection_provider = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
             db.execute("PRAGMA journal_mode=WAL")
@@ -70,6 +71,8 @@ class ProposalStore:
                     ON conversation_turns(message_id) WHERE message_id <> '';
                 CREATE INDEX IF NOT EXISTS conversation_owner
                     ON conversation_turns(chat, sender, created DESC);
+                CREATE INDEX IF NOT EXISTS conversation_state
+                    ON conversation_turns(status);
                 CREATE TABLE IF NOT EXISTS conversation_events (
                     id INTEGER PRIMARY KEY, turn_id TEXT NOT NULL,
                     at REAL NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL,
@@ -78,12 +81,31 @@ class ProposalStore:
                 );
                 CREATE INDEX IF NOT EXISTS conversation_event_turn
                     ON conversation_events(turn_id, id);
+                CREATE TABLE IF NOT EXISTS conversation_deliveries (
+                    id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, piece TEXT NOT NULL,
+                    route TEXT NOT NULL, body TEXT NOT NULL, state TEXT NOT NULL,
+                    metadata TEXT NOT NULL, updated REAL NOT NULL,
+                    UNIQUE(turn_id,piece));
             """)
         if os.name != "nt":
             self.path.chmod(0o600)
 
+    def set_connection_provider(self, provider):
+        """Borrow host-owned contexts without taking ownership of their handles."""
+        if not callable(provider):
+            raise TypeError("connection provider must be callable")
+        self._connection_provider = provider
+
     @contextmanager
     def connection(self):
+        provider = self._connection_provider
+        if provider is not None:
+            with provider(database=self.path, autocommit=False) as db:
+                # The same cache also serves consumers without foreign keys.
+                # Apply this contract on every borrow, before any transaction.
+                db.execute("PRAGMA foreign_keys=ON")
+                yield db
+            return
         db = sqlite3.connect(self.path, timeout=10)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
@@ -128,6 +150,126 @@ class ProposalStore:
                 (turn_id, chat, sender, message_id, question, now, now),
             )
         return turn_id
+
+    def admit_turn(self, envelope: dict, execution_store, *, source="feishu"):
+        """Persist the inbound receipt, turn and executable work atomically.
+
+        The runtime tables must live in this same SQLite file. A caller must
+        never mark the message received in another database before this commit.
+        """
+        if Path(execution_store.path).resolve() != self.path.resolve():
+            raise ValueError("conversation admission requires one SQLite file")
+        chat, sender = envelope["chat"], envelope["sender"]
+        message_id = envelope["message_id"]
+        if not all(
+            isinstance(v, str) and v and len(v) <= 512
+            for v in (chat, sender, message_id)
+        ):
+            raise ValueError("invalid authenticated message identity")
+        text = _bounded_text(envelope["text"], CONVERSATION_TEXT_LIMIT)
+        current, turn_id = time.time(), uuid.uuid4().hex
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            previous = db.execute(
+                "SELECT id,chat,sender FROM conversation_turns WHERE message_id=?",
+                (message_id,),
+            ).fetchone()
+            if previous:
+                if (previous["chat"], previous["sender"]) != (chat, sender):
+                    raise ValueError("message already belongs to another owner")
+                return {"accepted": False, "turn_id": previous["id"], "duplicate": True}
+            # Preserve legacy completed/rejected receipts. Missing historical
+            # envelopes cannot safely become new intent after the cutover.
+            if db.execute(
+                "SELECT 1 FROM receipts WHERE id=?", (message_id,)
+            ).fetchone():
+                return {"accepted": False, "duplicate": True, "turn_id": None}
+            db.execute("INSERT INTO receipts VALUES (?,?)", (message_id, current))
+            db.execute(
+                "INSERT INTO conversation_turns "
+                "(id,chat,sender,message_id,question,status,created,updated) "
+                "VALUES (?,?,?,?,?,'queued',?,?)",
+                (turn_id, chat, sender, message_id, text, current, current),
+            )
+            payload = dict(envelope, text=text, turn_id=turn_id)
+            session = canonical_json(
+                [
+                    envelope.get("platform", "feishu"),
+                    envelope.get("app_id", ""),
+                    chat,
+                    sender,
+                ]
+            )
+            run_id = execution_store.submit(
+                "conversation.turn",
+                payload,
+                request_id="inbound:" + message_id,
+                session_key=session,
+                module_id="conversation",
+                source=source,
+                max_pending=32,
+                db=db,
+            )
+        return {"accepted": True, "turn_id": turn_id, "run_id": run_id}
+
+    def turn(self, turn_id):
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT * FROM conversation_turns WHERE id=?", (turn_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def reconcile_execution(self):
+        """Reflect proved terminal execution facts, never reset another live turn."""
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "UPDATE conversation_turns SET status='interrupted',"
+                "error='execution_result_unknown',updated=? "
+                "WHERE status IN ('queued','running') AND EXISTS ("
+                "SELECT 1 FROM execution_runs r WHERE r.job_id='conversation.turn' "
+                "AND r.request_id='inbound:'||conversation_turns.message_id "
+                "AND r.status IN ('unknown','failed','skipped'))",
+                (time.time(),),
+            )
+            db.execute(
+                "UPDATE conversation_deliveries SET state='unknown',updated=? "
+                "WHERE state='submitted' AND turn_id IN (SELECT id FROM "
+                "conversation_turns WHERE status IN ('interrupted','delivery_failed','failed'))",
+                (time.time(),),
+            )
+
+    def prepare_reply(self, turn_id, piece, route, body):
+        """Commit a send intent; a repeated submitted/unknown reply is not resent."""
+        identity = payload_hash([turn_id, piece])
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT OR IGNORE INTO conversation_deliveries VALUES "
+                "(?,?,?,?,?,'prepared','{}',?)",
+                (identity, turn_id, piece, route, body, time.time()),
+            )
+            row = db.execute(
+                "SELECT * FROM conversation_deliveries WHERE id=?", (identity,)
+            ).fetchone()
+            if row["route"] != route or row["body"] != body:
+                raise ValueError("reply identity cannot be rebound")
+            changed = db.execute(
+                "UPDATE conversation_deliveries SET state='submitted',updated=? "
+                "WHERE id=? AND state='prepared'",
+                (time.time(), identity),
+            ).rowcount
+        return identity, bool(changed), row["state"]
+
+    def finish_reply(self, identity, outcome, metadata):
+        if outcome not in {"sent", "failed", "unknown"}:
+            raise ValueError("invalid delivery outcome")
+        with self.connection() as db:
+            db.execute(
+                "UPDATE conversation_deliveries SET state=?,metadata=?,updated=? "
+                "WHERE id=? AND state='submitted'",
+                (outcome, canonical_json(metadata), time.time(), identity),
+            )
 
     def record_turn_event(self, turn_id: str, kind: str, data_dict: dict) -> None:
         """Store bounded, already-redacted diagnostics without reading credentials."""
@@ -232,7 +374,7 @@ class ProposalStore:
             ).rowcount
 
     def prune_conversations(self, retention_days: int = 30) -> int:
-        """Expire only conversation records and their cascading child events."""
+        """Expire terminal conversation bodies; keep dedup and execution summaries."""
         if (
             isinstance(retention_days, bool)
             or not isinstance(retention_days, int)
@@ -241,8 +383,34 @@ class ProposalStore:
             raise ValueError("Conversation retention must be a positive number of days")
         cutoff = time.time() - retention_days * 86400
         with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "DELETE FROM conversation_deliveries WHERE turn_id IN "
+                "(SELECT id FROM conversation_turns WHERE updated<? "
+                "AND status NOT IN ('queued','running'))",
+                (cutoff,),
+            )
+            tables = {
+                row[0]
+                for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if "execution_runs" in tables:
+                db.execute(
+                    "UPDATE execution_runs SET payload=?,result=NULL WHERE job_id='conversation.turn' "
+                    "AND status NOT IN ('queued','running') AND finished<? AND payload<>?",
+                    ('{"redacted":true}', cutoff, '{"redacted":true}'),
+                )
+            if "execution_ingress" in tables:
+                db.execute(
+                    "UPDATE execution_ingress SET payload='{}' WHERE state<>'pending' AND created<? AND payload<>'{}'",
+                    (cutoff,),
+                )
             return db.execute(
-                "DELETE FROM conversation_turns WHERE updated<?", (cutoff,)
+                "DELETE FROM conversation_turns WHERE updated<? "
+                "AND status NOT IN ('queued','running')",
+                (cutoff,),
             ).rowcount
 
     def receipt(self, message_id: str) -> bool:

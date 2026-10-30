@@ -19,9 +19,13 @@ def test_extension_package_imports():
     assert src.backtest.Backtester
 
 
-def test_health_server_imports():
-    """health_server 子包导入"""
-    assert True
+def test_service_components_import_without_http_server():
+    """Bot SDKs stay lazy and the service imports without retired HTTP code."""
+    from src.core.config_store import ConfigStore
+    from src.core.runtime_service import RuntimeService
+    from src.core.schedule_manager import ScheduleManager
+
+    assert ConfigStore and RuntimeService and ScheduleManager
 
 
 def test_all_key_modules():
@@ -34,17 +38,15 @@ def test_all_key_modules():
         "src.search.workflow",
         "src.strategy",
         "src.markets",
-        # health_server
-        "src.health_server.core.global_instances",
-        "src.health_server.core.health_server",
-        "src.health_server.handlers.health_handler",
-        "src.health_server.auth.rate_limiter",
-        "src.health_server.auth.otp_manager",
-        "src.health_server.auth.auth_session",
         # core
+        "src.core.config_store",
+        "src.core.runtime_service",
         "src.core.condition_checker",
         "src.core.data_fetcher",
-        "src.core.scheduler_manager",
+        "src.core.schedule_manager",
+        # Bot transports (SDK imports must be lazy)
+        "src.interactive.feishu_bot",
+        "src.interactive.telegram_bot",
         # data
         "src.data.data_source",
         "src.data.web_crawler",
@@ -81,9 +83,6 @@ def test_project_structure():
         "src/search",
         "src/backtest",
         "src/experiments",
-        "src/health_server/core",
-        "src/health_server/handlers",
-        "src/health_server/auth",
         "src/core",
         "src/data",
         "src/models",

@@ -233,9 +233,16 @@ def _issue(
     reason: object,
 ) -> DataReadinessIssue:
     text = str(reason)
-    lowered = text.lower()
+    # URL/error details must not override the primary readiness category
+    # (e.g. a filename containing "403" is not an HTTP access denial).
+    lowered = text.split("; hkex_evidence_details=[", 1)[0].lower()
     if "403" in lowered or "blocked" in lowered or "forbidden" in lowered:
         category = "source_blocked"
+    elif (
+        "in-kind distribution is not supported" in lowered
+        or "rights issue is not supported" in lowered
+    ):
+        category = "corporate_action_unsupported"
     elif "corporate action" in lowered or "adjustment factor" in lowered:
         category = "corporate_action_evidence_missing"
     elif (
@@ -285,6 +292,56 @@ def _retry_delay(exc: Exception, attempt: int, now: datetime) -> float | None:
 
     if isinstance(exc, USIssuerMetadataTransientError):
         return min(60.0, max(0.0, float(exc.retry_after_seconds)))
+    if isinstance(exc, BaostockAccessBlocked):
+        return None
+    if isinstance(exc, BaostockTransientError):
+        retry_at = exc.retry_at
+        if retry_at:
+            try:
+                retry_time = datetime.fromisoformat(retry_at)
+                if retry_time.tzinfo is None:
+                    retry_time = retry_time.replace(tzinfo=timezone.utc)
+                return max(0.0, (retry_time - now).total_seconds())
+            except ValueError:
+                return None
+        return min(60.0, 2.0 ** max(0, attempt - 1))
+    if isinstance(exc, requests.HTTPError):
+        response = exc.response
+        status = getattr(response, "status_code", None)
+        if status == 403 or status not in (429, 500, 502, 503, 504):
+            return None
+        headers = getattr(response, "headers", {}) or {}
+        value = headers.get("Retry-After")
+        if value:
+            try:
+                return max(0.0, float(value))
+            except (TypeError, ValueError):
+                try:
+                    retry_time = email.utils.parsedate_to_datetime(value)
+                    if retry_time.tzinfo is None:
+                        retry_time = retry_time.replace(tzinfo=timezone.utc)
+                    return max(0.0, (retry_time - now).total_seconds())
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        return min(60.0, 2.0 ** max(0, attempt - 1))
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError, TimeoutError)):
+        return min(60.0, 2.0 ** max(0, attempt - 1))
+    return None
+
+
+def _planned_source(code: str, purpose: str) -> str:
+    if purpose != "optimizer":
+        return "market_provider"
+    market = detect_market(code)
+    if market == "us":
+        return "nasdaq_disclosed"
+    if market == "a_share" and code.startswith(("0", "3", "6")):
+        return "baostock_disclosed_actions"
+    return "tencent_disclosed_actions"
+
+
+def _retry_delay(exc: Exception, attempt: int, now: datetime) -> float | None:
+    """Return a safe delay only for transient transport/service failures."""
     if isinstance(exc, BaostockAccessBlocked):
         return None
     if isinstance(exc, BaostockTransientError):

@@ -1,7 +1,10 @@
 """TDD: /ref_date 命令全链路测试。"""
 
-import sys
 import os
+import sys
+
+import pytest
+import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 os.environ.setdefault("LOG_LEVEL", "ERROR")
@@ -10,39 +13,14 @@ os.environ.setdefault("LOG_LEVEL", "ERROR")
 class TestRefDateHandler:
     """handle_ref_date 逻辑测试。"""
 
-    def setup_method(self):
+    @pytest.fixture(autouse=True)
+    def isolated_config(self, tmp_path, monkeypatch):
         """确保测试不影响真实 config，且从干净状态开始。"""
-        import yaml
         from src.interactive.commands import handlers
 
-        try:
-            with open(handlers.CONFIG_PATH, "r", encoding="utf-8") as f:
-                self._saved_config = yaml.safe_load(f)
-        except Exception:
-            self._saved_config = {}
-        # 清掉上一次测试残留的 reference_base_date
-        try:
-            cfg = handlers._load_config()
-            if cfg.get("optimizer", {}).get("reference_base_date"):
-                del cfg["optimizer"]["reference_base_date"]
-                handlers._save_config(cfg)
-        except Exception:
-            pass
-
-    def teardown_method(self):
-        """恢复原始 config。"""
-        import yaml
-        from src.interactive.commands import handlers
-
-        if self._saved_config is not None:
-            with open(handlers.CONFIG_PATH, "w", encoding="utf-8") as f:
-                yaml.dump(
-                    self._saved_config,
-                    f,
-                    allow_unicode=True,
-                    default_flow_style=False,
-                    sort_keys=False,
-                )
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump({"optimizer": {}}), encoding="utf-8")
+        monkeypatch.setattr(handlers, "CONFIG_PATH", path)
 
     def test_show_unset(self):
         from src.interactive.commands.handlers import handle_ref_date
@@ -75,8 +53,8 @@ class TestRefDateCommandParser:
 
     def test_parse_with_date(self):
         from src.interactive.command_parser import (
-            parse_command,
             RefDateCommand,
+            parse_command,
         )
 
         cmd = parse_command("/ref_date 2026-07-14")
@@ -85,8 +63,8 @@ class TestRefDateCommandParser:
 
     def test_parse_no_date(self):
         from src.interactive.command_parser import (
-            parse_command,
             RefDateCommand,
+            parse_command,
         )
 
         cmd = parse_command("/ref_date")
@@ -95,8 +73,8 @@ class TestRefDateCommandParser:
 
     def test_parse_empty_date(self):
         from src.interactive.command_parser import (
-            parse_command,
             RefDateCommand,
+            parse_command,
         )
 
         cmd = parse_command("/ref_date   ")
@@ -107,19 +85,20 @@ class TestRefDateCommandParser:
 class TestRefDateDispatch:
     """命令分派：飞书 / Telegram 均正确路由到 handle_ref_date。"""
 
-    def test_feishu_dispatch(self):
+    def test_shared_bot_dispatch(self):
         from unittest.mock import patch
+
+        from src.interactive.command_dispatcher import dispatch_command
         from src.interactive.command_parser import (
             parse_command,
         )
-        from src.interactive.feishu_handler import _dispatch
 
         cmd = parse_command("/ref_date")
         with patch(
             "src.interactive.commands.handlers._load_config",
             return_value={"optimizer": {}},
         ):
-            r = _dispatch(cmd)
+            r = dispatch_command(cmd)
         assert "参考持仓基期" in r
 
     def test_telegram_dispatch_import(self):

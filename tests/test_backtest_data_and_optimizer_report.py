@@ -8,9 +8,17 @@ import pandas as pd
 import pytest
 import requests
 
-from src.data.backtest_data import prepare_backtest_data
+from src.data.backtest_data import _issue, prepare_backtest_data
 from src.data.market_history import CorporateAction, PriceHistoryBundle
 from src.search.reporting import render_optimizer_report
+
+
+def test_in_kind_gap_is_classified_as_unsupported_action():
+    issue = _issue(
+        "00700", "etnet", date(2018, 4, 6), date(2026, 10, 3),
+        "local=stale; fetch=in-kind distribution is not supported: 00700 2022-01-20",
+    )
+    assert issue.category == "corporate_action_unsupported"
 
 
 def _bundle(code="600000"):

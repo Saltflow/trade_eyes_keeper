@@ -201,7 +201,11 @@ python main.py --brief
 
 `--optimize` 会为 A/HK/US 分别解析配置并分别运行；`--group` 可只运行一个市场。每个市场都生成独立的 `run_id` 和 `data/optimizer/runs/<run_id>/`，包括参数、窗口指标、搜索 archive、checkpoint、数据 readiness 和 holdout 结果。
 
-当前代码会始终先保存为 candidate，不会因为相对 promotion policy 通过就自动改生产策略。必须显式执行 `--activate-run`。
+搜参先保存可审计的 candidate；当 `promotion_policy.enabled` 和
+`auto_activate_if_better` 均开启，且与该市场现任策略的同窗相对比较通过时，
+自动激活该市场候选，保留其他市场的活动指针。关闭自动激活、没有现任策略、
+比较结果不完整或新候选未改善时，仅保留 candidate，可另行显式执行
+`--activate-run`。相对晋升仍允许覆盖绝对留出表现门槛，沿用现有安全底线。
 
 日报读取 active artifact 后，使用同一套策略参数、成交合同和基准合同生成信号与组合评估，避免扫描器、日报和优化器各自实现一套交易逻辑。
 

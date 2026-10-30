@@ -257,7 +257,11 @@ def test_submit_receipt_and_queue_share_one_trace(assistant):
     assistant.client.complete.return_value = {"role": "assistant", "content": "答复"}
     assert assistant.submit("chat", "owner", "问题", "one-message")
     assert not assistant.submit("chat", "owner", "问题", "one-message")
-    assistant.handle(*assistant._messages.get_nowait())
+    runtime = assistant.execution_runtime
+    runs = runtime.store.list_runs()
+    assert len(runs) == 1
+    runtime.tick()
+    assert runtime.wait(runs[0]["id"], 5)["status"] == "succeeded"
     turns = assistant.store.recent_turns("chat", "owner")
     assert len(turns) == 1
     assert turns[0]["status"] == "completed"
@@ -373,9 +377,11 @@ def test_cancel_bypasses_pending_llm_queue_and_preserves_terminal_states(assista
     assistant.store.update(item["id"], "running")
     cancel = threading.Event()
     assistant._cancels[item["id"]] = cancel
-    assistant._messages.put(("chat", "owner", "一个很慢的模型请求"))
+    assert assistant.submit("chat", "owner", "一个很慢的模型请求", "slow-message")
+    assert assistant.execution_runtime.store.count_pending("conversation.turn") == 1
     assert assistant.submit("chat", "owner", "取消 " + item["id"], "cancel-message")
     assert cancel.is_set()
+    assert assistant.execution_runtime.store.count_pending("conversation.turn") == 1
     assert assistant.store.get(item["id"], "chat", "owner")["status"] == "cancelling"
     assert not assistant.store.transition(
         item["id"], "running", ("preparing", "running")

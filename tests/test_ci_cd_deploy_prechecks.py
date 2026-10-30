@@ -30,7 +30,6 @@ def test_workspace_pytest_uses_a_project_owned_basetemp(monkeypatch, tmp_path):
 
 def test_dry_run_stays_local_and_does_not_parse_mock_remote_output(monkeypatch):
     monkeypatch.setenv("DRY_RUN", "true")
-    monkeypatch.setattr(ci_cd_deploy.time, "sleep", lambda seconds: None)
 
     def unexpected_remote_preflight():
         raise AssertionError("dry run must not open an SSH connectivity probe")

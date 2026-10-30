@@ -53,6 +53,7 @@ if HAS_NUMBA_BATCH:
         gross_cash_dividends,
         dividend_tax_costs,
         share_multipliers,
+        share_rounding_up,
         initial_cash,
         buy_cash_limits,
         sell_cash_limits,
@@ -89,6 +90,7 @@ if HAS_NUMBA_BATCH:
                 gross_cash_dividends,
                 dividend_tax_costs,
                 share_multipliers,
+                share_rounding_up,
                 initial_cash,
                 buy_cash_limits[candidate_index],
                 sell_cash_limits[candidate_index],
@@ -211,8 +213,9 @@ def evaluate_cash_batch(
             action_schedule.dividend_tax_costs, dtype=np.float32
         ),
         np.ascontiguousarray(
-            action_schedule.share_multipliers, dtype=np.float32
+            action_schedule.share_multipliers, dtype=np.float64
         ),
+        np.ascontiguousarray(action_schedule.share_rounding_up, dtype=np.bool_),
         float(evaluator.initial_cash),
         np.asarray([plan.buy_cash_limit for plan in trade_plans]),
         np.asarray([plan.sell_cash_limit for plan in trade_plans]),

@@ -11,6 +11,40 @@ from .corporate_action_currency import validate_cash_currency
 from .market_history import CorporateAction, PriceHistoryBundle, corporate_action_issues
 
 
+def _failure_diagnostics(actions: list[CorporateAction]) -> str:
+    """Keep bounded HKEX failure context when strict adjustment building rejects.
+
+    The rejected actions will not be persisted, so their URL/reason must reach
+    the outer readiness report through the exception. Do not emit unrelated
+    metadata or diagnostics for successfully verified actions.
+    """
+    details: list[str] = []
+    omitted = 0
+    prefixes = (
+        "hkex_cash_evidence_unavailable=",
+        "hkex_cash_evidence_conflict=",
+        "hkex_cash_evidence_document_budget_exhausted",
+    )
+    for action in actions:
+        if not corporate_action_issues([action]):
+            continue
+        for diagnostic in action.diagnostics:
+            if not diagnostic.startswith(prefixes):
+                continue
+            detail = f"{action.code} {action.ex_date}: {diagnostic}"
+            if len(detail) > 1024:
+                detail = detail[:1024] + "...[truncated]"
+            if detail in details:
+                continue
+            if len(details) < 8:
+                details.append(detail)
+            else:
+                omitted += 1
+    if omitted:
+        details.append(f"additional_hkex_failure_diagnostics_omitted={omitted}")
+    return "; ".join(details)
+
+
 def apply_disclosed_adjustments(
     bundle: PriceHistoryBundle, actions: list[CorporateAction], *, evidence: str
 ) -> PriceHistoryBundle:
@@ -25,7 +59,11 @@ def apply_disclosed_adjustments(
         raise ValueError("independent corporate-action coverage evidence is required")
     issues = corporate_action_issues(actions)
     if issues:
-        raise ValueError("; ".join(issues))
+        diagnostics = _failure_diagnostics(actions)
+        reason = "; ".join(issues)
+        if diagnostics:
+            reason += "; hkex_evidence_details=[" + diagnostics + "]"
+        raise ValueError(reason)
     for action in actions:
         validate_cash_currency(action, bundle.currency)
     frame = bundle.prices.copy().sort_values("date").reset_index(drop=True)

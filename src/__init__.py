@@ -28,7 +28,7 @@ def get_NotifierManager():
     return NotifierManager
 
 
-def get_SchedulerManager():
-    from .core.scheduler_manager import SchedulerManager
+def get_ScheduleManager():
+    from .core.schedule_manager import ScheduleManager
 
-    return SchedulerManager
+    return ScheduleManager

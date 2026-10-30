@@ -42,6 +42,17 @@ def _parse_date(value: object) -> date | None:
         return None
 
 
+def reference_valuation_price(value: object) -> float | None:
+    """Accept only finite, positive prices; missing quotes are never zero."""
+    if isinstance(value, (bool, np.bool_)):
+        return None
+    try:
+        price = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return price if np.isfinite(price) and price > 0 else None
+
+
 def reference_execution_contract(
     strategy_execution: dict,
     execution_config,
@@ -59,6 +70,21 @@ def reference_execution_contract(
             execution_config.withholding_rates.get(market_group, 0.0)
         ),
     }
+
+
+def reference_execution_binding_status(stored_hash: str, contract: dict) -> str:
+    """Diagnose an execution binding without relaxing the trading guard."""
+    from ..search.contracts import stable_hash
+
+    if stored_hash == stable_hash(contract):
+        return "current"
+    if "withholding_rate" in contract:
+        legacy_contract = {
+            key: value for key, value in contract.items() if key != "withholding_rate"
+        }
+        if stored_hash == stable_hash(legacy_contract):
+            return "legacy_missing_withholding"
+    return "mismatch"
 
 
 # ── 数据模型 ──────────────────────────────────────────────────
@@ -123,23 +149,35 @@ class RefPortfolio:
             and self.strategy_id
         )
 
-    def total_market_value(self, prices: dict[str, float]) -> float:
-        """当前持仓市值。"""
+    def missing_price_codes(self, prices: dict[str, float]) -> list[str]:
+        """List holdings whose current valuation cannot be determined."""
+        return sorted(
+            code
+            for code in self.holdings
+            if reference_valuation_price(prices.get(code)) is None
+        )
+
+    def total_market_value(self, prices: dict[str, float]) -> float | None:
+        """当前持仓市值；任一持仓缺少有效行情时返回 None。"""
         total = 0.0
         for code, h in self.holdings.items():
-            if code in prices and prices[code] > 0:
-                total += h.shares * prices[code]
+            price = reference_valuation_price(prices.get(code))
+            if price is None:
+                return None
+            total += h.shares * price
         return total
 
-    def nav(self, prices: dict[str, float]) -> float:
-        """当前净值 = 现金 + 持仓市值。"""
-        return self.cash + self.total_market_value(prices)
+    def nav(self, prices: dict[str, float]) -> float | None:
+        """当前净值 = 现金 + 完整持仓市值；不把缺价持仓当作零。"""
+        market_value = self.total_market_value(prices)
+        return None if market_value is None else self.cash + market_value
 
     def nav_return_pct(self, prices: dict[str, float]) -> float | None:
         """净值回报率（相对 initial_capital）。"""
-        if self.initial_capital <= 0:
+        nav = self.nav(prices)
+        if self.initial_capital <= 0 or nav is None:
             return None
-        return (self.nav(prices) / self.initial_capital - 1.0) * 100.0
+        return (nav / self.initial_capital - 1.0) * 100.0
 
     def to_dict(self) -> dict:
         """序列化为纯 Python dict（供 YAML 持久化）。"""
@@ -1452,7 +1490,7 @@ class RefPortfolioManager:
     # ── 查询 ──
 
     @staticmethod
-    def calculate_nav(pf: RefPortfolio, prices: dict[str, float]) -> float:
+    def calculate_nav(pf: RefPortfolio, prices: dict[str, float]) -> float | None:
         """计算当前净值。"""
         return pf.nav(prices)
 
@@ -1476,16 +1514,19 @@ class RefPortfolioManager:
         prices = prices or {}
         nav = pf.nav(prices)
         nav_ret = pf.nav_return_pct(prices)
+        market_value = pf.total_market_value(prices)
+        missing_price_codes = pf.missing_price_codes(prices)
 
         holdings_list = []
         for code, h in pf.holdings.items():
-            p = prices.get(code, 0.0)
+            p = reference_valuation_price(prices.get(code))
             holdings_list.append(
                 {
                     "code": code,
                     "shares": h.shares,
-                    "price": round(p, 2),
-                    "market_value": round(h.shares * p, 2),
+                    "price": round(p, 2) if p is not None else None,
+                    "market_value": round(h.shares * p, 2) if p is not None else None,
+                    "price_available": p is not None,
                     "avg_cost": round(h.avg_cost, 4),
                 }
             )
@@ -1495,11 +1536,20 @@ class RefPortfolioManager:
             "cash": round(pf.cash, 2),
             "initial_capital": pf.initial_capital,
             "trading_days": pf.trading_days,
-            "nav": round(nav, 2) if prices else round(pf.cash, 2),
+            "nav": round(nav, 2) if nav is not None else None,
             "nav_return_pct": round(nav_ret, 2) if nav_ret is not None else None,
             "holdings": holdings_list,
             "last_rebalance_date": pf.last_rebalance_date,
-            "total_market_value": round(pf.total_market_value(prices), 2),
+            "total_market_value": (
+                round(market_value, 2) if market_value is not None else None
+            ),
+            "valuation_complete": not missing_price_codes,
+            "missing_price_codes": missing_price_codes,
+            "valuation_reason": (
+                "估值不完整：缺少 " + ", ".join(missing_price_codes) + " 行情"
+                if missing_price_codes
+                else ""
+            ),
             "market_group": pf.market_group,
             "strategy_run_id": pf.strategy_run_id,
             "strategy_id": pf.strategy_id,

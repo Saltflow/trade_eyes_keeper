@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -10,13 +11,13 @@ import re
 import threading
 import time
 import uuid
-from collections import OrderedDict
 from pathlib import Path
 
 from .client import AssistantAPIError, DeepSeekAssistantClient
 from .harness import ConversationHarness
 from .knowledge import ProjectKnowledge
 from .repository import RepositoryKnowledge
+from .runtime_support import LockedOrderedDict
 from .settings import PROJECT_ROOT, AssistantSettings
 from .store import ProposalStore, canonical_json, payload_hash
 
@@ -134,6 +135,24 @@ def _tool(name: str, description: str, properties: dict, required=()) -> dict:
 
 
 class FeishuAssistant:
+    @property
+    def client(self):
+        context = getattr(getattr(self, "_turn_context", None), "current", None)
+        return (context or {}).get("client", self._client_template)
+
+    @client.setter
+    def client(self, value):
+        self._client_template = value
+
+    @property
+    def harness(self):
+        context = getattr(getattr(self, "_turn_context", None), "current", None)
+        return (context or {}).get("harness", self._harness_template)
+
+    @harness.setter
+    def harness(self, value):
+        self._harness_template = value
+
     def __init__(
         self,
         config: dict,
@@ -146,34 +165,82 @@ class FeishuAssistant:
         client=None,
         store=None,
         start_workers=True,
+        image_loader=None,
+        personal_store=None,
+        personal_runtime=None,
+        personal_quote_loader=None,
+        personal_route_allowed=None,
+        personal_send=None,
+        execution_runtime=None,
+        capabilities=None,
     ):
         from .config_tools import ConfigurationTools
         from .research import ResearchRunner
 
         self.settings = AssistantSettings.from_config(config)
         self.root = Path(project_root).resolve()
+        self._application_config = dict(config)
+        self.capabilities = (
+            frozenset(capabilities) if capabilities is not None else None
+        )
         self.knowledge = ProjectKnowledge(self.root)
         self.repository = RepositoryKnowledge(self.root)
         self.configuration = configuration or ConfigurationTools(self.root)
         self.research = research or ResearchRunner(self.root, self.settings.dict())
         self.client = client or DeepSeekAssistantClient(config, self.settings)
+        data_directory = Path((config.get("storage") or {}).get("data_dir", "data"))
+        if not data_directory.is_absolute():
+            data_directory = self.root / data_directory
         self.store = store or ProposalStore(
-            self.root / "data" / "runtime" / "feishu_assistant.sqlite3"
+            data_directory / "runtime" / "feishu_assistant.sqlite3"
         )
+        from ...core.execution import JobSpec, ModuleSpec, get_runtime
+
+        self.execution_runtime = execution_runtime or get_runtime(self.store.path)
+        if self.execution_runtime.store.path.resolve() != self.store.path.resolve():
+            raise ValueError("assistant and execution admission must share SQLite")
+        if isinstance(self.store, ProposalStore):
+            self.store.set_connection_provider(self.execution_runtime.store.connection)
+        self._owns_execution = execution_runtime is None
         self.send_message = send_message
         self.send_file = send_file
+        self._personal_send = personal_send or self._send_personal_notification
+        from ...personal_monitor import MonitorStore
+        from ...personal_monitor_runtime import PersonalMonitorRuntime
+        from .personal_tools import PersonalTools
+
+        self.personal_store = personal_store or MonitorStore(
+            data_directory / "runtime" / "personal_monitor.sqlite3"
+        )
+        self.personal_runtime = personal_runtime or PersonalMonitorRuntime(
+            self.personal_store,
+            config,
+            self._personal_send,
+            config_provider=self._personal_runtime_config,
+            execution_runtime=self.execution_runtime,
+        )
+        provider = self.personal_runtime.observation_provider
+        self.personal = PersonalTools(
+            self.personal_store,
+            image_loader=image_loader,
+            client=self,
+            quote_loader=personal_quote_loader
+            or getattr(provider, "screenshot_quote", None),
+            route_allowed=personal_route_allowed,
+        )
         self._stop = threading.Event()
         self.harness = ConversationHarness(
             self.client, self.settings, self.root, self._stop
         )
-        self._messages = queue.Queue(maxsize=32)
         self._jobs = queue.Queue(maxsize=8)
-        self._history = OrderedDict()
+        self._history = LockedOrderedDict()
         self._cancels: dict[str, threading.Event] = {}
         self._cancel_lock = threading.Lock()
         self._operation_lock = threading.RLock()
         self._threads = []
         self._turn_context = threading.local()
+        self._active_turns = {}
+        self._active_turns_lock = threading.RLock()
         self._secrets = set()
         self._collect_secrets(config)
         for key, value in os.environ.items():
@@ -182,7 +249,8 @@ class FeishuAssistant:
                 for word in ("secret", "password", "token", "api_key", "webhook")
             ):
                 self._secrets.add(value)
-        self.store.recover_turns()
+        # Runtime owner/lease recovery replaces constructor-wide turn resets.
+        self.store.reconcile_execution()
         self.store.prune_conversations(self.settings.conversation_retention_days)
         for item in self.store.recover():
             if item["kind"] != "research":
@@ -206,14 +274,85 @@ class FeishuAssistant:
                     "interrupted",
                     "任务恢复核验失败；未重新执行，请检查部署主机的任务目录。",
                 )
+        # Publish only after all dependencies and recovery have initialized.
+        # A failed replacement must not consume queued work with a partial object.
+        self.execution_runtime.register(
+            ModuleSpec(
+                "conversation",
+                (
+                    JobSpec(
+                        "conversation.turn",
+                        self._execute_turn,
+                        lane="conversation",
+                        timeout_seconds=self.settings.conversation_timeout_seconds,
+                    ),
+                ),
+            )
+        )
+        self.execution_runtime.bind_lifecycle(
+            "conversation", self._conversation_lifecycle
+        )
         if start_workers:
-            for target, name in (
-                (self._conversation_worker, "feishu-assistant"),
-                (self._research_worker, "feishu-research"),
-            ):
+            self.personal_runtime.start()
+            if self._owns_execution:
+                self.execution_runtime.start()
+            self._conversation_lifecycle(True)
+            for target, name in ((self._research_worker, "feishu-research"),):
+                if (
+                    self.capabilities is not None
+                    and "research" not in self.capabilities
+                ):
+                    continue
                 worker = threading.Thread(target=target, name=name, daemon=True)
                 worker.start()
                 self._threads.append(worker)
+
+    def _conversation_lifecycle(self, enabled):
+        if not enabled:
+            return
+        self.store.reconcile_execution()
+        self.execution_runtime.add_timer(
+            "conversation.reconcile",
+            time.time() + 60,
+            lambda: self._conversation_lifecycle(True),
+            module_id="conversation",
+        )
+
+    def read_position_images(self, images, **kwargs):
+        """PersonalTools uses the current turn client, including OCR diagnostics."""
+        return self.client.read_position_images(images, **kwargs)
+
+    @property
+    def last_image_diagnostics(self):
+        return getattr(self.client, "last_image_diagnostics", [])
+
+    def _execute_turn(self, payload, execution_context):
+        from ...core.execution import RunResult
+
+        execution_context.progress("conversation")
+        self._turn_context.execution = execution_context
+        try:
+            self.handle(
+                payload["chat"],
+                payload["sender"],
+                payload["text"],
+                payload["message_id"],
+                payload["turn_id"],
+                attachments=payload.get("attachments"),
+                message_time=payload.get("message_time"),
+            )
+            turn = self.store.turn(payload["turn_id"])
+            status = turn["status"]
+            return RunResult(
+                "succeeded"
+                if status == "completed"
+                else "unknown"
+                if status in {"interrupted", "delivery_failed"}
+                else "failed",
+                turn.get("error", ""),
+            )
+        finally:
+            self._turn_context.execution = None
 
     def _collect_secrets(self, value, key="") -> None:
         if isinstance(value, dict):
@@ -248,57 +387,172 @@ class FeishuAssistant:
             return False
         text = self.redact(str(text))
         context = getattr(self._turn_context, "current", None)
-        if context is not None:
-            context["answers"].append(text)
-        self._audit("reply", {"text": text})
-        # Keep cards comfortably below platform limits, including UTF-8 CJK.
-        for offset in range(0, max(1, len(text)), 2800):
+        candidates = (
+            self.personal.immediate_results(context)
+            if context is not None and not context.get("immediate_delivery_recorded")
+            else []
+        )
+
+        def notice(item):
+            return f"已到期提醒：{item['text']}。原定时间 {item['due_at']}。"
+
+        def emit(payload, claims=None):
+            claims = claims or []
+            piece = str((context or {}).get("reply_piece", 0))
+            if context is not None:
+                context["reply_piece"] = int(piece) + 1
+            identity, may_send, prior = self.store.prepare_reply(
+                (context or {}).get("id", uuid.uuid4().hex), piece, chat, payload
+            )
+            if not may_send:
+                return prior == "sent"
+            execution = getattr(self._turn_context, "execution", None)
+            if execution is not None:
+                execution.mark_side_effect("reply_submitted")
+            if context is not None:
+                context["answers"].append(payload)
+            self._audit("reply", {"text": payload})
+            classified = {"outcome": "unknown"}
             try:
-                result = self.send_message(chat, text[offset : offset + 2800])
-                delivered = bool(result and result[0])
-                self._audit("delivery", {"ok": delivered, "detail": str(result)})
-                if not result or not result[0]:
-                    if context is not None:
-                        context["delivery_failed"] = True
-                    return False
-            except Exception as exc:  # noqa: BLE001 - delivery must not rerun operations
+                if claims:
+                    classified = self._personal_send(chat, payload)
+                    delivered = classified.get("outcome") == "sent"
+                    self.personal.immediate_delivery.finish(
+                        claims, classified.get("outcome", "unknown"), classified
+                    )
+                else:
+                    result = self.send_message(chat, payload)
+                    delivered = bool(result and result[0])
+                    classified = {
+                        "outcome": "sent" if delivered else "unknown",
+                        "detail": str(result[1]) if result and len(result) > 1 else "",
+                    }
+                self._audit("delivery", {"ok": delivered})
+            except Exception as exc:  # noqa: BLE001 - never rerun operations
+                if claims:
+                    self.personal.immediate_delivery.finish(
+                        claims, "unknown", {"error": type(exc).__name__}
+                    )
                 self._audit("delivery", {"ok": False, "error": type(exc).__name__})
-                if context is not None:
-                    context["delivery_failed"] = True
+                delivered = False
                 logger.warning("Assistant delivery failed: %s", type(exc).__name__)
+            self.store.finish_reply(
+                identity,
+                classified.get("outcome", "unknown"),
+                self.redact_value(classified),
+            )
+            if not delivered and context is not None:
+                context["delivery_failed"] = True
+            return delivered
+
+        # A claim covers exactly one platform message containing that reminder.
+        # Longer management replies are sent before any reminder is submitted,
+        # so another conversation can still cancel the unsent reminder.
+        combined = text + "\n" + "\n".join(notice(item) for item in candidates)
+        if candidates and len(combined) <= 2800:
+            claims = self.personal.immediate_delivery.claim(candidates, chat)
+            payload = text
+            if claims:
+                payload += "\n" + "\n".join(notice(claim["item"]) for claim in claims)
+            delivered = emit(payload, claims)
+            if context is not None and delivered:
+                context["immediate_delivery_recorded"] = True
+            return delivered
+        for offset in range(0, max(1, len(text)), 2800):
+            if not emit(text[offset : offset + 2800]):
                 return False
+        for candidate in candidates:
+            claims = self.personal.immediate_delivery.claim([candidate], chat)
+            if claims and not emit(notice(claims[0]["item"]), claims):
+                return False
+        if candidates and context is not None:
+            context["immediate_delivery_recorded"] = True
         return True
 
-    def submit(self, chat: str, sender: str, text: str, message_id: str) -> bool:
+    def _personal_runtime_config(self):
+        if self.capabilities is not None:
+            return copy.deepcopy(self._application_config)
+        from ...core.config_store import ConfigStore
+
+        path = self.root / "config" / "config.yaml"
+        if path.is_file():
+            return ConfigStore(path).load_runtime()
+        return self._application_config
+
+    def _send_personal_notification(self, route, text):
+        """Legacy send adapters cannot prove a timeout was safely rejected."""
+        try:
+            result = self.send_message(route, text)
+        except Exception as exc:  # noqa: BLE001 - ambiguous delivery must not retry
+            return {"outcome": "unknown", "error": type(exc).__name__}
+        if isinstance(result, tuple) and result and result[0] is True:
+            return {"outcome": "sent"}
+        return {"outcome": "unknown", "error": str(result)}
+
+    def submit(
+        self,
+        chat,
+        sender,
+        text,
+        message_id,
+        *,
+        attachments=None,
+        message_time=None,
+    ) -> bool:
         if self._stop.is_set() or not sender or not message_id:
             return False
-        if not self.store.receipt(message_id):
+        text = self.redact(text)
+        if len(text) > 16000 or len(attachments or []) > 5:
+            self._reply(chat, "消息过长或图片过多，请拆分发送。")
             return False
-        self.store.prune_conversations(self.settings.conversation_retention_days)
-        turn_id = self.store.begin_turn(chat, sender, message_id, self.redact(text))
-        if len(text) > 16000:
-            self._reject_turn(
-                chat, turn_id, "message_too_long", "消息过长，请将需求拆成较短的描述。"
-            )
-            return False
+        envelope = {
+            "platform": "feishu",
+            "chat": chat,
+            "sender": sender,
+            "app_id": str(
+                (
+                    (self._application_config.get("interactive") or {}).get("feishu")
+                    or {}
+                ).get("app_id")
+                or os.getenv("FEISHU_APP_ID", "")
+            ),
+            "text": text,
+            "message_id": message_id,
+            "attachments": attachments or [],
+            "message_time": message_time
+            or {"create_time": str(int(time.time() * 1000))},
+        }
         control = CONTROL.fullmatch(text.strip())
         if control and control[1] in {"取消", "进度"}:
-            # A slow provider must not hold cancellation behind the LLM queue.
-            self.handle(chat, sender, text, message_id, turn_id)
-            return True
-        try:
-            self._messages.put_nowait(
-                (chat, sender, self.redact(text), message_id, turn_id)
-            )
-        except queue.Full:
-            self._reject_turn(
+            # Existing proposal controls have their own idempotent CAS. They
+            # must not queue behind the two model slots.
+            turn_id = self.store.begin_turn(chat, sender, message_id, text)
+            if (self.store.turn(turn_id) or {}).get("status") != "queued":
+                return False
+            self.handle(
                 chat,
+                sender,
+                text,
+                message_id,
                 turn_id,
-                "conversation_queue_full",
-                "助手当前请求较多，请稍后重新发送。",
+                message_time=envelope["message_time"],
             )
+            return True
+        from ...core.execution import ModuleDisabled
+
+        try:
+            result = self.store.admit_turn(envelope, self.execution_runtime.store)
+        except ModuleDisabled:
+            self._reply(chat, "对话模块已停用，请启用后重新发送。")
             return False
-        return True
+        except RuntimeError as exc:
+            if type(exc).__name__ != "QueueFull":
+                raise
+            self._reply(chat, "助手当前请求较多，请稍后重新发送。")
+            return False
+        if result["accepted"]:
+            self.execution_runtime.wake()
+        return result["accepted"]
 
     def _reject_turn(self, chat, turn_id, error, answer):
         previous = getattr(self._turn_context, "current", None)
@@ -312,20 +566,6 @@ class FeishuAssistant:
             self.store.finish_turn(turn_id, "rejected", answer=answer, error=error)
         finally:
             self._turn_context.current = previous
-
-    def _conversation_worker(self) -> None:
-        while not self._stop.is_set():
-            try:
-                item = self._messages.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            try:
-                self.handle(*item)
-            except Exception as exc:  # noqa: BLE001 - contain one conversation failure
-                logger.error("Assistant turn failed: %s", type(exc).__name__)
-                self._reply(item[0], "助手处理失败；尚未确认的操作不会执行。")
-            finally:
-                self._messages.task_done()
 
     def _audit(self, kind: str, data: dict) -> None:
         context = getattr(self._turn_context, "current", None)
@@ -349,11 +589,12 @@ class FeishuAssistant:
             value = {key: self._model_value(child) for key, child in value.items()}
             # Dataset titles repeat long import paths. Keep the physical path
             # once so reading the next page does not evict the previous page.
-            if (
-                {"dataset_id", "logical_root", "physical_root", "file_count"}
-                <= value.keys()
-                and value.get("title") == value["physical_root"]
-            ):
+            if {
+                "dataset_id",
+                "logical_root",
+                "physical_root",
+                "file_count",
+            } <= value.keys() and value.get("title") == value["physical_root"]:
                 value.pop("title", None)
             if (
                 "path" in value
@@ -388,7 +629,16 @@ class FeishuAssistant:
                 errors.append({"citation": match[0], "read_ranges": ranges})
         return errors[:8]
 
-    def handle(self, chat, sender, text, message_id="", turn_id=None) -> None:
+    def handle(
+        self,
+        chat,
+        sender,
+        text,
+        message_id="",
+        turn_id=None,
+        attachments=None,
+        message_time=None,
+    ) -> None:
         text = self.redact(text)
         if self._stop.is_set():
             if turn_id:
@@ -403,27 +653,84 @@ class FeishuAssistant:
             "answers": [],
             "delivery_failed": False,
             "error": "",
+            "message_id": message_id,
+            "original_text": text,
+            "message_time": message_time,
+            "attachments": attachments or [],
             "allow_stock_backfill": bool(
                 not STOCK_ACTION_TERMS.search(text)
                 and STOCK_LOOKUP_TERMS.search(text)
-                and (
-                    not STOCK_FILE_TERMS.search(text)
-                    or STOCK_DATA_TERMS.search(text)
-                )
+                and (not STOCK_FILE_TERMS.search(text) or STOCK_DATA_TERMS.search(text))
             ),
         }
+        client = self._client_template
+        execution = getattr(self._turn_context, "execution", None)
+        cancel_event = execution.cancel_event if execution else threading.Event()
+        if isinstance(client, DeepSeekAssistantClient):
+            client = copy.copy(client)
+            client.stopped = cancel_event
+            client.last_image_diagnostics = []
+        harness = self._harness_template
+        if isinstance(harness, ConversationHarness) and "run" not in harness.__dict__:
+            harness = ConversationHarness(
+                client, self.settings, self.root, cancel_event
+            )
+        context.update(client=client, harness=harness)
+        with self._active_turns_lock:
+            self._active_turns[turn_id] = context
         self._turn_context.current = context
-        self.store.finish_turn(turn_id, "running")
-        logger.info("Assistant turn started: trace=%s", turn_id)
+        from .personal_tools import message_datetime
+
         try:
+            context["effective_time"] = message_datetime(message_time)
+            self.store.finish_turn(turn_id, "running")
+            logger.info("Assistant turn started: trace=%s", turn_id)
+            self.personal_store.register_route(sender, chat)
+            if attachments:
+
+                def image_stage(stage):
+                    context["image_stage"] = stage
+
+                context["image_batch"] = self.personal.prepare_images(
+                    sender,
+                    attachments,
+                    text,
+                    message_time,
+                    chat=chat,
+                    on_stage=image_stage,
+                )
+                context.pop("image_stage", None)
             self._handle(chat, sender, text)
         except Exception as exc:  # noqa: BLE001 - persist errors before worker containment
+            if context.get("image_stage"):
+                chain, seen, current = [], set(), exc
+                while (
+                    current is not None and id(current) not in seen and len(chain) < 8
+                ):
+                    seen.add(id(current))
+                    chain.append(type(current).__name__)
+                    current = current.__cause__ or current.__context__
+                self._audit(
+                    "image_prepare_error",
+                    {"stage": context["image_stage"], "chain": chain},
+                )
             context["error"] = self.redact(str(exc) or type(exc).__name__)
             self._audit("error", {"type": type(exc).__name__, "detail": str(exc)})
-            self._reply(
-                chat, f"助手处理失败，排查编号：{turn_id}；未确认的操作不会执行。"
+            answer = (
+                self.personal.render_receipts(context) + "\n后续说明生成失败。"
+                if context.get("personal_receipts")
+                else "本次截图读取或识别未完成，持仓未更新；可以直接输入明确事实更正。"
+                if context.get("image_stage")
+                else "助手处理失败；尚未提交的操作未执行。"
             )
+            self._reply(chat, answer + f"\n排查编号：{turn_id}")
         finally:
+            if self.personal.immediate_results(context) and not context.get(
+                "immediate_delivery_recorded"
+            ):
+                self.personal.record_immediate_delivery(
+                    context, "failed", "reply_not_submitted"
+                )
             status = (
                 "delivery_failed"
                 if context["delivery_failed"]
@@ -444,6 +751,10 @@ class FeishuAssistant:
                     "Assistant turn finished: trace=%s status=%s", turn_id, status
                 )
             finally:
+                if context.get("harness") is not self._harness_template:
+                    context["harness"].stop()
+                with self._active_turns_lock:
+                    self._active_turns.pop(turn_id, None)
                 self._turn_context.current = previous
 
     def _handle(self, chat: str, sender: str, text: str) -> None:
@@ -464,6 +775,24 @@ class FeishuAssistant:
             self._history.pop((chat, sender), None)
             self._reply(chat, "已清空当前对话上下文；操作与排查记录按保留期限留档。")
             return
+        context = getattr(self._turn_context, "current", None) or {}
+        # These are routing hints only. The model, not this regex, chooses any
+        # personal action and its conditions via owner-bound typed tools.
+        personal_context = context.get("attachments") or re.search(
+            r"持仓|仓位|提醒|trigger|逆回购|滚存|到期|截图|更正|纠错|撤销|重做",
+            text,
+            re.IGNORECASE,
+        )
+        if (
+            personal_context
+            and (self.capabilities is None or "personal" in self.capabilities)
+            and not context.get("attachments")
+        ):
+            scope = self.personal.holdings_query_scope(sender, text)
+            if scope is not None:
+                status = self.call_tool(chat, sender, "personal_monitor_status", scope)
+                self._reply(chat, self.personal.render_holdings(status))
+                return
         key = (chat, sender)
         now = time.time()
         for old_key, (at, _) in list(self._history.items()):
@@ -472,11 +801,88 @@ class FeishuAssistant:
         history = self._history.get(key, (now, None))[1]
         if history is None:
             history = self._restore_history(chat, sender, now)
+        from .personal_tools import PERSONAL_PROMPT, history_only_action
+
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": SYSTEM_PROMPT + PERSONAL_PROMPT},
             *history,
             {"role": "user", "content": text},
         ]
+        if context.get("image_batch"):
+            batch = context["image_batch"]
+            messages.extend(
+                [
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "personal_image_evidence",
+                                "type": "function",
+                                "function": {
+                                    "name": "personal_monitor_image_evidence",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "personal_image_evidence",
+                        "content": canonical_json(
+                            {
+                                "untrusted_image_facts": True,
+                                "batch_id": batch["batch_id"],
+                                "document": batch["document"],
+                                "account_revisions": batch["revisions"],
+                            }
+                        ),
+                    },
+                ]
+            )
+        if personal_context:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "本轮当前时间/消息生效时刻："
+                        + context["effective_time"].isoformat()
+                        + "；当前创建会话："
+                        + chat
+                        + "；仅可操作当前发送者的个人监控。"
+                    ),
+                }
+            )
+        history_action = history_only_action(text)
+        if (self.capabilities is None or "personal" in self.capabilities) and re.search(
+            r"更正|纠错|撤销|重做", text
+        ):
+            # Load current authenticated facts after historical assistant text.
+            # This is a read, never an inferred correction or history write.
+            result = self.call_tool(chat, sender, "personal_monitor_status", {})
+            messages.extend(
+                [
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "personal_correction_context",
+                                "type": "function",
+                                "function": {
+                                    "name": "personal_monitor_status",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "personal_correction_context",
+                        "content": canonical_json(self._model_value(result)),
+                    },
+                ]
+            )
         # Run retrieval on the server so project knowledge is present even if the
         # model initially chooses not to call tools. Keep quoted docs in tool role.
         previous_question = next(
@@ -484,7 +890,11 @@ class FeishuAssistant:
             "",
         )
         query = (text[:180] + " " + previous_question[:75]).strip() or "项目功能"
-        reference = self.knowledge.search(query, limit=3)
+        reference = (
+            self.knowledge.search(query, limit=3)
+            if self.capabilities is None or "repository" in self.capabilities
+            else {"results": [], "disabled": True}
+        )
         self._audit_document_sources(reference)
         self._audit("document_search", reference)
         messages.extend(
@@ -512,7 +922,11 @@ class FeishuAssistant:
                 },
             ]
         )
-        overview = self.repository.map()
+        overview = (
+            self.repository.map()
+            if self.capabilities is None or "repository" in self.capabilities
+            else {"disabled": True}
+        )
         self._audit("repository_map", overview)
         messages.extend(
             [
@@ -537,6 +951,8 @@ class FeishuAssistant:
         stock_codes = (
             dict.fromkeys(STOCK_CODE.findall(text))
             if STOCK_LOOKUP_TERMS.search(text)
+            and not personal_context
+            and (self.capabilities is None or "research" in self.capabilities)
             else ()
         )
         for code in stock_codes:
@@ -588,21 +1004,56 @@ class FeishuAssistant:
                 and STOCK_DATA_TERMS.search(text)
                 and not STOCK_ACTION_TERMS.search(text)
             ):
-                answer = self._format_stock_data_answer(
-                    chat, sender, code, result
-                )
+                answer = self._format_stock_data_answer(chat, sender, code, result)
                 self._audit("automatic_stock_answer", {"code": code})
                 self._reply(chat, answer)
                 return
         try:
+            tools = self.tool_schema()
+            if history_action:
+                allowed = {
+                    "personal_monitor_status",
+                    "personal_monitor_" + history_action,
+                }
+                tools = [item for item in tools if item["function"]["name"] in allowed]
+            personal_read = {"called": False, "results": [], "other_tool": False}
+
+            def invoke(name, arguments):
+                # Observe this round's real tools only, never historical replies or
+                # preloaded correction context. A later failed read invalidates it.
+                if name == "personal_monitor_status":
+                    personal_read["called"] = True
+                else:
+                    personal_read["other_tool"] = True
+                try:
+                    result = self.call_tool(chat, sender, name, arguments)
+                except Exception:
+                    if name == "personal_monitor_status":
+                        personal_read["results"].clear()
+                    raise
+                if name == "personal_monitor_status":
+                    personal_read["results"].append(result)
+                return result
+
             answer = self.harness.run(
                 messages,
-                self.tool_schema(),
-                lambda name, arguments: self.call_tool(chat, sender, name, arguments),
+                tools,
+                invoke,
                 self._audit,
                 self._model_value,
                 self._citation_errors,
             )
+            if context.get("personal_receipts"):
+                answer = self.personal.render_receipts(context)
+            elif personal_read["called"] and not personal_read["other_tool"]:
+                answer = (
+                    "\n\n".join(
+                        self.personal.render_status(result)
+                        for result in personal_read["results"]
+                    )
+                    if personal_read["results"]
+                    else "本次个人监控查询未完成，未采用上次查询结果。"
+                )
             if not self._reply(chat, answer):
                 return
             pairs = [
@@ -625,7 +1076,14 @@ class FeishuAssistant:
                 context["error"] = self.redact(str(exc) or type(exc).__name__)
             self._audit("model_error", {"detail": str(exc)})
             trace = f"\n排查编号：{context['id']}" if context is not None else ""
-            self._reply(chat, str(exc) + trace)
+            committed = (
+                self.personal.render_receipts(context) + "\n"
+                if (context or {}).get("personal_receipts")
+                else ""
+            )
+            self._reply(chat, committed + str(exc) + trace)
+
+
 
     def _format_stock_data_answer(
         self, chat: str, sender: str, code: str, result: dict
@@ -701,11 +1159,13 @@ class FeishuAssistant:
                 f"- {row.get('dataset_id')}：{row.get('relative_path')}（{row.get('kind')}）"
                 for row in inventory[:8]
             )
-        reasons = list(dict.fromkeys(
-            str(row.get("reason"))
-            for row in result.get("dataset_results", [])
-            if row.get("reason")
-        ))
+        reasons = list(
+            dict.fromkeys(
+                str(row.get("reason"))
+                for row in result.get("dataset_results", [])
+                if row.get("reason")
+            )
+        )
         if reasons:
             lines.append("无法直接读取的原因：" + "；".join(reasons[:3]))
         backfill = result.get("automatic_backfill")
@@ -737,7 +1197,9 @@ class FeishuAssistant:
             )
             matches = web.get("results", [])
             if matches:
-                lines.append("公开网页搜索结果（摘要未核验，财务事实应以原始公告为准）：")
+                lines.append(
+                    "公开网页搜索结果（摘要未核验，财务事实应以原始公告为准）："
+                )
                 lines.extend(
                     f"- {row.get('title')} — {row.get('url')}\n  {row.get('snippet', '')}"
                     for row in matches[:5]
@@ -746,9 +1208,15 @@ class FeishuAssistant:
                 lines.append("已尝试公开网页搜索，但没有取得可用结果。")
         except Exception as exc:  # noqa: BLE001 - make network failure explicit
             raw_detail = str(exc).lower()
-            if "network is unreachable" in raw_detail or "network unreachable" in raw_detail:
+            if (
+                "network is unreachable" in raw_detail
+                or "network unreachable" in raw_detail
+            ):
                 detail = "网络出口不可达"
-            elif "name or service not known" in raw_detail or "temporary failure in name resolution" in raw_detail:
+            elif (
+                "name or service not known" in raw_detail
+                or "temporary failure in name resolution" in raw_detail
+            ):
                 detail = "DNS 解析失败"
             else:
                 detail = "连接失败（" + type(exc).__name__ + "）"
@@ -783,9 +1251,12 @@ class FeishuAssistant:
         return pairs
 
     def tool_schema(self) -> list[dict]:
+        from .personal_tools import personal_tool_schema
         from .research import ResearchJobSpec
 
-        return [
+        if self.capabilities is not None and "research" not in self.capabilities:
+            return personal_tool_schema()
+        return personal_tool_schema() + [
             _tool(
                 "list_datasets",
                 "分页查看服务器统一数据集目录及最近索引状态，不触发下载或扫描",
@@ -961,12 +1432,16 @@ class FeishuAssistant:
                 {
                     "dataset_id": {"type": "string", "minLength": 1, "maxLength": 128},
                     "codes": {
-                        "type": "array", "minItems": 1, "maxItems": 100,
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 100,
                         "items": {"type": "string"},
                     },
                     "as_of": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
                     "growth_rates": {
-                        "type": "array", "minItems": 1, "maxItems": 12,
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 12,
                         "items": {"type": "number", "minimum": 0, "maximum": 0.2},
                     },
                 },
@@ -1009,10 +1484,26 @@ class FeishuAssistant:
         self._audit("tool_request", {"name": name, "arguments": arguments})
         started = time.monotonic()
         try:
+            if self.capabilities is not None and name not in {
+                item["function"]["name"] for item in self.tool_schema()
+            }:
+                raise ValueError("当前会话未开放此工具。")
             result = self._call_tool(chat, sender, name, arguments)
         except Exception as exc:
             self._audit("tool_error", {"name": name, "error": str(exc)})
+            if name.startswith("personal_monitor_"):
+                context = getattr(self._turn_context, "current", None)
+                if context is not None:
+                    context["personal_last_error"] = str(exc)
             raise
+        if (
+            name.startswith("personal_monitor_")
+            and isinstance(result, dict)
+            and result.get("operation")
+        ):
+            context = getattr(self._turn_context, "current", None)
+            if context is not None:
+                context.pop("personal_last_error", None)
         if name in {
             "search_project_docs",
             "read_project_doc",
@@ -1081,6 +1572,26 @@ class FeishuAssistant:
     def _call_tool(self, chat: str, sender: str, name: str, arguments: dict):
         if self._stop.is_set():
             raise ValueError("助手正在停止")
+        if name.startswith("personal_monitor_"):
+            context = getattr(self._turn_context, "current", None)
+            if context is None:
+                from .personal_tools import message_datetime
+
+                context = {
+                    "id": uuid.uuid4().hex,
+                    "effective_time": message_datetime(None),
+                }
+            try:
+                return self.personal.invoke(
+                    sender,
+                    chat,
+                    name.removeprefix("personal_monitor_"),
+                    arguments,
+                    context,
+                )
+            finally:
+                if hasattr(self.personal_runtime, "wake"):
+                    self.personal_runtime.wake()
         catalog_tools = {
             "list_datasets": ("list_datasets", {"limit", "offset"}, set()),
             "get_dataset_details": ("details", {"dataset_id"}, {"dataset_id"}),
@@ -1140,9 +1651,9 @@ class FeishuAssistant:
                 raise ValueError("year 必须是整数年份")
             from ...data.cninfo_reports import CninfoReportService
 
-            result = CninfoReportService(
-                self.root, self.client, stop=self._stop
-            ).fetch(arguments["code"], arguments["report_type"], year)
+            result = CninfoReportService(self.root, self.client, stop=self._stop).fetch(
+                arguments["code"], arguments["report_type"], year
+            )
             self._audit("a_share_report_result", result)
             return result
         if name == "search_report_text":
@@ -1623,6 +2134,19 @@ class FeishuAssistant:
                 self._jobs.task_done()
 
     def stop(self) -> None:
+        if self._owns_execution:
+            self.execution_runtime.stop(drain=True, timeout=3)
+        from ...personal_monitor_runtime import PersonalMonitorRuntime
+
+        if isinstance(self.personal_runtime, PersonalMonitorRuntime):
+            self.personal_runtime.stop(disable=False)
+        else:
+            self.personal_runtime.stop()
+        with self._active_turns_lock:
+            for context in self._active_turns.values():
+                context["harness"].stop()
+                if isinstance(context["client"], DeepSeekAssistantClient):
+                    context["client"].stop()
         with self._operation_lock:
             self._stop.set()
             self.client.stop()

@@ -18,38 +18,53 @@ from email import policy
 from datetime import datetime
 from pathlib import Path
 
-from .chart_generator import (
-    generate_combined_chart,
-    generate_portfolio_overview_chart,
-)
+from .receipts import legacy_tuple, normalize_receipt
 from .base import BaseNotifier
-from .daily_pdf import generate_daily_pdf
-from .report_builders import (  # noqa: F401
-    SIGNAL_NAMES,
+from .report_builders import (
+    SIGNAL_NAMES as SIGNAL_NAMES,  # noqa: PLC0414 -- compatibility re-export
+    _benchmark_label as _benchmark_label,  # noqa: PLC0414 -- compatibility re-export
+    _build_optimizer_run_summary as _build_optimizer_run_summary,  # noqa: PLC0414 -- compatibility re-export
+    _signed_text_metric as _signed_text_metric,  # noqa: PLC0414 -- compatibility re-export
+    build_strategy_suggestions as build_strategy_suggestions,  # noqa: PLC0414 -- compatibility re-export
+    build_strategy_text_summary as build_strategy_text_summary,  # noqa: PLC0414 -- compatibility re-export
+
     _alert_value,
-    _benchmark_label,
-    _build_optimizer_run_summary,
     _build_signal_label_map,
     _fmt,
     _format_benchmark_comparison,
     _html_escape,
     _readable_signal,
     _safe_html_url,
-    _signed_text_metric,
     build_brief_entries,
     build_optimizer_summary,
-    build_strategy_suggestions,
-    build_strategy_text_summary,
     optimizer_notification_title,
     pick_best_anchor,
+    build_daily_event_rows,
 )
+from .receipts import combine_receipts
 
-try:
-    from ..markets import _detect_fine_group
-except ImportError:  # pragma: no cover - legacy top-level ``notification`` imports
-    from markets import _detect_fine_group
+from ..markets import _detect_fine_group
+
+from .settings import channel_enabled
 
 logger = logging.getLogger(__name__)
+
+
+def generate_combined_chart(*args, **kwargs):
+    """Load the plotting backend only when a report needs a chart."""
+    from .chart_generator import generate_combined_chart as render
+
+    return render(*args, **kwargs)
+
+def generate_portfolio_overview_chart(*args, **kwargs):
+    from .chart_generator import generate_portfolio_overview_chart as render
+
+    return render(*args, **kwargs)
+
+def generate_daily_pdf(*args, **kwargs):
+    from .daily_pdf import generate_daily_pdf as render
+
+    return render(*args, **kwargs)
 
 
 class EmailNotifier(BaseNotifier):
@@ -88,17 +103,6 @@ class EmailNotifier(BaseNotifier):
         if not self.sender_email or not self.sender_password or not self.receiver_email:
             logger.warning("邮件配置不完整，邮件通知功能可能无法正常工作")
 
-        # 报告 token 超时配置
-        try:
-            timeout = config.get("health_server", {}).get(
-                "report_token_timeout_minutes", 30
-            )
-            from ..health_server.core.global_instances import set_report_token_timeout
-
-            set_report_token_timeout(timeout)
-        except Exception as e:
-            logger.debug(f"设置 token 超时失败: {e}")
-
     def send_from_session(self, session):
         """
         从Session读取数据并发送邮件（新数据流）
@@ -123,7 +127,7 @@ class EmailNotifier(BaseNotifier):
             )
 
             # 构建邮件主题
-            subject = f"股票日报 - {datetime.now().strftime('%Y-%m-%d')}"
+            subject = f"股票日报 - {datetime.now().astimezone().strftime('%Y-%m-%d')}"
 
             # 获取投资组合策略结果（唯一收口）
             evaluation_reports = getattr(session, "evaluation_reports", None)
@@ -132,9 +136,7 @@ class EmailNotifier(BaseNotifier):
             portfolio_chart_dict = None
             if evaluation_reports:
                 try:
-                    overview_png = generate_portfolio_overview_chart(
-                        evaluation_reports
-                    )
+                    overview_png = generate_portfolio_overview_chart(evaluation_reports)
                     portfolio_chart_dict = (
                         {"overview": overview_png} if overview_png else None
                     )
@@ -144,7 +146,7 @@ class EmailNotifier(BaseNotifier):
                         if n_charts
                         else "投资组合图表跳过"
                     )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 -- contain optional report/OS/archive failures
                     logger.error(f"投资组合图表生成失败: {e}")
 
             # 获取策略信号扫描结果
@@ -163,7 +165,7 @@ class EmailNotifier(BaseNotifier):
                 )
                 if pdf_bytes:
                     logger.info("日报 PDF 生成成功 (%d bytes)", len(pdf_bytes))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 -- contain optional report/OS/archive failures
                 logger.warning("日报 PDF 生成失败: %s", e)
 
             # 构建邮件内容（精简正文）
@@ -183,9 +185,8 @@ class EmailNotifier(BaseNotifier):
                 instrument_audit=getattr(session, "instrument_audit", None),
             )
 
-
             # 发送邮件（PDF 作为附件）
-            self._send_email(
+            receipt = self._send_email(
                 subject,
                 body,
                 chart_png_bytes=chart_png_bytes,
@@ -197,9 +198,11 @@ class EmailNotifier(BaseNotifier):
                 f"邮件任务完成 ({self.receiver_email}) "
                 f"(来自Session: {len(alert_stocks)}个警报)"
             )
+            return receipt
 
-        except Exception as e:
-            logger.error(f"从Session发送邮件失败: {e}")
+        except Exception as e:  # noqa: BLE001 -- contain optional report/OS/archive failures
+            logger.error("日报邮件准备失败: %s", type(e).__name__)
+            return {"status": "failed", "reason": "email_preparation_failed"}
 
     def send_daily_report_from_session(self, session):
         """
@@ -216,7 +219,7 @@ class EmailNotifier(BaseNotifier):
             historical_data = getattr(session, "_historical", {})
 
             # 构建邮件主题
-            subject = f"股票日报 - {datetime.now().strftime('%Y-%m-%d')}"
+            subject = f"股票日报 - {datetime.now().astimezone().strftime('%Y-%m-%d')}"
 
             # 获取投资组合策略结果（唯一收口）
             evaluation_reports = getattr(session, "evaluation_reports", None)
@@ -225,13 +228,11 @@ class EmailNotifier(BaseNotifier):
             portfolio_chart_dict = None
             if evaluation_reports:
                 try:
-                    overview_png = generate_portfolio_overview_chart(
-                        evaluation_reports
-                    )
+                    overview_png = generate_portfolio_overview_chart(evaluation_reports)
                     portfolio_chart_dict = (
                         {"overview": overview_png} if overview_png else None
                     )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 -- contain optional report/OS/archive failures
                     logger.error(f"投资组合图表生成失败: {e}")
 
             # 获取策略信号扫描结果
@@ -248,7 +249,7 @@ class EmailNotifier(BaseNotifier):
                     backtest,
                     stock_data,
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 -- contain optional report/OS/archive failures
                 logger.warning("日报 PDF 生成失败: %s", e)
 
             # 构建邮件内容（使用空警报列表）
@@ -267,9 +268,8 @@ class EmailNotifier(BaseNotifier):
                 instrument_audit=getattr(session, "instrument_audit", None),
             )
 
-
             # 发送邮件
-            self._send_email(
+            receipt = self._send_email(
                 subject,
                 body,
                 portfolio_chart_dict=portfolio_chart_dict,
@@ -277,9 +277,11 @@ class EmailNotifier(BaseNotifier):
             )
 
             logger.info(f"每日报告邮件任务完成 ({self.receiver_email}) (来自Session)")
+            return receipt
 
-        except Exception as e:
-            logger.error(f"从Session发送每日报告邮件失败: {e}")
+        except Exception as e:  # noqa: BLE001 -- contain optional report/OS/archive failures
+            logger.error("每日报告邮件准备失败: %s", type(e).__name__)
+            return {"status": "failed", "reason": "email_preparation_failed"}
 
     def _build_strategy_alert_section(
         self, signal_scan, alert_stocks, stock_data
@@ -1473,122 +1475,32 @@ class EmailNotifier(BaseNotifier):
         self, announcements, placements, stock_data, dividend_events=None
     ) -> str:
         """Keep the email event feed short; detailed content remains in the PDF."""
-        events = []
-        row_map = self._daily_row_map(stock_data)
-        for item in dividend_events or []:
-            if not isinstance(item, dict):
-                continue
-            status = str(item.get("status", "") or "")
-            if status not in {"未除权", "已除权未派息"}:
-                continue
-            code = str(item.get("code", "") or "").strip()
-            ex_date = str(item.get("ex_date", "") or "")
-            payment_date = str(item.get("payment_date", "") or "")
-            cash_per_share = self._daily_number(item.get("cash_per_share"))
-            currency = str(item.get("currency", "") or "").strip().upper()
-            name = row_map.get(code, {}).get("stock_name", "")
-            amount = (
-                f"每股/份现金 {currency + ' ' if currency else ''}{cash_per_share:.4f}"
-                if cash_per_share is not None
-                else "金额待公告"
-            )
-            schedule = f"除权 {ex_date or '待确认'}"
-            if payment_date:
-                schedule += f" · 派息 {payment_date}"
-            events.append(
-                {
-                    "date": ex_date,
-                    "code": code,
-                    "kind": status,
-                    "title": f"{name} · {amount} · {schedule}",
-                    "url": "",
-                    "priority": 0 if status == "已除权未派息" else 1,
-                }
-            )
-        for code, items in (announcements or {}).items():
-            for item in items or []:
-                if isinstance(item, dict):
-                    date = str(item.get("date", "") or "")
-                    title = str(item.get("title", "未命名公告") or "未命名公告")
-                    url = _safe_html_url(item.get("url"))
-                else:
-                    date, title, url = "", str(item), ""
-                events.append(
-                    {
-                        "date": date,
-                        "code": str(code),
-                        "kind": "公告",
-                        "title": title,
-                        "url": url,
-                        "priority": 3,
-                    }
-                )
-        for code, item in (placements or {}).items():
-            if not isinstance(item, dict):
-                continue
-            unlock_date = str(item.get("unlock_date", "") or "")
-            name = row_map.get(str(code), {}).get("stock_name", "")
-            issue_num = self._daily_number(item.get("issue_num"))
-            issue_price = self._daily_number(item.get("issue_price"))
-            pct_of_total = self._daily_number(item.get("pct_of_total"))
-            issue_num_text = self._daily_metric(
-                issue_num / 1e8 if issue_num is not None else None,
-                "亿股",
-                2,
-            )
-            events.append(
-                {
-                    "date": unlock_date,
-                    "code": str(code),
-                    "kind": "未解禁定增",
-                    "title": (
-                        f"{name} · {issue_num_text} · "
-                        f"占总股本 {self._daily_metric(pct_of_total, '%', 2)} · "
-                        f"定增价 {self._daily_metric(issue_price, '元', 2)} · "
-                        f"解禁 {unlock_date or '待确认'}"
-                    ),
-                    "url": "",
-                    "priority": 2,
-                }
-            )
+        events = build_daily_event_rows(
+            announcements, placements, stock_data, dividend_events
+        )
         if not events:
             return ""
-        dividend = sorted(
-            (item for item in events if int(item.get("priority", 9)) < 2),
-            key=lambda item: (int(item["priority"]), item["date"], item["code"]),
-        )
-        placements = sorted(
-            (item for item in events if int(item.get("priority", 9)) == 2),
-            key=lambda item: (item["date"], item["code"]),
-            reverse=True,
-        )
-        announcements = sorted(
-            (item for item in events if int(item.get("priority", 9)) >= 3),
-            key=lambda item: (item["date"], item["code"]),
-            reverse=True,
-        )
-        events = dividend + placements + announcements
         # Preserve the decision-first ordering, but keep every collected row.
         # The daily report is the complete event record for the configured
         # universe, so no pending dividend, locked placement, or announcement
         # may be silently dropped here.
         selected = events
         lines = [
-            '<section class="daily-section events-section">'
+            ('<section class="daily-section events-section">'
             '<div class="section-heading">事件速览'
-            f'<span class="section-count">{len(selected)}/{len(events)}</span></div>'
+            f'<span class="section-count">{len(selected)}/{len(events)}</span></div>')
         ]
         for item in selected:
             title = _html_escape(item["title"])
             if item["url"]:
                 title = (
-                    f'<a href="{item["url"]}" target="_blank" rel="noopener">'
+                    f'<a href="{_safe_html_url(item["url"])}" target="_blank" rel="noopener">'
                     f"{title}</a>"
                 )
             lines.append(
                 '<div class="event-row"><span class="event-date">'
                 f'{_html_escape(item["date"] or "—")}</span><span class="event-kind">'
-                f'{_html_escape(item["kind"])}</span><strong>{_html_escape(item["code"])}</strong> '
+                f"{_html_escape(item['kind'])}</span><strong>{_html_escape(item['code'])}</strong> "
                 f"{title}</div>"
             )
         lines.append(
@@ -1637,50 +1549,12 @@ class EmailNotifier(BaseNotifier):
                 f'回报 {_html_escape(self._daily_metric(status.get("nav_return_pct"), "%", 2))} · '
                 f'交易日 {_html_escape(status.get("trading_days", "—"))}</div>'
             ]
-            if status.get("requires_manual_reset"):
-                lines.append('<div class="muted-note">旧账户未绑定当前运行，需通过机器人 /ref_date 重置后恢复交易。</div>')
+            lines.append(self._build_ref_portfolio_status_note(status))
             lines.append(f'<div class="stock-line">现金：{_html_escape(self._daily_metric(status.get("cash"), "", 2))}</div></div>')
             sections.append("".join(lines))
         if not sections:
             return '<section class="daily-section"><div class="section-heading">示例账户</div><div class="empty-card">暂无示例账户数据。</div></section>'
         return '<section class="daily-section"><div class="section-heading">参考持仓 · 示例账户</div>' + "".join(sections) + '</section>'
-
-    def _build_daily_report_links(self):
-        optimizer_dir = Path("data/optimizer")
-        if not optimizer_dir.exists():
-            return ""
-        report_files = {
-            "A股": sorted(optimizer_dir.glob("*_a_share_report.html"), key=lambda p: p.stat().st_mtime, reverse=True),
-            "港股": sorted(optimizer_dir.glob("*_hk_report.html"), key=lambda p: p.stat().st_mtime, reverse=True),
-            "美股": sorted(optimizer_dir.glob("*_us_report.html"), key=lambda p: p.stat().st_mtime, reverse=True),
-            # Keep links to installations that generated the old combined
-            # report until their next optimizer run.
-            "境外": sorted(optimizer_dir.glob("*_non_a_share_report.html"), key=lambda p: p.stat().st_mtime, reverse=True),
-        }
-        if not any(report_files.values()):
-            return ""
-        try:
-            from ..health_server.core.global_instances import register_report_token
-        except ImportError:
-            from health_server.core.global_instances import register_report_token
-        health = self.config.get("health_server", {}) or {}
-        server_ip = health.get("public_ip") or self._get_server_info().get("ip_address", "")
-        server_ip = str(server_ip).split(",")[0].split("(")[0].strip()
-        if not server_ip or any(ch in server_ip for ch in '<>"\r\n\t'):
-            return ""
-        proto = "https" if health.get("ssl", False) else "http"
-        port = health.get("port", 1933)
-        links = []
-        for label, paths in report_files.items():
-            if not paths:
-                continue
-            token = register_report_token(str(paths[0]))
-            url = _safe_html_url(f"{proto}://{server_ip}:{port}/report/{token}")
-            if url:
-                links.append(f'<a href="{url}" target="_blank" rel="noopener">{_html_escape(label)}报告</a>')
-        if not links:
-            return ""
-        return '<div class="link-card">优化报告：' + " · ".join(links) + '（链接短期有效）</div>'
 
     def _build_mobile_daily_email_body(
         self,
@@ -1701,12 +1575,14 @@ class EmailNotifier(BaseNotifier):
         template = (template_dir / "daily_email_mobile.html").read_text(encoding="utf-8")
         server_info = self._get_server_info()
         deployment_status = (
-            '<div class="deployment-strip"><strong>部署状态</strong> · 节点 '
-            f'{_html_escape(server_info.get("hostname"))} · 公网 IP '
-            f'{_html_escape(server_info.get("ip_address"))}'
-            f'<span> · {_html_escape(server_info.get("system"))} '
-            f'{_html_escape(server_info.get("machine"))} '
-            f'{_html_escape(server_info.get("kernel_version"))}</span></div>'
+            '<div class="deployment-strip"><strong>版本 '
+            f"{_html_escape(server_info.get('release_label', '未登记发布'))}</strong><br>"
+            '<strong>部署状态</strong> · 节点 '
+            f"{_html_escape(server_info.get('hostname'))} · IP "
+            f"{_html_escape(server_info.get('ip_address'))}"
+            f"<span> · {_html_escape(server_info.get('system'))} "
+            f"{_html_escape(server_info.get('machine'))} "
+            f"{_html_escape(server_info.get('kernel_version'))}</span></div>"
         )
         reports = evaluation_reports or {}
         watchlist_rows = self._daily_watchlist_rows(
@@ -1735,7 +1611,6 @@ class EmailNotifier(BaseNotifier):
             events_section=self._build_daily_events_section(
                 announcements, placements, stock_data, dividend_events
             ),
-            report_links=self._build_daily_report_links(),
         )
 
     def _build_email_body(
@@ -2335,7 +2210,7 @@ class EmailNotifier(BaseNotifier):
                 # 多层级警报格式
                 alert_section = f"""
                 <h3>满足条件的股票 ({len(alert_stocks)} 只)</h3>
-                
+
                 <h4>多层级警报技术指标</h4>
                 <table>
                     <tr>
@@ -2352,7 +2227,7 @@ class EmailNotifier(BaseNotifier):
                     </tr>
                     {alert_rows_technical}
                 </table>
-                
+
                 <h4>基本面指标</h4>
                 <table>
                     <tr>
@@ -2390,80 +2265,6 @@ class EmailNotifier(BaseNotifier):
                 "系统检测到以下股票满足条件：<strong>当天最低价 &lt; MA60（前复权）</strong>",
             )
 
-        # 8.5. 报告链接（A股 + 境外各一份，30 分钟后过期）
-        report_link = ""
-        try:
-            optimizer_dir = Path("data/optimizer")
-            if optimizer_dir.exists():
-                a_r = sorted(
-                    optimizer_dir.glob("*_a_share_report.html"),
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True,
-                )
-                nona_r = sorted(
-                    optimizer_dir.glob("*_non_a_share_report.html"),
-                    key=lambda p: p.stat().st_mtime,
-                    reverse=True,
-                )
-                if a_r or nona_r:
-                    from ..health_server.core.global_instances import (
-                        register_report_token,
-                    )
-
-                    hc = self.config.get("health_server", {})
-                    server_ip = hc.get("public_ip", "")
-                    port = hc.get("port", 1933)
-                    use_ssl = hc.get("ssl", False)
-
-                    if not server_ip:
-                        try:
-                            import urllib.request
-
-                            ip_url = hc.get("ip_detect_url", "https://ifconfig.me")
-                            server_ip = (
-                                urllib.request.urlopen(ip_url, timeout=5)
-                                .read()
-                                .decode("utf-8")
-                                .strip()
-                            )
-                        except Exception as e:
-                            logger.debug(f"IP检测服务失败: {e}")
-                            fi = self._get_server_info().get("ip_address", "localhost")
-                            for p in (
-                                fi.replace("(优先)", "")
-                                .replace("(", "")
-                                .replace(")", "")
-                                .split(",")
-                            ):
-                                s = p.strip().split()[0] if p.strip() else ""
-                                if s and not s.startswith(
-                                    ("172.", "10.", "192.168.", "127.")
-                                ):
-                                    server_ip = s
-                                    break
-                            if server_ip == "localhost":
-                                server_ip = fi.split(",")[0].strip().split()[0]
-
-                    proto = "https" if use_ssl else "http"
-                    links_html = ""
-                    for label, report_list in [("A股", a_r), ("境外", nona_r)]:
-                        if not report_list:
-                            continue
-                        token = register_report_token(str(report_list[0]))
-                        links_html += (
-                            f'<a href="{proto}://{server_ip}:{port}/report/{token}" '
-                            f'style="color:#2980b9;text-decoration:none">'
-                            f"{label}</a> &nbsp;"
-                        )
-                    if links_html:
-                        report_link = (
-                            f'<tr><td style="padding:8px 16px;color:#7f8c8d;font-size:13px">'
-                            f"交互报告: {links_html}"
-                            f'<span style="font-size:11px">(30分钟)</span></td></tr>'
-                        )
-        except Exception as e:
-            logger.debug(f"交互报告链接生成失败: {e}")
-
         # 9. 替换主模板变量
         placement_section = self._build_placement_section(placements, stock_data)
         try:
@@ -2488,9 +2289,9 @@ class EmailNotifier(BaseNotifier):
             portfolio_chart_section=portfolio_chart_section,
             strategy_alert_section=strategy_alert_section,
             backtest_section=backtest_section,
-            report_link=report_link,
             portfolio_section=portfolio_section,
             strategy_results_section=strategy_results_section,
+            release_label=_html_escape(server_info.get("release_label", "未登记发布")),
             server_hostname=server_info["hostname"],
             server_ip=server_info["ip_address"],
         )
@@ -2629,6 +2430,13 @@ class EmailNotifier(BaseNotifier):
             dict: 包含服务器信息的字典
         """
         try:
+            from ..core.build_info import build_label, get_build_info
+        except ImportError:
+            from core.build_info import build_label, get_build_info
+
+        build = get_build_info()
+        release = {"release_label": build_label(build), "build_info": build}
+        try:
             # 获取主机名和IP地址
             hostname = socket.gethostname()
             ip_list = []
@@ -2650,24 +2458,6 @@ class EmailNotifier(BaseNotifier):
                     ip_list.extend(ips)
             except Exception as e:
                 logger.debug(f"hostname -I 失败: {e}")
-
-            # 方法3: 获取公网IP（可选）
-            try:
-                import urllib.request
-
-                ip_url = self.config.get("health_server", {}).get(
-                    "ip_detect_url", "https://ifconfig.me"
-                )
-                public_ip = (
-                    urllib.request.urlopen(ip_url, timeout=10)
-                    .read()
-                    .decode("utf-8")
-                    .strip()
-                )
-                if public_ip and public_ip not in ip_list:
-                    ip_list.append(f"{public_ip} (公网)")
-            except Exception as e:
-                logger.debug(f"公网IP检测失败: {e}")
 
             # 去重并过滤回环地址
             ip_list = list(set(ip_list))
@@ -2695,6 +2485,7 @@ class EmailNotifier(BaseNotifier):
                 kernel_version = platform.uname().release
 
             return {
+                **release,
                 "hostname": hostname,
                 "ip_address": ip_address,
                 "kernel_version": kernel_version,
@@ -2704,6 +2495,7 @@ class EmailNotifier(BaseNotifier):
         except Exception as e:
             logger.warning(f"获取服务器信息失败: {e}")
             return {
+                **release,
                 "hostname": "未知",
                 "ip_address": "无法获取",
                 "kernel_version": "未知",
@@ -2721,6 +2513,45 @@ class EmailNotifier(BaseNotifier):
     # ── 参考持仓 HTML 构建 ────────────────────────────────────
 
     @staticmethod
+    def _build_ref_portfolio_status_note(status) -> str:
+        """Explain blocked trading and incomplete valuation without mutating state."""
+        notes = []
+        reason = str(status.get("_trading_blocked_reason") or "")
+        manual_reset = bool(status.get("requires_manual_reset"))
+        if manual_reset and not reason:
+            reason = "未绑定运行，需手动重置"
+        if reason:
+            notes.append(f'<p class="muted-note">停单原因：{_html_escape(reason)}</p>')
+            if "未绑定运行" in reason:
+                recovery = (
+                    "旧账户未绑定策略运行。若选择重建，先确认有效策略已激活，"
+                    "再通过机器人 /ref_date YYYY-MM-DD 重置；"
+                    "这会清空三市场持仓并重设基期。"
+                )
+            elif "固定运行或执行合同不可恢复" in reason:
+                recovery = "请恢复该账户绑定的策略产物及执行合同后重新检查。"
+            elif "公司行为数据不就绪" in reason:
+                recovery = "请补齐分红、除权等公司行为数据后重新检查。"
+            elif "没有完整历史数据" in reason:
+                recovery = "请补齐监控标的及持仓的历史行情后重新检查。"
+            else:
+                recovery = "请核对对应运行日志，修复上述停单原因后重新检查。"
+            notes.append(f'<p class="muted-note">恢复提示：{_html_escape(recovery)}</p>')
+
+        if status.get("valuation_complete") is False:
+            valuation_reason = str(status.get("valuation_reason") or "")
+            if not valuation_reason:
+                missing = ", ".join(
+                    str(code) for code in status.get("missing_price_codes", [])
+                )
+                valuation_reason = f"缺少 {missing} 行情" if missing else "持仓行情不完整"
+            notes.append(
+                '<p class="muted-note">估值不完整：'
+                f'{_html_escape(valuation_reason)}</p>'
+            )
+        return "".join(notes)
+
+    @staticmethod
     def _build_ref_portfolio_html(session, today_date) -> str:
         """构建参考持仓 HTML 片段。三组（A股/港股/美股）各自展示。"""
         all_statuses = getattr(session, "ref_portfolio_status", None)
@@ -2735,13 +2566,15 @@ class EmailNotifier(BaseNotifier):
             if not status:
                 continue
             label = status.get("_label", gk)
+            nav = _fmt(status.get("nav"), fmt_spec=",.0f")
+            nav_return = _fmt(status.get("nav_return_pct"), "%", "+.2f")
             lines.append(
-                f"<h4>{label}</h4>"
-                f"<p>📅 期初: {status['inception_date']} | "
-                f"💰 净值: {status['nav']:,.0f} | "
-                f"📈 回报: {status['nav_return_pct']:+.2f}% | "
-                f"📆 交易日: {status['trading_days']}</p>"
+                f"<h4>{_html_escape(label)}</h4>"
+                f"<p>📅 期初: {_html_escape(status.get('inception_date'))} | "
+                f"💰 净值: {nav} | 📈 回报: {nav_return} | "
+                f"📆 交易日: {_html_escape(status.get('trading_days'))}</p>"
             )
+            lines.append(EmailNotifier._build_ref_portfolio_status_note(status))
 
             if status["holdings"]:
                 lines.append(
@@ -2751,22 +2584,23 @@ class EmailNotifier(BaseNotifier):
                 for h in status["holdings"]:
                     lines.append(
                         f"<tr>"
-                        f"<td>{h['code']}</td>"
-                        f"<td>{h['shares']}</td>"
-                        f"<td>{h['price']:.2f}</td>"
-                        f"<td>{h['market_value']:,.0f}</td>"
-                        f"<td>{h['avg_cost']:.2f}</td>"
+                        f"<td>{_html_escape(h['code'])}</td>"
+                        f"<td>{_html_escape(h['shares'])}</td>"
+                        f"<td>{_fmt(h.get('price'))}</td>"
+                        f"<td>{_fmt(h.get('market_value'), fmt_spec=',.0f')}</td>"
+                        f"<td>{_fmt(h.get('avg_cost'))}</td>"
                         f"</tr>"
                     )
                 lines.append("</table>")
             else:
                 lines.append("<p>📭 空仓</p>")
 
-            lines.append(f"<p>💵 现金: {status['cash']:,.2f}</p>")
+            cash = _fmt(status.get("cash"), fmt_spec=",.2f")
+            lines.append(f"<p>💵 现金: {cash}</p>")
 
         return "\n".join(lines)
 
-    def send_brief_report(self, session, report_config: dict):
+    def _prepare_brief_report(self, session, report_config: dict):
         """
         发送简报邮件（仅价格+锚点偏离率，无图表/基本面/公告）。
 
@@ -2778,8 +2612,10 @@ class EmailNotifier(BaseNotifier):
         from pathlib import Path
 
         label = report_config.get("label", "简报")
-        stock_data = session.get_all_dataframe()
-        today = datetime.now()
+        from .report_builders import get_brief_dataframe
+
+        stock_data = get_brief_dataframe(session)
+        today = datetime.now().astimezone()
         today_date = today.date()
 
         # ── 构建每只股票的行 ──
@@ -2852,7 +2688,10 @@ class EmailNotifier(BaseNotifier):
         template_dir = Path(__file__).parent.parent / "templates"
         template = (template_dir / "brief_email.html").read_text(encoding="utf-8")
 
+        from ..core.build_info import build_label
+
         body = template.format(
+            release_label=_html_escape(build_label()),
             label=label,
             report_date=today.strftime("%Y-%m-%d"),
             current_time=today.strftime("%H:%M"),
@@ -2864,9 +2703,98 @@ class EmailNotifier(BaseNotifier):
         )
 
         subject = f"{label} - {today.strftime('%Y-%m-%d')}"
-        self._send_email(subject, body)
+        return subject, body
+
+    def send_brief_report(self, session, report_config: dict):
+        try:
+            subject, body = self._prepare_brief_report(session, report_config)
+        except Exception as exc:  # noqa: BLE001 -- optional placement metadata  # noqa: BLE001 - classify preparation before SMTP
+            logger.error("简报邮件准备失败: %s", type(exc).__name__)
+            return {"status": "failed", "reason": "email_preparation_failed"}
+        return self._send_email(subject, body)
 
     # ────────────────────────────────────
+
+
+    @staticmethod
+    def _smtp_recipient_receipt(refused, recipients: list) -> dict:
+        """A returned refusal map implies DATA acceptance only if well formed."""
+        valid_map = isinstance(refused, dict) and set(refused) <= set(recipients)
+        valid_values = valid_map and all(
+            isinstance(value, (tuple, list)) and value and type(value[0]) is int
+            for value in refused.values()
+        )
+        if not valid_values:
+            return {
+                "status": "unknown",
+                "reason": "smtp_acknowledgement_missing",
+                "pieces": [
+                    {"recipient": address, "status": "unknown"}
+                    for address in recipients
+                ],
+            }
+        pieces = []
+        for address in recipients:
+            rejection = refused.get(address)
+            pieces.append(
+                {
+                    "recipient": address,
+                    "status": "failed" if rejection is not None else "sent",
+                    "reason": "recipient_rejected"
+                    if rejection is not None
+                    else "smtp_accepted",
+                    **({"smtp_code": rejection[0]} if rejection else {}),
+                }
+            )
+        receipt = combine_receipts(pieces)
+        receipt["smtp_accepted"] = any(item["status"] == "sent" for item in pieces)
+        receipt["refused_count"] = len(refused)
+        return receipt
+
+    @staticmethod
+    def _smtp_failure_receipt(
+        exc: Exception,
+        *,
+        submitted: bool,
+        recipients: list,
+        message_id=None,
+        archive=None,
+    ) -> dict:
+        rejected = isinstance(
+            exc,
+            (
+                smtplib.SMTPSenderRefused,
+                smtplib.SMTPRecipientsRefused,
+                smtplib.SMTPDataError,
+                smtplib.SMTPHeloError,
+                smtplib.SMTPNotSupportedError,
+            ),
+        )
+        status = "failed" if not submitted or rejected else "unknown"
+        rejected_recipients = (
+            exc.recipients if isinstance(exc, smtplib.SMTPRecipientsRefused) else {}
+        )
+        return {
+            "status": status,
+            "reason": "smtp_rejected"
+            if rejected
+            else ("smtp_submission_unknown" if submitted else "smtp_pre_submit_failed"),
+            "error": type(exc).__name__,
+            "archive": str(archive) if archive else None,
+            "message_id": message_id,
+            "pieces": [
+                {
+                    "recipient": address,
+                    "status": status,
+                    **(
+                        {"smtp_code": rejected_recipients[address][0]}
+                        if address in rejected_recipients
+                        else {}
+                    ),
+                }
+                for address in recipients
+            ],
+        }
 
     def _send_email(
         self,
@@ -2888,7 +2816,6 @@ class EmailNotifier(BaseNotifier):
             pdf_bytes: 日报 PDF 附件 bytes（可选）
             candlestick_png: 周K蜡烛图 bytes（可选），CID=candlestick
         """
-        import os
 
         # 保存邮件副本（无论是否跳过发送）
         copy_path = self._save_email_copy(subject, body)
@@ -2897,15 +2824,17 @@ class EmailNotifier(BaseNotifier):
         else:
             logger.error("邮件副本未保存，目标目录: %s", self.email_archive_dir)
 
-        if os.environ.get("SKIP_EMAIL") == "true":
+        if not channel_enabled(self.config, "email"):
             logger.info(f"跳过邮件发送（测试模式）: 主题={subject}")
-            return
+            return {"status": "skipped", "error": "email_channel_disabled"}
 
+        submitted = False
+        receipt = None
+        recipients = []
         try:
             # 创建 HTML 部分
+            # MIMEText encodes the payload and sets its matching transfer header.
             html_part = MIMEText(body, "html", "utf-8")
-            html_part.set_charset("utf-8")
-            html_part["Content-Transfer-Encoding"] = "quoted-printable"
 
             has_any_chart = chart_png_bytes or portfolio_chart_dict or candlestick_png
 
@@ -2966,7 +2895,7 @@ class EmailNotifier(BaseNotifier):
                 inner.policy = policy.default
                 inner.attach(html_part)
 
-            # 如有 PDF 附件，外层包 MIMEMultipart("mixed")
+            # Preserve the remote PDF-only MIME attachment structure.
             if pdf_bytes:
                 from email.mime.application import MIMEApplication
 
@@ -2988,44 +2917,63 @@ class EmailNotifier(BaseNotifier):
             # 编码发件人和收件人
             msg["From"] = self.sender_email
             msg["To"] = self.receiver_email
+            from email.utils import formatdate, make_msgid
+
+            msg["Message-ID"] = make_msgid()
+            msg["Date"] = formatdate(localtime=False)
+            from email.utils import getaddresses
+
+            recipients = list(
+                dict.fromkeys(
+                    address
+                    for _name, address in getaddresses([self.receiver_email])
+                    if address
+                )
+            )
+            if not all(
+                (self.smtp_server, self.sender_email, self.sender_password, recipients)
+            ):
+                return {"status": "failed", "reason": "smtp_configuration_incomplete"}
 
             # 连接到SMTP服务器并发送邮件
             if self.enable_ssl:
-                # 使用SSL连接
                 context = ssl.create_default_context()
-                with smtplib.SMTP_SSL(
+                connection = smtplib.SMTP_SSL(
                     self.smtp_server, self.smtp_port, timeout=30, context=context
-                ) as server:
-                    # 登录邮箱
-                    server.login(self.sender_email, self.sender_password)
-
-                    # 发送邮件
-                    server.send_message(msg)
+                )
             else:
-                # 使用普通SMTP连接
-                with smtplib.SMTP(
-                    self.smtp_server, self.smtp_port, timeout=30
-                ) as server:
-                    if self.enable_tls:
-                        server.starttls()  # 启用TLS加密
-
-                    # 登录邮箱
-                    server.login(self.sender_email, self.sender_password)
-
-                    # 发送邮件
-                    server.send_message(msg)
-
-            logger.debug(f"邮件发送成功: {subject}")
-
-        except smtplib.SMTPAuthenticationError as e:
-            logger.error(f"SMTP认证失败: {e}")
-            raise
-        except smtplib.SMTPException as e:
-            logger.error(f"SMTP错误: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"发送邮件时发生未知错误: {e}", exc_info=True)
-            raise
+                connection = smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30)
+            with connection as server:
+                if self.enable_tls and not self.enable_ssl:
+                    server.starttls()
+                server.login(self.sender_email, self.sender_password)
+                submitted = True
+                try:
+                    refused = server.send_message(msg)
+                except Exception as exc:  # noqa: BLE001 -- optional placement metadata  # noqa: BLE001 - preserve before QUIT
+                    receipt = self._smtp_failure_receipt(
+                        exc,
+                        submitted=True,
+                        recipients=recipients,
+                        message_id=msg["Message-ID"],
+                        archive=copy_path,
+                    )
+                else:
+                    receipt = self._smtp_recipient_receipt(refused, recipients)
+                receipt["message_id"] = msg["Message-ID"]
+                receipt["archive"] = str(copy_path) if copy_path else None
+            return receipt
+        except Exception as exc:  # noqa: BLE001 -- optional placement metadata  # noqa: BLE001 - classify transport stage
+            logger.error("SMTP阶段异常: %s", type(exc).__name__)
+            if receipt is not None:
+                return {**receipt, "cleanup_error": type(exc).__name__}
+            return self._smtp_failure_receipt(
+                exc,
+                submitted=submitted,
+                recipients=recipients,
+                message_id=msg.get("Message-ID") if submitted else None,
+                archive=copy_path,
+            )
 
     def send_deployment_notification(
         self, deployment_info=None, version=None, summary=None
@@ -3041,7 +2989,7 @@ class EmailNotifier(BaseNotifier):
             server_info = self._get_server_info()
 
             # 构建部署邮件主题
-            subject = f"部署完成通知 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            subject = f"部署完成通知 - {datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S')}"
 
             # 构建部署邮件正文
             body = f"""<!DOCTYPE html>
@@ -3059,28 +3007,28 @@ class EmailNotifier(BaseNotifier):
 <body>
     <h1>部署完成通知</h1>
     <p class="success">✅ 股票量化系统已成功部署到生产服务器</p>
-    
+
     <div class="info">
-        <p><strong>部署时间:</strong> {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
+        <p><strong>部署时间:</strong> {datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")}</p>
         <p><strong>部署服务器:</strong> {server_info["hostname"]}</p>
         <p><strong>服务器IP:</strong> {server_info["ip_address"]}</p>
         <p><strong>系统信息:</strong> {server_info["system"]} {server_info["machine"]} (内核: {server_info["kernel_version"]})</p>
         {f"<p><strong>部署版本:</strong> {version}</p>" if version else ""}
         {f"<p><strong>部署摘要:</strong> {summary}</p>" if summary else ""}
     </div>
-    
+
     {f'<div class="info"><p><strong>部署详情:</strong> {deployment_info}</p></div>' if deployment_info else ""}
-    
+
     <p><em>注：此邮件由股票量化系统自动发送，用于部署验证。</em></p>
 </body>
 </html>"""
 
             # 发送邮件
-            self._send_email(subject, body)
-            logger.info(f"部署通知邮件发送成功: {subject} (version={version})")
-            return True, "sent"
+            receipt = normalize_receipt(self._send_email(subject, body))
+            logger.info("部署通知邮件结果: %s", receipt["status"])
+            return legacy_tuple(receipt)
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- contain optional report/OS/archive failures
             msg = str(e)
             logger.error(f"发送部署通知邮件失败: {msg}")
             return False, msg

@@ -55,6 +55,8 @@
 \vspace{6pt}
 {\huge\color{white}\textbf{Stock Quant Report}}\\[2pt]
 {\small\color{gray!50}\VAR{report_date} · \VAR{server_hostname}}
+
+{\small\color{gray!70}版本 \VAR{release_label}}
 \vspace{6pt}
 \end{minipage}}
 \end{center}
@@ -76,6 +78,7 @@
 {\Large\color{\VAR{kpi_color_s}}\textbf{\VAR{kpi_s}}}
 \end{tabular}}
 \end{center}
+\VAR{readiness_section}
 
 % ═══════ Section: 偏离度走势 ═══════
 \section*{\color{navy}\rule[-4pt]{4pt}{14pt}\quad 偏离度 30 日走势}
@@ -95,6 +98,8 @@
 策略: \VAR{strategy_note}\\[2pt]
 \VAR{backtest_note}
 }
+
+\VAR{events_section}
 
 % ═══════ Section: 统一策略评估 ═══════
 \VAR{evaluation_report_section}

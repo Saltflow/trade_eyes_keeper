@@ -105,14 +105,14 @@ def test_manual_position_change_rejects_invalid_operator_input(tmp_path):
         )
 
 
-def test_feishu_dispatch_routes_reference_position_command():
-    from src.interactive.feishu_handler import _dispatch
+def test_shared_bot_dispatch_routes_reference_position_command():
+    from src.interactive.command_dispatcher import dispatch_command
 
     command = parse_command("/ref_position set a_share 510300 10000 3.85")
     assert isinstance(command, RefPositionCommand)
     with patch(
-        "src.interactive.feishu_handler.handle_ref_position",
+        "src.interactive.commands.handlers.handle_ref_position",
         return_value="routed",
     ) as handler:
-        assert _dispatch(command) == "routed"
+        assert dispatch_command(command) == "routed"
         handler.assert_called_once_with("set", "a_share", "510300", 10000, 3.85)

@@ -1,5 +1,6 @@
 """Data preparation failures stay visible in optimizer notification receipts."""
 
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -173,7 +174,7 @@ def _isolated_optimizer_inputs(monkeypatch, tmp_path):
 def test_optimizer_fails_closed_on_incomplete_configured_universe(
     tmp_path, monkeypatch
 ):
-    config, market_config, codes, benchmarks, bundles, loaders = (
+    config, market_config, codes, _benchmarks, bundles, loaders = (
         _isolated_optimizer_inputs(monkeypatch, tmp_path)
     )
     failed_code = codes[0]
@@ -296,3 +297,33 @@ def test_empty_configured_universe_is_unexecuted_after_market_receipts_merge(
     assert set(report.groups) == {"a_share", "hk", "us"}
     assert all(item.status == "no_symbols" for item in report.groups.values())
     assert optimizer_notification_title(report) == "策略优化未执行"
+
+
+def test_optimizer_logging_keeps_warnings_without_pdf_parser_debug(tmp_path):
+    root = logging.getLogger()
+    old_level = root.level
+    old_handlers = set(root.handlers)
+    path = tmp_path / "optimizer.log"
+    try:
+        main.setup_logging({"logging": {"level": "DEBUG", "file": str(path)}})
+        handler = next(
+            item for item in root.handlers
+            if isinstance(item, logging.FileHandler)
+            and item.baseFilename == str(path)
+        )
+        for name, level, message in (
+            ("pdfminer.psparser", logging.DEBUG, "huge parser trace"),
+            ("pdfminer.psparser", logging.WARNING, "parser warning"),
+            ("src.data.backtest_data", logging.DEBUG, "optimizer detail"),
+        ):
+            handler.handle(logging.LogRecord(name, level, __file__, 1, message, (), None))
+        handler.flush()
+        contents = path.read_text(encoding="utf-8")
+        assert "huge parser trace" not in contents
+        assert "parser warning" in contents
+        assert "optimizer detail" in contents
+    finally:
+        for handler in set(root.handlers) - old_handlers:
+            root.removeHandler(handler)
+            handler.close()
+        root.setLevel(old_level)

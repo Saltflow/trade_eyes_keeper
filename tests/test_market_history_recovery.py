@@ -202,3 +202,36 @@ def test_unchanged_cumulative_factor_metadata_is_not_a_second_action(changed_fie
     assert len(actions) == (2 if changed_field else 1)
     if not changed_field:
         assert "unchanged_factor_record:2019-07-19" in actions[0].diagnostics
+
+
+def test_adjustment_rejection_bounds_failure_details_and_omits_unrelated_metadata():
+    action = _distribution(published_at=None)
+    action.diagnostics = ["unrelated_metadata=private"] + [
+        "hkex_cash_evidence_unavailable=https://www.hkexnews.hk/"
+        + str(index)
+        + ".pdf; "
+        + "x" * 2000
+        for index in range(12)
+    ]
+    with pytest.raises(ValueError) as caught:
+        apply_disclosed_adjustments(_price_bundle(), [action], evidence="official")
+    reason = str(caught.value)
+    assert "cash dividend lacks causal publication date" in reason
+    assert reason.count("hkex_cash_evidence_unavailable=") == 8
+    assert "additional_hkex_failure_diagnostics_omitted=4" in reason
+    assert "[truncated]" in reason
+    assert "unrelated_metadata" not in reason
+    assert len(reason) < 8500
+
+
+def test_adjustment_rejection_does_not_report_verified_actions_old_failures():
+    verified = _distribution()
+    verified.diagnostics = ["hkex_cash_evidence_unavailable=old_unrelated.pdf"]
+    unresolved = _distribution(published_at=None)
+    unresolved.diagnostics = ["hkex_cash_evidence_document_budget_exhausted"]
+    with pytest.raises(ValueError) as caught:
+        apply_disclosed_adjustments(
+            _price_bundle(), [verified, unresolved], evidence="official"
+        )
+    assert "document_budget_exhausted" in str(caught.value)
+    assert "old_unrelated.pdf" not in str(caught.value)

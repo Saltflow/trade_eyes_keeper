@@ -1,39 +1,18 @@
-"""Telegram 交互机器人 — 轮询 + 命令分发。"""
+"""Telegram polling transport for the shared bot command dispatcher."""
+
+from __future__ import annotations
 
 import logging
+import math
 import os
-import time
-from typing import Optional
+import threading
 
 import requests
 
-from .command_parser import (
-    AddCommand,
-    BacktestCommand,
-    DailyReportFrequencyCommand,
-    ErrorCommand,
-    HelpCommand,
-    ListCommand,
-    OptimizeCommand,
-    RefDateCommand,
-    RefPositionCommand,
-    RemoveCommand,
-    SwitchOptimizerCommand,
-    parse_command,
-)
-from .commands.handlers import (
-    handle_add,
-    handle_backtest,
-    handle_daily_report_frequency,
-    handle_help,
-    handle_list,
-    handle_optimize,
-    handle_ref_date,
-    handle_ref_position,
-    handle_remove,
-    handle_switch_optimizer,
-)
-from .security import RateLimiter, SecurityGate
+from ..notification.settings import env_flag
+from .command_dispatcher import CommandExecutor
+from .command_parser import parse_command
+from .security import BotAccess
 
 logger = logging.getLogger(__name__)
 
@@ -41,20 +20,26 @@ TELEGRAM_API = "https://api.telegram.org"
 
 
 class TelegramBot:
-    """Telegram 轮询 Bot。"""
+    """A single polling lifecycle; run in a service thread and stop from its owner."""
 
     def __init__(self, config: dict):
-        ic = config.get("interactive", {}).get("telegram", {})
-        self.bot_token = ic.get("bot_token") or os.getenv("TELEGRAM_BOT_TOKEN", "")
-        allowed = ic.get("allowed_chat_ids", [])
-        if not allowed or allowed == [""]:
-            env_chat = os.getenv("TELEGRAM_CHAT_ID", "")
-            allowed = [env_chat] if env_chat else []
-        self.allowed_chat_ids = set(str(cid) for cid in allowed if cid)
-        self.polling_interval = ic.get("polling_interval", 2)
+        self.config = config
+        ic = (config.get("interactive") or {}).get("telegram") or {}
+        self.bot_token = str(
+            ic.get("bot_token") or os.getenv("TELEGRAM_BOT_TOKEN", "")
+        ).strip()
+        self.access = BotAccess(config, "telegram")
+        self.allowed_chat_ids = self.access.allowed_chat_ids
+        self.gate = self.access.gate
+        self.rate_limiter = self.access.rate_limiter
+        self.polling_interval = float(ic.get("polling_interval", 2))
+        if not math.isfinite(self.polling_interval) or self.polling_interval <= 0:
+            raise ValueError("interactive.telegram.polling_interval must be positive")
         self._running = False
-
-        # 代理配置（中国大陆服务器访问 Telegram API 需要）
+        self._stop_event = threading.Event()
+        self.command_executor = CommandExecutor(
+            lambda chat_id, text: self._send_message(chat_id, text)
+        )
         proxy_url = (
             ic.get("proxy")
             or os.getenv("TELEGRAM_PROXY")
@@ -64,36 +49,51 @@ class TelegramBot:
         )
         self._proxies = {"https": proxy_url} if proxy_url else None
 
-        self.gate = SecurityGate(self.allowed_chat_ids)
-        self.rate_limiter = RateLimiter(
-            max_per_minute=ic.get("rate_limit_per_minute", 10)
+    @property
+    def enabled(self) -> bool:
+        return bool(
+            self.access.enabled
+            and self.bot_token
+            and self.allowed_chat_ids
+            and not self._stop_event.is_set()
         )
 
-    def _api(self, method: str, **params) -> Optional[dict]:
-        """调用 Telegram Bot API。"""
+    def validate_config(self) -> None:
+        self.access.validate_config()
+        if not self.bot_token:
+            raise ValueError("Telegram requires bot_token")
+
+    def _api(self, method: str, **params):
+        if not self.enabled:
+            return None
+        if method != "getUpdates" and (
+            env_flag("SKIP_NOTIFICATIONS") or env_flag("SKIP_TELEGRAM")
+        ):
+            return None
         url = f"{TELEGRAM_API}/bot{self.bot_token}/{method}"
         try:
-            resp = requests.post(
+            response = requests.post(
                 url,
                 data=params,
-                timeout=30 if method == "getUpdates" else 15,
+                timeout=(5, 10),
                 proxies=self._proxies,
             )
-            if resp.status_code != 200:
-                logger.error(f"Telegram API {method} HTTP {resp.status_code}")
+            if response.status_code != 200:
+                logger.error("Telegram API %s HTTP %s", method, response.status_code)
                 return None
-            result = resp.json()
+            result = response.json()
             if not result.get("ok"):
-                logger.error(
-                    f"Telegram API {method} error: {result.get('description')}"
-                )
+                logger.error("Telegram API %s rejected the request", method)
                 return None
             return result.get("result")
-        except Exception as e:
-            logger.error(f"Telegram API {method} 请求失败: {e}")
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            # Requests errors may include the token-bearing URL.
+            logger.error("Telegram API %s failed: %s", method, type(exc).__name__)
             return None
 
-    def _send_message(self, chat_id, text: str) -> bool:
+    def _send_message(self, chat_id: str, text: str) -> bool:
+        if not self.gate.is_allowed(chat_id):
+            return False
         return (
             self._api(
                 "sendMessage",
@@ -106,83 +106,53 @@ class TelegramBot:
         )
 
     def _get_updates(self, offset: int) -> list[dict]:
-        result = self._api("getUpdates", offset=offset, timeout=10)
+        result = self._api("getUpdates", offset=offset, timeout=5)
         return result if isinstance(result, list) else []
 
     def _process_update(self, update: dict) -> None:
-        message = update.get("message")
-        if not message:
+        if not self.enabled:
             return
-
-        chat = message.get("chat", {})
-        chat_id = str(chat.get("id", ""))
-
-        if not self.gate.is_allowed(chat_id):
-            logger.warning(f"未授权的 chat_id: {chat_id}")
+        message = update.get("message") or {}
+        text = message.get("text")
+        if not isinstance(text, str):
             return
-
-        if not self.rate_limiter.check(chat_id):
-            self._send_message(chat_id, "操作过于频繁，请稍后再试。")
+        chat_id = str((message.get("chat") or {}).get("id", ""))
+        message_id = message.get("message_id")
+        event_id = f"{chat_id}:{message_id}" if message_id is not None else ""
+        result = self.access.accept(chat_id, event_id)
+        if result != "accepted":
+            if result == "rate_limited":
+                self._send_message(chat_id, "操作过于频繁，请稍后再试。")
             return
-
-        text = message.get("text", "")
-        cmd = parse_command(text)
-
-        if isinstance(cmd, HelpCommand):
-            response = handle_help()
-        elif isinstance(cmd, ListCommand):
-            response = handle_list()
-        elif isinstance(cmd, AddCommand):
-            response = handle_add(cmd.stock_code)
-        elif isinstance(cmd, RemoveCommand):
-            response = handle_remove(cmd.stock_code)
-        elif isinstance(cmd, BacktestCommand):
-            self._send_message(
-                chat_id,
-                f"⏳ 正在回测 <code>{cmd.stock_code}</code>…",
-            )
-            response = handle_backtest(cmd.stock_code, cmd.start_date, cmd.end_date)
-        elif isinstance(cmd, OptimizeCommand):
-            response = handle_optimize(cmd.group)
-        elif isinstance(cmd, DailyReportFrequencyCommand):
-            response = handle_daily_report_frequency(cmd.frequency)
-        elif isinstance(cmd, SwitchOptimizerCommand):
-            response = handle_switch_optimizer(cmd.kind, cmd.group)
-        elif isinstance(cmd, ErrorCommand):
-            response = f"❌ {cmd.message}"
-        elif isinstance(cmd, RefDateCommand):
-            response = handle_ref_date(cmd.date_str)
-        elif isinstance(cmd, RefPositionCommand):
-            response = handle_ref_position(
-                cmd.action, cmd.group, cmd.code, cmd.shares, cmd.price
-            )
-        else:
-            response = "❌ 未知错误"
-
-        self._send_message(chat_id, response)
+        command = parse_command(text)
+        self.command_executor.execute(chat_id, command)
 
     def run(self) -> None:
-        """启动轮询循环（阻塞）。"""
-        if not self.bot_token:
-            logger.error("Telegram bot_token 未配置，无法启动交互模式")
+        """Block while polling. A stop waits at most the current bounded HTTP call."""
+        self.validate_config()
+        if self._stop_event.is_set():
             return
-        if not self.allowed_chat_ids:
-            logger.warning("未配置 allowed_chat_ids，Bot 将不响应任何消息")
-
-        logger.info("Telegram 交互 Bot 启动")
+        logger.info("Telegram interactive bot started")
         self._running = True
         offset = 0
-
-        while self._running:
-            try:
+        try:
+            while not self._stop_event.is_set():
                 updates = self._get_updates(offset)
                 for update in updates:
-                    self._process_update(update)
-                    offset = max(offset, update.get("update_id", 0) + 1)
-            except Exception as e:
-                logger.error(f"轮询异常: {e}")
-            time.sleep(self.polling_interval)
+                    if self._stop_event.is_set():
+                        break
+                    try:
+                        self._process_update(update)
+                    except Exception:
+                        logger.exception("Telegram update handling failed")
+                    finally:
+                        offset = max(offset, update.get("update_id", 0) + 1)
+                self._stop_event.wait(self.polling_interval)
+        finally:
+            self._running = False
+            self.command_executor.stop()
 
     def stop(self) -> None:
+        self._stop_event.set()
+        self.command_executor.stop()
         self._running = False
-        logger.info("Telegram 交互 Bot 已停止")

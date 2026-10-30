@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import email.utils
 import hashlib
 import io
 import json
+import math
 import re
+import time
+from collections import OrderedDict
 from copy import deepcopy
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
+from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlsplit
@@ -326,9 +331,7 @@ def match_hkex_cash_notice(
     payment_dates = set()
     weekday = r"(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+)?"
     payment_patterns = (
-        r"Payment date\s*[:：]?\s*(?:(?:is expected to be|will be|is)\s+)?(?:on\s+)?("
-        + _NAMED_DATE
-        + ")",
+        r"Payment date\s*[:：]?\s*(?:(?:is expected to be|will be|is)\s+)?(?:on\s+)?(" + _NAMED_DATE + ")",
         r"\b(?:pay|paid|payable|distribute)\b(?:(?![.!?]\s).){0,200}?"
         r"\b(?:on(?:\s+or)?(?:\s+around)?|around)\s+"
         + weekday
@@ -340,14 +343,62 @@ def match_hkex_cash_notice(
         payment_dates.update(
             _named_day(value) for value in re.findall(pattern, compact, re.IGNORECASE)
         )
-    if explicit_ex is None and (
-        action.payable_date is None or action.payable_date not in payment_dates
-    ):
+    approximate_payment_dates = {
+        _named_day(value)
+        for value in re.findall(
+            r"\b(?:on\s+(?:or\s+)?around|around)\s+"
+            + weekday
+            + "("
+            + _NAMED_DATE
+            + ")",
+            compact,
+            re.IGNORECASE,
+        )
+    }
+    firm_payment_dates = payment_dates - approximate_payment_dates
+    firm_payment_dates.update(
+        _named_day(value)
+        for value in re.findall(
+            r"Payment date\s*[:：]?\s*(?:(?:is expected to be|will be|is)\s+)?(?:on\s+)?(" + _NAMED_DATE + ")",
+            compact,
+            re.IGNORECASE,
+        )
+    )
+    register_dates = {
+        _named_day(value)
+        for value in re.findall(
+            r"\bH\s+share\s+register\s+of\s+members.{0,80}?\bon\s+("
+            + _NAMED_DATE
+            + ")",
+            compact,
+            re.IGNORECASE,
+        )
+    }
+    book_end = next(
+        (
+            _day(item.split("=", 1)[1])
+            for item in action.diagnostics
+            if item.startswith("book_closed_until=")
+        ),
+        None,
+    )
+    record_match = len(register_dates) == 1 and book_end in register_dates
+    payable_match = (
+        action.payable_date is not None and action.payable_date in payment_dates
+    )
+    if action.currency == "USD":
+        if explicit_ex is None and not payable_match:
+            return None
+        if action.payable_date is not None and payment_dates and not payable_match:
+            raise ValueError(
+                f"{action.code}: conflicting official payment date on {action.ex_date}"
+            )
+    if explicit_ex is None and not payable_match and not record_match:
         return None
     if (
         action.payable_date is not None
-        and payment_dates
-        and action.payable_date not in payment_dates
+        and firm_payment_dates
+        and action.payable_date not in firm_payment_dates
     ):
         raise ValueError(
             f"{action.code}: conflicting official payment date on {action.ex_date}"
@@ -489,6 +540,15 @@ def match_hkex_cash_notice(
     result.published_at = published_at
     if action.payable_date is None and len(payment_dates) == 1:
         result.payable_date = next(iter(payment_dates))
+    approximate_mismatch = bool(
+        record_match and approximate_payment_dates and not payable_match
+    )
+    if approximate_mismatch:
+        # A filing's "around" date is an estimate, not proof that a later
+        # ETNet settlement date is false. Neither date is treated as verified.
+        result.payable_date = None
+    if record_match:
+        result.record_date = next(iter(register_dates))
     if is_form:
         record = re.search(
             r"Record date\s+(" + _NAMED_DATE + ")", compact, re.IGNORECASE
@@ -511,16 +571,66 @@ def match_hkex_cash_notice(
             "cash_stock_components_complete",
             "hkex_cash_evidence_matched",
             "hkex_event_match="
-            + ("ex_date" if explicit_ex else "payable_date_and_cash"),
+            + (
+                "ex_date"
+                if explicit_ex
+                else "payable_date_and_cash"
+                if payable_match
+                else "record_date_and_cash"
+            ),
             "hkex_published_at=" + published_at.isoformat(),
         ]
     )
+    if approximate_mismatch:
+        result.diagnostics.append("payable_date_unverified_approximate_hkex_notice")
     if conversion:
         result.diagnostics.append(conversion)
     if code_match is None:
         result.diagnostics.append("issuer_identity=hkex_title_search")
     result.diagnostics = list(dict.fromkeys(result.diagnostics))
     return result
+
+
+_NOTICE_MAX_BYTES = 16 * 1024 * 1024
+_NOTICE_MAX_PAGES = 32
+_NOTICE_MAX_TEXT_CHARS = 2 * 1024 * 1024
+
+
+class _BoundedNoticeText(io.StringIO):
+    """Stop retaining extracted text as soon as the evidence budget is exceeded."""
+
+    def write(self, text: str) -> int:
+        if self.tell() + len(text) > _NOTICE_MAX_TEXT_CHARS:
+            raise ValueError("HKEX cash notice exceeds the extracted text limit")
+        return super().write(text)
+
+
+def _notice_retry_delay(exc: Exception) -> float | None:
+    """Allow one short retry for transport failures, never parsing/evidence errors."""
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        return 1.0
+    if not isinstance(exc, requests.HTTPError):
+        return None
+    response = exc.response
+    if getattr(response, "status_code", None) not in (429, 500, 502, 503, 504):
+        return None
+    value = (getattr(response, "headers", {}) or {}).get("Retry-After")
+    if not value:
+        return 1.0
+    try:
+        delay = float(value)
+        if delay < 0:
+            return None
+    except (TypeError, ValueError):
+        try:
+            retry_at = email.utils.parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            delay = (retry_at - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    # Do not hammer a server asking us to wait longer than this bounded retry.
+    return max(0.0, delay) if math.isfinite(delay) and delay <= 5.0 else None
 
 
 class HkexDividendEvidenceProvider:
@@ -534,13 +644,100 @@ class HkexDividendEvidenceProvider:
         self.max_documents = max(
             1, int(settings.get("hkex_dividend_max_documents", 48))
         )
-        self._text_cache = {}
+        self._text_cache: OrderedDict[str, str] = OrderedDict()
         self.cache_root = (
             Path(settings.get("output_dir", "data/point_in_time"))
             / "hkex_dividend_sources"
         )
 
+    def _download_notice(self, url: str) -> bytes:
+        """Bound response buffering, including absent or misleading length headers."""
+        response = self.provider.http.get(
+            url,
+            headers=self.provider._headers,
+            timeout=max(self.provider.timeout, 30),
+            stream=True,
+        )
+        try:
+            response.raise_for_status()
+            content = bytearray()
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if len(content) + len(chunk) > _NOTICE_MAX_BYTES:
+                    raise ValueError("HKEX cash notice exceeds the document size limit")
+                content.extend(chunk)
+            return bytes(content)
+        finally:
+            response.close()
+
     def _notice_text(self, content: bytes, *, prospectus: bool = False) -> str:
+        """Read complete short notices; never treat a truncated filing as evidence.
+
+        Enumerate at most 33 pages and reject long documents before any layout
+        extraction. Extract each accepted page once, including implementation
+        clauses after page eight, without the financial-statement selector or
+        its fallback to a second parser. Byte/page/text limits bound retained
+        evidence; they are not a CPU deadline for arbitrary malformed PDFs.
+        """
+        if prospectus:
+            return self._prospectus_text(content, prospectus=True)
+        from pdfminer.converter import PDFPageAggregator
+        from pdfminer.layout import LAParams, LTTextLine
+        from pdfminer.pdfinterp import PDFPageInterpreter, PDFResourceManager
+        from pdfminer.pdfpage import PDFPage
+
+        if len(content) > _NOTICE_MAX_BYTES:
+            raise ValueError("HKEX cash notice exceeds the document size limit")
+        with io.BytesIO(content) as stream, _BoundedNoticeText() as output:
+            pages = list(
+                islice(
+                    PDFPage.get_pages(stream, caching=False),
+                    _NOTICE_MAX_PAGES + 1,
+                )
+            )
+            if len(pages) > _NOTICE_MAX_PAGES:
+                raise ValueError("HKEX cash notice exceeds the 32-page evidence limit")
+            manager = PDFResourceManager(caching=False)
+            with PDFPageAggregator(
+                manager, laparams=LAParams(char_margin=1.0, word_margin=0.1)
+            ) as device:
+                interpreter = PDFPageInterpreter(manager, device)
+
+                def text_lines(item):
+                    if isinstance(item, LTTextLine):
+                        yield item
+                    else:
+                        for child in getattr(item, "_objs", ()):
+                            yield from text_lines(child)
+
+                for page in pages:
+                    interpreter.process_page(page)
+                    # HKEX forms emit labels and values in separate columns.
+                    # Preserve the statement extractor's visual-row ordering,
+                    # but retain every page and never retry with another parser.
+                    line_items = [
+                        (
+                            float(item.x0),
+                            (float(item.y0) + float(item.y1)) / 2.0,
+                            str(item.get_text()).strip(),
+                        )
+                        for item in text_lines(device.get_result())
+                        if str(item.get_text()).strip()
+                    ]
+                    row_groups: list[list[tuple[float, float, str]]] = []
+                    for item in sorted(line_items, key=lambda value: -value[1]):
+                        if row_groups and abs(item[1] - row_groups[-1][0][1]) <= 1.5:
+                            row_groups[-1].append(item)
+                        else:
+                            row_groups.append([item])
+                    for row in row_groups:
+                        for item in sorted(row, key=lambda value: value[0]):
+                            output.write(item[2])
+                            output.write(" ")
+                        output.write("\n")
+                    output.write("\f")
+            return output.getvalue()
+
+    def _prospectus_text(self, content: bytes, *, prospectus: bool = False) -> str:
         """Retain later implementation clauses in small official notices."""
         import pdfplumber
 
@@ -563,7 +760,7 @@ class HkexDividendEvidenceProvider:
 
     def _cached_notice(self, url: str, *, prospectus: bool = False) -> str:
         key = hashlib.sha256(
-            (url + ("#opening64" if prospectus else "")).encode()
+            (url + ("#opening64" if prospectus else "#bounded-v1")).encode()
         ).hexdigest()
         path = self.cache_root / (key + ".json")
         if path.exists():
@@ -573,14 +770,11 @@ class HkexDividendEvidenceProvider:
             ).hexdigest() != item.get("sha256"):
                 raise ValueError("HKEX cached notice integrity mismatch")
             return item["text"]
-        response = self.provider.http.get(
-            url, headers=self.provider._headers, timeout=max(self.provider.timeout, 30)
-        )
-        response.raise_for_status()
+        content = self._download_notice(url)
         text = (
-            self._notice_text(response.content, prospectus=True)
+            self._notice_text(content, prospectus=True)
             if prospectus
-            else self._notice_text(response.content)
+            else self._notice_text(content)
         )
         self.cache_root.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".tmp")
@@ -590,7 +784,7 @@ class HkexDividendEvidenceProvider:
                     "url": url,
                     "text": text,
                     "sha256": hashlib.sha256(text.encode()).hexdigest(),
-                    "pdf_sha256": hashlib.sha256(response.content).hexdigest(),
+                    "pdf_sha256": hashlib.sha256(content).hexdigest(),
                 },
                 ensure_ascii=False,
             ),
@@ -670,6 +864,7 @@ class HkexDividendEvidenceProvider:
     def refine(self, actions: list[CorporateAction]) -> list[CorporateAction]:
         """Return copies, preserving gaps when no causal official match exists."""
         result = deepcopy(actions)
+        failures: dict[str, str] = {}
         missing = [
             a
             for a in result
@@ -690,7 +885,7 @@ class HkexDividendEvidenceProvider:
             )
             end = max(action.ex_date for action in targets)
             downloaded = 0
-            for title in ("dividend", "results"):
+            for title in ("dividend", "poll results", "results"):
                 if not targets:
                     break
                 records = self._announcements(code, start, end, title)
@@ -705,16 +900,51 @@ class HkexDividendEvidenceProvider:
                         if not announced <= published <= action.ex_date:
                             continue
                         url = record["url"]
-                        if url not in self._text_cache:
+                        if url not in self._text_cache and url not in failures:
                             if downloaded >= self.max_documents:
-                                break
-                            downloaded += 1
-                            if not urlsplit(url).path.lower().endswith(".pdf"):
-                                action.diagnostics.append(
-                                    "hkex_non_pdf_evidence_not_parsed=" + url
+                                diagnostic = (
+                                    "hkex_cash_evidence_document_budget_exhausted"
                                 )
-                                continue
-                            self._text_cache[url] = self._cached_notice(url)
+                                if diagnostic not in action.diagnostics:
+                                    action.diagnostics.append(diagnostic)
+                                break
+                            for attempt in range(2):
+                                downloaded += 1
+                                try:
+                                    if not urlsplit(url).path.lower().endswith(".pdf"):
+                                        raise ValueError("HKEX non-PDF evidence not parsed")
+                                    self._text_cache[url] = self._cached_notice(url)
+                                    while len(self._text_cache) > self.max_documents:
+                                        self._text_cache.popitem(last=False)
+                                    break
+                                except Exception as exc:  # noqa: BLE001 -- isolate PDF/HTTP failures
+                                    delay = _notice_retry_delay(exc)
+                                    if (
+                                        attempt == 0
+                                        and delay is not None
+                                        and downloaded < self.max_documents
+                                    ):
+                                        # Retries consume the SAME request budget;
+                                        # never multiply the maximum network work.
+                                        diagnostic = "hkex_cash_evidence_retried=" + url
+                                        if diagnostic not in action.diagnostics:
+                                            action.diagnostics.append(diagnostic)
+                                        time.sleep(delay)
+                                        continue
+                                    failures[url] = (
+                                        "hkex_cash_evidence_unavailable="
+                                        + url
+                                        + "; "
+                                        + type(exc).__name__
+                                        + ": "
+                                        + str(exc)[:240]
+                                    )
+                                    break
+                        if url in failures:
+                            if failures[url] not in action.diagnostics:
+                                action.diagnostics.append(failures[url])
+                            continue
+                        self._text_cache.move_to_end(url)
                         try:
                             matched = match_hkex_cash_notice(
                                 self._text_cache[url],
@@ -751,7 +981,20 @@ class HkexDividendEvidenceProvider:
                     if downloaded >= self.max_documents:
                         break
                     downloaded += 1
-                    text = self._cached_notice(record["url"], prospectus=True)
+                    url = record["url"]
+                    if url in failures:
+                        if failures[url] not in action.diagnostics:
+                            action.diagnostics.append(failures[url])
+                        continue
+                    try:
+                        text = self._cached_notice(url, prospectus=True)
+                    except Exception as exc:
+                        failures[url] = (
+                            "hkex_cash_evidence_unavailable=" + url + "; "
+                            + type(exc).__name__ + ": " + str(exc)[:240]
+                        )
+                        action.diagnostics.append(failures[url])
+                        continue
                     matched = match_hkex_cash_notice(
                         text,
                         action,

@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import io
 import json
 import logging
+import math
+import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
+import numpy as np
 import pandas as pd
 
 from src.instruments.classifier import (
@@ -26,7 +32,14 @@ from src.instruments.point_in_time import (
 )
 from src.instruments.providers import SecCompanyFactsProvider
 
-from .market_history import MarketHistoryProvider, PointInTimeMarketStore
+from .baostock_access import BaostockAccessBlocked, BaostockTransientError
+from .market_history import (
+    CorporateAction,
+    MarketHistoryProvider,
+    PointInTimeMarketStore,
+    PriceHistoryBundle,
+    corporate_action_issues,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +68,7 @@ class PointInTimeBackfillService:
     ):
         self.config = config
         settings = config.get("point_in_time_data", {}) or {}
-        self.output_dir = Path(
-            settings.get("output_dir", "data/point_in_time")
-        )
+        self.output_dir = Path(settings.get("output_dir", "data/point_in_time"))
         self.history_years = max(1, int(settings.get("history_years", 6)))
         self.use_official_crawlers = bool(
             settings.get("official_statement_crawlers", True)
@@ -80,8 +91,8 @@ class PointInTimeBackfillService:
             0, int(market_settings.get("coverage_tolerance_days", 31))
         )
         self.market_provider = market_provider or MarketHistoryProvider(config)
-        self.a_share_statements = (
-            a_share_statements or BaostockStatementProvider(config=config)
+        self.a_share_statements = a_share_statements or BaostockStatementProvider(
+            config=config
         )
         self.sse_statements = sse_statements or SseXbrlStatementProvider(config)
         self.cninfo_statements = cninfo_statements or CninfoAnnualReportProvider(config)
@@ -107,8 +118,15 @@ class PointInTimeBackfillService:
             for code in sorted(self.fx_symbols | self.market_only_symbols)
             if code not in normalized
         )
-        rows = [self._backfill_one(code, start, end) for code in normalized]
+        rows = []
+        for code in normalized:
+            row = self._backfill_one(code, start, end)
+            rows.append(row)
+            if row.get("source_access", {}).get("blocked"):
+                break
         summary = self._summary(start, end, rows)
+        summary["requested_instrument_count"] = len(normalized)
+        summary["pending_codes"] = normalized[len(rows) :]
         self.output_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = self.output_dir / f"{timestamp}_backfill.json"
@@ -119,10 +137,233 @@ class PointInTimeBackfillService:
         summary["output_file"] = str(path)
         return summary
 
-    def _backfill_one(self, code: str, start: date, end: date) -> dict[str, Any]:
-        configured = (
-            self.config.get("instrument_catalog", {}) or {}
-        ).get(str(code), {}) or {}
+    def _market_paths(self, code: str) -> dict[str, Path]:
+        stem = PointInTimeMarketStore._safe_code(code)
+        directory = self.market_store.market_dir
+        return {
+            "prices": directory / f"{stem}.csv",
+            "actions": directory / f"{stem}.actions.json",
+            "metadata": directory / f"{stem}.meta.json",
+            "receipt": directory / f"{stem}.request.json",
+        }
+
+    def _market_settings_hash(self) -> str:
+        settings = (self.config.get("point_in_time_data", {}) or {}).get(
+            "market_history", {}
+        )
+        encoded = json.dumps(settings, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _market_row(
+        self, bundle: PriceHistoryBundle, start: date, end: date, price_path: Path
+    ) -> dict[str, Any]:
+        actual_start = pd.Timestamp(bundle.prices["date"].min()).date()
+        actual_end = pd.Timestamp(bundle.prices["date"].max()).date()
+        requested_days = max(1, (end - start).days)
+        covered_days = max(0, (actual_end - max(start, actual_start)).days)
+        coverage = (
+            "full"
+            if actual_start
+            <= start + timedelta(days=self.market_coverage_tolerance_days)
+            and actual_end >= end - timedelta(days=self.market_coverage_tolerance_days)
+            else "partial"
+        )
+        return {
+            "status": "success",
+            "source": bundle.source,
+            "rows": len(bundle.prices),
+            "actions": len(bundle.actions),
+            "raw_price_rows": int(bundle.prices["raw_close"].notna().sum()),
+            "qfq_price_rows": int(bundle.prices["qfq_close"].notna().sum()),
+            "requested_start": start.isoformat(),
+            "requested_end": end.isoformat(),
+            "actual_start": actual_start.isoformat(),
+            "actual_end": actual_end.isoformat(),
+            "requested_window_coverage": coverage,
+            "calendar_coverage_ratio": min(1.0, covered_days / requested_days),
+            "output": str(price_path),
+            "diagnostics": list(bundle.diagnostics),
+            "action_issues": list(corporate_action_issues(bundle.actions)),
+        }
+
+    def _validated_market_snapshot(
+        self, code: str, start: date, end: date, expected: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        """Validate the same bytes that will be hashed in the request receipt."""
+        paths = self._market_paths(code)
+        if (
+            expected.get("status") != "success"
+            or expected.get("requested_start") != start.isoformat()
+            or expected.get("requested_end") != end.isoformat()
+            or Path(str(expected.get("output", ""))).resolve()
+            != paths["prices"].resolve()
+        ):
+            raise ValueError("market cache does not match the original request")
+        contents = {
+            name: paths[name].read_bytes() for name in ("prices", "actions", "metadata")
+        }
+        metadata = json.loads(contents["metadata"])
+        action_rows = json.loads(contents["actions"])
+        if (
+            not isinstance(metadata, dict)
+            or metadata.get("contract") != "raw-and-qfq-1"
+            or metadata.get("code") != str(code)
+            or not isinstance(action_rows, list)
+            or not isinstance(metadata.get("diagnostics"), list)
+        ):
+            raise ValueError("invalid market cache metadata or actions")
+        frame = pd.read_csv(io.BytesIO(contents["prices"]))
+        if frame.empty or not set(PriceHistoryBundle.REQUIRED_COLUMNS).issubset(frame):
+            raise ValueError("market cache is empty or lacks raw/qfq columns")
+        dates = pd.to_datetime(frame["date"], errors="coerce")
+        if (
+            dates.isna().any()
+            or dates.duplicated().any()
+            or not dates.is_monotonic_increasing
+            or dates.min().date() < start
+            or dates.max().date() > end
+        ):
+            raise ValueError(
+                "market cache dates are invalid or outside requested window"
+            )
+        flags = frame["tradable"].astype(str).str.lower()
+        if not flags.isin({"true", "false", "1", "0"}).all():
+            raise ValueError("invalid cached tradability flags")
+        frame["tradable"] = flags.isin({"true", "1"})
+        numeric_columns = list(PriceHistoryBundle.REQUIRED_COLUMNS[1:-1])
+        numbers = frame[numeric_columns].apply(pd.to_numeric, errors="coerce")
+        if (
+            np.isinf(numbers.to_numpy()).any()
+            or not np.isfinite(numbers.loc[frame["tradable"]].to_numpy()).all()
+        ):
+            raise ValueError("market cache contains invalid numeric values")
+        price_columns = [column for column in numeric_columns if column != "volume"]
+        if not numbers.loc[frame["tradable"], price_columns].gt(0).all().all():
+            raise ValueError("tradable cached prices must be positive")
+        actions = [CorporateAction(**item) for item in action_rows]
+        for action in actions:
+            if action.code != str(code) or not start <= action.ex_date <= end:
+                raise ValueError(
+                    "cached corporate action belongs to another window/code"
+                )
+            for field in (
+                "cash_per_share",
+                "share_multiplier",
+                "rights_price",
+                "raw_adjustment_factor",
+            ):
+                value = getattr(action, field)
+                if value is not None and not math.isfinite(value):
+                    raise ValueError("cached corporate action is not finite")
+        bundle = PriceHistoryBundle(
+            code=code,
+            prices=frame,
+            actions=actions,
+            source=str(metadata.get("source", "")),
+            currency=metadata.get("currency"),
+            diagnostics=list(metadata["diagnostics"]),
+        ).validate()
+        row = self._market_row(bundle, start, end, paths["prices"])
+        for key in (
+            "source",
+            "rows",
+            "actions",
+            "raw_price_rows",
+            "qfq_price_rows",
+            "actual_start",
+            "actual_end",
+            "requested_window_coverage",
+            "diagnostics",
+        ):
+            if row[key] != expected.get(key):
+                raise ValueError(f"market cache differs from checkpoint field {key}")
+        for key, row_key in (
+            ("rows", "rows"),
+            ("actions", "actions"),
+            ("start", "actual_start"),
+            ("end", "actual_end"),
+        ):
+            if metadata.get(key) != row[row_key]:
+                raise ValueError(f"market metadata differs from data field {key}")
+        return row, {
+            name: hashlib.sha256(content).hexdigest()
+            for name, content in contents.items()
+        }
+
+    def _write_market_receipt(
+        self, code: str, row: dict[str, Any], hashes: dict[str, str]
+    ) -> None:
+        path = self._market_paths(code)["receipt"]
+        current_paths = self._market_paths(code)
+        current_hashes = {
+            name: hashlib.sha256(current_paths[name].read_bytes()).hexdigest()
+            for name in ("prices", "actions", "metadata")
+        }
+        if current_hashes != hashes:
+            raise ValueError("market cache changed while validating its receipt")
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        payload = {
+            "contract": "point-in-time-market-cache-1",
+            "code": str(code),
+            "market_settings_hash": self._market_settings_hash(),
+            "sha256": hashes,
+            "market_history": row,
+        }
+        try:
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _cached_market(
+        self, code: str, start: date, end: date, previous_market: dict | None
+    ) -> dict[str, Any] | None:
+        """Reuse only an exact request receipt or validated matching batch evidence."""
+        path = self._market_paths(code)["receipt"]
+        try:
+            if path.exists():
+                receipt = json.loads(path.read_text(encoding="utf-8"))
+                if (
+                    receipt.get("contract") != "point-in-time-market-cache-1"
+                    or receipt.get("code") != str(code)
+                    or receipt.get("market_settings_hash")
+                    != self._market_settings_hash()
+                ):
+                    return None
+                row, hashes = self._validated_market_snapshot(
+                    code, start, end, receipt["market_history"]
+                )
+                if hashes != receipt.get("sha256"):
+                    return None
+                evidence = "request_receipt"
+            elif previous_market is not None:
+                row, hashes = self._validated_market_snapshot(
+                    code, start, end, previous_market
+                )
+                try:
+                    self._write_market_receipt(code, row, hashes)
+                except OSError as exc:
+                    logger.warning(
+                        "Could not seal validated market cache for %s: %s", code, exc
+                    )
+                evidence = "reference_checkpoint"
+            else:
+                return None
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+            logger.warning("Ignoring invalid market cache for %s: %s", code, exc)
+            return None
+        row["cache_hit"] = True
+        row["cache_evidence"] = evidence
+        return row
+
+    def _backfill_one(
+        self, code: str, start: date, end: date, *, previous_market: dict | None = None
+    ) -> dict[str, Any]:
+        configured = (self.config.get("instrument_catalog", {}) or {}).get(
+            str(code), {}
+        ) or {}
         is_fx = code in self.fx_symbols
         is_market_only = code in self.market_only_symbols
         instrument_type = None
@@ -146,52 +387,62 @@ class PointInTimeBackfillService:
             "statements": {"status": "not_applicable"},
         }
         try:
-            bundle = self.market_provider.fetch(code, start, end)
-            paths = self.market_store.write(bundle)
-            actual_start = pd.Timestamp(bundle.prices["date"].min()).date()
-            actual_end = pd.Timestamp(bundle.prices["date"].max()).date()
-            requested_days = max(1, (end - start).days)
-            covered_days = max(
-                0, (actual_end - max(start, actual_start)).days
-            )
-            coverage_ratio = min(1.0, covered_days / requested_days)
-            coverage_status = (
-                "full"
-                if actual_start
-                <= start + timedelta(days=self.market_coverage_tolerance_days)
-                else "partial"
-            )
-            row["market_history"] = {
-                "status": "success",
-                "source": bundle.source,
-                "rows": len(bundle.prices),
-                "actions": len(bundle.actions),
-                "raw_price_rows": int(bundle.prices["raw_close"].notna().sum()),
-                "qfq_price_rows": int(bundle.prices["qfq_close"].notna().sum()),
-                "requested_start": start.isoformat(),
-                "requested_end": end.isoformat(),
-                "actual_start": actual_start.isoformat(),
-                "actual_end": actual_end.isoformat(),
-                "requested_window_coverage": coverage_status,
-                "calendar_coverage_ratio": coverage_ratio,
-                "output": str(paths["prices"]),
-                "diagnostics": bundle.diagnostics,
-            }
+            cached = self._cached_market(code, start, end, previous_market)
+            if cached is not None:
+                row["market_history"] = cached
+            else:
+                bundle = self.market_provider.fetch(code, start, end)
+                paths = self.market_store.write(bundle)
+                row["market_history"] = self._market_row(
+                    bundle, start, end, paths["prices"]
+                )
+                try:
+                    validated, hashes = self._validated_market_snapshot(
+                        code, start, end, row["market_history"]
+                    )
+                    self._write_market_receipt(code, validated, hashes)
+                except (OSError, ValueError, TypeError, KeyError) as exc:
+                    logger.warning(
+                        "Market cache receipt not created for %s: %s", code, exc
+                    )
+        except BaostockAccessBlocked as exc:
+            row["source_access"] = exc.to_dict()
+            row["market_history"] = {"status": "blocked", "reason": str(exc)}
+            row["statements"] = {"status": "blocked", "reason": "source access blocked"}
+            return row
         except Exception as exc:
             logger.exception("Market-history backfill failed for %s", code)
             row["market_history"] = {
                 "status": "failed",
                 "reason": str(exc),
             }
+            if isinstance(exc, BaostockTransientError):
+                row["source_access"] = exc.to_dict()
 
         if is_fx or is_market_only or instrument_type != InstrumentType.EQUITY:
             return row
         try:
             market = detect_market(code)
             if market == "a_share":
-                result = self.a_share_statements.fetch(code, start, end)
-                statements = list(result.statements)
-                attempts = list(result.attempts)
+                statements = []
+                attempts = []
+                try:
+                    result = self.a_share_statements.fetch(code, start, end)
+                    statements = list(result.statements)
+                    attempts = list(result.attempts)
+                except BaostockAccessBlocked:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - keep independent provider failures visible
+                    logger.warning("Baostock statements failed for %s: %s", code, exc)
+                    attempts.append(
+                        {
+                            "source": "baostock_profit",
+                            "status": "failed",
+                            "reason": str(exc),
+                        }
+                    )
+                    if isinstance(exc, BaostockTransientError):
+                        row["source_access"] = exc.to_dict()
                 if self.use_official_crawlers:
                     is_sse = str(code).startswith(("5", "6", "9"))
                     recent_start = date(
@@ -204,9 +455,7 @@ class PointInTimeBackfillService:
                     )
                     provider_specs = []
                     if is_sse:
-                        provider_specs.append(
-                            (self.sse_statements, "sse_xbrl", start)
-                        )
+                        provider_specs.append((self.sse_statements, "sse_xbrl", start))
                         provider_specs.append(
                             (
                                 self.cninfo_statements,
@@ -224,24 +473,26 @@ class PointInTimeBackfillService:
                         )
                     for provider, source, provider_start in provider_specs:
                         try:
-                            supplement = provider.fetch(
-                                code, provider_start, end
-                            )
+                            supplement = provider.fetch(code, provider_start, end)
                             statements = merge_statement_sources(
                                 statements, supplement.statements
                             )
                             attempts.extend(supplement.attempts)
+                        except BaostockAccessBlocked:
+                            raise
                         except Exception as exc:
                             logger.warning(
                                 "Official statement crawler failed for %s: %s",
                                 code,
                                 exc,
                             )
-                            attempts.append({
-                                "source": source,
-                                "status": "failed",
-                                "reason": str(exc),
-                            })
+                            attempts.append(
+                                {
+                                    "source": source,
+                                    "status": "failed",
+                                    "reason": str(exc),
+                                }
+                            )
             elif market == "us":
                 payload = self.sec_provider.fetch(code, end)
                 statements = [
@@ -262,7 +513,14 @@ class PointInTimeBackfillService:
                     replace_sources = {"sec_companyfacts"}
                 elif market == "hk":
                     replace_sources = {"hkex_results_pdf"}
-                elif market == "a_share" and self.use_official_crawlers:
+                elif (
+                    market == "a_share"
+                    and self.use_official_crawlers
+                    and any(
+                        "cninfo_annual_report" in item.source.split("+")
+                        for item in statements
+                    )
+                ):
                     replace_sources = {"cninfo_annual_report"}
                 output = self.fundamental_store.upsert(
                     code,
@@ -270,9 +528,7 @@ class PointInTimeBackfillService:
                     replace_sources=replace_sources,
                 )
                 available = self.fundamental_store.as_of(code, end)
-                field_availability = self._statement_field_availability(
-                    available
-                )
+                field_availability = self._statement_field_availability(available)
                 row["statements"] = {
                     "status": "success",
                     "stored": len(statements),
@@ -290,12 +546,20 @@ class PointInTimeBackfillService:
                     "attempts": attempts,
                 }
             else:
+                source_failed = any(item.get("status") == "failed" for item in attempts)
                 row["statements"] = {
-                    "status": "missing",
+                    "status": "failed" if source_failed else "missing",
                     "stored": 0,
-                    "reason": "provider returned no dated financial statements",
+                    "reason": (
+                        "no dated financial statements; one or more providers failed"
+                        if source_failed
+                        else "provider returned no dated financial statements"
+                    ),
                     "attempts": attempts,
                 }
+        except BaostockAccessBlocked as exc:
+            row["source_access"] = exc.to_dict()
+            row["statements"] = {"status": "blocked", "reason": str(exc)}
         except Exception as exc:
             logger.exception("Statement backfill failed for %s", code)
             row["statements"] = {"status": "failed", "reason": str(exc)}
@@ -337,9 +601,7 @@ class PointInTimeBackfillService:
             for row in rows
         )
         applicable = [
-            row
-            for row in rows
-            if row["statements"].get("status") != "not_applicable"
+            row for row in rows if row["statements"].get("status") != "not_applicable"
         ]
         statement_success = sum(
             row["statements"].get("status") == "success" for row in applicable
@@ -350,9 +612,7 @@ class PointInTimeBackfillService:
             filled = sum(
                 bool(
                     (
-                        row["statements"]
-                        .get("field_availability", {})
-                        .get(field, {})
+                        row["statements"].get("field_availability", {}).get(field, {})
                     ).get("available")
                 )
                 for row in applicable
@@ -362,7 +622,7 @@ class PointInTimeBackfillService:
                 "total": total,
                 "fill_rate": filled / total if total else 0.0,
             }
-        return {
+        summary = {
             "generated_at": datetime.now().isoformat(),
             "contract": "point-in-time-data-1",
             "start": start.isoformat(),
@@ -378,3 +638,14 @@ class PointInTimeBackfillService:
             "statement_field_coverage": field_coverage,
             "instruments": rows,
         }
+        blocked = next(
+            (
+                row["source_access"]
+                for row in rows
+                if row.get("source_access", {}).get("blocked")
+            ),
+            None,
+        )
+        if blocked is not None:
+            summary["source_access"] = copy.deepcopy(blocked)
+        return summary

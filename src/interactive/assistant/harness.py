@@ -347,7 +347,11 @@ class _Run:
             self.calls += 1
             key = canonical_json([name, arguments])
             self.repeated[key] = self.repeated.get(key, 0) + 1
-            if self.repeated[key] > 1:
+            # Personal tools observe mutable account/task state. A failed import
+            # must be retryable after account creation and status must refresh
+            # after writes. Their write endpoints own idempotency and CAS; the
+            # shared call/round/time budgets still bound retries here.
+            if self.repeated[key] > 1 and not name.startswith("personal_monitor_"):
                 raise ValueError(
                     "相同查询已执行；请使用已有结果，或根据错误改换数据集、关键词或路径。"
                 )

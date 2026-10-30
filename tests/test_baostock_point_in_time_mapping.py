@@ -157,11 +157,12 @@ class _TimeoutProbeModule:
         self.logout_called = True
 
 
-def test_baostock_socket_timeout_is_bounded_and_restored():
+def test_baostock_socket_timeout_is_bounded_and_restored(tmp_path):
     module = _TimeoutProbeModule()
     provider = BaostockMarketHistoryProvider(
         module=module,
         config={
+            "provider_access": {"baostock": {"state_dir": str(tmp_path)}},
             "point_in_time_data": {
                 "market_history": {
                     "baostock_socket_timeout_seconds": 7,
@@ -174,6 +175,7 @@ def test_baostock_socket_timeout_is_bounded_and_restored():
     with pytest.raises(RuntimeError, match="timed out"):
         provider.fetch("601398", date(2020, 1, 1), date(2026, 1, 1))
 
-    assert module.observed_timeouts == [7.0, 7.0]
-    assert module.logout_called
+    # A rejected login must not spend another provider request on logout.
+    assert module.observed_timeouts == [7.0]
+    assert not module.logout_called
     assert socket.getdefaulttimeout() == previous
