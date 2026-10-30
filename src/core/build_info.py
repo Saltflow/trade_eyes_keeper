@@ -11,6 +11,7 @@ import threading
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
+from uuid import uuid4
 
 from zoneinfo import ZoneInfo
 
@@ -171,7 +172,13 @@ def write_release_manifest(root: Path, source_commit: str) -> dict:
         "version": _version(root),
         "source_commit": source_commit,
         "source_sha256": digest,
-        "deployment_id": now.strftime("%Y%m%dT%H%M%S%f%z") + "-" + digest[:8],
+        "deployment_id": (
+            now.strftime("%Y%m%dT%H%M%S%f%z")
+            + "-"
+            + digest[:8]
+            + "-"
+            + uuid4().hex[:12]
+        ),
         "deployed_at": now.isoformat(),
         "files": files,
     }

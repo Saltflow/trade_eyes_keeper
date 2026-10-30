@@ -43,7 +43,13 @@ def test_deployment_records_actual_version_and_overlay_not_git_head(source):
     assert builds.build_label(info).startswith("v1.18.0 · aaaaaaa · 构建 ")
 
 
-def test_same_sources_have_same_bundle_and_separate_deployment_ids(source):
+def test_same_sources_have_same_bundle_and_separate_deployment_ids(source, monkeypatch):
+    class FixedDateTime(builds.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 30, 12, 0, tzinfo=tz)
+
+    monkeypatch.setattr(builds, "datetime", FixedDateTime)
     first = publish(source)
     second = publish(source)
     assert first["source_sha256"] == second["source_sha256"]
