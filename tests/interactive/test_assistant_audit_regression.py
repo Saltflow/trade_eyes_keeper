@@ -11,7 +11,7 @@ from src.interactive.assistant.store import ProposalStore
 
 
 @pytest.fixture
-def service(tmp_path):
+def service(tmp_path, stub_pi_transport):
     value = FeishuAssistant(
         {},
         Mock(return_value=(True, "ok")),

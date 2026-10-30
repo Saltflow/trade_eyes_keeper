@@ -82,6 +82,7 @@ class ScheduleManager:
 
     def start(self):
         """注册所有 job 并启动调度器。"""
+        self._remove_retired_research_jobs()
         if self.scheduler.running:
             return
         sched_cfg = self.config.get("scheduler", {})
@@ -160,6 +161,9 @@ class ScheduleManager:
         misfire_grace_seconds: int = DEFAULT_BRIEF_MISFIRE_GRACE_SECONDS,
     ):
         """Register a trigger; report callbacks only submit durable work."""
+        if self._retired_research_job(task_id, cli_args, job_id_override):
+            logger.warning("跳过已退役研究调度: %s", task_id)
+            return
         hour, minute = self._parse_time(time_str)
         if hour is None:
             logger.warning(f"跳过无效调度时间: {task_id}={time_str}")
@@ -186,7 +190,25 @@ class ScheduleManager:
             misfire_grace_seconds,
         )
 
+    @staticmethod
+    def _retired_research_job(task_id, cli_args=(), job_id=None) -> bool:
+        identifiers = (str(task_id).lower(), str(job_id or "").lower())
+        return any(
+            value.startswith(("fundamental_quant", "brief_fundamental_quant"))
+            for value in identifiers
+        ) or any(
+            str(argument)
+            .split("=", 1)[0]
+            .startswith(("--fundamental-quant", "--fundamental-materials"))
+            for argument in cli_args
+        )
 
+    def _remove_retired_research_jobs(self) -> None:
+        """Discard legacy jobs even when the saved legacy settings stay enabled."""
+        for job in self.scheduler.get_jobs():
+            if self._retired_research_job(job.id):
+                self.scheduler.remove_job(job.id)
+                logger.info("已移除退役研究调度: %s", job.id)
 
     def _job_runner(self, task_id: str, cli_args: list[str], source: str = "schedule"):
         generation = (self._generation, self._task_generations.get(task_id, 0))
@@ -194,6 +216,9 @@ class ScheduleManager:
         def run():
             if generation != (self._generation, self._task_generations.get(task_id, 0)):
                 logger.info("已忽略失效的调度触发器: %s", task_id)
+                return None
+            if ScheduleManager._retired_research_job(task_id, cli_args):
+                logger.warning("已阻止退役研究任务: %s", task_id)
                 return None
             if "--once" in cli_args or "--brief" in cli_args:
                 from .report_execution import submit_report
@@ -277,6 +302,7 @@ class ScheduleManager:
         with self._change_lock:
             if not self.scheduler.running:
                 raise RuntimeError("调度器尚未启动，配置在下次启动后生效")
+            self._remove_retired_research_jobs()
             saved = ConfigStore(self.config_path).load_runtime()
             previous = self._scheduled_specs(self.config)
             proposed = self._scheduled_specs(saved)
@@ -361,6 +387,11 @@ class ScheduleManager:
                     ),
                 )
             )
+        specs = [
+            spec
+            for spec in specs
+            if not cls._retired_research_job(spec[1], spec[3], spec[0])
+        ]
         ids = [spec[0] for spec in specs]
         if len(ids) != len(set(ids)):
             raise ValueError("调度任务 id 重复")

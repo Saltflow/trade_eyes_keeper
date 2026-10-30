@@ -213,6 +213,22 @@ def test_smtp_starttls_failure_is_pre_submit(smtp):
     server.send_message.assert_not_called()
 
 
+def test_email_invalid_attachment_never_starts_transport(smtp):
+    notifier, _connection, server, factory = smtp
+    receipt = notifier._send_email(
+        "controlled",
+        "body",
+        attachments=[
+            {
+                "filename": "../bad.pdf",
+                "content": b"bad",
+                "content_type": "application/pdf",
+            }
+        ],
+    )
+    assert receipt["status"] == "failed"
+    factory.assert_not_called()
+    server.send_message.assert_not_called()
 
 
 @pytest.mark.parametrize(

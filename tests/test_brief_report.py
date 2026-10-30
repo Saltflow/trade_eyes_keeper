@@ -4,13 +4,13 @@
 锚点择优算法 + 简报邮件渲染 + 交易日过滤
 """
 
-import pytest
-import pandas as pd
-from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime
+from unittest.mock import MagicMock, Mock, patch
+
+import pandas as pd
+import pytest
 
 from src.notification.email_notifier import EmailNotifier
-
 
 # ════════════════════════════════════════════════════════
 # _pick_best_anchor 测试
@@ -147,7 +147,8 @@ class TestSendBriefReport:
     @pytest.fixture
     def mock_session(self):
         """构建模拟 Session（日期用今天，避免时间漂移导致过滤）"""
-        today = datetime.now()
+        # Fixture models the existing local calendar/date filter, not an instant.
+        today = datetime.now()  # noqa: DTZ005
         session = Mock()
         session.signal_scan = None  # 避免 Mock.alerts len() 报错
         session.get_all_dataframe.return_value = pd.DataFrame(
@@ -193,7 +194,8 @@ class TestSendBriefReport:
         """超过3天的旧数据被过滤"""
         # 把 VOO 日期改成 10 天前
         df = mock_session.get_all_dataframe.return_value
-        df.at[1, "date"] = datetime.now() - __import__("datetime").timedelta(days=10)
+        # Fixture models the existing local calendar/date filter, not an instant.
+        df.at[1, "date"] = datetime.now() - __import__("datetime").timedelta(days=10)  # noqa: DTZ005
 
         notifier = EmailNotifier({"email": {}})
         with patch.object(notifier, "_send_email") as mock_send:
@@ -257,7 +259,8 @@ class TestSendBriefReport:
         """按锚点偏离率升序排列：跌幅越大越靠前"""
         session = Mock()
         session.signal_scan = None  # 避免 Mock.alerts len() 报错
-        today = datetime.now()
+        # Fixture models the existing local calendar/date filter, not an instant.
+        today = datetime.now()  # noqa: DTZ005
         session.get_all_dataframe.return_value = pd.DataFrame(
             [
                 {
@@ -312,7 +315,8 @@ class TestSendBriefReport:
         """无有效锚点的股票排在最后"""
         session = Mock()
         session.signal_scan = None  # 避免 Mock.alerts len() 报错
-        today = datetime.now()
+        # Fixture models the existing local calendar/date filter, not an instant.
+        today = datetime.now()  # noqa: DTZ005
         session.get_all_dataframe.return_value = pd.DataFrame(
             [
                 {
@@ -374,8 +378,10 @@ class TestRunBriefReportIntegration:
             }
             with patch("main.datetime") as mock_dt:
                 # 周六
-                mock_dt.now.return_value = datetime(2026, 4, 25, 9, 50)
-                mock_dt.date.return_value = datetime(2026, 4, 25).date()
+                # Fixture models the existing local calendar/date filter, not an instant.
+                mock_dt.now.return_value = datetime(2026, 4, 25, 9, 50)  # noqa: DTZ001
+                # Fixture models the existing local calendar/date filter, not an instant.
+                mock_dt.date.return_value = datetime(2026, 4, 25).date()  # noqa: DTZ001
                 with patch("main.StockDataFetcher") as mock_fetcher:
                     run_brief_report("morning_snapshot")
                     # 周末跳过 → 不应该尝试 fetch

@@ -22,6 +22,25 @@ FINAL_INSTRUCTION = (
     "本轮工具预算已用完。请仅根据已取得的证据回答用户，列明尚未查清的点。"
     "不要发起工具调用、虚构执行成功或再要求用户提供仓库已有的内容。"
 )
+RETRIEVAL_TOOLS = frozenset(
+    {
+        "get_dataset_details",
+        "query_dataset_documents",
+        "fetch_a_share_report",
+        "search_report_text",
+        "read_dataset_text",
+        "search_repository",
+        "read_repository_file",
+        "search_project_docs",
+        "read_project_doc",
+        "read_configuration",
+        "query_research_data",
+        "query_stock_fundamentals",
+        "search_web",
+        "calculate_gordon_ke_sensitivity",
+        "query_tasks",
+    }
+)
 
 
 def compact_messages(messages: list[dict], limit: int) -> list[dict]:
@@ -80,20 +99,36 @@ class ConversationHarness:
                     os.killpg(process.pid, signal.SIGKILL)
                 process.wait(timeout=2)
 
-    def run(self, messages, tools, invoke, audit, format_value, check_answer) -> str:
+    def run(
+        self,
+        messages,
+        tools,
+        invoke,
+        audit,
+        format_value,
+        check_answer,
+        *,
+        require_retrieval=False,
+        evidence_ready=False,
+    ) -> str:
         run = _Run(self, tools, invoke, audit, format_value, check_answer)
-        audit("harness_start", {"backend": self.settings.harness_backend})
+        run.require_retrieval = require_retrieval
+        run.evidence_ready = evidence_ready
+        run.backend = "pi" if require_retrieval else self.settings.harness_backend
+        audit("harness_start", {"backend": run.backend})
         try:
-            if self.settings.harness_backend == "pi":
+            if run.backend == "pi":
                 answer = self._pi(messages, tools, run)
             else:
                 answer = self._native(messages, run)
             audit(
                 "harness_finished",
                 {
-                    "backend": self.settings.harness_backend,
+                    "backend": run.backend,
                     "model_rounds": run.rounds,
                     "tool_calls": run.calls,
+                    "retrieval_attempts": run.retrieval_attempts,
+                    "evidence_ready": run.evidence_ready,
                 },
             )
             return answer
@@ -131,7 +166,7 @@ class ConversationHarness:
         bridge = self.root / "tools" / "feishu-pi" / "bridge.mjs"
         if not executable or not bridge.is_file() or bridge.is_symlink():
             raise AssistantAPIError(
-                "Pi harness 未安装完整，请检查部署依赖或切换 native。"
+                "Pi harness 未安装完整，研究问答需要可用的 Node 和锁定依赖；未退回直接回答。"
             )
         environment = {
             key: value
@@ -267,6 +302,11 @@ class _Run:
         self.repeated = {}
         self.deadline = time.monotonic() + self.settings.conversation_timeout_seconds
         self.finalizing = False
+        self.backend = self.settings.harness_backend
+        self.require_retrieval = False
+        self.evidence_ready = False
+        self.retrieval_attempts = 0
+        self.retrieval_repairs = 0
 
     def guard(self):
         if self.harness.stop_event.is_set():
@@ -283,6 +323,18 @@ class _Run:
             or self.calls >= self.settings.max_tool_calls
         )
         messages = compact_messages(messages, self.settings.max_context_chars)
+        if (
+            self.require_retrieval
+            and self.retrieval_attempts
+            and not self.evidence_ready
+        ):
+            messages.append(
+                {
+                    "role": "system",
+                    "content": "本轮检索尚未取得可用资料。继续换来源查询，或只说明实际尝试和失败；"
+                    "不得把模型记忆、旧会话或目录清单当作已核实的财务事实。",
+                }
+            )
         if self.finalizing:
             messages.append({"role": "system", "content": FINAL_INSTRUCTION})
         self.rounds += 1
@@ -291,9 +343,11 @@ class _Run:
             {
                 "round": self.rounds,
                 "model": self.settings.model,
-                "backend": self.settings.harness_backend,
+                "backend": self.backend,
                 "input_chars": len(canonical_json(messages)),
                 "finalizing": self.finalizing,
+                "thinking": "enabled",
+                "reasoning_effort": self.settings.reasoning_effort,
             },
         )
         start = time.monotonic()
@@ -315,6 +369,29 @@ class _Run:
         if self.finalizing and response.get("tool_calls"):
             raise AssistantAPIError("模型未在预算内完成总结；已有提案仍须单独确认。")
         if not response.get("tool_calls"):
+            if (
+                self.require_retrieval
+                and not self.evidence_ready
+                and not self.retrieval_attempts
+            ):
+                self.audit("retrieval_required", {"round": self.rounds})
+                if not self.retrieval_repairs and not self.finalizing:
+                    self.retrieval_repairs += 1
+                    return self.model(
+                        [
+                            *messages,
+                            response,
+                            {
+                                "role": "system",
+                                "content": "该问题需要资料，但本轮还没有实际检索。"
+                                "请调用与问题相关的查询、搜索或原文读取工具后再分析回答；"
+                                "repository_map、工具目录和旧会话不算已查资料。",
+                            },
+                        ]
+                    )
+                raise AssistantAPIError(
+                    "研究问答未完成资料检索，未发送未经核实的回答。"
+                )
             errors = self.check_answer(response.get("content") or "")
             if errors:
                 self.audit("citation_rejected", {"errors": errors})
@@ -355,7 +432,19 @@ class _Run:
                 raise ValueError(
                     "相同查询已执行；请使用已有结果，或根据错误改换数据集、关键词或路径。"
                 )
-            return self.invoke(name, arguments)
-        except (ValueError, KeyError, TypeError, OSError) as exc:
+            if name in RETRIEVAL_TOOLS:
+                self.retrieval_attempts += 1
+            result = self.invoke(name, arguments)
+            if name in RETRIEVAL_TOOLS and isinstance(result, dict):
+                self.evidence_ready = self.evidence_ready or not (
+                    result.get("error")
+                    or result.get("errors")
+                    or result.get("status")
+                    in {"failed", "error", "lookup_error", "blocked"}
+                )
+            return result
+        except (ValueError, KeyError, TypeError, OSError, RuntimeError) as exc:
+            if isinstance(exc, RuntimeError) and name not in RETRIEVAL_TOOLS:
+                raise
             self.audit("tool_error", {"name": name, "error": str(exc)})
             return {"error": str(exc)}

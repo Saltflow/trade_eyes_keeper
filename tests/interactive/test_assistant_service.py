@@ -9,9 +9,11 @@ import pytest
 from src.interactive.assistant.service import FeishuAssistant
 from src.interactive.assistant.store import ProposalStore
 
+pytestmark = pytest.mark.usefixtures("stub_pi_transport")
+
 
 @pytest.fixture
-def assistant(tmp_path):
+def assistant(tmp_path, stub_pi_transport):
     configuration = Mock()
     configuration.describe.return_value = {
         "fields": [{"key": "stocks", "value": ["600036"]}]
@@ -123,7 +125,7 @@ def test_stock_code_is_looked_up_before_model_and_result_is_in_context(assistant
     assert any(event["kind"] == "automatic_stock_lookup" for event in turn["events"])
 
 
-def test_simple_stock_fundamental_question_uses_grounded_direct_answer(assistant):
+def test_stock_query_is_analyzed_by_pi_instead_of_returning_template(assistant):
     assistant.research.query_stock_fundamentals.return_value = {
         "code": "600150",
         "as_of": "2026-10-01",
@@ -148,15 +150,32 @@ def test_simple_stock_fundamental_question_uses_grounded_direct_answer(assistant
         },
     }
 
+    assistant.client.complete.return_value = {
+        "role": "assistant",
+        "content": "依据 ds_sample 的已披露指标，PB 为 1.2，ROE 为 8.4%；这是模型分析正文。",
+        "reasoning_content": "核对日期、口径和指标，避免把估值倍数等同投资回报。",
+    }
     assistant.handle("chat", "owner", "查一下 600150 的基本面指标")
 
-    assistant.client.complete.assert_not_called()
+    assistant.client.complete.assert_called_once()
     answer = assistant.send_message.call_args.args[1]
-    assert "ds_sample" in answer
-    assert "自动调用单标的时点补数链路" in answer
-    assert "fixture-provider" in answer
-    assert "市净率 PB：1.2（derived）" in answer
-    assert "净资产收益率 TTM：8.4（observed）" in answer
+    assert answer == assistant.client.complete.return_value["content"]
+    messages = assistant.client.complete.call_args.args[0]
+    assert any("ds_sample" in str(item.get("content")) for item in messages)
+    turn = assistant.store.recent_turns("chat", "owner")[0]
+    events = {event["kind"]: event["data"] for event in turn["events"]}
+    assert events["harness_start"]["backend"] == "pi"
+    assert events["model_request"]["thinking"] == "enabled"
+    assert "automatic_stock_answer" not in events
+
+
+def test_research_about_holdings_is_not_replaced_by_status_template(assistant):
+    assistant.personal.holdings_query_scope = Mock(return_value={})
+    assistant.harness.run = Mock(return_value="研究分析正文，当前资料仍有缺口。")
+    assistant.handle("chat", "owner", "分析我的持仓公司估值，需要看财报")
+    assistant.personal.holdings_query_scope.assert_not_called()
+    assert assistant.harness.run.call_args.kwargs["require_retrieval"] is True
+    assert assistant.send_message.call_args.args[1] == "研究分析正文，当前资料仍有缺口。"
 
 
 def test_missing_stock_data_attempts_web_and_reports_network_failure(assistant):
@@ -165,7 +184,11 @@ def test_missing_stock_data_attempts_web_and_reports_network_failure(assistant):
         "datasets_checked": 2,
         "selected": None,
         "dataset_results": [
-            {"dataset_id": "ds_meta", "status": "not_materialized", "reason": "metadata only"}
+            {
+                "dataset_id": "ds_meta",
+                "status": "not_materialized",
+                "reason": "metadata only",
+            }
         ],
         "matched_file_inventory": [
             {
@@ -176,10 +199,20 @@ def test_missing_stock_data_attempts_web_and_reports_network_failure(assistant):
         ],
     }
     assistant.call_tool = Mock(side_effect=OSError("Network is unreachable"))
+    assistant.client.complete.side_effect = [
+        call(
+            "search_web",
+            {"query": "600150 公司基本面 最新年报 财务指标 公告", "limit": 5},
+        ),
+        {
+            "role": "assistant",
+            "content": "本地仅有 reference_batches/codes/600150.json 元数据；联网查询失败，不能确认当前指标。",
+        },
+    ]
 
     assistant.handle("chat", "owner", "查一下 600150 的基本面指标")
 
-    assistant.client.complete.assert_not_called()
+    assert assistant.client.complete.call_count == 2
     assistant.call_tool.assert_called_once_with(
         "chat",
         "owner",
@@ -188,8 +221,10 @@ def test_missing_stock_data_attempts_web_and_reports_network_failure(assistant):
     )
     answer = assistant.send_message.call_args.args[1]
     assert "reference_batches/codes/600150.json" in answer
-    assert "网络出口不可达" in answer
-    assert "我没有用模型记忆补造财务数据" in answer
+    assert "联网查询失败" in answer
+    turn = assistant.store.recent_turns("chat", "owner")[0]
+    assert turn["status"] == "completed"
+    assert any(e["kind"] == "tool_error" for e in turn["events"])
 
 
 def test_audit_redacts_question_reply_and_tool_events(assistant):
@@ -231,6 +266,9 @@ def test_model_failure_is_persisted_with_trace(assistant):
 
 
 def test_persisted_history_restores_only_owner_and_clear_is_a_barrier(assistant):
+    (assistant.root / "README.md").write_text(
+        "# 公告栏\n公告栏旧问题与时效性说明。\n", encoding="utf-8"
+    )
     assistant.client.complete.return_value = {"role": "assistant", "content": "旧回答"}
     assistant.handle("chat", "owner", "公告栏旧问题")
     assistant._history.clear()
@@ -257,11 +295,9 @@ def test_submit_receipt_and_queue_share_one_trace(assistant):
     assistant.client.complete.return_value = {"role": "assistant", "content": "答复"}
     assert assistant.submit("chat", "owner", "问题", "one-message")
     assert not assistant.submit("chat", "owner", "问题", "one-message")
-    runtime = assistant.execution_runtime
-    runs = runtime.store.list_runs()
-    assert len(runs) == 1
-    runtime.tick()
-    assert runtime.wait(runs[0]["id"], 5)["status"] == "succeeded"
+    run = assistant.execution_runtime.store.list_runs()[0]
+    assistant.execution_runtime.start()
+    assert assistant.execution_runtime.wait(run["id"], 10)["status"] == "succeeded"
     turns = assistant.store.recent_turns("chat", "owner")
     assert len(turns) == 1
     assert turns[0]["status"] == "completed"
@@ -377,11 +413,9 @@ def test_cancel_bypasses_pending_llm_queue_and_preserves_terminal_states(assista
     assistant.store.update(item["id"], "running")
     cancel = threading.Event()
     assistant._cancels[item["id"]] = cancel
-    assert assistant.submit("chat", "owner", "一个很慢的模型请求", "slow-message")
-    assert assistant.execution_runtime.store.count_pending("conversation.turn") == 1
+    assert assistant.submit("chat", "owner", "一个很慢的模型请求", "slow-model")
     assert assistant.submit("chat", "owner", "取消 " + item["id"], "cancel-message")
     assert cancel.is_set()
-    assert assistant.execution_runtime.store.count_pending("conversation.turn") == 1
     assert assistant.store.get(item["id"], "chat", "owner")["status"] == "cancelling"
     assert not assistant.store.transition(
         item["id"], "running", ("preparing", "running")

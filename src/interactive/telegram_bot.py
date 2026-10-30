@@ -37,6 +37,8 @@ class TelegramBot:
             raise ValueError("interactive.telegram.polling_interval must be positive")
         self._running = False
         self._stop_event = threading.Event()
+        self._admission_paused = threading.Event()
+        self._admission_lock = threading.RLock()
         self.command_executor = CommandExecutor(
             lambda chat_id, text: self._send_message(chat_id, text)
         )
@@ -137,22 +139,35 @@ class TelegramBot:
         offset = 0
         try:
             while not self._stop_event.is_set():
+                if self._admission_paused.is_set():
+                    self._stop_event.wait(self.polling_interval)
+                    continue
                 updates = self._get_updates(offset)
                 for update in updates:
-                    if self._stop_event.is_set():
-                        break
-                    try:
-                        self._process_update(update)
-                    except Exception:
-                        logger.exception("Telegram update handling failed")
-                    finally:
-                        offset = max(offset, update.get("update_id", 0) + 1)
+                    with self._admission_lock:
+                        if self._stop_event.is_set() or self._admission_paused.is_set():
+                            # Do not advance the offset for a returned but
+                            # unadmitted update. No later GET acknowledges it.
+                            break
+                        try:
+                            self._process_update(update)
+                        except Exception:
+                            logger.exception("Telegram update handling failed")
+                        finally:
+                            offset = max(offset, update.get("update_id", 0) + 1)
                 self._stop_event.wait(self.polling_interval)
         finally:
             self._running = False
             self.command_executor.stop()
 
     def stop(self) -> None:
+        self.pause_admission()
         self._stop_event.set()
         self.command_executor.stop()
         self._running = False
+
+    def pause_admission(self) -> None:
+        """Wait for the current admitted handler without acknowledging new rows."""
+        self._admission_paused.set()
+        with self._admission_lock:
+            pass

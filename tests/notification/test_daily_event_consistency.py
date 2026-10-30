@@ -75,6 +75,18 @@ def test_pdf_shows_implementation_notice_and_payment_dates(monkeypatch, session)
     assert "\r" not in tex
 
 
+def test_pdf_includes_hk_announcements_alongside_a_shares(monkeypatch, session):
+    session.announcements["00700"] = [{
+        "date": "2026-10-21", "title": "截至六月三十日止六個月業績公佈",
+        "url": "https://www1.hkexnews.hk/listedco/notice_c.pdf",
+        "exchange": "hkex",
+    }]
+    tex = pdf_source(monkeypatch, session)
+    assert "权益分派实施公告" in tex
+    assert "截至六月三十日止六個月業績公佈" in tex
+    assert "00700" in tex
+
+
 @pytest.mark.parametrize("final_pass_fails", [False, True])
 def test_pdf_keeps_cross_reference_pass_without_duplicate_pdf_conversion(
     monkeypatch, session, final_pass_fails

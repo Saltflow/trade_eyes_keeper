@@ -2,9 +2,8 @@
 日报模式邮件测试（EvaluationReport 统一数据源）
 """
 
-import sys
 import os
-from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pandas as pd
@@ -211,13 +210,14 @@ class TestDailyModeEmail:
 
         monkeypatch.setattr(notifier, "_chart_deviation_timeline", lambda *a, **k: None)
 
-        def fake_run(args, **kwargs):
-            tex_path = Path(args[-1])
+        def capture_compilation(tex_path):
+            # This test checks template data; compiler protocol has its own tests.
             captured["tex"] = tex_path.read_text(encoding="utf-8")
-            (tex_path.parent / "report.pdf").write_bytes(b"%PDF-FAKE")
-            return SimpleNamespace(returncode=0, stderr="")
+            return b"%PDF-FAKE"
 
-        monkeypatch.setattr("subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "src.notification.daily_pdf._compile_pdf", capture_compilation
+        )
         pdf = notifier._generate_daily_pdf(session, [], None, {}, pd.DataFrame())
 
         assert pdf == b"%PDF-FAKE"

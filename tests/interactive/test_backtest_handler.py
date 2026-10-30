@@ -7,6 +7,7 @@ class TestBacktestHandler:
     def test_backtest_returns_error_for_invalid_code(self):
         result = handle_backtest("ZZZZZZ", "2024-01-01", "2024-12-31")
         assert "❌" in result
+        assert "至少需要 24 个月" in result
 
     def test_backtest_with_real_data(self):
         """真实数据回测：验证不崩溃。"""

@@ -1,0 +1,8 @@
+# Copy to config/personal_monitor_feishu_test.local.yaml; never use config.yaml.
+# Credentials go only in dedicated PERSONAL_MONITOR_TEST_* environment variables.
+test_mode: true
+app_id: cli_REPLACE_WITH_NEW_TEST_APP_ID
+allowed_chat_ids: []       # --discover-chat prints oc_...; private chat only
+allowed_sender_ids: []     # --discover-chat prints your ou_...
+workspace_name: screenshot_acceptance
+market_check_times: ["09:50", "14:30", "19:00"]

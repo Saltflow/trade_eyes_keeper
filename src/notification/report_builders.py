@@ -9,6 +9,8 @@ email_notifier.py re-exports every name here, so existing importers are
 unaffected.
 """
 
+from __future__ import annotations
+
 import html as html_lib
 import logging
 from datetime import datetime
@@ -61,9 +63,7 @@ def pick_best_anchor(
             return True
         if 5.0 <= dev < 10.0:
             return True
-        if 10.0 <= dev < 15.0:
-            return True
-        return False
+        return 10.0 <= dev < 15.0
 
     candidates = []
     for name, value in anchors.items():
@@ -156,8 +156,9 @@ def build_brief_entries(stock_data, today) -> list[dict]:
         [{code, name, close, open, anchor_name, anchor_val, dev_pct, dev_str}]
         dev_pct 为 None 时排到最后，dev_str 为 "-"
     """
-    import pandas as pd
     from datetime import datetime as dt_mod
+
+    import pandas as pd
 
     today_date = today.date() if hasattr(today, "date") else today
     entries = []
@@ -167,6 +168,13 @@ def build_brief_entries(stock_data, today) -> list[dict]:
         name = str(row.get("stock_name") or code)
         close_price = row.get("close")
         open_price = row.get("open")
+        prev_close = row.get("prev_close")
+        try:
+            prev_close = float(prev_close)
+            if not np.isfinite(prev_close) or prev_close <= 0:
+                prev_close = None
+        except (TypeError, ValueError):
+            prev_close = None
 
         # 3 天日期过滤
         data_date = row.get("date")
@@ -174,10 +182,11 @@ def build_brief_entries(stock_data, today) -> list[dict]:
         if data_date is not None and not pd.isna(data_date):
             try:
                 date_str = str(data_date)[:10]
-                data_dt = dt_mod.strptime(date_str, "%Y-%m-%d").date()
+                data_dt = dt_mod.strptime(date_str, "%Y-%m-%d").date()  # noqa: DTZ007 -- calendar only
                 days_since = (today_date - data_dt).days
                 in_trading = 0 <= days_since <= 3
-            except Exception:
+            except (TypeError, ValueError, OverflowError) as exc:
+                logger.debug("Report row omitted: %s", type(exc).__name__)
                 continue
         if not in_trading:
             continue
@@ -212,6 +221,7 @@ def build_brief_entries(stock_data, today) -> list[dict]:
                 "name": name,
                 "close": close_price,
                 "open": open_price,
+                "prev_close": prev_close,
                 "anchor_name": anchor_name,
                 "anchor_val": anchor_val,
                 "dev_pct": dev_pct,
@@ -244,7 +254,7 @@ def build_strategy_suggestions(stock_data, today=None) -> dict | None:
         }
     """
     today_date = (
-        today.date() if hasattr(today, "date") else (today or datetime.now().date())
+        today.date() if hasattr(today, "date") else (today or datetime.now().astimezone().date())
     )
 
     # 空数据直接返回
@@ -274,7 +284,7 @@ def build_strategy_suggestions(stock_data, today=None) -> dict | None:
             return None
         top = strategies[0]
         params = top.get("params", {})
-    except Exception:
+    except Exception:  # noqa: BLE001 -- optional saved-strategy summary boundary
         return None
 
     # 解析买入规则
@@ -330,11 +340,12 @@ def build_strategy_suggestions(stock_data, today=None) -> dict | None:
         data_date = row.get("date")
         if data_date is not None and not pd.isna(data_date):
             try:
-                data_dt = datetime.strptime(str(data_date)[:10], "%Y-%m-%d").date()
+                data_dt = datetime.strptime(str(data_date)[:10], "%Y-%m-%d").date()  # noqa: DTZ007 -- calendar only
                 days_since = (today_date - data_dt).days
                 if days_since < 0 or days_since > 3:
                     continue
-            except Exception:
+            except (TypeError, ValueError, OverflowError) as exc:
+                logger.debug("Report row omitted: %s", type(exc).__name__)
                 continue
 
         active_signals = []
@@ -397,7 +408,8 @@ def build_strategy_suggestions(stock_data, today=None) -> dict | None:
                     bb = float(row.get("boll_pct_b", np.nan))
                     t = (1.0 - t_raw) * 0.35
                     triggered = not np.isnan(bb) and bb < t
-            except Exception:
+            except (TypeError, ValueError, OverflowError) as exc:
+                logger.debug("Report row omitted: %s", type(exc).__name__)
                 continue
 
             if triggered:
@@ -502,8 +514,8 @@ def _build_signal_label_map(group: str = "a_share") -> dict[str, str]:
             label_map[rule_id] = SIGNAL_NAMES.get(v, v)
         logger.debug(f"Signal label map: {label_map}")
         return label_map
-    except Exception as e:
-        logger.warning(f"读取信号标签映射失败: {e}")
+    except Exception as e:  # noqa: BLE001 -- optional strategy plugin boundary
+        logger.warning("读取信号标签映射失败: %s", type(e).__name__)
         return {}
 
 
@@ -521,7 +533,7 @@ def _alert_value(alert, name: str, default: str = "?"):
 
 
 def _readable_signal(
-    code: str, rule_label: str, map_a: dict, map_hk: dict, map_us: dict = None
+    code: str, rule_label: str, map_a: dict, map_hk: dict, map_us: dict | None = None
 ) -> str:
     """按标的所属细分组把 rule_id(如 buy_1) 翻译成信号名(如 趋势跟踪)。
 
@@ -1119,12 +1131,22 @@ def _build_optimizer_run_summary(report) -> str:
     return "<br>".join(lines)
 
 
+def get_brief_dataframe(session):
+    """Use the same eligible quote rows on every scheduled delivery channel."""
+    frame = session.get_all_dataframe()
+    codes = getattr(session, "brief_active_codes", None)
+    if isinstance(codes, (tuple, list, set, frozenset)):
+        return frame.loc[frame["stock_code"].astype(str).isin(codes)].copy()
+    return frame
+
+
 def _event_number(value):
     try:
         number = float(value)
     except (TypeError, ValueError):
         return None
     return number if np.isfinite(number) else None
+
 
 def build_daily_event_rows(announcements, placements, stock_data, dividend_events=None):
     """Share the complete, ordered event feed across report channels."""
@@ -1227,6 +1249,7 @@ def build_daily_event_rows(announcements, placements, stock_data, dividend_event
     )
     return dividend + placements + announcements
 
+
 def build_daily_events_text(session, stock_data=None) -> str:
     """Use the same event rows as email, without silently truncating the feed."""
     rows = build_daily_event_rows(
@@ -1240,6 +1263,7 @@ def build_daily_events_text(session, stock_data=None) -> str:
         f"{_html_escape(row['kind'])}\n{_html_escape(row['title'])}"
         for row in rows
     )
+
 
 def report_data_readiness(session) -> dict:
     """One readiness projection for execution receipts and report renderers."""
@@ -1265,12 +1289,3 @@ def report_data_readiness(session) -> dict:
         "missing_codes": missing, "error_count": len(errors),
         "analysis_issues": analysis_issues,
     }
-
-
-def get_brief_dataframe(session):
-    """Use the same eligible quote rows on every scheduled delivery channel."""
-    frame = session.get_all_dataframe()
-    codes = getattr(session, "brief_active_codes", None)
-    if isinstance(codes, (tuple, list, set, frozenset)):
-        return frame.loc[frame["stock_code"].astype(str).isin(codes)].copy()
-    return frame

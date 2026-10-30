@@ -2,9 +2,9 @@
 
 from unittest.mock import Mock, patch
 
-from src.search.artifacts import OptimizerGroupSummary, OptimizerRunSummary
 from src.notification.email_notifier import build_optimizer_summary
 from src.notification.telegram_notifier import TelegramNotifier
+from src.search.artifacts import OptimizerGroupSummary, OptimizerRunSummary
 
 
 class TestTelegramTransport:
@@ -26,7 +26,7 @@ class TestTelegramTransport:
         with patch("requests.post") as mock_post:
             mock_post.return_value.status_code = 200
             mock_post.return_value.json.return_value = {"ok": True}
-            ok, msg = notifier._send("test标题", "<b>test正文</b>")
+            ok, _msg = notifier._send("test标题", "<b>test正文</b>")
             assert ok
             mock_post.assert_called_once()
             url = mock_post.call_args[0][0]
@@ -50,7 +50,7 @@ class TestTelegramTransport:
         )
         with patch("requests.post") as mock_post:
             mock_post.side_effect = TimeoutError("timeout")
-            ok, msg = notifier._send("标题", "正文")
+            ok, _msg = notifier._send("标题", "正文")
             assert not ok
 
     def test_transport_error_redacts_bot_token(self, caplog):
@@ -96,7 +96,7 @@ class TestTelegramTransport:
                 "ok": False,
                 "description": "chat not found",
             }
-            ok, msg = notifier._send("标题", "正文")
+            ok, _msg = notifier._send("标题", "正文")
             assert not ok
 
     def test_http_error_returns_false(self):
@@ -113,7 +113,7 @@ class TestTelegramTransport:
         )
         with patch("requests.post") as mock_post:
             mock_post.return_value.status_code = 403
-            ok, msg = notifier._send("标题", "正文")
+            ok, _msg = notifier._send("标题", "正文")
             assert not ok
 
     def test_message_too_long_splits(self):
@@ -132,7 +132,7 @@ class TestTelegramTransport:
         with patch("requests.post") as mock_post:
             mock_post.return_value.status_code = 200
             mock_post.return_value.json.return_value = {"ok": True}
-            ok, msg = notifier._send("标题", long_body)
+            ok, _msg = notifier._send("标题", long_body)
             assert ok
             assert mock_post.call_count >= 2  # 至少分2片
 
@@ -179,7 +179,7 @@ class TestTelegramContent:
         )
         with patch.object(notifier, "_send") as mock_send:
             mock_send.return_value = (True, "ok")
-            ok, msg = notifier.send_deployment_notification(
+            ok, _msg = notifier.send_deployment_notification(
                 status="SUCCESS", version="abc1234", summary="部署完成"
             )
             assert ok

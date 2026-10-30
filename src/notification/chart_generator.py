@@ -4,12 +4,13 @@
 使用 subplots 布局，每只告警股票独立子图
 """
 
+from __future__ import annotations
+
+import base64
 import logging
 import math
 import re
-from typing import Optional, Dict, List
 from io import BytesIO
-import base64
 
 import numpy as np
 import pandas as pd
@@ -21,8 +22,8 @@ try:
     import matplotlib
 
     matplotlib.use("Agg")  # 非交互后端，服务器渲染
-    import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
     from matplotlib.ticker import MaxNLocator
 
     # 设置中文字体（统一使用 portfolio_strategy 的平台感知检测）
@@ -40,7 +41,7 @@ except ImportError:
 
 
 # ── 内置锚点窗口大小映射（用于判断"最长"） ──
-_ANCHOR_WINDOW_MAP: Dict[str, int] = {
+_ANCHOR_WINDOW_MAP: dict[str, int] = {
     "wma50": 50,
     "wma30": 30,
     "wma20": 20,
@@ -57,7 +58,7 @@ def _extract_window(name: str) -> int:
     return _ANCHOR_WINDOW_MAP.get(name, 0)
 
 
-def _pick_longest_anchor(anchor_names: List[str]) -> str:
+def _pick_longest_anchor(anchor_names: list[str]) -> str:
     """
     从一组告警锚点名中选出"最长"的那个（窗口最大）
     如 ['wma20', 'wma50'] → 'wma50'
@@ -67,7 +68,7 @@ def _pick_longest_anchor(anchor_names: List[str]) -> str:
     return max(anchor_names, key=lambda n: _extract_window(n))
 
 
-def _get_stock_name(stock_code: str, stock_data: "pd.DataFrame") -> str:
+def _get_stock_name(stock_code: str, stock_data: pd.DataFrame) -> str:
     """从 stock_data DataFrame 中查找股票名称，找不到返回 stock_code"""
     if stock_data is not None and not stock_data.empty:
         match = stock_data[stock_data["stock_code"] == stock_code]
@@ -79,11 +80,11 @@ def _get_stock_name(stock_code: str, stock_data: "pd.DataFrame") -> str:
 
 
 def generate_combined_chart(
-    historical_data: Dict[str, "pd.DataFrame"],
-    alerts: List[dict],
-    stock_data: "pd.DataFrame",
+    historical_data: dict[str, pd.DataFrame],
+    alerts: list[dict],
+    stock_data: pd.DataFrame,
     trading_days: int = 60,
-) -> tuple[Optional[str], Optional[bytes]]:
+) -> tuple[str | None, bytes | None]:
     """
     生成所有告警股票的合并走势图（subplots 布局），返回 (base64 PNG, 原始 PNG bytes)
 
@@ -105,7 +106,7 @@ def generate_combined_chart(
         return (None, None)
 
     # ── 收集每只告警股票要画的数据 ──
-    stock_anchors: Dict[str, List[str]] = {}
+    stock_anchors: dict[str, list[str]] = {}
     for alert in alerts:
         code = alert.get("stock_code", "")
         anchor = alert.get("anchor_name", "")
@@ -117,7 +118,7 @@ def generate_combined_chart(
         return (None, None)
 
     # ── 筛选有有效历史数据的股票 ──
-    valid_codes: List[str] = []
+    valid_codes: list[str] = []
     for code in stock_anchors:
         full_df = historical_data.get(code)
         if full_df is not None and not full_df.empty:
@@ -239,7 +240,8 @@ def generate_combined_chart(
         plt.close(fig)
         logger.info(f"图表生成成功: {n_stocks} 只股票, {rows}x{cols} 布局")
         return (b64_str, png_bytes)
-    except Exception as e:
+    # Charts are optional; rendering errors must not cancel the report.
+    except Exception as e:  # noqa: BLE001
         logger.error(f"图表生成失败: {e}")
         plt.close(fig)
         return (None, None)
@@ -287,7 +289,8 @@ def _build_weekly_ohlc(
         if len(ohlc["labels"]) < 3:
             return None
         return ohlc
-    except Exception as e:
+    # Malformed OHLC inputs keep the existing optional-chart fallback.
+    except Exception as e:  # noqa: BLE001
         logger.warning(f"周K OHLC 构建失败: {e}")
         return None
 
@@ -309,7 +312,8 @@ def generate_candlestick_chart(weekly_ohlc: dict) -> tuple[str, bytes] | None:
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         from matplotlib.patches import Rectangle
-    except Exception:
+    # Optional plotting backend initialization can fail beyond import.
+    except Exception:  # noqa: BLE001
         logger.warning("matplotlib 不可用，跳过蜡烛图")
         return None
 
@@ -383,10 +387,11 @@ def generate_portfolio_chart(
     import matplotlib
 
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import matplotlib.dates as mdates
-
     from io import BytesIO
+
+    import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
+
     from src.utils.font_setup import setup_cjk_font
 
     setup_cjk_font()
@@ -425,14 +430,18 @@ def generate_portfolio_chart(
 
         try:
             dt_arr = pd.to_datetime(dates)
-        except Exception:
-            dt_arr = pd.date_range(
-                end=pd.Timestamp.now(), periods=len(navs), freq="B"
-            )
+        # Keep the existing business-day axis fallback for invalid dates.
+        except Exception:  # noqa: BLE001
+            dt_arr = pd.date_range(end=pd.Timestamp.now(), periods=len(navs), freq="B")
 
         ax.plot(
-            dt_arr, nav_arr, color="#2e7d32", linewidth=2.5,
-            alpha=0.9, label="策略", zorder=5,
+            dt_arr,
+            nav_arr,
+            color="#2e7d32",
+            linewidth=2.5,
+            alpha=0.9,
+            label="策略",
+            zorder=5,
         )
 
         # 布林带
@@ -442,12 +451,24 @@ def generate_portfolio_chart(
             upper = (sma + 2 * std).bfill().values
             lower = (sma - 2 * std).bfill().values
             ax.fill_between(
-                dt_arr, lower, upper, alpha=0.15, color="#2e7d32",
-                linewidth=0, zorder=1,
+                dt_arr,
+                lower,
+                upper,
+                alpha=0.15,
+                color="#2e7d32",
+                linewidth=0,
+                zorder=1,
             )
             for arr, ls in [(upper, "--"), (lower, "--")]:
-                ax.plot(dt_arr, arr, color="#2e7d32", linewidth=1.0,
-                        alpha=0.4, linestyle=ls, zorder=2)
+                ax.plot(
+                    dt_arr,
+                    arr,
+                    color="#2e7d32",
+                    linewidth=1.0,
+                    alpha=0.4,
+                    linestyle=ls,
+                    zorder=2,
+                )
 
         # 基准 ETF
         benchmark_map = {
@@ -474,9 +495,14 @@ def generate_portfolio_chart(
             b_base = b_close[0] if b_close[0] > 0 else 1.0
             b_norm = b_close / b_base * 100
             ax.plot(
-                bdf["date"].to_numpy(), b_norm,
-                color=bench_colors[bi], linewidth=1.5, alpha=0.7,
-                linestyle=bench_styles[bi], label=bcode, zorder=3,
+                bdf["date"].to_numpy(),
+                b_norm,
+                color=bench_colors[bi],
+                linewidth=1.5,
+                alpha=0.7,
+                linestyle=bench_styles[bi],
+                label=bcode,
+                zorder=3,
             )
 
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
@@ -493,7 +519,8 @@ def generate_portfolio_chart(
             output[group_key] = buf.read()
             plt.close(fig)
             logger.info(f"投资组合图表 {group_key} 生成成功")
-        except Exception as e:
+        # Isolate each optional portfolio chart from the remaining groups.
+        except Exception as e:  # noqa: BLE001
             logger.error(f"投资组合图表 {group_key} 生成失败: {e}")
             plt.close(fig)
 
@@ -589,7 +616,8 @@ def generate_portfolio_overview_chart(
         fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
         buf.seek(0)
         return buf.read()
-    except Exception as exc:
+    # An optional overview chart must not cancel the report.
+    except Exception as exc:  # noqa: BLE001
         logger.error("三市场组合总览图生成失败: %s", exc)
         return None
     finally:

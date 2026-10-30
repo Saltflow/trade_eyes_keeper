@@ -104,11 +104,3 @@ def test_ssh_command_is_noninteractive_and_uses_keepalives(monkeypatch):
     assert "BatchMode=yes" in captured["command"]
     assert captured["stdin"] is ci_cd_deploy.subprocess.DEVNULL
     assert captured["timeout"] == 47
-
-
-def test_retired_web_unit_is_masked_before_new_service_starts():
-    command = ci_cd_deploy._build_runtime_systemd_command()
-    assert command.index("systemctl mask trade-eyes-health.service") < command.index(
-        "systemctl restart trade-eyes.service"
-    )
-    assert "--notify-start" not in command

@@ -189,7 +189,6 @@ pkill -f '^python3 {REMOTE_DIR}/main.py$' 2>/dev/null || true
 cd {shlex.quote(REMOTE_DIR)}
 python3 -c {shlex.quote(migration_code)}
 rm -f /etc/systemd/system/trade-eyes-health.service /tmp/hs.pid
-systemctl mask trade-eyes-health.service
 printf '%s\n' {shlex.quote(unit)} > /etc/systemd/system/trade-eyes.service
 systemctl daemon-reload
 systemctl enable trade-eyes.service

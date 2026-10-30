@@ -224,7 +224,7 @@ def test_legacy_command_remains_available_after_natural_language_failure():
 
     try:
         app.validate_config()
-        assert handle_feishu_message(app, event("分析最近的策略", "nl-1")) == "accepted"
+        assert handle_feishu_message(app, event("分析最近的策略", "nl-1")) == "retry"
         assert handle_feishu_message(app, event("/help", "command-1")) == "accepted"
         app.command_executor.execute.assert_called_once()
         assert handle_feishu_message(app, event("/help", "command-1")) == "duplicate"

@@ -129,6 +129,34 @@ def test_stop_interrupts_idle_polling_wait():
         assert not worker.is_alive()
 
 
+def test_pause_never_acknowledges_a_returned_unadmitted_update(monkeypatch):
+    bot = TelegramBot(_make_bot_config({"polling_interval": 0.01}))
+    first, second = _update("/daily", 1), _update("/daily", 2)
+    requests, admitted, first_done = [], [], threading.Event()
+
+    def poll(offset):
+        requests.append(offset)
+        return [first, second]
+
+    def process(update):
+        admitted.append(update["update_id"])
+        bot.pause_admission()
+        first_done.set()
+
+    monkeypatch.setattr(bot, "_get_updates", poll)
+    monkeypatch.setattr(bot, "_process_update", process)
+    thread = threading.Thread(target=bot.run)
+    thread.start()
+    try:
+        assert first_done.wait(1)
+        assert admitted == [1] and requests == [0]
+        assert not bot._stop_event.is_set()
+    finally:
+        bot.stop()
+        thread.join(2)
+    assert not thread.is_alive() and requests == [0]
+
+
 def test_long_poll_transport_has_bounded_timeouts():
     bot = TelegramBot(_make_bot_config())
     with patch("requests.post") as post:

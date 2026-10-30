@@ -35,7 +35,7 @@ class TestFeishuTransport:
         with patch("requests.post") as mock_post:
             mock_post.return_value.status_code = 200
             mock_post.return_value.json.return_value = {"code": 0, "msg": "success"}
-            ok, msg = notifier._send("test标题", "test正文")
+            ok, _msg = notifier._send("test标题", "test正文")
             assert ok
             mock_post.assert_called_once()
             url_called = mock_post.call_args[0][0]
@@ -84,7 +84,7 @@ class TestFeishuTransport:
         with patch("requests.post") as mock_post:
             mock_post.return_value.status_code = 500
             mock_post.return_value.text = "Internal Error"
-            ok, msg = notifier._send("标题", "正文")
+            ok, _msg = notifier._send("标题", "正文")
             assert not ok
 
     def test_feishu_code_nonzero_returns_false(self):
@@ -95,7 +95,7 @@ class TestFeishuTransport:
         with patch("requests.post") as mock_post:
             mock_post.return_value.status_code = 200
             mock_post.return_value.json.return_value = {"code": 10001, "msg": "invalid"}
-            ok, msg = notifier._send("标题", "正文")
+            ok, _msg = notifier._send("标题", "正文")
             assert not ok
 
 
@@ -192,7 +192,7 @@ class TestFeishuContent:
         )
         with patch.object(notifier, "_send") as mock_send:
             mock_send.return_value = (True, "ok")
-            ok, msg = notifier.send_deployment_notification(
+            ok, _msg = notifier.send_deployment_notification(
                 status="SUCCESS", version="abc1234", summary="部署成功"
             )
             assert ok

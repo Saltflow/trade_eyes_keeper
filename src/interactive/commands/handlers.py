@@ -49,13 +49,14 @@ def handle_help() -> str:
             [
                 ("/daily", "触发完整日报"),
                 ("/brief [afternoon]", "触发简报（默认早盘）"),
+                ("/fundamental [代码|status]", "只读查询历史价投记录和原状态"),
                 (
                     "/report_frequency [daily|weekly|off]",
                     "设置日报频次；weekly 每周五，告警仍即时发送",
                 ),
                 (
                     "/backtest 代码 起 止",
-                    "回测例 <code>/backtest 601919 2024-01-01 2024-12-31</code>",
+                    "回测例 <code>/backtest 601919 2023-01-01 2024-12-31</code>",
                 ),
             ],
         ),
@@ -349,18 +350,33 @@ def _get_backtest_params(group: str, strategy):
 
 
 def handle_backtest(code: str, start: str, end: str) -> str:
-    """单票回测（使用统一评估引擎 evaluate_all_groups）。"""
+    """Run one stock only when its requested evaluation spans two years."""
     try:
+        import pandas as pd
+
         from ...backtest.engine import evaluate_all_groups
         from ...data.backtest_data import prepare_backtest_data
-        from ...search.config import get_market_optimizer_config
         from ...markets import _detect_fine_group
-        import pandas as pd
+        from ...search.config import (
+            get_market_optimizer_config,
+            load_evaluation_horizon_policy,
+        )
 
         config = _load_config()
 
-        s = datetime.strptime(start, "%Y-%m-%d")
-        e = datetime.strptime(end, "%Y-%m-%d")
+        # Date-only exchange bounds must match the naive pandas window contract.
+        s = datetime.strptime(start, "%Y-%m-%d")  # noqa: DTZ007
+        e = datetime.strptime(end, "%Y-%m-%d")  # noqa: DTZ007
+        policy = load_evaluation_horizon_policy()
+        minimum_end = pd.Timestamp(s) + pd.DateOffset(
+            months=policy.minimum_evaluation_months
+        ) - pd.Timedelta(days=1)
+        if pd.Timestamp(e) < minimum_end:
+            return (
+                "❌ 回测区间至少需要 "
+                f"{policy.minimum_evaluation_months} 个月："
+                f"{pd.Timestamp(s).date()} 至少应回测到 {minimum_end.date()}"
+            )
         group = _detect_fine_group(code)
         strategy = _get_backtest_strategy(config, group)
         if strategy is None:
@@ -531,8 +547,8 @@ def handle_save(config_path=None) -> str:
         return f"❌ 保存失败: {e}"
 
 
-def _run_main(command_args: list[str], env_extra: dict | None = None) -> str:
-    """后台启动 main.py 子进程。返回提示消息。"""
+def _run_main(command_args: list[str], env_extra: dict | None = None) -> bool:
+    """Reports use the shared queue; non-migrated optimizer keeps its guard."""
     if command_args and command_args[0] in {"--once", "--brief"}:
         from ...core.report_execution import submit_report
 
@@ -564,14 +580,15 @@ def _run_main(command_args: list[str], env_extra: dict | None = None) -> str:
         env.update(env_extra)
     try:
         log_file = project_root / "logs" / "quant_system.log"
-        log_fh = open(str(log_file), "a")
-        subprocess.Popen(
-            cmd,
-            cwd=str(project_root),
-            env=env,
-            stdout=log_fh,
-            stderr=log_fh,
-        )
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8") as log_fh:
+            subprocess.Popen(
+                cmd,
+                cwd=str(project_root),
+                env=env,
+                stdout=log_fh,
+                stderr=log_fh,
+            )
         logger.info(f"后台进程已启动: {' '.join(cmd)}")
         return True
     except Exception:
@@ -684,7 +701,7 @@ def handle_alerts() -> str:
 
     try:
         data = json.loads(state_path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, ValueError):
         return "报警状态文件读取失败"
 
     alerts = data.get("alerts", {})
@@ -716,7 +733,7 @@ def handle_reset_alerts(stock_code: str = "") -> str:
 
     try:
         data = json.loads(state_path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, ValueError):
         return "报警状态文件读取失败"
 
     alerts = data.get("alerts", {})
@@ -1025,7 +1042,8 @@ def handle_config(action: str, key: str, value: str) -> str:
             )
         except (TypeError, ValueError) as exc:
             return f"❌ 配置值无效，未保存: {exc}"
-        except Exception as exc:
+        # Bot boundary retains old config on failure.
+        except Exception as exc:  # noqa: BLE001
             return f"❌ 配置校验或保存失败，旧配置已保留: {exc}"
         actual = _config_value(cfg, key)
         return f"✅ {_CONFIG_HELP[key]['label']}: {actual}"
@@ -1050,7 +1068,8 @@ def handle_config(action: str, key: str, value: str) -> str:
         from ...search.config import get_market_optimizer_configs
 
         market_configs = get_market_optimizer_configs(configured)
-    except Exception as exc:
+    # Bot boundary reports invalid market config.
+    except Exception as exc:  # noqa: BLE001
         return f"❌ 市场配置不完整，无法显示: {exc}"
 
     lines = [
@@ -1073,13 +1092,19 @@ def handle_config(action: str, key: str, value: str) -> str:
                 "",
                 f"<b>{group}</b>",
                 f"  候选 strategy: {market.strategy_name}",
-                f"  Solver: {market.solver_id} / 预算: "
-                f"{market.search.solver_config().get('budget', '未设置')}",
+                (
+                    f"  Solver: {market.solver_id} / 预算: "
+                    f"{market.search.solver_config().get('budget', '未设置')}"
+                ),
                 f"  Gate: {market.gate_profile}",
-                f"  WF: {market.walk_forward_profile} / "
-                f"{wf.total_months_needed}月 / {wf.num_windows}窗",
-                f"  execution: {market.execution_profile} / benchmark: "
-                f"{market.benchmark_profile}",
+                (
+                    f"  WF: {market.walk_forward_profile} / "
+                    f"{wf.total_months_needed}月 / {wf.num_windows}窗"
+                ),
+                (
+                    f"  execution: {market.execution_profile} / benchmark: "
+                    f"{market.benchmark_profile}"
+                ),
                 f"  当前生产: {active_label}",
                 f"  config hash: <code>{market.config_hash}</code>",
             ]
@@ -1087,9 +1112,11 @@ def handle_config(action: str, key: str, value: str) -> str:
     lines.extend(
         [
             "",
-            f"共享运行调度: workers={workers_label} / "
-            f"batch={search.get('batch_size', '未设置')} / "
-            f"候选保留={search.get('candidate_retention_ratio', '未设置')}",
+            (
+                f"共享运行调度: workers={workers_label} / "
+                f"batch={search.get('batch_size', '未设置')} / "
+                f"候选保留={search.get('candidate_retention_ratio', '未设置')}"
+            ),
             "策略切换: <code>/switch_optimizer 市场 策略</code>",
         ]
     )
@@ -1118,7 +1145,8 @@ def handle_ref_position(
         return "❌ 市场只能是 a_share、hk 或 us。"
     try:
         detected = _detect_fine_group(code)
-    except Exception:
+    # Malformed bot symbols must not reach portfolio writes.
+    except Exception:  # noqa: BLE001
         detected = ""
     if detected != group:
         return f"❌ {code} 不属于 {labels[group]}，未修改参考持仓。"
@@ -1142,7 +1170,7 @@ def handle_ref_position(
         ).execution
     except ValueError as exc:
         return f"❌ 市场优化配置无效，未修改参考持仓：{exc}"
-    trade_date = datetime.now().strftime("%Y-%m-%d")
+    trade_date = datetime.now().astimezone().strftime("%Y-%m-%d")
     try:
         new_pf, trades = mgr.adjust_position(
             pf,
@@ -1253,7 +1281,8 @@ def handle_ref_date(date_str: str | None = None) -> str:
     from datetime import datetime as _dt
 
     try:
-        _dt.strptime(date_str, "%Y-%m-%d")
+        # This validates only a calendar date; no instant is constructed or compared.
+        _dt.strptime(date_str, "%Y-%m-%d")  # noqa: DTZ007
     except ValueError:
         return f"❌ 日期格式错误: {date_str}。请使用 YYYY-MM-DD。"
 

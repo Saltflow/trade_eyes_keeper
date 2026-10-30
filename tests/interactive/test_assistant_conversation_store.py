@@ -131,6 +131,7 @@ def test_pruning_cascades_events_but_preserves_business_records(store, monkeypat
     monkeypatch.setattr("src.interactive.assistant.store.time.time", lambda: clock[0])
     expired = store.begin_turn("chat", "alice", "old", "old")
     store.record_turn_event(expired, "tool_result", {"old": True})
+    store.finish_turn(expired, "completed")
     action = store.create("config", "chat", "alice", {"schedule": "19:00"})
     assert store.receipt("business-receipt")
     clock[0] += 31 * 86400

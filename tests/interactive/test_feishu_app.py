@@ -113,12 +113,19 @@ class TestFeishuAppMessages:
             assert payload["receive_id"] == "oc_test"
             assert payload["msg_type"] == "interactive"
 
-    def test_send_message_failure(self):
+    def test_send_message_failure(self, caplog):
         app = FeishuApp(_make_config())
         with patch.object(app, "get_tenant_token", return_value="tok-abc"), patch(
             "requests.post"
         ) as post:
-            post.return_value.json.return_value = {"code": 10001}
+            post.return_value.json.return_value = {
+                "code": 10001,
+                "msg": "private-platform-error-body",
+            }
             ok, message = app.send_message("oc_test", "hello")
             assert not ok
             assert "10001" in message
+        assert "Feishu message rejected: code=10001" in caplog.text
+        assert "private-platform-error-body" not in caplog.text
+        assert "tok-abc" not in caplog.text
+        assert "oc_test" not in caplog.text

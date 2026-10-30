@@ -1,5 +1,7 @@
 """Telegram 命令解析器 — 将用户消息解析为命令对象。"""
 
+from __future__ import annotations
+
 import re
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -26,6 +28,14 @@ class CommandType(Enum):
     REF_DATE = auto()
     REF_POSITION = auto()
     ERROR = auto()
+    FUNDAMENTAL = auto()
+
+
+@dataclass
+class FundamentalCommand:
+    code: str | None = None
+    status: bool = False
+    cmd_type: CommandType = CommandType.FUNDAMENTAL
 
 
 @dataclass
@@ -220,7 +230,8 @@ def _validate_date(date_str: str) -> str | None:
     try:
         from datetime import datetime
 
-        datetime.strptime(date_str, "%Y-%m-%d")
+        # Calendar-only input: retain naive dates for validation/day differences.
+        datetime.strptime(date_str, "%Y-%m-%d")  # noqa: DTZ007
     except ValueError:
         return f"日期不存在: {date_str}"
     return None
@@ -246,6 +257,16 @@ def parse_command(text: str):
     parts = text.split(maxsplit=1)
     cmd_name = parts[0][1:].lower()  # 去掉 / 并转小写
     args = parts[1] if len(parts) > 1 else ""
+
+    if cmd_name == "fundamental":
+        value = args.strip()
+        if value.lower() == "status":
+            return FundamentalCommand(status=True)
+        if value:
+            error = _validate_stock_code(value)
+            if error:
+                return ErrorCommand(message=error)
+        return FundamentalCommand(code=value.upper() or None)
 
     if cmd_name == "help":
         return HelpCommand()
@@ -358,7 +379,7 @@ def parse_command(text: str):
         arg_parts = args.split()
         if len(arg_parts) < 3:
             return ErrorCommand(
-                message="缺少参数。格式: /backtest 601919 2024-01-01 2024-12-31"
+                message="缺少参数。格式: /backtest 601919 2023-01-01 2024-12-31"
             )
         code = arg_parts[0].upper()
         start = arg_parts[1]
@@ -425,6 +446,8 @@ def parse_command(text: str):
         kind = sub[1].lower()
         if kind in valid:
             return SwitchOptimizerCommand(kind=kind, group=group)
-        return ErrorCommand(message=f"未知引擎: {kind}。可用: {', '.join(sorted(valid))}")
+        return ErrorCommand(
+            message=f"未知引擎: {kind}。可用: {', '.join(sorted(valid))}"
+        )
 
     return ErrorCommand(message=f"未知命令: /{cmd_name}。发送 /help 查看可用命令")

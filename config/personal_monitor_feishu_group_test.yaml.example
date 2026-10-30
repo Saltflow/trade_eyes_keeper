@@ -1,0 +1,8 @@
+# One explicitly selected group; no secret belongs in this file.
+# This mode polls the existing app through OpenAPI and never opens WebSocket.
+test_mode: true
+chat_id: oc_REPLACE_WITH_TEST_GROUP
+allowed_sender_ids: [ou_REPLACE_WITH_YOUR_OPEN_ID]
+workspace_name: group_acceptance
+market_check_times: ["09:50", "14:30", "19:00"]
+poll_seconds: 5

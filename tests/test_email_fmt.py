@@ -1,8 +1,9 @@
 """测试 _fmt() 函数: None/pd.NA → —，数值 → 格式化，零值 ≠ 缺失。"""
 
-import pandas as pd
 import sys
 from pathlib import Path
+
+import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from src.notification.email_notifier import _fmt

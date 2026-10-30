@@ -28,7 +28,7 @@ def test_failed_initialization_preserves_published_handler(service, monkeypatch)
     )
     with pytest.raises(RuntimeError, match="resource unavailable"):
         FeishuAssistant(
-            assistant._application_config,
+            assistant._fundamental_config,
             Mock(),
             project_root=assistant.root,
             store=assistant.store,
