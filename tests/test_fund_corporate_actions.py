@@ -1,4 +1,7 @@
+import hashlib
+import json
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -275,14 +278,15 @@ def test_non_cash_action_is_not_silently_omitted(title, monkeypatch):
 
 def test_project_company_merger_is_not_a_fund_unit_action():
     title = (
-        "华夏凯德商业资产封闭式基础设施证券投资基金"
-        "关于不动产项目公司完成吸收合并的公告"
+        "华夏凯德商业资产封闭式基础设施证券投资基金关于不动产项目公司完成吸收合并的公告"
     )
 
     def http_get(url, **kwargs):
         if "params" in kwargs:
             return Response(index([row(TITLE=title, SSEDATE="2026-02-11")]))
-        raise AssertionError("Asset-level merger PDF must not be classified as a fund action")
+        raise AssertionError(
+            "Asset-level merger PDF must not be classified as a fund action"
+        )
 
     provider = SseFundCorporateActionProvider(http_get=http_get)
     assert provider.fetch_actions("510300", date(2018, 3, 28), date(2026, 9, 23)) == []
@@ -475,3 +479,226 @@ def test_historical_conversion_suspension_has_explicit_resume_boundary(monkeypat
     assert provider.fetch_actions("510300", date(2018, 3, 28), date(2026, 9, 23)) == []
     with pytest.raises(FundActionEvidenceError, match="Unsupported non-cash"):
         provider.fetch_actions("510300", date(2014, 1, 1), date(2026, 9, 23))
+
+
+FUND_SPLITS = Path(__file__).parent / "fixtures/fund_splits"
+
+
+def real_split_text(kind):
+    return (FUND_SPLITS / f"512810_{kind}.txt").read_text("utf-8")
+
+
+def actual_split_provider(monkeypatch, *, prior=True, result=True, result_text=None):
+    rows, documents = [], {}
+    for kind, enabled, day in (
+        ("result", result, "2025-06-23"),
+        ("prior", prior, "2025-06-17"),
+    ):
+        if not enabled:
+            continue
+        url = "/" + kind + ".pdf"
+        title = "基金份额拆分结果的公告" if kind == "result" else "实施基金份额拆分公告"
+        rows.append(row(SECURITY_CODE="512810", SSEDATE=day, TITLE=title, URL=url))
+        documents["https://www.sse.com.cn" + url] = (
+            result_text if kind == "result" and result_text else real_split_text(kind)
+        )
+    provider = SseFundCorporateActionProvider()
+    monkeypatch.setattr(provider, "_index", lambda *_: rows)
+    monkeypatch.setattr(
+        provider,
+        "_document",
+        lambda url: (
+            documents[url],
+            hashlib.sha256(documents[url].encode()).hexdigest(),
+        ),
+    )
+    return provider
+
+
+def integer_split_prices():
+    # Synthetic raw/qfq bars isolate the source-ratio gate; they are not a live
+    # provider acceptance receipt or a generated production report.
+    return pd.DataFrame(
+        {
+            "date": ["2025-06-20", "2025-06-23"],
+            "raw_close": [1.2, 0.6],
+            "qfq_close": [0.6, 0.6],
+        }
+    )
+
+
+def test_real_split_fixture_provenance_and_prior_execution_dates():
+    for source in json.loads((FUND_SPLITS / "sources.json").read_text("utf-8")):
+        assert (
+            hashlib.sha256((FUND_SPLITS / source["file"]).read_bytes()).hexdigest()
+            == source["text_sha256"]
+        )
+        assert source["source_url"].startswith("https://www.sse.com.cn/")
+    evidence = parse_split_announcement(
+        real_split_text("prior"),
+        code="512810",
+        disclosed_at=date(2025, 6, 17),
+        source_url="https://www.sse.com.cn/prior.pdf",
+    )
+    assert evidence.record_date == date(2025, 6, 20)
+    assert evidence.first_post_split_session == date(2025, 6, 23)
+    assert evidence.share_multiplier == 2
+    assert evidence.share_rounding == "none"
+
+
+def test_real_result_first_joins_prior_without_using_later_publication(monkeypatch):
+    provider = actual_split_provider(monkeypatch)
+    actions = provider.fetch_actions(
+        "512810",
+        date(2025, 1, 1),
+        date(2025, 6, 30),
+        market_prices=integer_split_prices(),
+    )
+    assert len(actions) == 1
+    action = actions[0]
+    assert action.published_at == date(2025, 6, 17)
+    assert action.record_date == date(2025, 6, 20)
+    assert action.ex_date == date(2025, 6, 23)
+    assert action.share_multiplier == 2
+    assert action.share_rounding == "none"
+    assert action.source_url.endswith("/prior.pdf")
+
+
+def test_real_result_alone_cannot_supply_execution_date(monkeypatch):
+    provider = actual_split_provider(monkeypatch, prior=False)
+    with pytest.raises(FundActionEvidenceError, match="causal prior"):
+        provider.fetch_actions(
+            "512810",
+            date(2025, 1, 1),
+            date(2025, 6, 30),
+            market_prices=integer_split_prices(),
+        )
+
+
+def test_result_with_ambiguous_explicit_sessions_is_not_downgraded(monkeypatch):
+    text = real_split_text("result") + (
+        "\n份额拆分除权日：2025年6月23日。份额拆分除权日：2025年6月24日。"
+    )
+    provider = actual_split_provider(monkeypatch, result_text=text)
+    with pytest.raises(FundActionEvidenceError, match="dates are not explicit"):
+        provider.fetch_actions(
+            "512810",
+            date(2025, 1, 1),
+            date(2025, 6, 30),
+            market_prices=integer_split_prices(),
+        )
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("512810", "512811"),
+        ("2025年6月20日", "2025年6月19日"),
+        ("比例为1:2", "比例为1:3"),
+    ],
+)
+def test_real_split_result_must_match_identity_record_and_ratio(
+    monkeypatch, before, after
+):
+    provider = actual_split_provider(
+        monkeypatch, result_text=real_split_text("result").replace(before, after)
+    )
+    with pytest.raises(FundActionEvidenceError):
+        provider.fetch_actions(
+            "512810",
+            date(2025, 1, 1),
+            date(2025, 6, 30),
+            market_prices=integer_split_prices(),
+        )
+
+
+def test_explicit_ex_date_and_integer_allocation_are_not_inferred():
+    prior = real_split_text("prior")
+    variants = [
+        prior.replace("份额拆分除权日：2025年6月23日", "份额拆分除权日：待定"),
+        prior.replace("“精确分配”", "未披露取整规则"),
+        prior.replace("比例为1:2", "比例为1:0"),
+        prior.replace("比例为1:2", "比例为1:1.5").replace(
+            "即每1份基金份额拆为2份。", ""
+        ),
+    ]
+    for text in variants:
+        with pytest.raises(FundActionEvidenceError):
+            parse_split_announcement(
+                text,
+                code="512810",
+                disclosed_at=date(2025, 6, 17),
+                source_url="https://www.sse.com.cn/prior.pdf",
+            )
+
+
+def test_integer_split_still_requires_independent_price_basis(monkeypatch):
+    provider = actual_split_provider(monkeypatch)
+    with pytest.raises(FundActionEvidenceError, match="independent raw/qfq"):
+        provider.fetch_actions("512810", date(2025, 1, 1), date(2025, 6, 30))
+    prices = integer_split_prices()
+    prices["raw_close"] = prices["qfq_close"]
+    with pytest.raises(FundActionEvidenceError, match="does not confirm"):
+        provider.fetch_actions(
+            "512810", date(2025, 1, 1), date(2025, 6, 30), market_prices=prices
+        )
+
+
+def prelisting_conversion_provider(monkeypatch, *, text=None, code="518660"):
+    notice = (FUND_SPLITS / "518660_prelisting_conversion.txt").read_text("utf-8")
+    notice = notice if text is None else text
+
+    def http_get(url, **kwargs):
+        if "params" in kwargs:
+            return Response(
+                index(
+                    [
+                        row(
+                            SECURITY_CODE=code,
+                            SSEDATE="2020-05-18",
+                            TITLE="关于工银瑞信黄金交易型开放式证券投资基金基金份额折算的公告",
+                            URL="/disclosure/fund/announcement/c/2020-05-18/518660_20200518_1.pdf",
+                        )
+                    ]
+                )
+            )
+        return Response(url=url)
+
+    provider = SseFundCorporateActionProvider(http_get=http_get)
+    monkeypatch.setattr(provider, "_pdf_text", lambda _: notice)
+    return provider
+
+
+def test_explicit_prelisting_conversion_is_outside_post_listing_window(monkeypatch):
+    # DisclosedMarketHistoryProvider starts actions at the separately proven
+    # listing date; this notice explicitly states an earlier conversion date.
+    provider = prelisting_conversion_provider(monkeypatch)
+    assert provider.fetch_actions("518660", date(2020, 5, 29), date(2026, 9, 23)) == []
+    with pytest.raises(FundActionEvidenceError, match="Unsupported non-cash"):
+        provider.fetch_actions("518660", date(2020, 5, 19), date(2026, 9, 23))
+
+
+def test_prelisting_conversion_requires_index_identity(monkeypatch):
+    provider = prelisting_conversion_provider(monkeypatch, code="518661")
+    with pytest.raises(FundActionEvidenceError, match="different fund"):
+        provider.fetch_actions("518660", date(2020, 5, 29), date(2026, 9, 23))
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("决定2020年5月19日为", "按测算日期2020年5月19日安排"),
+        ("决定2020年5月19日为", "决定2020年5月30日为"),
+    ],
+)
+def test_early_publication_does_not_exclude_unknown_or_later_conversion(
+    monkeypatch,
+    before,
+    after,
+):
+    text = (FUND_SPLITS / "518660_prelisting_conversion.txt").read_text("utf-8")
+    provider = prelisting_conversion_provider(
+        monkeypatch, text=text.replace(before, after)
+    )
+    with pytest.raises(FundActionEvidenceError, match="Unsupported non-cash"):
+        provider.fetch_actions("518660", date(2020, 5, 29), date(2026, 9, 23))

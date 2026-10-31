@@ -1,0 +1,35 @@
+{
+  "captured_at": "2026-10-31T01:36:36.935561+00:00",
+  "source_url": "https://fund.szse.cn/api/report/ShowReport?SHOWTYPE=xlsx&CATALOGID=1000_lf&TABKEY=tab1",
+  "http_status": 200,
+  "workbook_sha256": "f12bee76ffe2d85e9367d90734a11b564390c30cb2f4abe100ac140b93827a5a",
+  "workbook_bytes": 73668,
+  "workbook_total_rows": 1083,
+  "columns": [
+    "基金代码",
+    "基金简称",
+    "基金类别",
+    "投资类别",
+    "上市日期",
+    "当前规模(份)",
+    "基金管理人",
+    "基金发起人",
+    "基金托管人",
+    "净值"
+  ],
+  "rows": [
+    {
+      "基金代码": 159655,
+      "基金简称": "标普500ETF华夏",
+      "基金类别": "ETF",
+      "投资类别": "其它基金",
+      "上市日期": "2022-10-25",
+      "当前规模(份)": "2,285,143,045",
+      "基金管理人": "华夏基金管理有限公司",
+      "基金发起人": null,
+      "基金托管人": null,
+      "净值": 1.8791
+    }
+  ],
+  "method": "One exact official row and workbook headers extracted with pandas/openpyxl; test workbooks are reconstructed from this public row, not claimed as original exchange bytes."
+}

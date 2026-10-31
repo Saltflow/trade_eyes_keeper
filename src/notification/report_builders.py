@@ -19,6 +19,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ..utils.in_kind_reporting import render_in_kind_ledger
+
 logger = logging.getLogger(__name__)
 
 
@@ -718,6 +720,21 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
     return "\n".join(lines).strip()
 
 
+def _optimizer_execution_description(execution: dict) -> str:
+    """Describe the selected execution model without inventing cash limits."""
+    if execution.get("model") == "target_weight":
+        return (
+            "目标仓位: "
+            f"单标的上限 {float(execution['per_symbol_cap']):.0%} / "
+            f"总仓位上限 {float(execution['total_exposure_cap']):.0%}"
+        )
+    return (
+        "单笔现金上限: "
+        f"买入 {float(execution.get('buy_cash_limit', 0)):.0f} / "
+        f"卖出 {float(execution.get('sell_cash_limit', 0)):.0f} 元"
+    )
+
+
 def optimizer_notification_title(report, group_name: str = "") -> str:
     """Return a title consistent with both aggregate and per-market outcomes."""
     states = {
@@ -822,11 +839,7 @@ def build_optimizer_summary(
             )
             execution = full_report.get("execution", {}) or {}
             if execution:
-                lines.append(
-                    "  单笔现金上限 "
-                    f"买入 {float(execution.get('buy_cash_limit', 0)):.0f} / "
-                    f"卖出 {float(execution.get('sell_cash_limit', 0)):.0f} 元"
-                )
+                lines.append("  " + _optimizer_execution_description(execution))
 
         # 季末持仓
         qh = full_report.get("quarterly", [])
@@ -1070,11 +1083,7 @@ def _build_optimizer_run_summary(report) -> str:
             lines.append(f"<code>{params}</code>")
         execution = getattr(item, "execution", None) or {}
         if execution:
-            lines.append(
-                "单笔现金上限: "
-                f"买入 {float(execution.get('buy_cash_limit', 0)):.0f} / "
-                f"卖出 {float(execution.get('sell_cash_limit', 0)):.0f} 元"
-            )
+            lines.append(_optimizer_execution_description(execution))
         validation = getattr(item, "validation", None) or {}
         if validation:
             lines.append("<b>验证期回测</b>")
@@ -1092,6 +1101,12 @@ def _build_optimizer_run_summary(report) -> str:
                 f"{validation.get('dividend_tax_cost', 0.0):,.2f} / "
                 f"{validation.get('net_dividend_cash', 0.0):,.2f}"
             )
+            ledger = render_in_kind_ledger(
+                validation.get("in_kind_positions", []) or [],
+                validation.get("in_kind_cashflows", []) or [],
+            )
+            if ledger:
+                lines.append(ledger)
             benchmark_returns = validation.get("benchmark_returns", {}) or {}
             if benchmark_returns:
                 baselines = " | ".join(

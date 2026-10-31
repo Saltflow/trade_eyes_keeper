@@ -213,7 +213,12 @@ def validate_market_bundle(
     issues = corporate_action_issues(bundle.actions)
     if issues:
         raise ValueError("; ".join(issues))
-    build_corporate_action_schedule(bundle.actions, frame["date"], [str(code)])
+    build_corporate_action_schedule(
+        bundle.actions,
+        frame["date"],
+        [str(code)],
+        external_prices=bundle.external_prices,
+    )
     # Cached bundles can contain newer or still-trading daily bars. Keep the
     # complete source contract checks above, then expose only the accepted
     # window to downstream indicators and simulations without rewriting cache.
@@ -410,6 +415,45 @@ def prepare_backtest_data(
         try:
             loaded = store.read(code, config=config)
             if loaded is not None:
+                from .in_kind_distributions import confirmed_reconciliation_pending
+
+                pending = [
+                    action
+                    for action in loaded.actions
+                    if confirmed_reconciliation_pending(action)
+                ]
+                if pending:
+                    reason = (
+                        "explicit confirmed settlement reconciliation requires "
+                        "additional actual receipts; automatic source repair "
+                        "cannot replace it with estimates: "
+                        + ", ".join(str(action.ex_date) for action in pending)
+                    )
+                    result.issues.append(
+                        DataReadinessIssue(
+                            code,
+                            "confirmed_settlement_reconciliation",
+                            start.isoformat(),
+                            end.isoformat(),
+                            reason,
+                            "confirmed_reconciliation_pending",
+                        )
+                    )
+                    result.fetch_attempts.append(
+                        DataFetchAttempt(
+                            code,
+                            "confirmed_settlement_reconciliation",
+                            0,
+                            "confirmed_reconciliation_pending",
+                            reason,
+                        )
+                    )
+                    continue
+                from .in_kind_market_inputs import attach_in_kind_market_inputs
+
+                loaded = attach_in_kind_market_inputs(
+                    loaded, provider_config, store, provider, effective_end
+                )
                 cached_bundle = loaded
                 listing_added = False
                 first_loaded = pd.Timestamp(loaded.prices["date"].min()).date()
@@ -492,6 +536,11 @@ def prepare_backtest_data(
             try:
                 fetched = None
                 fetched = provider.fetch(code, start, effective_end)
+                from .in_kind_market_inputs import attach_in_kind_market_inputs
+
+                fetched = attach_in_kind_market_inputs(
+                    fetched, provider_config, store, provider, effective_end
+                )
                 first_fetched = pd.Timestamp(fetched.prices["date"].min()).date()
                 if (
                     purpose == "optimizer"

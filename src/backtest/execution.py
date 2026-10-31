@@ -7,6 +7,8 @@ from typing import Iterable
 
 import numpy as np
 
+from .in_kind import InKindSchedule, build_in_kind_schedule
+
 
 @dataclass(frozen=True)
 class CorporateActionSlice:
@@ -24,6 +26,7 @@ class CorporateActionSlice:
     gross_cash_dividends: np.ndarray | None = None
     dividend_tax_costs: np.ndarray | None = None
     share_rounding_up: np.ndarray | None = None
+    in_kind: InKindSchedule | None = None
 
     def __post_init__(self) -> None:
         cash = np.asarray(self.cash_dividends, dtype=np.float64)
@@ -72,6 +75,10 @@ class CorporateActionSlice:
         object.__setattr__(self, "gross_cash_dividends", gross)
         object.__setattr__(self, "dividend_tax_costs", taxes)
         object.__setattr__(self, "share_rounding_up", rounding)
+        if self.in_kind is None:
+            object.__setattr__(self, "in_kind", InKindSchedule.empty(cash.shape[0]))
+        elif self.in_kind.prices.shape[0] != cash.shape[0]:
+            raise ValueError("in-kind schedule and cash arrays must have the same rows")
 
     @classmethod
     def empty(cls, rows: int, columns: int) -> "CorporateActionSlice":
@@ -90,6 +97,7 @@ class CorporateActionSlice:
             gross_cash_dividends=self.gross_cash_dividends[start:end].copy(),
             dividend_tax_costs=self.dividend_tax_costs[start:end].copy(),
             share_rounding_up=self.share_rounding_up[start:end].copy(),
+            in_kind=self.in_kind.sliced(start, end),
         )
 
     def scaled(self, factor: float) -> "CorporateActionSlice":
@@ -100,6 +108,7 @@ class CorporateActionSlice:
             gross_cash_dividends=self.gross_cash_dividends * float(factor),
             dividend_tax_costs=self.dividend_tax_costs * float(factor),
             share_rounding_up=self.share_rounding_up.copy(),
+            in_kind=self.in_kind.scaled(float(factor)),
         )
 
     def with_withholding(self, rate: float) -> "CorporateActionSlice":
@@ -115,6 +124,7 @@ class CorporateActionSlice:
             gross_cash_dividends=gross,
             dividend_tax_costs=taxes,
             share_rounding_up=self.share_rounding_up.copy(),
+            in_kind=self.in_kind,
         )
 
 
@@ -124,6 +134,7 @@ def build_corporate_action_schedule(
     symbols: Iterable[str],
     *,
     require_published_at: bool = True,
+    external_prices: dict | None = None,
 ) -> CorporateActionSlice:
     """Convert dated ``CorporateAction`` objects into a strict matrix.
 
@@ -144,6 +155,10 @@ def build_corporate_action_schedule(
     if not actions:
         return result
 
+    actions = list(actions)
+    in_kind = build_in_kind_schedule(
+        actions, date_values, symbol_values, external_prices
+    )
     symbol_index = {symbol: index for index, symbol in enumerate(symbol_values)}
     for action in actions:
         code = str(getattr(action, "code", ""))
@@ -156,6 +171,8 @@ def build_corporate_action_schedule(
         row = int(np.searchsorted(date_values, ex_day, side="left"))
         if row >= len(date_values):
             # Actions after the requested history do not affect this slice.
+            continue
+        if getattr(action, "action_type", "") == "in_kind_distribution":
             continue
         if getattr(action, "rights_price", None) is not None:
             raise ValueError(
@@ -208,6 +225,7 @@ def build_corporate_action_schedule(
         multipliers,
         gross_cash_dividends=gross_cash,
         share_rounding_up=rounding,
+        in_kind=in_kind,
     )
 
 

@@ -54,6 +54,13 @@ if HAS_NUMBA_BATCH:
         dividend_tax_costs,
         share_multipliers,
         share_rounding_up,
+        in_kind_events,
+        in_kind_prices,
+        in_kind_sales,
+        in_kind_fx,
+        in_kind_cash_fx,
+        in_kind_dividends,
+        in_kind_multipliers,
         initial_cash,
         buy_cash_limits,
         sell_cash_limits,
@@ -62,6 +69,8 @@ if HAS_NUMBA_BATCH:
         min_holding_days,
     ):
         candidate_count, row_count, symbol_count = buy_signals.shape
+        if in_kind_events.shape[1] != 30:
+            raise ValueError("unsupported in-kind numerical event schema")
         daily_values = np.zeros((candidate_count, row_count), dtype=np.float64)
         trade_counts = np.zeros(candidate_count, dtype=np.int64)
         avg_position_pct = np.zeros(candidate_count, dtype=np.float64)
@@ -75,6 +84,9 @@ if HAS_NUMBA_BATCH:
         gross_dividend_cash = np.zeros(candidate_count, dtype=np.float64)
         dividend_tax_cost = np.zeros(candidate_count, dtype=np.float64)
         net_dividend_cash = np.zeros(candidate_count, dtype=np.float64)
+        in_kind_quantities = np.zeros((candidate_count, len(in_kind_events)))
+        in_kind_fractions = np.zeros((candidate_count, len(in_kind_events)))
+        in_kind_audit = np.zeros((candidate_count, len(in_kind_events), 14))
         snapshot_mask = np.zeros(row_count, dtype=np.bool_)
         for candidate_index in prange(candidate_count):
             result = _simulate_cash_plan_numba(
@@ -91,6 +103,13 @@ if HAS_NUMBA_BATCH:
                 dividend_tax_costs,
                 share_multipliers,
                 share_rounding_up,
+                in_kind_events,
+                in_kind_prices,
+                in_kind_sales,
+                in_kind_fx,
+                in_kind_cash_fx,
+                in_kind_dividends,
+                in_kind_multipliers,
                 initial_cash,
                 buy_cash_limits[candidate_index],
                 sell_cash_limits[candidate_index],
@@ -112,6 +131,9 @@ if HAS_NUMBA_BATCH:
             gross_dividend_cash[candidate_index] = result[15]
             dividend_tax_cost[candidate_index] = result[16]
             net_dividend_cash[candidate_index] = result[17]
+            in_kind_quantities[candidate_index] = result[18]
+            in_kind_fractions[candidate_index] = result[19]
+            in_kind_audit[candidate_index] = result[20]
         return (
             daily_values,
             trade_counts,
@@ -126,6 +148,7 @@ if HAS_NUMBA_BATCH:
             gross_dividend_cash,
             dividend_tax_cost,
             net_dividend_cash,
+            in_kind_quantities, in_kind_fractions, in_kind_audit,
         )
 
 
@@ -216,6 +239,7 @@ def evaluate_cash_batch(
             action_schedule.share_multipliers, dtype=np.float64
         ),
         np.ascontiguousarray(action_schedule.share_rounding_up, dtype=np.bool_),
+        *action_schedule.in_kind.kernel_args(),
         float(evaluator.initial_cash),
         np.asarray([plan.buy_cash_limit for plan in trade_plans]),
         np.asarray([plan.sell_cash_limit for plan in trade_plans]),
@@ -252,6 +276,7 @@ def evaluate_cash_batch(
             gross_dividend_cash=float(result[10][index]),
             dividend_tax_cost=float(result[11][index]),
             net_dividend_cash=float(result[12][index]),
+            **action_schedule.in_kind.describe(result[13][index], result[14][index], result[15][index]),
         )
         for index in range(len(trade_plans))
     ]

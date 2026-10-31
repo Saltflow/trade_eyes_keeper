@@ -231,6 +231,8 @@ def _optimizer_validation_snapshot(report) -> dict[str, object]:
         "gross_dividend_cash": float(getattr(report, "gross_dividend_cash", 0.0)),
         "dividend_tax_cost": float(getattr(report, "dividend_tax_cost", 0.0)),
         "net_dividend_cash": float(getattr(report, "net_dividend_cash", 0.0)),
+        "in_kind_positions": list(getattr(report, "in_kind_positions", []) or []),
+        "in_kind_cashflows": list(getattr(report, "in_kind_cashflows", []) or []),
         "initial_asset": float(report.initial_asset),
         "final_asset": float(report.final_asset),
         "final_cash": float(report.final_cash),
@@ -319,6 +321,7 @@ def _load_optimizer_market_bundles_with_errors(
 ) -> tuple[dict[str, object], list[str]]:
     """Load bundles and retain per-symbol failures for optimizer filtering."""
     from src.backtest.execution import build_corporate_action_schedule
+    from src.data.in_kind_estimation import validate_cached_in_kind_estimates
     from src.data.market_history import (
         PointInTimeMarketStore,
         corporate_action_issues,
@@ -333,9 +336,10 @@ def _load_optimizer_market_bundles_with_errors(
     errors: list[str] = []
     for code in dict.fromkeys(str(item) for item in codes):
         try:
-            bundle = store.read(code)
+            bundle = store.read(code, config=config)
             if bundle is None:
                 raise ValueError("bundle is absent")
+            validate_cached_in_kind_estimates(bundle, config)
             frame = bundle.prices
             dates = pd.to_datetime(frame["date"], errors="coerce").dropna()
             if dates.empty:
@@ -362,6 +366,7 @@ def _load_optimizer_market_bundles_with_errors(
                 bundle.actions,
                 frame["date"],
                 [code],
+                external_prices=bundle.external_prices,
             )
             bundles[code] = bundle
         except Exception as exc:  # noqa: BLE001 - Preserve per-symbol readiness errors.
@@ -393,6 +398,8 @@ def _reference_portfolio_prices(
     stock_data: pd.DataFrame,
     fx_rate: float,
     fetch_quote: Callable[[str], dict | None],
+    *,
+    external_fx_rates: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """Value every held symbol, including those removed from the watchlist.
 
@@ -405,19 +412,48 @@ def _reference_portfolio_prices(
     if fx is None:
         raise ValueError("reference portfolio FX rate must be finite and positive")
     prices: dict[str, float] = {}
+    external_codes = {
+        position["asset_code"]
+        for position in getattr(portfolio, "in_kind_positions", {}).values()
+        if position.get("quantity", 0) + position.get("fraction", 0) > 0
+    }
+
+    def quote_fx(code):
+        if code not in external_codes:
+            return fx
+        from src.instruments.classifier import detect_market
+
+        market = detect_market(code)
+        if external_fx_rates is not None:
+            return reference_valuation_price(external_fx_rates.get(market))
+        if market == portfolio.market_group:
+            return fx
+        return None
+
+    valued_codes = set(portfolio.holdings)
+    valued_codes.update(
+        position["asset_code"]
+        for position in getattr(portfolio, "in_kind_positions", {}).values()
+        if position.get("quantity", 0) + position.get("fraction", 0) > 0
+    )
     for _, row in stock_data.iterrows():
         code = str(row.get("stock_code", ""))
-        if code not in portfolio.holdings:
+        if code not in valued_codes:
             continue
         price = reference_valuation_price(row.get("close"))
-        if price is not None:
-            prices[code] = price * fx
+        conversion = quote_fx(code)
+        if price is not None and conversion is not None:
+            prices[code] = price * conversion
     for code in portfolio.missing_price_codes(prices):
+        conversion = quote_fx(code)
+        if conversion is None:
+            logger.warning("参考持仓 %s 缺少外部标的币种换汇合同，估值不完整", code)
+            continue
         try:
             quote = fetch_quote(code)
             price = reference_valuation_price((quote or {}).get("close"))
             if price is not None:
-                prices[code] = price * fx
+                prices[code] = price * conversion
             else:
                 logger.warning("参考持仓 %s 无有效补充行情，估值不完整", code)
         # An unavailable quote leaves valuation partial.
@@ -434,20 +470,49 @@ def _reference_portfolio_actions(config: dict, portfolio) -> list[object]:
     rebalance is blocked with an explicit reason.
     """
     from src.data.market_history import PointInTimeMarketStore
+    from src.data.in_kind_estimation import validate_cached_in_kind_estimates
 
     settings = config.get("point_in_time_data", {}) or {}
     store = PointInTimeMarketStore(settings.get("output_dir", "data/point_in_time"))
     actions: list[object] = []
     missing: list[str] = []
-    for code in sorted(portfolio.holdings):
-        bundle = store.read(code)
+    parent_codes = set(portfolio.holdings)
+    parent_codes.update(
+        identity.split(":")[1]
+        for identity in getattr(portfolio, "in_kind_positions", {})
+        if identity.startswith("in_kind:") and len(identity.split(":")) >= 4
+    )
+    for code in sorted(parent_codes):
+        bundle = store.read(code, config=config)
         if bundle is None:
             missing.append(code)
             continue
+        validate_cached_in_kind_estimates(bundle, config)
         actions.extend(bundle.actions)
     if missing:
         raise ValueError("missing point-in-time corporate-action bundle: " + ", ".join(missing))
     return actions
+
+
+def _reference_portfolio_external_prices(config: dict, portfolio) -> dict:
+    """Retain external quotes for pending rights after the parent is sold."""
+    from src.backtest.in_kind import merge_in_kind_prices
+    from src.data.market_history import PointInTimeMarketStore
+
+    settings = config.get("point_in_time_data", {}) or {}
+    store = PointInTimeMarketStore(settings.get("output_dir", "data/point_in_time"))
+    codes = set(portfolio.holdings)
+    codes.update(
+        identity.split(":")[1]
+        for identity in getattr(portfolio, "in_kind_positions", {})
+        if identity.startswith("in_kind:") and len(identity.split(":")) >= 4
+    )
+    external = {}
+    for code in sorted(codes):
+        bundle = store.read(code, config=config)
+        if bundle is not None:
+            external = merge_in_kind_prices(external, bundle.external_prices)
+    return external
 
 
 def rebuild_active_optimizer_summary(config: dict) -> OptimizerRunSummary | None:
@@ -1710,6 +1775,7 @@ def run_daily_task(
                         group_key, 0.0
                     ),
                     fx_rate=market_config.execution.fx_rates.get(group_key, 1.0),
+                    external_prices=_reference_portfolio_external_prices(config, pf),
                 )
                 mgr.save(pf)
             # Failed corporate actions keep old holdings.
@@ -1723,7 +1789,8 @@ def run_daily_task(
                 market_config.execution.fx_rates.get(group_key, 1.0)
             )
             prices = _reference_portfolio_prices(
-                pf, stock_data_df, fx, fetcher.web_crawler.fetch_realtime_quote
+                pf, stock_data_df, fx, fetcher.web_crawler.fetch_realtime_quote,
+                external_fx_rates=market_config.execution.fx_rates,
             )
             status = mgr.get_status(pf, prices)
             status["_group"] = group_key
@@ -1956,6 +2023,7 @@ def run_brief_report(
                         group_key, 0.0
                     ),
                     fx_rate=pool["fx"],
+                    external_prices=_reference_portfolio_external_prices(config, pf),
                 )
                 mgr.save(new_pf)
             # Corporate action failure blocks trades.
@@ -2085,6 +2153,7 @@ def run_brief_report(
                 stock_data_df,
                 pool["fx"],
                 fetcher.web_crawler.fetch_realtime_quote,
+                external_fx_rates=pool["execution"].fx_rates,
             )
             status = mgr.get_status(new_pf, cny_prices)
             status["_group"] = group_key
@@ -2488,6 +2557,11 @@ def _eval_opt_lookback() -> int:
 
 def _send_restart_notification(config: dict, service):
     """Announce a started service through the common notification policy."""
+    from src.notification.settings import env_flag
+
+    if env_flag("SKIP_STARTUP_NOTIFICATION"):
+        logging.getLogger(__name__).info("Startup notification skipped by setting")
+        return
     jobs = service.scheduler.scheduler.get_jobs() if service.scheduler else []
     summary = "服务已启动；" + (
         "任务：" + "; ".join(f"{job.name}: {job.trigger}" for job in jobs)

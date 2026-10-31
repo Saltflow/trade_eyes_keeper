@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from ..markets import _detect_fine_group
+from ..utils.in_kind_reporting import render_in_kind_ledger
 from .base import BaseNotifier
 from .receipts import combine_receipts, legacy_tuple, normalize_receipt
 from .report_builders import (  # noqa: F401
@@ -730,6 +731,12 @@ class EmailNotifier(BaseNotifier):
             lines.append(summary)
 
             final_holdings = getattr(r, "final_holdings", None) or []
+            ledger = render_in_kind_ledger(
+                getattr(r, "in_kind_positions", []) or [],
+                getattr(r, "in_kind_cashflows", []) or [],
+            )
+            if ledger:
+                lines.append(ledger)
             lines.append(
                 '<p style="font-size:11px;margin:8px 0 4px">'
                 f"<b>期末资产</b> {float(getattr(r, 'final_asset', 0)):,.2f} &nbsp; "
@@ -2582,6 +2589,12 @@ class EmailNotifier(BaseNotifier):
                 '<p class="muted-note">估值不完整：'
                 f"{_html_escape(valuation_reason)}</p>"
             )
+        ledger = render_in_kind_ledger(
+            status.get("in_kind_positions", []) or [],
+            status.get("in_kind_cashflows", []) or [],
+        )
+        if ledger:
+            notes.append(ledger)
         return "".join(notes)
 
     @staticmethod

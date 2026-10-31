@@ -632,6 +632,8 @@ class WindowStats:
         gross_dividend_cash: float = 0.0,
         dividend_tax_cost: float = 0.0,
         net_dividend_cash: float = 0.0,
+        in_kind_positions: list[dict] | None = None,
+        in_kind_cashflows: list[dict] | None = None,
         selected_basket_hold_return: float | None = None,
         timing_value_add: float | None = None,
         strongest_benchmark: str = "",
@@ -664,6 +666,8 @@ class WindowStats:
         self.gross_dividend_cash = gross_dividend_cash
         self.dividend_tax_cost = dividend_tax_cost
         self.net_dividend_cash = net_dividend_cash
+        self.in_kind_positions = list(in_kind_positions or [])
+        self.in_kind_cashflows = list(in_kind_cashflows or [])
         self.selected_basket_hold_return = selected_basket_hold_return
         self.timing_value_add = timing_value_add
         self.strongest_benchmark = strongest_benchmark

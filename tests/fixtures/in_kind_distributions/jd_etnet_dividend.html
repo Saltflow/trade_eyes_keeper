@@ -1,0 +1,344 @@
+
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="pragma" content="no-cache" />
+<title>FIRST SHANGHAI GROUP - E-commerce</title>
+<link href="../style/style.css" rel="stylesheet" type="text/css" />
+<script type="text/javascript" src="../js/jquery.js"></script>
+</head>
+<body>
+
+<div class="mainFrame">
+	<div class="mainFrameInner">
+	
+		<!-- search bar-->
+		<div><script type="text/JavaScript">
+
+function trim(x)
+{
+	return (x.replace(/^\s+|\s+$/g, ''));
+}
+function isPositiveInteger(x)
+{
+	result = (isNaN(x) || x < 1 || x.toString().indexOf(".") != -1)? false: true;
+	return result;
+}
+function alertError(type, field)
+{
+	errormessage =new Array('正確代號', '關鍵字');
+	if (type > 0)
+	{
+		alert('請輸入' + errormessage[type - 1]);
+		document.getElementById(field).select();
+		document.getElementById(field).focus();
+	}
+}
+function validateCommonSearch()
+{
+	commoninput = trim(document.getElementById('commoninput').value);
+	if ( isPositiveInteger(commoninput))
+	{	
+		var link = '/content/firstshanghai/tc/quote_dividend.php' + '?code=' + commoninput;
+		document.getElementById("commonsearchform").action = link;
+		document.commonsearchform.submit();
+		return true;
+	}
+	else
+	{
+		alertError(1, 'commoninput');
+	}
+
+	return false;
+}
+
+</script>
+<div><form name="commonsearchform" id="commonsearchform" method="post" onSubmit="return validateCommonSearch();">
+	<table cellspacing="0" cellpadding="3" border="0" width="100%" class="searchBar">
+		<tr>
+			<td width="80">股票代號</td>
+			<td width="80"><input id="commoninput" class="inputSearchBar" type="text" name="commoninput" maxlength="5" onClick="this.value='';"></td>
+			<td><input type="submit" value="搜尋" name="buttonsubmit" onclick="return validateCommonSearch();"></td> 
+		</tr>
+	</table>
+</form></div>
+
+<script type="text/javascript">
+
+$(function(){
+	$("#commoninput").val("9618");
+	$("#commoninput").focus();
+	$("#commoninput").select();
+});
+</script>
+</div>
+	
+		<div class="divTitle">
+			<div class="divTtitleHdr">派息紀錄</div>
+		</div>
+		
+		<div>
+			<div class="quoteDividendCode">09618</div>
+			<div class="quoteDividendName">京東集團－ＳＷ</div>
+			<div class="clear"></div>
+		</div>
+		
+		<div><table width="100%" border="0" cellspacing="0" cellpadding="0" class="contentTable">
+			<tr class="rowHeader">
+				<td width="70" align="left"><span class="boldTxt">公布日期</span></td>
+	            <td width="60" align="left"><span class="boldTxt">財政年度</span></td>
+	            <td align="left"><span class="boldTxt">事項</span></td>
+	            <td width="74" align="right"><span class="boldTxt">除淨日</span></td>
+	            <td width="100" align="right"><span class="boldTxt">截止過戶日期由</span></td>
+	            <td width="100" align="right"><span class="boldTxt">截止過戶日期至</span></td>
+	            <td width="70" align="right"><span class="boldTxt">派送日</span></td>
+            </tr>
+            <tr align="right" class="rowPaleGrey"><td align="left">2026/08/13</td><td align="left">2026/12</td><td align="left" class="Text">不派中期息</td><td align="right">--</td><td align="right">--</td><td align="right">--</td><td align="right">--</td></tr>
+<tr align="right" class="rowWhite"><td align="left">2026/03/05</td><td align="left">2025/12</td><td align="left" class="Text">末期息美元 0.5</td><td align="right">2026/04/08</td><td align="right">2026/04/10</td><td align="right">--</td><td align="right">2026/04/23</td></tr>
+<tr align="right" class="rowPaleGrey"><td align="left">2025/08/14</td><td align="left">2025/12</td><td align="left" class="Text">不派中期息</td><td align="right">--</td><td align="right">--</td><td align="right">--</td><td align="right">--</td></tr>
+<tr align="right" class="rowWhite"><td align="left">2025/03/06</td><td align="left">2024/12</td><td align="left" class="Text">末期息美元 0.5</td><td align="right">2025/04/07</td><td align="right">2025/04/09</td><td align="right">--</td><td align="right">2025/04/23</td></tr>
+<tr align="right" class="rowPaleGrey"><td align="left">2024/08/15</td><td align="left">2024/12</td><td align="left" class="Text">不派中期息</td><td align="right">--</td><td align="right">--</td><td align="right">--</td><td align="right">--</td></tr>
+<tr align="right" class="rowWhite"><td align="left">2024/03/06</td><td align="left">2023/12</td><td align="left" class="Text">末期息美元 0.38</td><td align="right">2024/04/03</td><td align="right">2024/04/08</td><td align="right">--</td><td align="right">2024/04/23</td></tr>
+<tr align="right" class="rowPaleGrey"><td align="left">2023/08/16</td><td align="left">2023/12</td><td align="left" class="Text">不派中期息</td><td align="right">--</td><td align="right">--</td><td align="right">--</td><td align="right">--</td></tr>
+<tr align="right" class="rowWhite"><td align="left">2023/03/09</td><td align="left">2022/12</td><td align="left" class="Text">末期息美元 0.31</td><td align="right">2023/04/04</td><td align="right">2023/04/11</td><td align="right">--</td><td align="right">2023/04/27</td></tr>
+<tr align="right" class="rowPaleGrey"><td align="left">2022/08/23</td><td align="left">2022/12</td><td align="left" class="Text">不派中期息</td><td align="right">--</td><td align="right">--</td><td align="right">--</td><td align="right">--</td></tr>
+<tr align="right" class="rowWhite"><td align="left">2022/05/04</td><td align="left">2022/12</td><td align="left" class="Text">特別股息美元 0.63</td><td align="right">2022/05/19</td><td align="right">2022/05/23</td><td align="right">--</td><td align="right">2022/06/08</td></tr>
+<tr align="right" class="rowPaleGrey"><td align="left">2022/04/28</td><td align="left">2021/12</td><td align="left" class="Text">不派末期息</td><td align="right">--</td><td align="right">--</td><td align="right">--</td><td align="right">--</td></tr>
+<tr align="right" class="rowWhite"><td align="left">2021/08/23</td><td align="left">2021/12</td><td align="left" class="Text">不派中期息</td><td align="right">--</td><td align="right">--</td><td align="right">--</td><td align="right">--</td></tr>
+<tr align="right" class="rowPaleGrey"><td align="left">2021/04/18</td><td align="left">2020/12</td><td align="left" class="Text">不派末期息</td><td align="right">--</td><td align="right">--</td><td align="right">--</td><td align="right">--</td></tr>
+<tr align="right" class="rowWhite"><td align="left">2020/08/17</td><td align="left">2020/12</td><td align="left" class="Text">不派中期息</td><td align="right">--</td><td align="right">--</td><td align="right">--</td><td align="right">--</td></tr>
+		</table></div>
+		
+		<div><style type="text/css">
+body{margin:0px; font-size:12px; font-family:Arial, Helvetica, sans-serif;}
+td{font-size: 12px; word-wrap:break-word; text-overflow:ellipsis;}
+a{text-decoration:none; color:#000;}
+a:hover{color:#b80000;}
+a img{border:0px;}
+form{margin:0px;}
+select{outline:none;}
+input{outline:none;}
+
+/* Common */
+.mainFrame{width:715px;}
+.mainFrameInner{padding-left:5px; padding-top:5px;}
+.themeColor{color:#EB1C22;}
+.up{color:green;}
+.down{color:red;}
+.divTitle{width:100%; height:27px; border-bottom:2px solid #EB1C22; *margin-right:-3px;}
+.divTtitleHdr{height:18px; padding:6px 10px 0 10px; border-bottom:3px solid #EB1C22; line-height:18px; font-weight:bold; float:left; clear:both;}
+.rowGrey, .RowGrey{background-color:#eff0f0; color:#000000;}
+.rowPaleGrey{background-color:#EFF0F0;}
+.rowWhite{background-color:#FFF;}
+.rowHeader{background:#ddd;}
+.rowHeader td{color:#666; font-weight:bold;}
+.rowHeader td a{color:#666;}
+.rowHeader td .themeColor{color:#EB1C22;}
+.FooterCopyright{padding:10px; font-size:12px; color:#333333;}
+.blankLine10{height:10px;}
+.TextBold, .boldTxt{font-weight:bold;}
+.up{color:red;}
+.down{color:green;}
+.contentTable td{padding:3px; vertical-align:top;}
+.contentTable td a:hover{color:#b80000;}
+.contentTable .rowGrey td, .contentTable .RowGrey td{vertical-align:middle;}
+.clear{clear:both;}
+.remarks{line-height:18px; padding:5px 0 0 3px;}
+.themeColor{color:#EB1C22;}
+.dotImg{background:url('../images/bgimg3.gif') 5px -364px no-repeat; width:10px; height:10px; float:left; padding-right:10px; margin-top:2px;}
+
+/* disclaimer */
+.divDisclaimer{padding:5px 0 0 3px;}
+.disclaimerText{float:left; line-height:18px; height:18px;}
+.disclaimerImg{float:left; padding-left:5px;}
+.disclaimerLink{float:left; padding-left:10px;}
+.disclaimerLink a:link, .disclaimerLink a:visited{color:blue; text-decoration:underline;}
+.disclaimerMoreBtn{float:right; line-height:18px; height:18px; color:#EB1C22;}
+.disclaimerMoreBtn a:link{color:#EB1C22;}
+.noPadding{padding:0px;}
+
+/* paging */
+.paging{padding:0px;}
+.paging a{text-decoration:underline; color:#EB1C22;}
+/*.paging a:hover{color:#000;}*/
+.paging a:hover{color:#b80000;}
+.page_selected{color:#EB1C22; font-weight:bold;}
+
+/* home right menu */
+.divHomeRightMenu{/*width:290px; margin:5px;*/ width:280px; padding:5px;}
+
+/* home economic indicator */
+.divEIContent{/*padding:3px;*/ padding-left:5px;}
+.divEIContent div{padding-top:3px;}
+.EITitle{float:left;}
+.EIDate{float:right;}
+
+/* home index global */
+.indexName{padding-bottom:5px; font-size:18px; font-weight:bold;}
+.indexNominal{line-height:26px; height:26px; font-size:22px; font-weight:bold;}
+
+/* home news */
+.divHomeNews{/*width:401px; margin:5px;*/ width:396px; padding:5px 0px 0px 5px;}
+.homeNewsDataTime{width:35px; line-height:18px; height:18px; padding-top:3px;}
+.homeNewsHeader{width:366px; line-height:18px; height:18px; padding-top:3px;}
+.homeNewsHeader a:hover{color:#b80000;}
+
+/* dlss */
+.divDLSS{padding:0px 10px 0 10px;}
+.dlssHeader{width: 100%; border-spacing:0px; padding-top:1px;}
+.dlssHeaderData{font-size:16px; font-weight: bold; line-height:30px; vertical-align:top;}
+.dlssContent{vertical-align:top; width: 375px;}
+.dlssTable{width: 100%; border-spacing: 0px; text-align: center; line-height: 18px}
+.dlssTable td{padding:5px; height:24px;}
+.cost{background-color:#717171; color:#FFFFFF; font-size: 14px; font-weight:bold;}
+.dlssNews{height:125px; overflow-x:hidden; overflow-y:auto;}
+.dlssNewsData{padding: 5px 0px 0px 0px; vertical-align: top; line-height: 20px; color:#EB1C22;}
+.dlssNewsData a{color:#000; text-decoration: none;}
+/*.dlssNewsData a:hover{color:#666666;}*/
+.dlssNewsData a:hover{color:#b80000;}
+.divMsg{float:left; padding:8px 0 0 8px; font-weight:bold;}
+.inputSearchBar{width:60px; outline:none;}
+.dlssBtn{float:right; width:80px; font-weight:bold; background-color:rgb(239,240,240); line-height:22px; height:22px; margin-left:5px;}
+.in{background-color:#fff8f2; color:#303181; font-weight:bold;}
+.out{background-color:#fff8f2; color:#c00019; font-weight:bold;}
+
+/* quote chart */
+.quoteNum01{font-weight:bold; font-size:20px; padding:6px 6px 2px 0px; float:left;}
+.quoteTxt01{font-weight:bold; font-size:16px; padding:8px 6px 2px 0px; float:left;}
+.dynChartOption{padding-top:5px; text-align:right;}
+.dynChartTable{width:100%; align:left; vertical-align:top;}
+.dynChartTable table{border:1px solid #EB1C22;}
+.dynChartSize{width:703px; height:700px;}
+.chartSetting{border:1px solid #EB1C22; border-top:none; padding-bottom:10px; background:#EFF0F0;}
+.chartSetting td{padding:2px 0px 2px 5px;}
+.chartTitle{color:#EB1C22; font-weight:bold; padding-left:5px;}
+.chartOption{width:120px;}
+.tiOption{width:200px;}
+.indexCodeOption{width:155px;}
+.drawButton{padding-right:10px;}
+.divChart{padding-left:5px;}
+.chart{padding-left:20px;}
+
+/* news detail */
+.con_table {padding:10px;}
+.tab_title b{font-size:16px;}
+.tab_title a{text-decoration:none; color:#666;}
+/*.tab_title a:hover{color:#093;}*/
+.tab_title a:hover{color:#b80000;}
+
+.tab_content{font-size:11px; border-left:1px solid #ddd; border-bottom:1px solid #ddd; border-right:1px solid #ddd; margin-left:1px; margin-right:1px; background-position:bottom; background-repeat:repeat-x; /**padding:10px !important;*/}
+.tab_content p{padding-left:45px;}
+.closeWindow a{text-decoration:underline;}
+.closeWindow a:hover{color:#b80000;}
+
+/* news list */
+.newsOption{float:right;}
+.newsDatetime{vertical-align:top; width:100px; color:#EB1C22;}
+.newsHeader{vertical-align:top;}
+
+/* popUp */
+.companyLogo{width:252px; height:52px; padding:5px 0px 5px 220px;}
+
+/* company search */
+.ciSearchBox{padding-left:10px;}
+.ciSearchBoxBtnLeft{float:left;}
+.ciSearchBoxBtnRight{float:left; padding-left:10px;}
+.ciResultTitle{font-weight:bold; padding-left:5px;}
+.ciResultTotal{padding:0px 0px 5px 10px; height:18px;}
+.divCIResult{padding:15px 0px 0px 5px;}
+.ciResultData{margin:10px 0 0 5px;}
+.ciResultTable{padding-top:10px;}
+
+/* top 20 */
+.mainMenuTable{padding:5px 0px;}
+.subMenu{float:right; padding-top:8px;}
+
+/* Market AH */
+.rowAHHeader{background:#ddd;}
+.rowAHHeader a{color:#666; text-decoration:underline; font-weight:bold;}
+.AHRightBorder{border-right:1px solid #e7e7e7}
+
+/* ipo */
+.selected_hot{color:#EB1C22; font-weight:bold;}
+.ipoDetailTable{padding:10px;}
+.backgroundDot{background-image:url(../images/table_dot.gif); background-repeat:repeat-x; height:9px; width:100%;}
+.ipoIntro{padding-left:30px;}
+.ipoNews .underLine{text-decoration:underline;}
+
+/* quote dividend */
+.quoteDividendCode{font-size:16px; font-weight: bold; line-height:30px; vertical-align:top; float:left; width:50px; padding:2px 0px 0px 11px;}
+.quoteDividendName{font-size:16px; font-weight: bold; line-height:30px; vertical-align:top; float:left; padding:3px 0px 0px 2px;}
+
+/* market calendar */
+.TabActive{height: 22px; border-style:solid; border-width:1px; border-color:#D3D4D6 #D3D4D6 white white;padding:10px 25px 0px 25px; float:left; background-color: white;}
+.TabNormal{height:22px; border-style:solid; border-width:1px; border-color:#D3D4D6 #D3D4D6 #D3D4D6 #EFF0F0; padding:10px 25px 0px 25px; float:left; background-color: white;}
+.TabSpace{height: 32px; border-style:solid; border-width:1px; border-color:white white #D3D4D6 white; background-color:white;}
+.calendarDate{height:25px; padding-left:5px; padding-right:7px; float:left; line-height:25px; font-weight:bold;}
+
+/* market calendar result */
+.CalNum11{color:#000000; font-weight:bold;}
+.CalNum09{color:#adadad; font-weight:bold;}
+.CalNum05{font-size:35px; color:#FFA2A2; font-weight:bold;line-height:35px;}
+.CalNum06{font-size:35px; color:#000000; font-weight:bold; text-decoration:none; line-height:35px;}
+.CalNum07{color:#FFA2A2; font-weight:bold;}
+/*td.CalNum06:hover{font-size:35px; font-weight:bold; color:#FF0000;}*/
+td.CalNum06:hover{font-size:35px; font-weight:bold; color:#b80000;}
+.CalNum10{color:#FFFFFF; font-weight:bold; background-color:#FFA2A2; background-repeat:no-repeat;}
+.CalNum12{color:#FFFFFF; font-weight:bold; background-color:#828282; background-repeat:no-repeat;}
+
+/* IR Express */
+.divIRExpress{/*width:225px; margin:5px;*/ width:215px; padding:5px;}
+.divIRExpress div{line-height:18px; height:18px;}
+.IRCodeInfo{font-size:18px; font-weight:bold; padding:3px 0px 3px 0px;}
+/*.IRChangeImg{float:left; width:20px;}*/
+.IRNominal{float:left;}
+.IRChangePercentage{float:left; padding-left:10px;}
+/*.divIRExpress .disclaimerLink a{color:#000;}*/
+
+/* Global Indexes */
+.globalIndexTable td{padding:3px; vertical-align:center;}
+
+.disclaimerLink a:hover{color:#b80000;}
+
+/* Global Indexes -- update common_files/global_index style */
+#common_global_index_container table{width: 100%;}
+.mainFrameInner #common_global_index_container table td{text-align: right; padding: 3px;}
+#common_global_index_container table td:first-child{text-align: left; width: auto;}
+#common_global_index_container .color_up, #common_global_index_container  .starSpan{color:red;}
+#common_global_index_container .color_down{color:green;}
+#common_global_index_container #remark{padding: 5px 0 0 3px; line-height: 18px; margin: 5px 0px;}
+.divHomeRightMenu #common_global_index_container .Footer.paddingTop, .divHomeRightMenu #common_global_index_container #remark{font-size:11px;}
+#common_global_index_container table td{width: 60px; padding: 2px 3px; vertical-align: top;}
+.mainFrameInner #common_global_index_container  tr.index_header{background: #ddd; color: #666; font-weight: bold;}
+.mainFrameInner #common_global_index_container table td{width: 60px;}
+.mainFrameInner #common_global_index_container table td.index_name{width: 150px;}
+.mainFrameInner #common_global_index_container table .index_header td.index_last{width: 45px; color: #666;}
+.mainFrameInner #common_global_index_container table td.index_last{color: black;}
+.mainFrameInner #common_global_index_container table td.index_hk_time{width: 80px;}
+.mainFrameInner #common_global_index_container table td.index_foreign_time{width: 75px;}
+.mainFrameInner #common_global_index_container table .index_foreign_time, #common_global_index_container .index_hk_time{text-align: center;}
+.mainFrameInner #common_global_index_container table tr.index_row.row_odd { background-color: #EFF0F0;}
+.mainFrameInner #common_global_index_container .index_open, .divHomeRightMenu #common_global_index_container .fullView, #common_global_index_container #remark_china, .divHomeRightMenu #common_global_index_container .index_change, #HomeGlobalIndex #common_global_index_container  #remark_other_tw{display:none;}
+.divHomeRightMenu #common_global_index_container  #remark_china{display:block;}
+</style>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/> 
+<table width="100%" border="0" cellspacing="0" cellpadding="0">
+	<tr>
+		<td width="58"><a href="https://www.etnet.com.hk" target="_blank"><img src="../images/logo-etnet.gif" border="0" width="58" height="51"/></a></td>
+		<td align="left" class="FooterCopyright">Copyright ET Net Limited.</br>
+		All rights reserved. Use of this site signifies your agreement to the
+		terms of use.</br>
+		免責聲明：經濟通有限公司及/或第三方信息提供者竭力確保其提供之資料準確可靠，惟不保證該等資料絕對正確。亦不對由於任何資料不確或遺漏所引起之損失或損害負上責任（不論是民事侵權行為責任或合約責任或其他）。</br>
+		</td>
+	</tr>
+</table></div>
+		
+
+	</div>
+</div>
+
+</body>
+</html>
+<!-- FunCodeInfoASA_MCY_IP1_CONY_DATY_IP1_CONY_DATY_310819_0, StkCiDividendASA_MCY_IP1_CONY_DATY_310946_3600 -->

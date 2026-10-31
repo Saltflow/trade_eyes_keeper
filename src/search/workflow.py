@@ -28,6 +28,32 @@ from .run_diagnostics import summarize_ranking_archive
 logger = logging.getLogger(__name__)
 
 
+def _hash_in_kind_inputs(data_hasher, action_schedule, label: str) -> None:
+    """Bind cached evaluations to external rights, quotes and account policy.
+
+    Leave markets without in-kind events byte-compatible with their existing
+    data hash. A changed external valuation or settlement policy must never
+    reuse a checkpoint computed against different entitlement inputs.
+    """
+    schedule = getattr(action_schedule, "in_kind", None)
+    if schedule is None or not len(schedule.events):
+        return
+    from .contracts import stable_hash
+
+    data_hasher.update(("in_kind_v1:" + label).encode("utf-8"))
+    for array in schedule.kernel_args():
+        values = np.ascontiguousarray(array)
+        data_hasher.update(str(values.shape).encode("ascii"))
+        data_hasher.update(str(values.dtype).encode("ascii"))
+        data_hasher.update(values.view(np.uint8))
+    data_hasher.update(stable_hash({
+        "asset_codes": schedule.asset_codes,
+        "event_ids": schedule.event_ids,
+        "metadata": schedule.metadata,
+        "dates": schedule.dates,
+    }).encode("ascii"))
+
+
 # ═══════════════════════════════════════════════════════════════
 # 策略编码
 # ═══════════════════════════════════════════════════════════════
@@ -585,11 +611,19 @@ def run_optimizer(
         data_hasher.update(str(contiguous.dtype).encode("ascii"))
         data_hasher.update(contiguous.view(np.uint8))
     data_hasher.update("|".join(wf_manager.stock_codes).encode("utf-8"))
+    _hash_in_kind_inputs(
+        data_hasher, getattr(wf_manager, "action_schedule", None), "strategy"
+    )
     data_hasher.update("|".join(map(str, wf_manager.dates)).encode("utf-8"))
     data_hasher.update(
         ("controls:" + "|".join(constraints.benchmark_codes)).encode("utf-8")
     )
     for benchmark_code in constraints.benchmark_codes:
+        _hash_in_kind_inputs(
+            data_hasher,
+            getattr(wf_manager, "benchmark_action_schedules", {}).get(benchmark_code),
+            "benchmark:" + benchmark_code,
+        )
         for series_name, source in (
             ("close", wf_manager.benchmark_series),
             ("high", wf_manager.benchmark_high_series),
@@ -920,6 +954,8 @@ def _save_optimizer_result(
             "net_dividend_cash": float(
                 getattr(stat, "net_dividend_cash", 0.0)
             ),
+            "in_kind_positions": list(getattr(stat, "in_kind_positions", []) or []),
+            "in_kind_cashflows": list(getattr(stat, "in_kind_cashflows", []) or []),
             "selected_basket_hold_return": getattr(
                 stat, "selected_basket_hold_return", None
             ),

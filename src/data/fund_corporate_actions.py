@@ -50,6 +50,71 @@ class FundSplitEvidence:
     source_url: str
 
 
+@dataclass(frozen=True)
+class FundSplitResult:
+    """A later result can corroborate, but cannot create prior knowledge."""
+
+    code: str
+    published_at: date
+    record_date: date
+    share_multiplier: float
+    source_url: str
+
+
+def _split_multiplier(compact: str) -> float:
+    ratios = set()
+    for before, after in re.findall(
+        r"份额拆分比例为(\d+(?:\.\d+)?)(?::(\d+(?:\.\d+)?))?", compact
+    ):
+        numerator = float(before)
+        if numerator <= 0:
+            raise FundActionEvidenceError("Invalid split multiplier")
+        ratios.add(float(after) / numerator if after else numerator)
+    if len(ratios) != 1:
+        raise FundActionEvidenceError("Split ratio is missing or ambiguous")
+    multiplier = next(iter(ratios))
+    if not math.isfinite(multiplier) or multiplier <= 0 or multiplier == 1:
+        raise FundActionEvidenceError("Invalid split multiplier")
+    descriptions = re.findall(
+        r"即每(\d+(?:\.\d+)?)份基金份额拆为(\d+(?:\.\d+)?)份", compact
+    )
+    if any(
+        float(before) <= 0
+        or not math.isclose(float(after) / float(before), multiplier, rel_tol=1e-12)
+        for before, after in descriptions
+    ):
+        raise FundActionEvidenceError(
+            "Split ratio conflicts with per-share description"
+        )
+    return multiplier
+
+
+def _parse_split_result(
+    text: str, *, code: str, disclosed_at: date, source_url: str
+) -> FundSplitResult:
+    compact = re.sub(r"\s+", "", unicodedata.normalize("NFKC", text))
+    codes = set(re.findall(r"基金(?:主)?代码:?(\d{6})(?!\d)", compact))
+    if codes != {str(code)} or "份额拆分结果" not in compact:
+        raise FundActionEvidenceError("Split result identity is missing or ambiguous")
+    records = re.findall(r"份额拆分(?:权益登记)?日(?::|\()?" + _DATE, compact)
+    try:
+        days = {date(*(int(part) for part in match)) for match in records}
+    except ValueError as exc:
+        raise FundActionEvidenceError("Invalid split result record date") from exc
+    if len(days) != 1:
+        raise FundActionEvidenceError("Split result record date is not explicit")
+    record = next(iter(days))
+    if disclosed_at < record or not re.search(
+        r"份额拆分(?:权益登记)?日(?:\(" + _DATE + r"\))?日终", compact
+    ):
+        raise FundActionEvidenceError(
+            "Split result does not confirm a completed day-end"
+        )
+    return FundSplitResult(
+        str(code), disclosed_at, record, _split_multiplier(compact), source_url
+    )
+
+
 def parse_split_announcement(
     text: str, *, code: str, disclosed_at: date, source_url: str
 ) -> FundSplitEvidence:
@@ -58,8 +123,9 @@ def parse_split_announcement(
     codes = set(re.findall(r"基金(?:主)?代码:?(\d{6})(?!\d)", compact))
     if codes != {str(code)}:
         raise FundActionEvidenceError("Split notice fund code is missing or ambiguous")
-    records = re.findall(r"份额拆分日(?::|\()?" + _DATE, compact)
+    records = re.findall(r"份额拆分(?:权益登记)?日(?::|\()?" + _DATE, compact)
     sessions = re.findall(r"份额拆分日(?:的下一|后的第一个)工作日\(" + _DATE, compact)
+    sessions += re.findall(r"份额拆分除权日:?" + _DATE, compact)
     try:
         record_dates = {date(*(int(part) for part in match)) for match in records}
         session_dates = {date(*(int(part) for part in match)) for match in sessions}
@@ -71,15 +137,16 @@ def parse_split_announcement(
     first_session = next(iter(session_dates))
     if record_date >= first_session:
         raise FundActionEvidenceError("Split session does not follow the record date")
-    if not re.search(r"份额拆分日(?:\(" + _DATE + r"\))?日终", compact):
+    if not re.search(r"份额拆分(?:权益登记)?日(?:\(" + _DATE + r"\))?日终", compact):
         raise FundActionEvidenceError("Split does not explicitly occur at day-end")
-    ratios = set(re.findall(r"份额拆分比例为(\d+(?:\.\d+)?)", compact))
-    if len(ratios) != 1:
-        raise FundActionEvidenceError("Split ratio is missing or ambiguous")
-    multiplier = float(next(iter(ratios)))
-    if not math.isfinite(multiplier) or multiplier <= 0 or multiplier == 1:
-        raise FundActionEvidenceError("Invalid split multiplier")
-    if "上进位" not in compact or "小数点后基金份额均进位为1份" not in compact:
+    multiplier = _split_multiplier(compact)
+    if "上进位" in compact and "小数点后基金份额均进位为1份" in compact:
+        rounding = "ceil"
+    elif multiplier.is_integer() and "按照“精确分配”的原则进行取整" in compact:
+        # Listed ETF holdings are whole units: an integer split has no
+        # fractional entitlement requiring an inferred rounding rule.
+        rounding = "none"
+    else:
         raise FundActionEvidenceError("Split share rounding is unsupported or unstated")
     return FundSplitEvidence(
         code=str(code),
@@ -87,7 +154,7 @@ def parse_split_announcement(
         record_date=record_date,
         first_post_split_session=first_session,
         share_multiplier=multiplier,
-        share_rounding="ceil",
+        share_rounding=rounding,
         source_url=source_url,
     )
 
@@ -140,7 +207,7 @@ def _non_cash_effective_date(text: str) -> date | None:
     label = r"(?:折算|拆分|合并)(?:基准|生效|实施)?日"
     matches = re.findall(label + r"(?::|为|\()?" + _DATE, text)
     matches += re.findall(
-        r"(?:确定|以)" + _DATE + r"(?:为|作为)[^。；;]{0,100}?" + label,
+        r"(?:确定|决定|以)" + _DATE + r"(?:为|作为)[^。；;]{0,100}?" + label,
         text,
     )
     try:
@@ -406,6 +473,7 @@ class SseFundCorporateActionProvider:
         evidence: list[dict] = []
         non_cash_notices: list[dict] = []
         split_evidence: dict[date, list[FundSplitEvidence]] = {}
+        split_results: list[FundSplitResult] = []
         index_rows = self._index(code, end)
         for row in index_rows:
             title = re.sub(r"\s+", "", str(row.get("TITLE", "")))
@@ -475,6 +543,24 @@ class SseFundCorporateActionProvider:
                         text, code=code, disclosed_at=disclosed_at, source_url=url
                     )
                 except FundActionEvidenceError as exc:
+                    if "拆分结果" in title and not re.search(
+                        r"份额拆分(?:除权日|日(?:的下一|后的第一个)工作日)", compact
+                    ):
+                        result = _parse_split_result(
+                            text, code=code, disclosed_at=disclosed_at, source_url=url
+                        )
+                        split_results.append(result)
+                        non_cash_notices.append(
+                            {
+                                "url": url,
+                                "sha256": digest,
+                                "disclosed_at": disclosed_at.isoformat(),
+                                "record_date": result.record_date.isoformat(),
+                                "share_multiplier": result.share_multiplier,
+                                "status": "result_requires_matching_causal_prior_notice",
+                            }
+                        )
+                        continue
                     raise FundActionEvidenceError(
                         f"Unsupported non-cash fund action: {code} {url}: {exc}"
                     ) from exc
@@ -513,6 +599,26 @@ class SseFundCorporateActionProvider:
                     continue
             selected[action.ex_date] = action
             evidence.append({"url": url, "sha256": digest, "exchange_row": row})
+        for result in split_results:
+            matches = split_evidence.get(result.record_date, [])
+            prior = [
+                item
+                for item in matches
+                if item.code == result.code and item.published_at <= item.record_date
+            ]
+            if not prior:
+                raise FundActionEvidenceError(
+                    "Split result has no matching causal prior notice"
+                )
+            if any(
+                not math.isclose(
+                    item.share_multiplier, result.share_multiplier, rel_tol=1e-12
+                )
+                for item in prior
+            ):
+                raise FundActionEvidenceError(
+                    "Split result conflicts with prior notice"
+                )
         if split_evidence:
             from .market_history import CorporateAction
 
@@ -558,7 +664,9 @@ class SseFundCorporateActionProvider:
                         "split_registered_at_record_day_end",
                         "effective_session_explicit_in_prior_announcement",
                         "raw_qfq_basis_confirms_effective_session",
-                        "fractional_split_shares_rounded_up_per_holder",
+                        "fractional_split_shares_rounded_up_per_holder"
+                        if split.share_rounding == "ceil"
+                        else "integer_split_preserves_whole_share_counts",
                     ],
                 )
                 for notice in non_cash_notices:

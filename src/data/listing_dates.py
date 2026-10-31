@@ -10,7 +10,7 @@ import time
 from dataclasses import asdict, dataclass, fields
 from datetime import date, datetime, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import pandas as pd
 import requests
@@ -23,12 +23,14 @@ SSE_FUND_URL = "https://etf.sse.com.cn/fundlist/"
 SSE_FUND_QUERY_URL = "https://query.sse.com.cn/commonQuery.do"
 SSE_ELIGIBLE_URL = "https://english.sse.com.cn/access/via/eligible/"
 SZSE_STOCK_URL = "https://www.szse.cn/api/report/ShowReport"
+SZSE_FUND_URL = "https://fund.szse.cn/api/report/ShowReport"
 _OFFICIAL_PATHS = {
     ("query.sse.com.cn", "/sseQuery/commonQuery.do"),
     ("query.sse.com.cn", "/commonQuery.do"),
     ("etf.sse.com.cn", "/fundlist/"),
     ("english.sse.com.cn", "/access/via/eligible/"),
     ("www.szse.cn", "/api/report/ShowReport"),
+    ("fund.szse.cn", "/api/report/ShowReport"),
 }
 HKEX_FACTBOOK_URL = (
     "https://www.hkex.com.hk/-/media/HKEX-Market/Market-Data/Statistics/"
@@ -72,6 +74,8 @@ class ListingDateEvidence:
         ):
             raise ValueError("listing-date evidence has a non-official source")
         source = (url.hostname, url.path)
+        if self.code.startswith(("15", "16")):
+            _validate_szse_fund_url(self.source_url)
         if self.code.startswith("5") and source not in {
             ("etf.sse.com.cn", "/fundlist/"),
             ("english.sse.com.cn", "/access/via/eligible/"),
@@ -256,6 +260,62 @@ def _szse_stock(code: str, session: requests.Session) -> tuple[date, str]:
     matches = frame.loc[normalized == code, "A股上市日期"]
     if len(matches) != 1 or pd.isna(matches.iloc[0]):
         raise ValueError(f"SZSE has no unique official listing date for {code}")
+    return _date(matches.iloc[0]), response.url
+
+
+def _validate_szse_fund_url(source_url: str) -> None:
+    url = urlsplit(source_url)
+    if (
+        url.scheme != "https"
+        or (url.hostname, url.path) != ("fund.szse.cn", "/api/report/ShowReport")
+        or url.port not in (None, 443)
+        or url.username
+        or url.password
+        or url.fragment
+    ):
+        raise ValueError("SZSE fund listing evidence has the wrong source")
+    query = parse_qs(url.query)
+    if any(
+        query.get(key) != [value]
+        for key, value in {
+            "SHOWTYPE": "xlsx",
+            "CATALOGID": "1000_lf",
+            "TABKEY": "tab1",
+        }.items()
+    ):
+        raise ValueError("SZSE fund listing evidence has the wrong report")
+
+
+def _szse_fund(code: str, session: requests.Session) -> tuple[date, str]:
+    """Match a listed fund in SZSE's complete official fund workbook."""
+    response = session.get(
+        SZSE_FUND_URL,
+        params={"SHOWTYPE": "xlsx", "CATALOGID": "1000_lf", "TABKEY": "tab1"},
+        headers={
+            "Referer": "https://fund.szse.cn/marketdata/fundslist/index.html",
+            "User-Agent": "Mozilla/5.0",
+        },
+        timeout=_OFFICIAL_TIMEOUT,
+    )
+    response.raise_for_status()
+    _validate_szse_fund_url(response.url)
+    if len(response.content) > 10 * 1024 * 1024:
+        raise ValueError("SZSE fund list exceeds 10 MiB")
+    if not response.content.startswith(b"PK\x03\x04"):
+        raise ValueError("SZSE fund list is not an XLSX workbook")
+    frame = pd.read_excel(io.BytesIO(response.content), engine="openpyxl")
+    if not {"基金代码", "上市日期"}.issubset(frame.columns):
+        raise ValueError("SZSE fund list lacks code or listing-date columns")
+
+    def normalize(value):
+        text = str(value).strip()
+        if not re.fullmatch(r"\d{1,6}(?:\.0+)?", text):
+            return ""
+        return text.split(".")[0].zfill(6)
+
+    matches = frame.loc[frame["基金代码"].map(normalize) == code, "上市日期"]
+    if len(matches) != 1 or pd.isna(matches.iloc[0]):
+        raise ValueError(f"SZSE has no unique official fund listing date for {code}")
     return _date(matches.iloc[0]), response.url
 
 
@@ -459,6 +519,8 @@ class ListingDateStore:
                         return evidence
                     if code.startswith("5"):
                         listing_date, source_url = _sse_fund(code, session)
+                    elif code.startswith(("15", "16")):
+                        listing_date, source_url = _szse_fund(code, session)
                     elif code.startswith(("6", "9")):
                         listing_date, source_url = _sse_stock(code, session)
                     elif code.startswith(("0", "2", "3")):

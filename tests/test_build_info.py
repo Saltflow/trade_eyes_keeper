@@ -154,6 +154,7 @@ def test_runtime_state_and_credentials_are_outside_bundle(source, monkeypatch):
     [
         "config/__init__.py",
         "requirements.txt",
+        "config/in_kind_estimation.yaml",
         "tools/feishu-pi/bridge.mjs",
         "tools/feishu-pi/shared-runtime.mjs",
         "tools/feishu-pi/framing.mjs",

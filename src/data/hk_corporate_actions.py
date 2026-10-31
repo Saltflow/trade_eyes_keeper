@@ -11,7 +11,7 @@ import re
 import time
 from collections import OrderedDict
 from copy import deepcopy
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from itertools import islice
 from pathlib import Path
@@ -117,6 +117,10 @@ def parse_etnet_dividend_html(
         if _NO_DIVIDEND.fullmatch(particulars):
             if ex_date is not None:
                 raise ValueError(f"{code}: no-dividend row has an ex-date")
+            # A dated explicit no-dividend decision is historical coverage,
+            # even for a listed company whose first cash payment came later.
+            # It is not an invented zero-cash action or a guessed listing date.
+            oldest_ex_date = min(oldest_ex_date or announced, announced)
             continue
         if ex_date is None:
             # An undated announced action might fall in the requested window.
@@ -868,12 +872,12 @@ class HkexDividendEvidenceProvider:
         missing = [
             a
             for a in result
-            if a.published_at is None
-            and a.action_type
-            in {
-                "cash_dividend",
-                "unresolved_cash_dividend",
-            }
+            if (
+                a.published_at is None
+                and a.action_type in {"cash_dividend", "unresolved_cash_dividend"}
+            ) or (
+                a.action_type == "in_kind_distribution" and a.in_kind_terms is None
+            )
         ]
         for code in sorted({action.code for action in missing}):
             targets = [a for a in missing if a.code == code]
@@ -885,7 +889,10 @@ class HkexDividendEvidenceProvider:
             )
             end = max(action.ex_date for action in targets)
             downloaded = 0
-            for title in ("dividend", "poll results", "results"):
+            titles = ["dividend", "poll results", "results"]
+            if any(a.action_type == "in_kind_distribution" for a in targets):
+                titles.append("distribution")
+            for title in titles:
                 if not targets:
                     break
                 records = self._announcements(code, start, end, title)
@@ -946,7 +953,14 @@ class HkexDividendEvidenceProvider:
                             continue
                         self._text_cache.move_to_end(url)
                         try:
-                            matched = match_hkex_cash_notice(
+                            matcher = match_hkex_cash_notice
+                            if action.action_type == "in_kind_distribution":
+                                from .in_kind_distributions import (
+                                    match_hkex_in_kind_notice,
+                                )
+
+                                matcher = match_hkex_in_kind_notice
+                            matched = matcher(
                                 self._text_cache[url],
                                 action,
                                 published_at=published,
@@ -1010,6 +1024,58 @@ class HkexDividendEvidenceProvider:
                         break
         return result
 
+    def refine_in_kind_settlements(
+        self, actions: list[CorporateAction], end: date
+    ) -> list[CorporateAction]:
+        """Look for issuer completion evidence, retaining unknown account receipt.
+
+        Search only the bounded period around the disclosed expected delivery.
+        Completion notices cannot make unavailable net cash or custody dates
+        executable. All downloads share a per-call document budget.
+        """
+        from .in_kind_distributions import match_hkex_in_kind_completion_notice
+
+        result = deepcopy(actions)
+        downloaded = 0
+        for index, action in enumerate(result):
+            terms = action.in_kind_terms
+            if action.action_type != "in_kind_distribution" or terms is None:
+                continue
+            start = terms.record_date or action.ex_date
+            expected = terms.expected_delivery_date or start
+            finish = min(end, expected + timedelta(days=31))
+            if finish < start:
+                continue
+            try:
+                records = self._announcements(action.code, start, finish, "distribution")
+            except (requests.RequestException, ValueError) as exc:
+                action.diagnostics.append(
+                    "hkex_in_kind_completion_unavailable=" + str(exc)[:240]
+                )
+                continue
+            for record in records:
+                if not record["url"].lower().endswith(".pdf"):
+                    continue
+                if downloaded >= self.max_documents:
+                    action.diagnostics.append("hkex_in_kind_completion_budget_exhausted")
+                    break
+                try:
+                    downloaded += 1
+                    text = self._cached_notice(record["url"])
+                    matched = match_hkex_in_kind_completion_notice(
+                        text, action, published_at=record["published_at"],
+                        source_url=record["url"], listed_code=record.get("listed_code"),
+                    )
+                except (requests.RequestException, ValueError) as exc:
+                    action.diagnostics.append(
+                        "hkex_in_kind_completion_unavailable=" + str(exc)[:240]
+                    )
+                    continue
+                if matched is not None:
+                    result[index] = matched
+                    break
+        return result
+
 
 class HkCorporateActionProvider:
     """Read dated HK history and resolve cash terms against official filings."""
@@ -1023,6 +1089,8 @@ class HkCorporateActionProvider:
 
     def fetch(self, code: str, start: date, end: date) -> list[CorporateAction]:
         actions = self.evidence.refine(self.history.fetch(code, start, end))
+        if any(action.in_kind_terms is not None for action in actions):
+            actions = self.evidence.refine_in_kind_settlements(actions, end)
         for index, action in enumerate(actions):
             if action.currency == "USD" and action.published_at is not None:
                 actions[index] = self.fx.convert(action)

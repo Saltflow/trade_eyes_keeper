@@ -29,6 +29,7 @@ from .baostock_access import (
 from .baostock_access import (
     guarded_baostock_session as baostock_session,
 )
+from .in_kind_distributions import InKindDistributionTerms
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ class CorporateAction(BaseModel):
     share_rounding: Literal["none", "ceil"] = "none"
     rights_price: float | None = None
     raw_adjustment_factor: float | None = None
+    in_kind_terms: InKindDistributionTerms | None = None
     source: str
     source_url: str | None = None
     currency: str | None = None
@@ -99,6 +101,11 @@ def corporate_action_issues(
         code = str(getattr(action, "code", ""))
         ex_date = getattr(action, "ex_date", None)
         label = f"{code} {ex_date}"
+        if action.action_type == "in_kind_distribution":
+            from .in_kind_distributions import in_kind_distribution_issues
+
+            issues.extend(in_kind_distribution_issues(action))
+            continue
         if getattr(action, "rights_price", None) is not None:
             issues.append(f"rights issue is not supported: {label}")
             continue
@@ -162,6 +169,7 @@ class PriceHistoryBundle:
     currency: str | None = None
     diagnostics: list[str] = field(default_factory=list)
     listing_evidence: dict[str, str] | None = None
+    external_prices: dict[str, pd.DataFrame] = field(default_factory=dict)
 
     REQUIRED_COLUMNS = (
         "date",
@@ -965,6 +973,10 @@ class PointInTimeMarketStore:
                     "actions": len(bundle.actions),
                     "diagnostics": bundle.diagnostics,
                     "listing_evidence": bundle.listing_evidence,
+                    "external_prices": {
+                        key: json.loads(frame.to_json(orient="records", date_format="iso"))
+                        for key, frame in bundle.external_prices.items()
+                    },
                     "contract": "raw-and-qfq-1",
                     "updated_at": datetime.now().isoformat(),
                 },
@@ -1000,6 +1012,7 @@ class PointInTimeMarketStore:
         currency: str | None = None
         diagnostics: list[str] = []
         listing_evidence: dict[str, str] | None = None
+        external_prices: dict[str, pd.DataFrame] = {}
         if metadata_path.exists():
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             source = str(metadata.get("source", ""))
@@ -1007,6 +1020,11 @@ class PointInTimeMarketStore:
             currency = str(currency_value).upper() if currency_value else None
             diagnostics = list(metadata.get("diagnostics", []) or [])
             listing_evidence = metadata.get("listing_evidence")
+            for key, records in (metadata.get("external_prices") or {}).items():
+                external = pd.DataFrame(records)
+                if "date" in external:
+                    external["date"] = pd.to_datetime(external["date"], errors="raise")
+                external_prices[str(key)] = external
         bundle = PriceHistoryBundle(
             code=str(code),
             prices=prices,
@@ -1015,6 +1033,7 @@ class PointInTimeMarketStore:
             currency=currency,
             diagnostics=diagnostics,
             listing_evidence=listing_evidence,
+            external_prices=external_prices,
         )
         from .corporate_action_currency import revalue_cached_bundle
 

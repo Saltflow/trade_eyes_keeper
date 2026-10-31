@@ -82,4 +82,30 @@ class DisclosedMarketHistoryProvider:
             evidence = "complete_sse_fund_index_and_implementation_notices"
         else:
             raise ValueError(f"No verified corporate action source for {code}")
+        if any(action.action_type == "in_kind_distribution" for action in actions):
+            from dataclasses import replace
+
+            from .in_kind_estimation import resolve_in_kind_estimates
+            from .market_history import PointInTimeMarketStore, corporate_action_issues
+
+            def load_external(asset, first, last):
+                source = self.fetch(asset, first, last)
+                if corporate_action_issues(source.actions):
+                    raise ValueError(
+                        "external asset corporate-action evidence is unresolved"
+                    )
+                PointInTimeMarketStore(
+                    settings.get("output_dir", "data/point_in_time")
+                ).write(source)
+                return source
+
+            # Estimates are an explicitly enabled account policy. Statements
+            # retain their source facts; the resolver records assumptions in
+            # separate fields before the common execution-readiness gate.
+            bundle = resolve_in_kind_estimates(
+                replace(bundle, actions=actions),
+                self.config,
+                load_external,
+            )
+            actions = bundle.actions
         return apply_disclosed_adjustments(bundle, actions, evidence=evidence)

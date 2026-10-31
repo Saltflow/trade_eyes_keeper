@@ -1,0 +1,17 @@
+version: 1
+profile: stock_connect_individual
+delivery_lag_sessions: 2
+cash_lag_sessions: 10
+tiered_cash_lag_sessions: 2
+withholding_rate: 0.20
+additional_cash_collection_fee: 0.0
+issuer_fractional_expense_rate: 0.0
+disposal_policy: sell_on_delivery
+foreign_security_election: cash
+issuer_qualified_assumption: true
+nominee_cash_model: pro_rata_declared_cash_election
+sources:
+  - https://fgk.chinatax.gov.cn/zcfgk/c102416/c5203646/content.html
+  - https://www.hkex.com.hk/-/media/HKEX-Market/Services/Circulars-and-Notices/Participant-and-Members-Circulars/HKSCC/2025/022_25_HKSCC_GR_OP_STMC_e.pdf
+  - https://www.sse.com.cn/aboutus/mediacenter/hotandd/c/c_20150912_3988781.shtml
+  - https://www.hkex.com.hk/-/media/HKEX-Market/Services/Circulars-and-Notices/Participant-and-Members-Circulars/HKSCC/2019/ce_HKSCC_DNS_009_2019.pdf

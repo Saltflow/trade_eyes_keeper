@@ -1,0 +1,35 @@
+[
+  {
+    "file": "512810_prior.txt",
+    "source_url": "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2025-06-17/512810_20250617_V0RQ.pdf",
+    "published_at": "2025-06-17",
+    "code": "512810",
+    "pdf_sha256": "b99cdc639808e80bbd6b8ad2bd9a374c162d5db11321088a7410cba84c2a6093",
+    "text_sha256": "7b68035c5d259ead38aa3d771d1899d99880f17705c58a2fb53a10c9f656f636",
+    "retrieved_at_utc": "2026-10-31T01:28:50.744883+00:00",
+    "extraction": "SseFundCorporateActionProvider._pdf_text (pdfplumber), all pages"
+  },
+  {
+    "file": "512810_result.txt",
+    "source_url": "https://www.sse.com.cn/disclosure/fund/announcement/c/new/2025-06-23/512810_20250623_MN62.pdf",
+    "published_at": "2025-06-23",
+    "code": "512810",
+    "pdf_sha256": "aac9dd34d33c4508205cead4c9911ab24a6787eb6987cd2e5458f194700973d2",
+    "text_sha256": "009edbcfb795baf259a1477f09db398e320a18e6a3a88978e4d43ff757f8461c",
+    "retrieved_at_utc": "2026-10-31T01:28:56.248298+00:00",
+    "extraction": "SseFundCorporateActionProvider._pdf_text (pdfplumber), all pages"
+  },
+  {
+    "file": "518660_prelisting_conversion.txt",
+    "source_url": "https://www.sse.com.cn/disclosure/fund/announcement/c/2020-05-18/518660_20200518_1.pdf",
+    "published_at": "2020-05-18",
+    "code": "518660",
+    "pdf_sha256": "71872e2b0de573c0d8dc34b606bd4ce99e5bf7797eb4e83ed2d4ec9c58905f0b",
+    "text_sha256": "3e3d6e8dc61bf31b0737c5f5441e7342415adcc1cfc9d3e970219412fda1da6b",
+    "retrieved_at_utc": "2026-10-31T01:31:10.883684+00:00",
+    "extraction": "SseFundCorporateActionProvider._pdf_text (pdfplumber), all pages",
+    "identity": "Authenticated SSE index row SECURITY_CODE=518660 and exact fund title; PDF has no numeric fund code",
+    "official_listing_date": "2020-05-29",
+    "explicit_conversion_date": "2020-05-19"
+  }
+]

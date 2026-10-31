@@ -1,7 +1,9 @@
 """Official listing-date evidence and IPO-aware strict market coverage."""
 
+import json
 from datetime import date
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -14,11 +16,13 @@ from src.data.listing_dates import (
     SSE_FUND_QUERY_URL,
     SSE_FUND_URL,
     SSE_STOCK_URL,
+    SZSE_FUND_URL,
     SZSE_STOCK_URL,
     ListingDateEvidence,
     ListingDateStore,
     _sse_fund,
     _sse_stock,
+    _szse_fund,
     _szse_stock,
 )
 from src.data.market_history import PointInTimeMarketStore, PriceHistoryBundle
@@ -345,3 +349,130 @@ def test_disclosed_fund_rejects_gap_on_official_listing_day(tmp_path, monkeypatc
         DisclosedMarketHistoryProvider(
             {"point_in_time_data": {"output_dir": str(tmp_path)}}
         ).fetch("510880", date(2018, 1, 1), date(2020, 1, 3))
+
+SZSE_FUND_SOURCE = json.loads(
+    (
+        Path(__file__).parent / "fixtures/listing_dates/szse_fund_159655.source.json"
+    ).read_text("utf-8")
+)
+
+
+def fund_workbook(rows=None, *, drop=()):
+    frame = pd.DataFrame(SZSE_FUND_SOURCE["rows"] if rows is None else rows)
+    frame = frame.drop(columns=list(drop))
+    workbook = BytesIO()
+    frame.to_excel(workbook, index=False)
+    return workbook.getvalue()
+
+
+def fund_session(content=None, source_url=None):
+    class Session:
+        def get(self, url, *, params, headers, timeout):
+            assert url == SZSE_FUND_URL
+            assert params == {
+                "SHOWTYPE": "xlsx",
+                "CATALOGID": "1000_lf",
+                "TABKEY": "tab1",
+            }
+            assert (
+                headers["Referer"]
+                == "https://fund.szse.cn/marketdata/fundslist/index.html"
+            )
+            assert timeout == (30, 60)
+            return _response(
+                source_url or SZSE_FUND_SOURCE["source_url"],
+                content=fund_workbook() if content is None else content,
+            )
+
+    return Session()
+
+
+def test_real_szse_fund_workbook_row_selects_listing_not_inception():
+    assert SZSE_FUND_SOURCE["workbook_total_rows"] == 1083
+    assert len(SZSE_FUND_SOURCE["workbook_sha256"]) == 64
+    assert {"基金代码", "上市日期"}.issubset(SZSE_FUND_SOURCE["columns"])
+    listed, source = _szse_fund("159655", fund_session())
+    assert listed == date(2022, 10, 25)
+    assert source == SZSE_FUND_SOURCE["source_url"]
+
+
+@pytest.mark.parametrize(
+    "mutation", ["wrong_code", "duplicate", "no_date", "fractional_code"]
+)
+def test_szse_fund_row_must_be_exact_unique_and_dated(mutation):
+    rows = [dict(SZSE_FUND_SOURCE["rows"][0])]
+    if mutation == "wrong_code":
+        rows[0]["基金代码"] = 159656
+    elif mutation == "duplicate":
+        rows *= 2
+    elif mutation == "no_date":
+        rows[0]["上市日期"] = None
+    else:
+        rows[0]["基金代码"] = 159655.5
+    with pytest.raises(ValueError, match="no unique official fund listing date"):
+        _szse_fund("159655", fund_session(fund_workbook(rows)))
+
+
+@pytest.mark.parametrize("oversized", [False, True])
+def test_szse_fund_list_requires_bounded_actual_workbook(oversized):
+    content = (
+        b"PK\x03\x04" + b"x" * (10 * 1024 * 1024)
+        if oversized
+        else b"<html>access denied</html>"
+    )
+    reason = "exceeds 10 MiB" if oversized else "not an XLSX"
+    with pytest.raises(ValueError, match=reason):
+        _szse_fund("159655", fund_session(content))
+
+
+def test_szse_fund_list_cannot_substitute_contract_effective_date():
+    row = dict(SZSE_FUND_SOURCE["rows"][0])
+    row["基金合同生效日"] = "2022-10-12"
+    with pytest.raises(ValueError, match="listing-date columns"):
+        _szse_fund("159655", fund_session(fund_workbook([row], drop=("上市日期",))))
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://etf.sse.com.cn/fundlist/",
+        "http://fund.szse.cn/api/report/ShowReport?SHOWTYPE=xlsx&CATALOGID=1000_lf&TABKEY=tab1",
+        "https://fund.szse.cn/api/report/ShowReport?SHOWTYPE=xlsx&CATALOGID=1110&TABKEY=tab1",
+        "https://fund.szse.cn/api/report/ShowReport?SHOWTYPE=xlsx&CATALOGID=1000_lf&TABKEY=tab2",
+        "https://fund.szse.cn/api/report/ShowReport?SHOWTYPE=xlsx&CATALOGID=1000_lf&CATALOGID=1110&TABKEY=tab1",
+    ],
+)
+def test_szse_fund_cache_and_redirect_require_its_exact_official_report(url):
+    with pytest.raises(ValueError, match="wrong (source|report)|non-official"):
+        ListingDateEvidence("159655", date(2022, 10, 25), url, "2026-10-31").validate(
+            "159655"
+        )
+    with pytest.raises(ValueError):
+        _szse_fund("159655", fund_session(source_url=url))
+
+
+@pytest.mark.parametrize("code", ["159655", "160001"])
+def test_listing_store_routes_szse_funds_without_stock_or_sse_fallback(
+    tmp_path,
+    monkeypatch,
+    code,
+):
+    from src.data import listing_dates
+
+    calls = []
+
+    def fetch(requested, _session):
+        calls.append(requested)
+        return date(2022, 10, 25), SZSE_FUND_SOURCE["source_url"]
+
+    monkeypatch.setattr(listing_dates, "_szse_fund", fetch)
+    monkeypatch.setattr(
+        listing_dates, "_szse_stock", lambda *_: pytest.fail("stock route")
+    )
+    monkeypatch.setattr(listing_dates, "_sse_fund", lambda *_: pytest.fail("SSE route"))
+    store = ListingDateStore(tmp_path)
+    evidence = store.resolve(code)
+    assert evidence.listing_date == date(2022, 10, 25)
+    assert store.read(code) == evidence
+    assert store.resolve(code) == evidence
+    assert calls == [code]

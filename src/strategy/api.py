@@ -215,6 +215,8 @@ class PortfolioTrace:
     gross_dividend_cash: float = 0.0
     dividend_tax_cost: float = 0.0
     net_dividend_cash: float = 0.0
+    in_kind_positions: list[dict] = field(default_factory=list)
+    in_kind_cashflows: list[dict] = field(default_factory=list)
     selected_basket_hold_return: float | None = None
     timing_value_add: float | None = None
 
@@ -242,6 +244,8 @@ class EvaluationReport:
     gross_dividend_cash: float = 0.0
     dividend_tax_cost: float = 0.0
     net_dividend_cash: float = 0.0
+    in_kind_positions: list[dict] = field(default_factory=list)
+    in_kind_cashflows: list[dict] = field(default_factory=list)
     selected_basket_hold_return: float | None = None
     timing_value_add: float | None = None
 
@@ -298,6 +302,8 @@ class EvaluationReport:
             "gross_dividend_cash": self.gross_dividend_cash,
             "dividend_tax_cost": self.dividend_tax_cost,
             "net_dividend_cash": self.net_dividend_cash,
+            "in_kind_positions": list(self.in_kind_positions),
+            "in_kind_cashflows": list(self.in_kind_cashflows),
             "selected_basket_hold_return": self.selected_basket_hold_return,
             "timing_value_add": self.timing_value_add,
             "initial_asset": self.initial_asset,

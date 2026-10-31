@@ -1,0 +1,42 @@
+[
+  {
+    "id": "tme_declaration",
+    "url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2018/1213/ltn20181213057.pdf",
+    "pdf_sha256": "66bb1836f6533c41a950eb9add33f5cbe79deeb7147d672a39259f3525640dd6",
+    "text_sha256": "472643a0f8d7541edb3d3dd36699305b2a65f96dd66950b61a7965bfa034bc8b",
+    "chars": 25811,
+    "published_at": "2018-12-13"
+  },
+  {
+    "id": "jd_declaration",
+    "url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2021/1223/2021122300040.pdf",
+    "pdf_sha256": "9b28f5b4d7b9f8f42496992734401fad5f84ad394ba60c337ed5e771f1bc069e",
+    "text_sha256": "a61fbfb0be79b42c85bf15453678cc5edc5764c5a36304f52112e2836e2c4486",
+    "chars": 35045,
+    "published_at": "2021-12-23"
+  },
+  {
+    "id": "meituan_declaration",
+    "url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2022/1116/2022111600357.pdf",
+    "pdf_sha256": "eeefd33ce5b8fd1a0579d955e8b98b59bffc245f922ee8a9db230a177a56e717",
+    "text_sha256": "c2441a18cfa98702a41549e2e5186edcba95c5c9e84bbbb976e85ad8029d146b",
+    "chars": 32696,
+    "published_at": "2022-11-16"
+  },
+  {
+    "id": "jd_completion",
+    "url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2022/0325/2022032502414.pdf",
+    "pdf_sha256": "07d7de7118dca4e6d333025044045cdba9d208bd5076e62af3989b7a4e9e607d",
+    "text_sha256": "9a85fe8b307adc5c581dd3ae957c18294a7e1ea92175c612a3b1aa44f2de97c8",
+    "chars": 14312,
+    "published_at": "2022-03-25"
+  },
+  {
+    "id": "meituan_completion",
+    "url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2023/0324/2023032400883.pdf",
+    "pdf_sha256": "304dad68fe59dc3e9c8b3091c5cb2a38bde6c766fbb1a167e2ae4ea4b57dece8",
+    "text_sha256": "89dd08e344ef648a6f6940432051efd627617c30e23ad77c35212d5574fd94bd",
+    "chars": 6769,
+    "published_at": "2023-03-24"
+  }
+]

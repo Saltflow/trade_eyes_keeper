@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -134,6 +135,7 @@ class RefPortfolio:
     gross_dividend_cash: float = 0.0
     dividend_tax_cost: float = 0.0
     net_dividend_cash: float = 0.0
+    in_kind_positions: dict[str, dict] = field(default_factory=dict)
 
     @property
     def is_bound(self) -> bool:
@@ -146,11 +148,20 @@ class RefPortfolio:
 
     def missing_price_codes(self, prices: dict[str, float]) -> list[str]:
         """List holdings whose current valuation cannot be determined."""
-        return sorted(
+        missing = {
             code
             for code in self.holdings
             if reference_valuation_price(prices.get(code)) is None
+        }
+        missing.update(
+            item["asset_code"]
+            for item in self.in_kind_positions.values()
+            if (item["quantity"] > 0 or (
+                item["fraction"] > 0 and not item.get("fractional_cash_known", False)
+            ))
+            and reference_valuation_price(prices.get(item["asset_code"])) is None
         )
+        return sorted(missing)
 
     def total_market_value(self, prices: dict[str, float]) -> float | None:
         """当前持仓市值；任一持仓缺少有效行情时返回 None。"""
@@ -160,6 +171,18 @@ class RefPortfolio:
             if price is None:
                 return None
             total += h.shares * price
+        for item in self.in_kind_positions.values():
+            fixed_fraction = item.get("fractional_cash_known", False)
+            units = item["quantity"] + (0.0 if fixed_fraction else item["fraction"])
+            if fixed_fraction:
+                total += float(item["fractional_cash_value"])
+            total += float(item.get("tiered_cash_value", 0.0))
+            if units <= 0:
+                continue
+            price = reference_valuation_price(prices.get(item["asset_code"]))
+            if price is None:
+                return None
+            total += units * price
         return total
 
     def nav(self, prices: dict[str, float]) -> float | None:
@@ -193,6 +216,7 @@ class RefPortfolio:
             "dividend_tax_cost": round(self.dividend_tax_cost, 2),
             "net_dividend_cash": round(self.net_dividend_cash, 2),
             "processed_events": list(dict.fromkeys(self.processed_events)),
+            "in_kind_positions": copy.deepcopy(self.in_kind_positions),
             "holdings": {
                 code: {
                     "shares": h.shares,
@@ -239,6 +263,7 @@ class RefPortfolio:
             gross_dividend_cash=float(d.get("gross_dividend_cash", 0.0) or 0.0),
             dividend_tax_cost=float(d.get("dividend_tax_cost", 0.0) or 0.0),
             net_dividend_cash=float(d.get("net_dividend_cash", 0.0) or 0.0),
+            in_kind_positions=copy.deepcopy(d.get("in_kind_positions") or {}),
         )
         for code, hd in (d.get("holdings") or {}).items():
             pf.holdings[code] = Holding(
@@ -400,6 +425,7 @@ class RefPortfolioManager:
             gross_dividend_cash=pf.gross_dividend_cash,
             dividend_tax_cost=pf.dividend_tax_cost,
             net_dividend_cash=pf.net_dividend_cash,
+            in_kind_positions=copy.deepcopy(pf.in_kind_positions),
         )
 
     def apply_corporate_actions(
@@ -410,6 +436,7 @@ class RefPortfolioManager:
         *,
         withholding_rate: float,
         fx_rate: float = 1.0,
+        external_prices: dict | None = None,
     ) -> tuple[RefPortfolio, list[Trade]]:
         """Accrue causally-known dividends and share actions before trading.
 
@@ -436,6 +463,9 @@ class RefPortfolioManager:
         new_pf = self._copy_portfolio(pf)
         processed = set(new_pf.processed_events)
         trades: list[Trade] = []
+        self._apply_in_kind_actions(
+            new_pf, actions, cutoff, scale, external_prices, trades
+        )
         ordered = sorted(
             actions,
             key=lambda item: (
@@ -445,6 +475,8 @@ class RefPortfolioManager:
             ),
         )
         for action in ordered:
+            if getattr(action, "action_type", "") == "in_kind_distribution":
+                continue
             code = str(getattr(action, "code", ""))
             ex_date = getattr(action, "ex_date", None)
             if not isinstance(ex_date, date) or ex_date > cutoff:
@@ -533,6 +565,122 @@ class RefPortfolioManager:
             processed.add(event_id)
         new_pf.processed_events = sorted(processed)
         return new_pf, trades
+
+    @staticmethod
+    def _apply_in_kind_actions(
+        pf: RefPortfolio,
+        actions: list[object],
+        cutoff: date,
+        fx_rate: float,
+        external_prices: dict | None,
+        trades: list[Trade],
+    ) -> None:
+        """Persist ex-date entitlements separately from tradeable holdings.
+
+        Missed ex-date capture is an explicit reconciliation error: today's
+        holdings cannot prove historical qualification.  Existing captured
+        rights continue to settle even after the parent position is sold.
+        """
+        import pandas as pd
+
+        from ..backtest.in_kind import advance_in_kind, build_in_kind_schedule, execution_term
+        from ..search.contracts import stable_hash
+
+        inception = _parse_date(pf.inception_date)
+        for action in actions:
+            if getattr(action, "action_type", "") != "in_kind_distribution":
+                continue
+            ex_date = getattr(action, "ex_date", None)
+            if ex_date is None or ex_date > cutoff:
+                continue
+            if inception is not None and ex_date < inception:
+                continue
+            code = str(getattr(action, "code", ""))
+            terms = getattr(action, "in_kind_terms", None)
+            asset = str(getattr(terms, "asset_code", "") or "")
+            identity = f"in_kind:{code}:{ex_date}:{asset}"
+            state = pf.in_kind_positions.get(identity)
+            terms_data = (
+                terms.model_dump() if hasattr(terms, "model_dump")
+                else vars(terms) if terms is not None else None
+            )
+            terms_hash = stable_hash(terms_data)
+            conflicts = [
+                key for key in pf.in_kind_positions
+                if key.startswith(f"in_kind:{code}:{ex_date}:") and key != identity
+            ]
+            if conflicts or (state is not None and state.get("terms_hash") != terms_hash):
+                raise ValueError(f"in-kind terms changed; reconciliation required: {identity}")
+            if state is None and ex_date < cutoff:
+                raise ValueError(
+                    f"missed in-kind ex-date requires holdings reconciliation: {identity}"
+                )
+            if state is not None and state["last_processed_date"] >= cutoff.isoformat():
+                continue
+            dates = pd.date_range(ex_date, cutoff, freq="D")
+            schedule = build_in_kind_schedule(
+                [action], dates, [code], external_prices
+            ).scaled(fx_rate)
+            if len(schedule.events) != 1:
+                raise ValueError(f"in-kind reference schedule is incomplete: {identity}")
+            quantities = np.array([float(state["quantity"]) if state else 0.0])
+            fractions = np.array([float(state["fraction"]) if state else 0.0])
+            audit = (
+                np.asarray(state["audit"], dtype=np.float64).reshape(1, 14)
+                if state else np.zeros((1, 14))
+            )
+            holding = pf.holdings.get(code)
+            parent_shares = np.array([holding.shares if holding else 0.0])
+            start = (
+                int(dates.searchsorted(pd.Timestamp(state["last_processed_date"]))) + 1
+                if state else 0
+            )
+            before_cash = pf.cash
+            for row in range(start, len(dates)):
+                cash, _value = advance_in_kind(
+                    row, parent_shares, *schedule.kernel_args(), quantities, fractions,
+                    audit,
+                )
+                pf.cash += cash
+            cash_known = len(dates) - 1 >= int(schedule.events[0, 12])
+            fractional_value = fractions[0] * schedule.events[0, 6]
+            if fractions[0] * schedule.events[0, 28] < schedule.events[0, 9]:
+                fractional_value = 0.0
+            fractional_value *= schedule.fx_rates[-1, 0]
+            described = schedule.describe(quantities, fractions, audit)
+            position_value = sum(
+                item["value"] for item in described["in_kind_positions"]
+            )
+            pf.in_kind_positions[identity] = {
+                "asset_code": asset,
+                "quantity": float(quantities[0]),
+                "fraction": float(fractions[0]),
+                "last_processed_date": cutoff.isoformat(),
+                "delivered": cutoff >= execution_term(terms, "actual_delivery_date") if execution_term(terms, "actual_delivery_date") is not None else bool(audit[0, 7]),
+                "audit": audit[0].tolist(),
+                "fractional_cash_known": cash_known,
+                "fractional_cash_value": float(fractional_value),
+                "cashflows": described["in_kind_cashflows"],
+                "value": float(position_value),
+                "tiered_cash_value": float(sum(item.get("cash_receivable", 0.0) for item in described["in_kind_positions"])),
+                "settlement_basis": getattr(terms, "settlement_basis", "confirmed"),
+                "assumption_basis": getattr(terms, "assumption_basis", None) or getattr(terms, "estimation_assumptions", []),
+                "policy_hash": getattr(terms, "policy_hash", None) or getattr(terms, "estimation_policy_id", None),
+                "terms_hash": terms_hash,
+                "source_url": getattr(terms, "source_url", None),
+                "ex_date": ex_date.isoformat(),
+                "delivery_date": described["in_kind_positions"][0]["delivery_date"] if described["in_kind_positions"] else None,
+                "parent_code": code,
+            }
+            trade = Trade(
+                date=cutoff.isoformat(), code=code, action="in_kind",
+                shares=float(quantities[0] + fractions[0]), price=0.0,
+                cost=before_cash - pf.cash, reason="corporate_action_in_kind",
+                event_id=f"{identity}:{cutoff}", run_id=pf.strategy_run_id,
+                strategy_id=pf.strategy_id,
+            )
+            trades.append(trade)
+            pf.trade_log.append(trade)
 
     @staticmethod
     def _rebalance_target_plan(
@@ -679,26 +827,62 @@ class RefPortfolioManager:
                 float(trade_plan.execution.get("total_exposure_cap", 0.80)),
             ),
         )
+        locked_value = 0.0
+        for item in new_pf.in_kind_positions.values():
+            if float(item.get("value", 0.0)) <= 0:
+                continue
+            if item["last_processed_date"] != plan_date:
+                raise ValueError("in-kind reference valuation is stale before allocation")
+            locked_value += float(item["value"])
+        close_cny = np.asarray(prices[row], dtype=float) * fx_rate
+        capital = new_pf.cash + locked_value
+        for column, code in enumerate(symbols):
+            holding = new_pf.holdings.get(code)
+            close = close_cny[column]
+            if holding is not None and np.isfinite(close) and close > 0:
+                capital += holding.shares * close
+        if capital > 0:
+            total_cap = max(total_cap - locked_value / capital, 0.0)
+        symbol_caps = np.full(columns, per_symbol_cap, dtype=float)
+        if capital > 0:
+            for item in new_pf.in_kind_positions.values():
+                if item["asset_code"] not in symbols:
+                    continue
+                column = symbols.index(item["asset_code"])
+                equity_value = float(item["value"]) - float(item.get("tiered_cash_value", 0.0))
+                if item.get("fractional_cash_known", False):
+                    equity_value -= float(item.get("fractional_cash_value", 0.0))
+                symbol_caps[column] = max(
+                    symbol_caps[column] - max(equity_value, 0.0) / capital, 0.0
+                )
         targets = np.zeros(columns, dtype=float)
         if trade_plan.target_weights is not None:
             declared = np.asarray(trade_plan.target_weights, dtype=float)[row]
             valid = active & np.isfinite(declared) & (declared > 0)
-            targets[valid] = np.minimum(declared[valid], per_symbol_cap)
+            targets[valid] = np.minimum(declared[valid], symbol_caps[valid])
             total = float(targets.sum())
             if total > total_cap and total > 0:
                 targets *= total_cap / total
         else:
-            from ..strategy import allocate_target_weights
-
-            targets = allocate_target_weights(
-                np.maximum(active_score, 0.000001),
-                active,
-                per_symbol_cap,
-                total_cap,
-            )
+            remaining = total_cap
+            while remaining > 1e-12:
+                available = active & (active_score > 0) & (targets < symbol_caps - 1e-12)
+                score_sum = float(active_score[available].sum())
+                if not available.any() or score_sum <= 0:
+                    break
+                addition = np.zeros(columns, dtype=float)
+                addition[available] = np.minimum(
+                    remaining * active_score[available] / score_sum,
+                    symbol_caps[available] - targets[available],
+                )
+                used = float(addition.sum())
+                if used <= 1e-12:
+                    break
+                targets += addition
+                remaining -= used
 
         close_cny = np.asarray(prices[row], dtype=float) * fx_rate
-        nav_before = new_pf.cash
+        nav_before = new_pf.cash + locked_value
         for column, code in enumerate(symbols):
             holding = new_pf.holdings.get(code)
             close = close_cny[column]
@@ -745,7 +929,7 @@ class RefPortfolioManager:
                     f"{new_pf.strategy_run_id}:{plan_date}:{code}:target_reduce",
                 )
 
-        nav_after_sells = new_pf.cash
+        nav_after_sells = new_pf.cash + locked_value
         current_shares = np.zeros(columns, dtype=float)
         for column, code in enumerate(symbols):
             holding = new_pf.holdings.get(code)
@@ -1236,6 +1420,38 @@ class RefPortfolioManager:
                 }
             )
 
+        in_kind_positions, in_kind_cashflows = [], []
+        for identity, item in pf.in_kind_positions.items():
+            quantity, fraction = float(item["quantity"]), float(item["fraction"])
+            asset = item["asset_code"]
+            price = reference_valuation_price(prices.get(asset))
+            fixed = item.get("fractional_cash_known", False)
+            quoted_units = quantity + (0.0 if fixed else fraction)
+            value = (
+                quoted_units * price if price is not None
+                else 0.0 if quoted_units == 0 else None
+            )
+            if fixed and value is not None:
+                value += float(item["fractional_cash_value"])
+            if value is not None:
+                value += float(item.get("tiered_cash_value", 0.0))
+            in_kind_positions.append({
+                "event_id": identity, "asset_code": asset,
+                "parent_code": item.get("parent_code", identity.split(":")[1]),
+                "source_url": item.get("source_url"),
+                "ex_date": item.get("ex_date", identity.split(":")[2]),
+                "delivery_date": item.get("delivery_date"),
+                "quantity": quantity, "fractional_quantity": fraction,
+                "delivered": bool(item["delivered"]),
+                "pending_quantity": 0.0 if item["delivered"] else quantity,
+                "value": round(value, 2) if value is not None else None,
+                "cash_receivable": float(item.get("tiered_cash_value", 0.0)),
+                "settlement_basis": item.get("settlement_basis", "confirmed"),
+                "assumption_basis": item.get("assumption_basis"),
+                "policy_hash": item.get("policy_hash"),
+            })
+            in_kind_cashflows.extend(copy.deepcopy(item.get("cashflows", [])))
+
         return {
             "inception_date": pf.inception_date,
             "cash": round(pf.cash, 2),
@@ -1244,6 +1460,8 @@ class RefPortfolioManager:
             "nav": round(nav, 2) if nav is not None else None,
             "nav_return_pct": round(nav_ret, 2) if nav_ret is not None else None,
             "holdings": holdings_list,
+            "in_kind_positions": in_kind_positions,
+            "in_kind_cashflows": in_kind_cashflows,
             "last_rebalance_date": pf.last_rebalance_date,
             "total_market_value": (
                 round(market_value, 2) if market_value is not None else None

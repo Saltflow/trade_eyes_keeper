@@ -26,9 +26,11 @@
 | [公告](guide/announcements.md) / [A 股源资料采集](guide/ashare_source_backfill.md) | 数据抓取、归档、缺口与回填 |
 | [数据集目录](guide/dataset_catalog.md) / [逐时点数据](llm/point_in_time_data.md) | 数据发现及防前视合同 |
 | [策略插件](../src/strategy/README.md) / [Solver 插件](../src/search/README.md) | 扩展实现说明 |
+| [跨股票分派账本](development/in_kind_ledger_20261031.md) | 统一权益与结算、港股通估算政策、真实三事件及完整搜参验收边界 |
 
 ## 变更、验收与退役
 
+- [v1.20.0实物分派发布](development/in_kind_release_20261031.md)：同一提交对齐本地、GitHub与生产，最小估算开关同步及配置/账户保护证据。
 - [基本面量化实验终止](development/failed_quant_experiments_retirement_20261030.md)：旧估值/行业评分/消融、MOE训练、Ke及状态回放因效果始终未正删除，后续不再尝试。
 - [项目变更记录](llm/proj4llm.md)：按日期记录实现和验收，不作为当前状态总表。
 - [财报与prompt缓存审计](development/financial_prompt_cache_audit_20261030.md)：真实阶段命中率、公共前缀断点、零丢失排列实验及费用优化边界；未执行付费改版验证。

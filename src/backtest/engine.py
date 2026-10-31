@@ -30,6 +30,8 @@ from .execution import (
     build_corporate_action_schedule,
 )
 
+from .in_kind import InKindSchedule, advance_in_kind, in_kind_concentration, merge_in_kind_prices
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -42,6 +44,10 @@ except ImportError:
         def decorator(fn):
             return fn
         return decorator
+
+
+_advance_in_kind_numba = jit(nopython=True, cache=True, nogil=True)(advance_in_kind)
+_in_kind_concentration_numba = jit(nopython=True, cache=True, nogil=True)(in_kind_concentration)
 
 
 @jit(nopython=True, cache=True, nogil=True)
@@ -158,7 +164,15 @@ def buy_and_hold_nav(
         if dividend_matrix.shape != closes.shape:
             raise ValueError("benchmark actions and prices must have the same shape")
     nav = np.zeros(rows, dtype=np.float64)
+    in_kind = corporate_actions.in_kind if corporate_actions is not None else InKindSchedule.empty(rows)
+    in_kind_quantities = np.zeros(len(in_kind.events))
+    in_kind_fractions = np.zeros(len(in_kind.events))
+    in_kind_audit = np.zeros((len(in_kind.events), 14))
     for row in range(rows):
+        extra_cash, extra_value = advance_in_kind(
+            row, shares, *in_kind.kernel_args(), in_kind_quantities, in_kind_fractions, in_kind_audit
+        )
+        cash += extra_cash
         for column in range(columns):
             if shares[column] > 0.0:
                 cash += shares[column] * dividend_matrix[row, column]
@@ -185,7 +199,7 @@ def buy_and_hold_nav(
                     continue
                 shares[column] = quantity
                 cash -= cost
-        nav[row] = cash + valuation[row].dot(shares)
+        nav[row] = cash + valuation[row].dot(shares) + extra_value
     return nav
 
 
@@ -307,6 +321,13 @@ if HAS_NUMBA:
         dividend_tax_costs,
         share_multipliers,
         share_rounding_up,
+        in_kind_events,
+        in_kind_prices,
+        in_kind_sales,
+        in_kind_fx,
+        in_kind_cash_fx,
+        in_kind_dividends,
+        in_kind_multipliers,
         initial_cash,
         buy_cash_limit,
         sell_cash_limit,
@@ -316,6 +337,10 @@ if HAS_NUMBA:
         snapshot_mask,
     ):
         T, N = buy_signals.shape
+        # Imported ledger helpers are embedded in cached Numba callers.
+        # Keep this schema guard in step with their numerical event contract.
+        if in_kind_events.shape[1] != 30:
+            raise ValueError("unsupported in-kind numerical event schema")
         shares = np.zeros(N, dtype=np.float64)
         cost_basis = np.zeros(N, dtype=np.float64)
         last_buy_day = np.full(N, -1000000, dtype=np.int32)
@@ -331,6 +356,10 @@ if HAS_NUMBA:
         gross_dividend_cash = 0.0
         dividend_tax_cost = 0.0
         net_dividend_cash = 0.0
+        in_kind_quantities = np.zeros(len(in_kind_events), dtype=np.float64)
+        in_kind_fractions = np.zeros(len(in_kind_events), dtype=np.float64)
+        in_kind_value = 0.0
+        in_kind_audit = np.zeros((len(in_kind_events), 14), dtype=np.float64)
 
         n_snapshots = 0
         for t in range(T):
@@ -345,6 +374,12 @@ if HAS_NUMBA:
         order = np.empty(N, dtype=np.int64)
 
         for t in range(T):
+            in_kind_cash, in_kind_value = _advance_in_kind_numba(
+                t, shares, in_kind_events, in_kind_prices, in_kind_sales,
+                in_kind_fx, in_kind_cash_fx, in_kind_dividends, in_kind_multipliers,
+                in_kind_quantities, in_kind_fractions, in_kind_audit,
+            )
+            cash += in_kind_cash
             # Ex-date actions are applied before orders.  This credits cash
             # dividends and changes share count/cost per share without
             # manufacturing a price return in the raw-price NAV path.
@@ -448,7 +483,7 @@ if HAS_NUMBA:
                 last_buy_day[n] = t
                 total_trades += 1
 
-            pos_value = 0.0
+            pos_value = in_kind_value
             for n in range(N):
                 price = valuation_prices[t, n]
                 if price > 0.0 and not np.isnan(price):
@@ -458,12 +493,11 @@ if HAS_NUMBA:
                 position_fraction_sum += pos_value / daily_values[t]
                 position_fraction_days += 1
             if pos_value > 0.0:
-                day_hhi = 0.0
-                for n in range(N):
-                    value = shares[n] * valuation_prices[t, n]
-                    if value > 0.0:
-                        weight = value / pos_value
-                        day_hhi += weight * weight
+                day_hhi = _in_kind_concentration_numba(
+                    shares, valuation_prices[t], in_kind_events, in_kind_prices,
+                    in_kind_fx, in_kind_quantities, in_kind_fractions, t, pos_value,
+                    in_kind_cash_fx, in_kind_audit,
+                )
                 concentration_hhi_sum += day_hhi
                 concentration_hhi_days += 1
 
@@ -481,7 +515,7 @@ if HAS_NUMBA:
             avg_pos_pct = position_fraction_sum / position_fraction_days * 100.0
         final_pos_pct = 0.0
         if T > 0 and daily_values[T - 1] > 0.0:
-            final_value = 0.0
+            final_value = in_kind_value
             for n in range(N):
                 final_value += shares[n] * valuation_prices[T - 1, n]
             final_pos_pct = final_value / daily_values[T - 1] * 100.0
@@ -494,6 +528,7 @@ if HAS_NUMBA:
             q_shares, q_cost_basis, q_cash, q_nav, q_prices,
             pending_order_count, cash_rejected_order_count, concentration_hhi,
             gross_dividend_cash, dividend_tax_cost, net_dividend_cash,
+            in_kind_quantities.copy(), in_kind_fractions.copy(), in_kind_audit.copy(),
         )
 
 else:
@@ -520,6 +555,13 @@ if HAS_NUMBA:
         dividend_tax_costs,
         share_multipliers,
         share_rounding_up,
+        in_kind_events,
+        in_kind_prices,
+        in_kind_sales,
+        in_kind_fx,
+        in_kind_cash_fx,
+        in_kind_dividends,
+        in_kind_multipliers,
         date_ordinals,
         initial_cash,
         per_symbol_cap,
@@ -531,6 +573,8 @@ if HAS_NUMBA:
     ):
         """Shared-cap target-weight execution without symbol-order allocation."""
         rows, columns = entry_events.shape
+        if in_kind_events.shape[1] != 30:
+            raise ValueError("unsupported in-kind numerical event schema")
         shares = np.zeros(columns, dtype=np.float64)
         cost_basis = np.zeros(columns, dtype=np.float64)
         active = np.zeros(columns, dtype=np.bool_)
@@ -548,6 +592,10 @@ if HAS_NUMBA:
         gross_dividend_cash = 0.0
         dividend_tax_cost = 0.0
         net_dividend_cash = 0.0
+        in_kind_quantities = np.zeros(len(in_kind_events), dtype=np.float64)
+        in_kind_fractions = np.zeros(len(in_kind_events), dtype=np.float64)
+        in_kind_value = 0.0
+        in_kind_audit = np.zeros((len(in_kind_events), 14), dtype=np.float64)
 
         n_snapshots = 0
         for row in range(rows):
@@ -561,8 +609,16 @@ if HAS_NUMBA:
         q_index = 0
         targets = np.zeros(columns, dtype=np.float64)
         desired_buys = np.zeros(columns, dtype=np.float64)
+        symbol_caps = np.zeros(columns, dtype=np.float64)
+        locked_symbol_values = np.zeros(columns, dtype=np.float64)
 
         for row in range(rows):
+            in_kind_cash, in_kind_value = _advance_in_kind_numba(
+                row, shares, in_kind_events, in_kind_prices, in_kind_sales,
+                in_kind_fx, in_kind_cash_fx, in_kind_dividends, in_kind_multipliers,
+                in_kind_quantities, in_kind_fractions, in_kind_audit,
+            )
+            cash += in_kind_cash
             for column in range(columns):
                 if shares[column] > 0.0:
                     gross_dividend_cash += (
@@ -640,7 +696,25 @@ if HAS_NUMBA:
             if state_changed:
                 for column in range(columns):
                     targets[column] = 0.0
-                exposure_cap = min(max(total_exposure_cap, 0.0), 1.0)
+                nav_for_cap = cash + in_kind_value
+                for column in range(columns):
+                    nav_for_cap += shares[column] * valuation_prices[row, column]
+                locked_weight = in_kind_value / nav_for_cap if nav_for_cap > 0 else 0.0
+                exposure_cap = max(min(max(total_exposure_cap, 0.0), 1.0) - locked_weight, 0.0)
+                for column in range(columns):
+                    locked_symbol_values[column] = 0.0
+                for event in range(len(in_kind_events)):
+                    column = int(in_kind_events[event, 13])
+                    if column < columns:
+                        forced_value = in_kind_quantities[event] * in_kind_prices[row, event]
+                        # A fixed native-cash receivable no longer consumes a
+                        # security-specific equity cap.
+                        if row < int(in_kind_events[event, 12]):
+                            forced_value += in_kind_fractions[event] * in_kind_prices[row, event]
+                        locked_symbol_values[column] += forced_value
+                for column in range(columns):
+                    locked_fraction = locked_symbol_values[column] / nav_for_cap if nav_for_cap > 0 else 0.0
+                    symbol_caps[column] = max(per_symbol_cap - locked_fraction, 0.0)
                 if use_declared_target_weights:
                     declared_total = 0.0
                     for column in range(columns):
@@ -649,7 +723,7 @@ if HAS_NUMBA:
                         requested = declared_target_weights[row, column]
                         if np.isnan(requested) or requested <= 0.0:
                             continue
-                        targets[column] = min(requested, per_symbol_cap)
+                        targets[column] = min(requested, symbol_caps[column])
                         declared_total += targets[column]
                     if declared_total > exposure_cap and declared_total > 0.0:
                         scale = exposure_cap / declared_total
@@ -667,7 +741,7 @@ if HAS_NUMBA:
                                 active[column]
                                 and active_score[column] > 0.0
                                 and targets[column]
-                                < per_symbol_cap - 0.000000000001
+                                < symbol_caps[column] - 0.000000000001
                             ):
                                 score_sum += active_score[column]
                                 open_count += 1
@@ -679,13 +753,13 @@ if HAS_NUMBA:
                                 not active[column]
                                 or active_score[column] <= 0.0
                                 or targets[column]
-                                >= per_symbol_cap - 0.000000000001
+                                >= symbol_caps[column] - 0.000000000001
                             ):
                                 continue
                             proposal = (
                                 remaining * active_score[column] / score_sum
                             )
-                            room = per_symbol_cap - targets[column]
+                            room = symbol_caps[column] - targets[column]
                             addition = min(proposal, room)
                             targets[column] += addition
                             used += addition
@@ -693,7 +767,7 @@ if HAS_NUMBA:
                             break
                         remaining -= used
 
-                nav_before = cash
+                nav_before = cash + in_kind_value
                 for column in range(columns):
                     nav_before += shares[column] * valuation_prices[row, column]
 
@@ -725,7 +799,7 @@ if HAS_NUMBA:
                     shares[column] -= quantity
                     total_trades += 1
 
-                nav_after_sells = cash
+                nav_after_sells = cash + in_kind_value
                 for column in range(columns):
                     nav_after_sells += (
                         shares[column] * valuation_prices[row, column]
@@ -780,7 +854,7 @@ if HAS_NUMBA:
                     cash -= total_cost
                     total_trades += 1
 
-            position_value = 0.0
+            position_value = in_kind_value
             for column in range(columns):
                 position_value += shares[column] * valuation_prices[row, column]
             daily_values[row] = cash + position_value
@@ -788,12 +862,11 @@ if HAS_NUMBA:
                 position_fraction_sum += position_value / daily_values[row]
                 position_fraction_days += 1
             if position_value > 0.0:
-                day_hhi = 0.0
-                for column in range(columns):
-                    value = shares[column] * valuation_prices[row, column]
-                    if value > 0.0:
-                        weight = value / position_value
-                        day_hhi += weight * weight
+                day_hhi = _in_kind_concentration_numba(
+                    shares, valuation_prices[row], in_kind_events, in_kind_prices,
+                    in_kind_fx, in_kind_quantities, in_kind_fractions, row, position_value,
+                    in_kind_cash_fx, in_kind_audit,
+                )
                 concentration_hhi_sum += day_hhi
                 concentration_hhi_days += 1
 
@@ -813,7 +886,7 @@ if HAS_NUMBA:
             )
         final_position = 0.0
         if rows > 0 and daily_values[rows - 1] > 0.0:
-            value = 0.0
+            value = in_kind_value
             for column in range(columns):
                 value += shares[column] * valuation_prices[rows - 1, column]
             final_position = value / daily_values[rows - 1] * 100.0
@@ -839,6 +912,7 @@ if HAS_NUMBA:
             gross_dividend_cash,
             dividend_tax_cost,
             net_dividend_cash,
+            in_kind_quantities.copy(), in_kind_fractions.copy(), in_kind_audit.copy(),
         )
 
 else:
@@ -991,6 +1065,7 @@ class FastEvaluator:
                 quarter_nav, quarter_prices, pending_order_count,
                 cash_rejected_order_count, concentration_hhi,
                 gross_dividend_cash, dividend_tax_cost, net_dividend_cash,
+                in_kind_quantities, in_kind_fractions, in_kind_audit,
             ) = _simulate_target_plan_numba(
                 np.ascontiguousarray(entry_events, dtype=np.bool_),
                 np.ascontiguousarray(exit_events, dtype=np.bool_),
@@ -1017,6 +1092,7 @@ class FastEvaluator:
                 np.ascontiguousarray(
                     action_schedule.share_rounding_up, dtype=np.bool_
                 ),
+                *action_schedule.in_kind.kernel_args(),
                 np.ascontiguousarray(date_ordinals, dtype=np.int64),
                 float(self.initial_cash),
                 float(trade_plan.execution.get("per_symbol_cap", 0.20)),
@@ -1038,6 +1114,7 @@ class FastEvaluator:
                 quarter_nav, quarter_prices, pending_order_count,
                 cash_rejected_order_count, concentration_hhi,
                 gross_dividend_cash, dividend_tax_cost, net_dividend_cash,
+                in_kind_quantities, in_kind_fractions, in_kind_audit,
             ) = _simulate_cash_plan_numba(
                 np.ascontiguousarray(buy_signals, dtype=np.bool_),
                 np.ascontiguousarray(sell_signals, dtype=np.bool_),
@@ -1062,6 +1139,7 @@ class FastEvaluator:
                 np.ascontiguousarray(
                     action_schedule.share_rounding_up, dtype=np.bool_
                 ),
+                *action_schedule.in_kind.kernel_args(),
                 float(self.initial_cash), buy_cash_limit, sell_cash_limit,
                 int(self.lot_size), float(self.commission_rate),
                 int(self.min_holding_days),
@@ -1078,6 +1156,7 @@ class FastEvaluator:
             benchmark_initial_values=benchmark_initial_values,
             benchmark_raw_returns=benchmark_raw_returns,
             initial_asset=self.initial_cash,
+            **action_schedule.in_kind.describe(in_kind_quantities, in_kind_fractions, in_kind_audit),
             final_pos_pct=final_pos_pct, final_shares=final_shares,
             final_cash=final_cash, cost_basis=cost_basis,
             quarter_shares=quarter_shares, quarter_cash=quarter_cash,
@@ -1220,7 +1299,16 @@ def selected_basket_hold_return(
     total_exposure_cap = float(
         trade_plan.execution.get("total_exposure_cap", 0.80)
     )
+    in_kind = corporate_actions.in_kind
+    in_kind_quantities = np.zeros(len(in_kind.events))
+    in_kind_fractions = np.zeros(len(in_kind.events))
+    in_kind_audit = np.zeros((len(in_kind.events), 14))
+    extra_value = 0.0
     for row in range(rows):
+        extra_cash, extra_value = advance_in_kind(
+            row, shares, *in_kind.kernel_args(), in_kind_quantities, in_kind_fractions, in_kind_audit
+        )
+        cash += extra_cash
         for column in range(columns):
             if shares[column] > 0.0:
                 cash += (
@@ -1272,7 +1360,7 @@ def selected_basket_hold_return(
                 continue
             if target_mode:
                 requested_weight = float(requested_weights[column])
-                nav = cash + float(np.dot(shares, values[row]))
+                nav = cash + float(np.dot(shares, values[row])) + extra_value
                 budget = min(cash, nav * max(requested_weight, 0.0))
             else:
                 requested_weight = 0.0
@@ -1289,7 +1377,7 @@ def selected_basket_hold_return(
             cash -= total_cost
             entered[column] = True
             committed_weights[column] = requested_weight
-    final_asset = cash + float(np.dot(shares, values[-1]))
+    final_asset = cash + float(np.dot(shares, values[-1])) + extra_value
     if initial_cash <= 0.0:
         return 0.0
     return round((final_asset / initial_cash - 1.0) * 100.0, 2)
@@ -1323,6 +1411,8 @@ def _compute_stats(
     selected_basket_hold_return=None,
     timing_value_add=None,
     initial_asset=None,
+    in_kind_positions=None,
+    in_kind_cashflows=None,
 ) -> WindowStats:
     """daily_values → WindowStats。"""
     T = len(daily_values)
@@ -1398,6 +1488,8 @@ def _compute_stats(
         final_shares=final_shares,
         final_prices=(price_matrix[-1].copy() if len(price_matrix) else None),
         final_cash=final_cash or 0.0,
+        in_kind_positions=in_kind_positions,
+        in_kind_cashflows=in_kind_cashflows,
         cost_basis=cost_basis,
         quarter_shares=quarter_shares,
         quarter_cash=quarter_cash,
@@ -1553,6 +1645,7 @@ def simulate_portfolio(
             q_shares, q_cost_basis, q_cash, q_nav, q_prices,
             pending_order_count, cash_rejected_order_count, concentration_hhi,
             gross_dividend_cash, dividend_tax_cost, net_dividend_cash,
+            in_kind_quantities, in_kind_fractions, in_kind_audit,
         ) = _simulate_target_plan_numba(
             np.ascontiguousarray(entry_events, dtype=np.bool_),
             np.ascontiguousarray(exit_events, dtype=np.bool_),
@@ -1579,6 +1672,7 @@ def simulate_portfolio(
             np.ascontiguousarray(
                 action_schedule.share_rounding_up, dtype=np.bool_
             ),
+            *action_schedule.in_kind.kernel_args(),
             np.ascontiguousarray(date_ordinals, dtype=np.int64),
             float(initial_cash),
             float(trade_plan.execution.get("per_symbol_cap", 0.20)),
@@ -1599,6 +1693,7 @@ def simulate_portfolio(
             q_shares, q_cost_basis, q_cash, q_nav, q_prices,
             pending_order_count, cash_rejected_order_count, concentration_hhi,
             gross_dividend_cash, dividend_tax_cost, net_dividend_cash,
+            in_kind_quantities, in_kind_fractions, in_kind_audit,
         ) = _simulate_cash_plan_numba(
             np.ascontiguousarray(buy_signals, dtype=np.bool_),
             np.ascontiguousarray(sell_signals, dtype=np.bool_),
@@ -1623,6 +1718,7 @@ def simulate_portfolio(
             np.ascontiguousarray(
                 action_schedule.share_rounding_up, dtype=np.bool_
             ),
+            *action_schedule.in_kind.kernel_args(),
             float(initial_cash), float(buy_cash_limit), float(sell_cash_limit),
             int(lot_size), float(commission_rate), int(min_holding_days),
             np.ascontiguousarray(snapshot_mask),
@@ -1647,7 +1743,7 @@ def simulate_portfolio(
                     "pnl_pct": round((px / max(cb_i, 0.0001) - 1) * 100, 1),
                 })
         qp = (
-            round(float(q_shares[qi].dot(q_prices[qi])) / max(q_nav[qi], 1.0) * 100, 1)
+            round(float(q_nav[qi] - q_cash[qi]) / max(q_nav[qi], 1.0) * 100, 1)
             if q_nav[qi] > 0 else 0.0
         )
         quarterly_holdings.append({
@@ -1657,6 +1753,7 @@ def simulate_portfolio(
             "cash": round(float(q_cash[qi]), 2),
             "nav": round(float(q_nav[qi]), 2),
             "pos_pct": qp, "positions": qpos,
+            "in_kind_value": round(float(q_nav[qi] - q_cash[qi] - q_shares[qi].dot(q_prices[qi])), 2),
         })
 
     nav = daily_values
@@ -1678,10 +1775,7 @@ def simulate_portfolio(
         rets = rets[~np.isnan(rets) & ~np.isinf(rets)]
         if len(rets) > 5 and np.std(rets, ddof=1) > 1e-10:
             sharpe = float(np.mean(rets) / np.std(rets, ddof=1) * np.sqrt(252))
-    final_pos_pct_calc = (
-        float(np.dot(final_shares, valuation_price[-1]) / max(nav[-1], 1.0) * 100)
-        if nav[-1] > 0 else 0.0
-    )
+    final_pos_pct_calc = float(final_pos_pct)
     basket_return = selected_basket_hold_return(
         trade_plan,
         valuation_price,
@@ -1694,6 +1788,7 @@ def simulate_portfolio(
     )
 
     return PortfolioTrace(
+        **action_schedule.in_kind.describe(in_kind_quantities, in_kind_fractions, in_kind_audit),
         daily_values=nav, daily_dates=dates,
         total_trades=trade_count,
         avg_position_pct=round(avg_pos_pct, 2),
@@ -1901,12 +1996,14 @@ class WalkForwardManager:
         from .execution import build_corporate_action_schedule
 
         actions = []
+        external_prices = {}
         for code in stock_codes:
             bundle = (market_bundles or {}).get(code)
             if bundle is not None:
                 actions.extend(bundle.actions)
+                external_prices = merge_in_kind_prices(external_prices, getattr(bundle, "external_prices", {}))
         self.action_schedule = build_corporate_action_schedule(
-            actions, self.dates, stock_codes
+            actions, self.dates, stock_codes, external_prices=external_prices
         )
 
         self.benchmark_series: dict[str, np.ndarray] = {}
@@ -1956,6 +2053,7 @@ class WalkForwardManager:
                     self.benchmark_bundles[code].actions,
                     self.dates,
                     [str(code)],
+                    external_prices=getattr(self.benchmark_bundles[code], "external_prices", {}),
                 )
                 self.benchmark_action_schedules[str(code)] = action
             elif "high" in benchmark.columns:
@@ -2182,7 +2280,8 @@ class Backtester:
             bundle = (benchmark_bundles or {}).get(code)
             if bundle is not None:
                 benchmark_actions[code] = build_corporate_action_schedule(
-                    bundle.actions, trace.nav_dates, [str(code)]
+                    bundle.actions, trace.nav_dates, [str(code)],
+                    external_prices=getattr(bundle, "external_prices", {}),
                 )
             benchmark_group = _detect_fine_group(str(code))
             benchmark_fx = float(
@@ -2295,6 +2394,7 @@ class Backtester:
         )
         holdings = _final_holdings(trace, list(market_data.symbols))
         holdings_value = sum(float(item["value"]) for item in holdings)
+        holdings_value += sum(float(item["value"]) for item in trace.in_kind_positions)
         configured_candidates = [
             code
             for code in (benchmark_codes or [])
@@ -2343,6 +2443,8 @@ class Backtester:
             final_holdings_value=round(holdings_value, 2),
             final_position_pct=round(trace.final_position_pct, 2),
             final_holdings=holdings,
+            in_kind_positions=list(trace.in_kind_positions),
+            in_kind_cashflows=list(trace.in_kind_cashflows),
             benchmark_returns=benchmark_returns,
             benchmark_win_rates=benchmark_win_rates,
             benchmark_excess_returns=benchmark_excess_returns,
@@ -2427,6 +2529,7 @@ def build_trade_plan(
         raw_high = np.full((T, N), np.nan, dtype=np.float32)
         raw_low = np.full((T, N), np.nan, dtype=np.float32)
         actions = []
+        external_prices = {}
         date_index = pd.DatetimeIndex(pd.to_datetime(dates))
         for column, code in enumerate(active_codes):
             bundle = market_bundles.get(code)
@@ -2458,8 +2561,9 @@ def build_trade_plan(
                     f"raw/qfq coverage mismatch for {code} in trade-plan history"
                 )
             actions.extend(bundle.actions)
+            external_prices = merge_in_kind_prices(external_prices, getattr(bundle, "external_prices", {}))
         action_schedule = build_corporate_action_schedule(
-            actions, date_index, active_codes
+            actions, date_index, active_codes, external_prices=external_prices
         )
     if context_enricher is not None:
         # Context adapters are strategy-owned and causal.  The shared plan

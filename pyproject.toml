@@ -1,6 +1,6 @@
 [project]
 name = "stock-quant-system"
-version = "1.19.0"
+version = "1.20.0"
 description = "A股/美股/港股量化监控系统: 策略搜索优化器 + 日报/简报 + 飞书/Telegram Bot"
 readme = "README.md"
 license = {text = "BSD-3-Clause"}

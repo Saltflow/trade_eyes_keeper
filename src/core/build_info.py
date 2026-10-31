@@ -28,6 +28,7 @@ _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _SUPPORT_SOURCE_FILES = (
     "config/__init__.py",
     "requirements.txt",
+    "config/in_kind_estimation.yaml",
     "tools/feishu-pi/bridge.mjs",
     "tools/feishu-pi/shared-runtime.mjs",
     "tools/feishu-pi/framing.mjs",
