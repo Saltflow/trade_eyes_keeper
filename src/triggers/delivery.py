@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from contextlib import closing
+from copy import deepcopy
 from pathlib import Path
 
 import requests
@@ -177,13 +179,23 @@ class TriggerChatNotifier(FeishuNotifier):
         if guard:
             return guard
         try:
-            card = dict(payload["card"])
+            card = deepcopy(payload["card"])
+            # Feishu Card 2.0 components belong to body.elements. A second
+            # top-level elements array makes otherwise valid reports invalid.
+            if (
+                not isinstance(card, dict)
+                or card.get("schema") != "2.0"
+                or "elements" in card
+                or not isinstance(card.get("body"), dict)
+                or not isinstance(card["body"].get("elements"), list)
+            ):
+                raise ValueError("invalid Feishu Card 2.0 envelope")
             # Every piece carries its reason; no extra untracked notification.
             reason = self.binding.get("reason", "")
             if reason:
-                card["elements"] = [
+                card["body"]["elements"] = [
                     {"tag": "markdown", "content": reason},
-                    *card.get("elements", []),
+                    *card["body"]["elements"],
                 ]
             content = json.dumps(card, ensure_ascii=False, allow_nan=False)
         except (TypeError, ValueError, KeyError):
@@ -255,6 +267,7 @@ class TriggerChatNotifier(FeishuNotifier):
                 "status": "failed" if rejected else "unknown",
                 "reason": "http_rejected" if rejected else "http_response_uncertain",
                 "http_status": response.status_code,
+                **_platform_error_metadata(response),
             }
         try:
             result = response.json()
@@ -264,7 +277,12 @@ class TriggerChatNotifier(FeishuNotifier):
         except (ValueError, TypeError, AttributeError):
             return {"status": "unknown", "reason": "http_acknowledgement_missing"}
         if code != 0:
-            return {"status": "failed", "reason": "feishu_rejected", "code": code}
+            return {
+                "status": "failed",
+                "reason": "feishu_rejected",
+                "code": code,
+                **_platform_error_metadata(response),
+            }
         message = result.get("data") or {}
         return {
             "status": "sent",
@@ -273,3 +291,23 @@ class TriggerChatNotifier(FeishuNotifier):
             if isinstance(message, dict)
             else None,
         }
+
+
+def _platform_error_metadata(response) -> dict:
+    """Keep support identifiers, never API bodies or credential-bearing text."""
+    metadata = {}
+    try:
+        data = response.json()
+    except (ValueError, TypeError, AttributeError):
+        data = None
+    if isinstance(data, dict):
+        if type(data.get("code")) is int:
+            metadata["code"] = data["code"]
+        error = data.get("error")
+        if isinstance(error, dict):
+            log_id = error.get("log_id")
+            if isinstance(log_id, str) and re.fullmatch(
+                r"[A-Za-z0-9_-]{1,128}", log_id
+            ):
+                metadata["platform_log_id"] = log_id
+    return metadata

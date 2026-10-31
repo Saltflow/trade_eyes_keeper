@@ -2,7 +2,7 @@
 
 import json
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
 import pytest
@@ -329,7 +329,7 @@ def test_list_shows_chinese_schedule_actions_next_date_and_recent_result(tools):
     assert "1. 逆回购到期【生效中】" in message
     assert "2026年11月02日 09:50" in message
     assert "Asia/Shanghai" in message and "提醒：逆回购到期" in message
-    assert "最近结果：未触发" in message
+    assert "最近结果：尚未触发" in message
     assert "[active]" not in message
 
 
@@ -560,3 +560,251 @@ def test_schema_and_prompt_do_not_allow_authentication_or_arbitrary_jobs():
         props["spec"]["properties"]["actions"]["items"]["properties"]["kind"]["enum"]
     ) == {"brief", "daily", "reminder"}
     assert "完整监控池" in TRIGGER_PROMPT
+    assert "action_results逐动作" in TRIGGER_PROMPT
+
+
+@pytest.fixture
+def shared_execution(tools):
+    """Real shared run storage, never start a worker or run a report."""
+    from src.core.execution import ExecutionStore, JobSpec, ModuleSpec, RunResult
+
+    store = ExecutionStore(tools.store.path)
+    store.apply(
+        ModuleSpec(
+            "reports",
+            tuple(
+                JobSpec("reports." + kind, lambda payload, context: RunResult())
+                for kind in ("brief", "daily")
+            ),
+        )
+    )
+    yield store
+    store.close_idle_connections()
+
+
+def multi_actions(tools, kinds=("brief", "daily"), *, occurred=True):
+    value = price_spec()
+    value["actions"] = [{"kind": kind, "payload": {}} for kind in kinds]
+    assert tools.execute({"action": "create", "spec": value})["status"] == "created"
+    record = tools.store.get(tools.owner, 1)
+    if occurred:
+        with tools.store.transaction() as db:
+            tools.store.record_occurrence(record, "fixture-first", {}, NOW, db=db)
+    return record
+
+
+def submit_first(tools, execution):
+    action = tools.store.claim_pending(limit=1, now=NOW)[0]
+    run = execution.submit(
+        "reports." + action["kind"], {}, source="synthetic-ui-receipt"
+    )
+    tools.store.mark_submitted(action["id"], run, now=NOW)
+    return action, run
+
+
+def test_each_action_without_an_occurrence_is_explicitly_not_triggered(tools):
+    multi_actions(tools, occurred=False)
+    reply = tools.handle_text("get trigger 1")
+    assert "简报：尚未触发" in reply["message"]
+    assert "日报：尚未触发" in reply["message"]
+    assert [row["status"] for row in reply["data"]["trigger"]["action_results"]] == [
+        "not_triggered",
+        "not_triggered",
+    ]
+
+
+@pytest.mark.parametrize(
+    "stage,status,label",
+    [
+        (None, "queued", "排队中"),
+        ("brief_stock_data", "generating", "正在生成"),
+        ("brief_notifications", "delivering", "正在投递"),
+    ],
+)
+def test_submitted_action_reads_queued_running_and_delivery_phase_from_shared_sqlite(
+    tools, shared_execution, stage, status, label
+):
+    multi_actions(tools)
+    action, run = submit_first(tools, shared_execution)
+    if stage is not None:
+        shared_execution.owner_started("fixture-owner")
+        claimed = shared_execution.claim("fixture-owner", "default", ["reports.brief"])
+        assert claimed["id"] == run
+        assert shared_execution.progress(run, claimed["claim_token"], stage)
+    before = tools.store.actions(tools.owner, 1)
+    reply = tools.handle_text("get trigger 1")
+    results = reply["data"]["trigger"]["action_results"]
+    assert results[0]["status"] == status
+    assert results[1]["status"] == "pending"
+    assert "简报：" + label in reply["message"] and "日报：待发送" in reply["message"]
+    assert tools.store.actions(tools.owner, 1) == before
+    assert run not in json.dumps(reply, ensure_ascii=False)
+    assert action["id"] not in json.dumps(reply, ensure_ascii=False)
+
+
+def test_http400_brief_failure_never_hides_daily_pending_and_public_codes_are_safe(
+    tools, shared_execution
+):
+    multi_actions(tools)
+    action, run = submit_first(tools, shared_execution)
+    tools.store.mark_completed(
+        action["id"],
+        status="failed",
+        reason="private-token-must-not-leak",
+        deliveries={
+            "feishu": {
+                "status": "failed",
+                "reason": "delivery_failed",
+                "pieces": [
+                    {
+                        "status": "failed",
+                        "reason": "http_rejected",
+                        "http_status": 400,
+                        "code": 230099,
+                        "detail": "private-token-must-not-leak",
+                        "owner": "other-private-owner",
+                    }
+                ],
+            }
+        },
+        now=NOW,
+    )
+    # The execution row is still queued, while the action has a terminal durable
+    # delivery result. Its terminal receipt wins over stale queue metadata.
+    reply = tools.handle_text("拉取已经激活的触发器")
+    assert "简报：失败（HTTP 400，平台code=230099）" in reply["message"]
+    assert "日报：待发送" in reply["message"]
+    public = json.dumps(reply, ensure_ascii=False)
+    assert all(
+        value not in public
+        for value in (
+            run,
+            "private-token-must-not-leak",
+            "other-private-owner",
+            tools.owner,
+            tools.chat,
+        )
+    )
+    results = reply["data"]["triggers"][0]["action_results"]
+    assert results[0]["status"] == "failed" and results[1]["status"] == "pending"
+    assert "http_rejected" in results[0]["diagnostics"]
+
+
+def test_same_kind_actions_keep_distinct_indices_and_outcomes(tools, shared_execution):
+    multi_actions(tools, ("brief", "brief"))
+    action, _ = submit_first(tools, shared_execution)
+    tools.store.mark_completed(
+        action["id"],
+        status="unknown",
+        deliveries={
+            "feishu": {"status": "unknown", "reason": "http_submission_unknown"}
+        },
+        now=NOW,
+    )
+    reply = tools.handle_text("get trigger 1")
+    assert "简报（动作1）：结果不明" in reply["message"]
+    assert "简报（动作2）：待发送" in reply["message"]
+    assert [
+        item["action_index"] for item in reply["data"]["trigger"]["action_results"]
+    ] == [0, 1]
+
+
+def test_report_data_not_ready_is_distinct_from_acknowledged_delivery(
+    tools, shared_execution
+):
+    multi_actions(tools)
+    action, _ = submit_first(tools, shared_execution)
+    tools.store.mark_completed(
+        action["id"],
+        status="failed",
+        reason="data_not_ready:all_enabled_channels_sent",
+        deliveries={
+            "feishu": {"status": "sent", "pieces": [{"status": "sent"}]},
+            "email": {"status": "skipped"},
+        },
+        now=NOW,
+    )
+    reply = tools.handle_text("get trigger 1")
+    assert "简报：已送达；报告数据未就绪" in reply["message"]
+    results = reply["data"]["trigger"]["action_results"]
+    assert (
+        results[0]["status"] == "sent" and "data_not_ready" in results[0]["diagnostics"]
+    )
+    assert results[1]["status"] == "pending"
+
+
+def test_newer_occurrence_pending_is_not_hidden_by_late_old_receipt(
+    tools, shared_execution
+):
+    record = multi_actions(tools, ("brief",))
+    action, _ = submit_first(tools, shared_execution)
+    with tools.store.transaction() as db:
+        tools.store.record_occurrence(
+            record, "fixture-newer", {}, NOW + timedelta(minutes=1), db=db
+        )
+    tools.store.mark_completed(
+        action["id"],
+        status="succeeded",
+        deliveries={"feishu": {"status": "sent"}},
+        now=NOW + timedelta(minutes=2),
+    )
+    reply = tools.handle_text("get trigger 1")
+    assert reply["data"]["trigger"]["action_results"][0]["status"] == "pending"
+    assert "最近结果：待发送" in reply["message"]
+
+
+def test_unreconciled_terminal_execution_receipt_is_visible_without_writing_state(
+    tools, shared_execution
+):
+    from src.core.execution import RunResult
+
+    multi_actions(tools)
+    action, run = submit_first(tools, shared_execution)
+    shared_execution.owner_started("fixture-owner")
+    claimed = shared_execution.claim("fixture-owner", "default", ["reports.brief"])
+    assert shared_execution.finish(
+        run,
+        claimed["claim_token"],
+        RunResult(
+            "failed",
+            "delivery_failed",
+            deliveries={
+                "feishu": {
+                    "status": "failed",
+                    "http_status": 400,
+                    "reason": "http_rejected",
+                }
+            },
+        ),
+    )
+    assert tools.store.get_action(action["id"])["state"] == "submitted"
+    reply = tools.handle_text("get trigger 1")
+    assert "简报：失败（HTTP 400）" in reply["message"]
+    assert "日报：待发送" in reply["message"]
+    assert tools.store.get_action(action["id"])["state"] == "submitted"
+
+
+def test_confirmed_partial_failure_does_not_become_an_unknown_delivery(
+    tools, shared_execution
+):
+    multi_actions(tools)
+    action, _ = submit_first(tools, shared_execution)
+    tools.store.mark_completed(
+        action["id"],
+        status="partial",
+        deliveries={
+            "feishu": {
+                "status": "partial",
+                "pieces": [
+                    {"status": "sent"},
+                    {"status": "failed", "reason": "http_rejected", "http_status": 400},
+                    {"status": "skipped", "reason": "batch_stopped"},
+                ],
+            }
+        },
+        now=NOW,
+    )
+    reply = tools.handle_text("get trigger 1")
+    first = reply["data"]["trigger"]["action_results"][0]
+    assert first["status"] == "failed"
+    assert "部分送达，其他发送失败（HTTP 400）" in reply["message"]

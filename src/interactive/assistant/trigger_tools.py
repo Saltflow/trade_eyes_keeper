@@ -9,16 +9,47 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
 import unicodedata
+from contextlib import closing
 from copy import deepcopy
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, time
+from pathlib import Path
 
 from zoneinfo import ZoneInfo
 
 BEIJING = ZoneInfo("Asia/Shanghai")
 _ACTIONS = {"create", "update", "list", "get", "pause", "resume", "remove", "catalog"}
 _ROUTE_KEYS = {"owner", "chat", "chat_id", "sender", "sender_id", "route"}
+_PUBLIC_FAILURE_REASONS = {
+    "http_rejected",
+    "http_response_uncertain",
+    "http_submission_unknown",
+    "http_pre_submit_failed",
+    "http_acknowledgement_missing",
+    "feishu_rejected",
+    "provider_rejected",
+    "feishu_authentication_failed",
+    "feishu_authentication_unavailable",
+    "delivery_failed",
+    "delivery_result_unknown",
+    "some_pieces_not_confirmed",
+    "payload_invalid",
+    "feishu_card_preparation_failed",
+    "feishu_report_preparation_failed",
+    "feishu_brief_preparation_failed",
+    "report_data_not_ready",
+    "data_not_ready",
+    "notification_receipt_missing",
+    "report_worker_receipt_missing",
+    "report_worker_receipt_exit_mismatch",
+    "trigger_revoked",
+    "channel_disabled",
+    "trigger_binding_invalid",
+    "trigger_configuration_unavailable",
+    "configuration_missing",
+}
 
 TRIGGER_PROMPT = """
 持久触发器使用trigger_manage；明确创建、暂停、恢复、删除直接执行，不要求多轮确认。
@@ -33,6 +64,7 @@ personal_monitor保留持仓及既有账户规则；新的通用条件/定时提
 编号是持久number，不是列表行号；先list/get取得真实状态，不猜编号或他人身份。
 删除区分已删除、已不存在与已提交将尽力停止；正在投递或已送达可能无法撤回，未知投递不得声称已撤回。
 只依据工具成功回执声称已创建或更改；复杂自然语言应转结构化规则，缺失条件明确询问。
+list/get按action_results逐动作解释状态；last_result只兼容最新一条，不代表其他报告无记录。报告数据未就绪与是否投递成功分别说明。
 """.strip()
 
 
@@ -443,6 +475,189 @@ class TriggerTools:
         value = json.dumps(node["value"], ensure_ascii=False) if "value" in node else ""
         return (field + op + value)[:350]
 
+    def _execution_result(self, action):
+        """Read the shared run without creating stores, reconciling or waking jobs."""
+        if not action.get("run_id"):
+            return {}
+        expected = (
+            "triggers.reminder"
+            if action["kind"] == "reminder"
+            else "reports." + action["kind"]
+        )
+        try:
+            uri = Path(self.store.path).resolve().as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True, timeout=1)) as db:
+                db.row_factory = sqlite3.Row
+                row = db.execute(
+                    "SELECT status,stage,result,reason FROM execution_runs WHERE id=? AND job_id=?",
+                    (action["run_id"], expected),
+                ).fetchone()
+            if row is None:
+                return {}
+            result = dict(row)
+            result["result"] = json.loads(result["result"] or "{}")
+            if not isinstance(result["result"], dict):
+                result["result"] = {}
+            return result
+        except (OSError, sqlite3.Error, ValueError, TypeError):
+            return {}
+
+    @staticmethod
+    def _safe_delivery_diagnostics(value):
+        public = []
+        pending = [value]
+        for _ in range(256):
+            if not pending:
+                break
+            item = pending.pop()
+            if isinstance(item, list):
+                pending.extend(item[:100])
+            elif isinstance(item, dict):
+                for key, child in item.items():
+                    if (
+                        key in {"http_status", "code", "provider_code"}
+                        and type(child) is int
+                    ):
+                        prefix = "HTTP " if key == "http_status" else "平台code="
+                        public.append(prefix + str(child))
+                    elif key == "reason" and isinstance(child, str):
+                        public.extend(
+                            part
+                            for part in child.split(":")
+                            if part in _PUBLIC_FAILURE_REASONS
+                        )
+                    elif isinstance(child, (dict, list)):
+                        pending.append(child)
+        return list(dict.fromkeys(public))[:12]
+
+    def _action_result(self, action, index, kind):
+        if action is None:
+            return {
+                "action_index": index,
+                "kind": kind,
+                "status": "not_triggered",
+                "message": "尚未触发",
+                "diagnostics": [],
+            }
+        run = self._execution_result(action)
+        state = action["state"]
+        result = run.get("result") or action.get("result") or {}
+        run_status = run.get("status")
+        deliveries = result.get("deliveries")
+        channel = deliveries.get("feishu") if isinstance(deliveries, dict) else None
+        delivered = [channel.get("status")] if isinstance(channel, dict) else []
+        terminal = {
+            "succeeded",
+            "failed",
+            "unknown",
+            "partial",
+            "cancelled",
+            "skipped",
+            "interrupted",
+            "expired",
+        }
+        if run_status == "queued" and state == "submitted":
+            status, message = "queued", "排队中"
+        elif run_status == "running" and state == "submitted":
+            stage = run.get("stage", "")
+            if stage in {
+                "brief_notifications",
+                "daily_notifications",
+                "trigger_message_starting",
+            }:
+                status, message = "delivering", "正在投递"
+            else:
+                status, message = (
+                    "generating",
+                    "正在生成" if kind != "reminder" else "正在准备提醒",
+                )
+        elif delivered and all(value == "sent" for value in delivered):
+            status, message = "sent", "已送达"
+        elif (
+            "partial" in delivered
+            and isinstance(channel.get("pieces"), list)
+            and any(
+                item.get("status") == "failed"
+                for item in channel["pieces"]
+                if isinstance(item, dict)
+            )
+            and not any(
+                item.get("status") in {"unknown", "partial"}
+                for item in channel["pieces"]
+                if isinstance(item, dict)
+            )
+        ):
+            status, message = "failed", "部分送达，其他发送失败"
+        elif "unknown" in delivered or "partial" in delivered:
+            status, message = (
+                "unknown",
+                "结果不明" if "sent" not in delivered else "部分送达，其他结果不明",
+            )
+        elif "failed" in delivered:
+            status, message = (
+                "failed",
+                "失败" if "sent" not in delivered else "部分送达，其他发送失败",
+            )
+        elif state == "pending":
+            status, message = "pending", "待发送"
+        elif state == "submitting":
+            status, message = "submitting", "正在提交"
+        elif state == "submitted" and run_status not in terminal:
+            status, message = "submitted", "已提交，等待执行状态回执"
+        else:
+            outcome = run_status if run_status in terminal else state
+            status, message = {
+                "failed": ("failed", "失败"),
+                "uncertain": ("unknown", "结果不明"),
+                "unknown": ("unknown", "结果不明"),
+                "partial": ("unknown", "结果不明"),
+                "cancelled": ("cancelled", "已取消"),
+                "skipped": ("cancelled", "已取消"),
+                "expired": ("failed", "执行已过期"),
+                "interrupted": ("unknown", "执行中断，结果待核实"),
+            }.get(outcome, ("completed", "已完成，缺少明确投递回执"))
+        diagnostics = self._safe_delivery_diagnostics(
+            {
+                "reason": action.get("reason"),
+                "result": result,
+                "run_reason": {"reason": run.get("reason")},
+            }
+        )
+        if "report_data_not_ready" in diagnostics or "data_not_ready" in diagnostics:
+            message += "；报告数据未就绪"
+        display = [
+            item for item in diagnostics if item.startswith(("HTTP ", "平台code="))
+        ]
+        display.sort(key=lambda item: (not item.startswith("HTTP "), item))
+        if display:
+            message += "（" + "，".join(display) + "）"
+        return {
+            "action_index": index,
+            "kind": kind,
+            "status": status,
+            "message": message,
+            "diagnostics": diagnostics,
+            "updated_at": action.get("updated_at"),
+        }
+
+    def _action_results(self, record):
+        rows = self.store.actions(self.owner, record["number"])
+        latest = {}
+        for action in rows:
+            index = action["action_index"]
+            if (
+                not 0 <= index < len(record["spec"]["actions"])
+                or action["kind"] != record["spec"]["actions"][index]["kind"]
+            ):
+                continue
+            key = (action["created_at"], action["updated_at"], action["id"])
+            if index not in latest or key > latest[index][0]:
+                latest[index] = (key, action)
+        return [
+            self._action_result(latest.get(index, (None, None))[1], index, spec["kind"])
+            for index, spec in enumerate(record["spec"]["actions"])
+        ]
+
     def _describe(self, record, now, detail=False):
         from ...triggers.schedule import next_due
 
@@ -515,28 +730,18 @@ class TriggerTools:
             diagnostic = {}
         truth = diagnostic.get("truth", "unknown")
         latest = record.get("last_result")
-        recent = "未触发"
-        if latest:
-            recent = {
-                "pending": "待发送",
-                "submitting": "正在提交",
-                "submitted": "已提交，待执行或投递",
-                "completed": "已完成",
-                "failed": "失败",
-                "uncertain": "结果不明",
-                "cancelled": "已取消",
-            }.get(latest["state"], "结果待核实")
-            deliveries = (latest.get("result") or {}).get("deliveries")
-            if (
-                latest["state"] == "completed"
-                and isinstance(deliveries, dict)
-                and deliveries
-                and all(
-                    isinstance(item, dict) and item.get("status") == "sent"
-                    for item in deliveries.values()
-                )
-            ):
-                recent = "已发送"
+        action_results = self._action_results(record)
+        if len(action_results) == 1:
+            recent = action_results[0]["message"].replace("已送达", "已发送", 1)
+        else:
+            names = {"brief": "简报", "daily": "日报", "reminder": "提醒"}
+            parts = []
+            for item in action_results:
+                name = names[item["kind"]]
+                if sum(other["kind"] == item["kind"] for other in action_results) > 1:
+                    name += f"（动作{item['action_index'] + 1}）"
+                parts.append(name + "：" + item["message"])
+            recent = "；".join(parts)
         readiness = {
             "true": "最近条件核验满足",
             "false": "最近条件核验未满足",
@@ -548,6 +753,7 @@ class TriggerTools:
             )
         message = f"{record['number']}. {record['label']}【{state}】\n条件/计划：{'；'.join(summary)}\n动作：{actions}\n下一次：{next_label}\n最近结果：{recent}；{readiness}"
         data = _clean(record)
+        data["action_results"] = action_results
         data["last_result"] = (
             {
                 key: latest[key]
