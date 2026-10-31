@@ -1,0 +1,23 @@
+{
+  "url": "https://www.cninfo.com.cn/new/hisAnnouncement/query",
+  "method": "POST",
+  "params": {
+    "pageNum": 1,
+    "pageSize": 50,
+    "column": "sse",
+    "tabName": "fulltext",
+    "stock": "601088,9900003701",
+    "searchkey": "",
+    "category": "",
+    "seDate": "2025-10-01~2025-10-31",
+    "sortName": "",
+    "sortType": "",
+    "isHLtitle": "false"
+  },
+  "fetched_at": "2026-10-31T13:03:16.048174+08:00",
+  "response_sha256": "65a0e351a2aff3c51026fd8ee9aa6c5c66097291f815d2f1e71cfdd610c8cdc3",
+  "identity_lookup_url": "https://www.cninfo.com.cn/new/information/topSearch/query",
+  "security": "601088",
+  "org_id": "9900003701",
+  "purpose": "Public source schema fixture; no report generation or account activity."
+}

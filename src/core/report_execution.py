@@ -279,6 +279,16 @@ def _report_handler(payload: dict, ctx) -> RunResult:
     kind = payload["kind"]
     if kind not in REPORT_JOB_IDS:
         return RunResult("failed", "invalid_report_kind")
+    snapshot = payload.get("config_snapshot", {})
+    if "_trigger_context" in snapshot:
+        from ..triggers.delivery import binding_status
+
+        state = binding_status(snapshot, run_id=ctx.run_id)
+        if state != "allowed":
+            return RunResult(
+                "skipped" if state == "revoked" else "failed",
+                "trigger_revoked" if state == "revoked" else "trigger_binding_invalid",
+            )
     directory = Path(payload["artifact_root"]) / ctx.run_id
     request_path = directory / "request.json"
     result_path = directory / "result.json"
@@ -430,15 +440,14 @@ def submit_report(
         raise ValueError("report kind must be daily or brief")
     runtime = runtime or get_runtime(runtime_path(config))
     register_report_jobs(runtime, config_path, config=config)
-    # Secrets from either YAML or environment must never enter the shared queue.
-    payload = {
-        "kind": kind,
-        "report_id": str(report_id),
-        "force": bool(force),
-        "config_path": str(Path(config_path).resolve()),
-        "config_snapshot": _settings_snapshot(config),
-        "artifact_root": str(runtime.store.path.parent / "reports"),
-    }
+    payload = build_report_payload(
+        config,
+        runtime,
+        kind=kind,
+        report_id=report_id,
+        force=force,
+        config_path=config_path,
+    )
     run = runtime.submit(
         REPORT_JOB_IDS[kind],
         payload,
@@ -474,6 +483,28 @@ def submit_report(
             runtime.stop(drain=True)
 
 
+def build_report_payload(
+    config,
+    runtime,
+    *,
+    kind="daily",
+    report_id="morning_snapshot",
+    force=False,
+    config_path=DEFAULT_CONFIG_PATH,
+):
+    """Prepare the normal report request for atomic enqueue by a durable caller."""
+    if kind not in REPORT_JOB_IDS:
+        raise ValueError("report kind must be daily or brief")
+    return {
+        "kind": kind,
+        "report_id": str(report_id),
+        "force": bool(force),
+        "config_path": str(Path(config_path).resolve()),
+        "config_snapshot": _settings_snapshot(config),
+        "artifact_root": str(runtime.store.path.parent / "reports"),
+    }
+
+
 def report_exit_code(result: RunResult) -> int:
     return 0 if result.status in {"succeeded", "skipped"} else 1
 
@@ -490,6 +521,16 @@ def run_report_worker(
             raise ValueError("worker kind does not match queued request")
         credentials = ConfigStore(Path(payload["config_path"])).load_runtime()
         config = _restore_secrets(payload["config_snapshot"], credentials)
+        if "_trigger_context" in config:
+            # Current allowlist and enabled flags can revoke a queued personal
+            # destination. Only report business settings stay frozen.
+            config["interactive"] = credentials.get("interactive", {})
+            from ..triggers.delivery import binding_status
+
+            if binding_status(config) != "allowed":
+                result = RunResult("skipped", "trigger_revoked")
+                _write_json(result_path, result.to_dict())
+                return report_exit_code(result)
         if application is None:
             import main as application
 

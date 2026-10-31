@@ -144,6 +144,9 @@ class SecAnnouncementProvider:
         descriptions = columns.get("primaryDocDescription", [""] * count)
         if len(descriptions) != count:
             raise ValueError(f"{code}: incomplete SEC filing descriptions")
+        report_dates = columns.get("reportDate", [""] * count)
+        if not isinstance(report_dates, list) or len(report_dates) != count:
+            raise ValueError(f"{code}: incomplete SEC report dates")
         result = []
         for index in range(count):
             filed = date.fromisoformat(columns["filingDate"][index])
@@ -164,11 +167,15 @@ class SecAnnouncementProvider:
                 f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/"
                 f"{accession.replace('-', '')}/{quote(document, safe='/')}"
             )
-            result.append(
-                self._record(
-                    code, columns["form"][index], filed, url, descriptions[index]
-                )
+            record = self._record(
+                code, columns["form"][index], filed, url, descriptions[index]
             )
+            if report_dates[index]:
+                report_date = date.fromisoformat(report_dates[index])
+                if report_date > filed:
+                    raise ValueError(f"{code}: SEC report date after filing")
+                record["reportDate"] = report_date.isoformat()
+            result.append(record)
         return result
 
     def _fund_filings(

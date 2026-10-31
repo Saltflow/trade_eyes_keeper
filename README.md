@@ -121,6 +121,11 @@ src/
 HTTP/HTTPS health server、管理页面与报告临时链接已整体下线。使用飞书/TG Bot
 更灵活、更安全，无需开放管理端口。设置见 [Bot 指南](docs/guide/feishu_telegram_setup.md)。
 
+飞书支持持久个人触发器：可直接说“11月2号逆回购到期”、
+“601088跌到50以下了发简报”或“任何监控标的发三季度报告的当天和次日发简报和日报”。
+用“拉取已经激活的触发器”查看固定编号，`remove trigger 1,2,3` 批量删除；
+更多日期、组合条件、暂停/修改和投递规则见[触发器指南](docs/development/managed_triggers_20261031.md)。
+
 ## 配置
 
 - `config/config.yaml` — 监控标的、技术指标参数 (gitignored)

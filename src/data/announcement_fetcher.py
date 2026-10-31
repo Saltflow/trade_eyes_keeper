@@ -3,10 +3,16 @@
 从新浪财经采集沪深公告、披露易采集港股公告、SEC 采集美股披露
 """
 
+from __future__ import annotations
+
+import hashlib
 import logging
+import math
 import re
-from datetime import datetime, timedelta
+import time
+from datetime import date, datetime, timedelta
 from typing import Any
+from urllib.parse import urljoin, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -18,20 +24,97 @@ LLMAnalyzer: Any = None
 
 logger = logging.getLogger(__name__)
 
+
+def _announcement_budget(cancelled, deadline):
+    if cancelled is not None and cancelled():
+        raise ValueError("announcement collection cancelled")
+    remaining = deadline - time.monotonic() if deadline is not None else None
+    if remaining is not None and remaining <= 0:
+        raise ValueError("announcement collection budget exhausted")
+    return remaining
+
+
+class _AnnouncementBudgetHTTP:
+    """Apply one poll's remaining deadline to every official HTTP request."""
+
+    def __init__(self, http, cancelled, deadline):
+        self.http, self.cancelled, self.deadline = http, cancelled, deadline
+
+    def _request(self, method, url, **kwargs):
+        remaining = _announcement_budget(self.cancelled, self.deadline)
+        if remaining is not None:
+            original = kwargs.get("timeout")
+            if isinstance(original, tuple):
+                kwargs["timeout"] = tuple(
+                    min(value, remaining) if value is not None else remaining
+                    for value in original
+                )
+            else:
+                kwargs["timeout"] = (
+                    min(original, remaining) if original is not None else remaining
+                )
+        return getattr(self.http, method)(url, **kwargs)
+
+    def get(self, url, **kwargs):
+        return self._request("get", url, **kwargs)
+
+    def post(self, url, **kwargs):
+        return self._request("post", url, **kwargs)
+
+
 DIVIDEND_KEYWORDS = ("分红", "利润分配", "权益分派", "派息", "送股", "转增")
 HK_DIVIDEND_KEYWORDS = (
     *DIVIDEND_KEYWORDS,
-    "分紅", "利潤分配", "權益分派", "股息", "分派", "紅股", "轉增",
-    "以股代息", "dividend", "distribution", "bonus issue",
+    "分紅",
+    "利潤分配",
+    "權益分派",
+    "股息",
+    "分派",
+    "紅股",
+    "轉增",
+    "以股代息",
+    "dividend",
+    "distribution",
+    "bonus issue",
 )
 HK_IMPORTANT_KEYWORDS = (
     *HK_DIVIDEND_KEYWORDS,
-    "業績", "年報", "年度報告", "中期報告", "季報", "盈利", "盈警",
-    "收購", "出售", "重組", "合併", "增持", "減持", "購回", "回購",
-    "關連交易", "股份獎勵", "股權激勵", "訴訟", "擔保", "債券",
-    "票據", "配股", "供股", "配售", "停牌", "復牌", "內幕消息",
-    "results", "annual report", "interim report", "profit warning",
-    "acquisition", "disposal", "repurchase", "connected transaction",
+    "業績",
+    "年報",
+    "年度報告",
+    "中期報告",
+    "季報",
+    "盈利",
+    "盈警",
+    "收購",
+    "出售",
+    "重組",
+    "合併",
+    "增持",
+    "減持",
+    "購回",
+    "回購",
+    "關連交易",
+    "股份獎勵",
+    "股權激勵",
+    "訴訟",
+    "擔保",
+    "債券",
+    "票據",
+    "配股",
+    "供股",
+    "配售",
+    "停牌",
+    "復牌",
+    "內幕消息",
+    "results",
+    "annual report",
+    "interim report",
+    "profit warning",
+    "acquisition",
+    "disposal",
+    "repurchase",
+    "connected transaction",
 )
 
 
@@ -43,6 +126,7 @@ def _is_dividend_announcement(announcement: dict) -> bool:
     if announcement.get("exchange") == "sec":
         return any(keyword in title.lower() for keyword in ("dividend", "distribution"))
     return any(keyword in title for keyword in DIVIDEND_KEYWORDS)
+
 
 # 尝试导入内容抓取和LLM分析模块
 try:
@@ -68,6 +152,208 @@ except ImportError as e:
 
 class AnnouncementFetcher:
     """公告抓取器"""
+
+    def fetch_announcements_status(
+        self,
+        stock_codes,
+        start: date,
+        end: date,
+        *,
+        observed_at=None,
+        max_pages=8,
+        cancelled=None,
+        deadline=None,
+    ) -> dict[str, dict]:
+        """Strict, unenriched disclosure windows; failures are never empty success.
+
+        This additive API deliberately bypasses legacy list fallbacks, PDF reads,
+        caches and LLM extraction. A-share/fund discovery uses official CNINFO
+        identity and pagination; HK/US use the existing strict official sources.
+        """
+        observed = observed_at or datetime.now(ZoneInfo("Asia/Shanghai"))
+        if observed.tzinfo is None or start > end:
+            raise ValueError("announcement observation must be aware; invalid window")
+        if type(max_pages) is not int or not 1 <= max_pages <= 32:
+            raise ValueError("announcement max_pages must be between 1 and 32")
+        if deadline is not None and (
+            type(deadline) not in (int, float) or not math.isfinite(deadline)
+        ):
+            raise ValueError("announcement deadline must be a finite monotonic time")
+        result = {}
+        for raw_code in stock_codes:
+            code = str(raw_code).strip().upper().replace(".", "-")
+            status = {
+                "available": False,
+                "items": [],
+                "error": None,
+                "observed_at": observed,
+                "coverage_start": start,
+                "coverage_end": end,
+                "source": "official_disclosures",
+            }
+            try:
+                _announcement_budget(cancelled, deadline)
+                if re.fullmatch(r"\d{6}", code):
+                    status["source"] = "cninfo"
+                    items = self._fetch_cninfo_status_window(
+                        code,
+                        start,
+                        end,
+                        max_pages=max_pages,
+                        cancelled=cancelled,
+                        deadline=deadline,
+                    )
+                elif re.fullmatch(r"\d{5}", code):
+                    from .hk_announcements import HkexAnnouncementProvider
+
+                    status["source"] = "hkex"
+                    provider = self._hk_announcements or HkexAnnouncementProvider(
+                        self.config,
+                        http=_AnnouncementBudgetHTTP(
+                            requests.Session(), cancelled, deadline
+                        ),
+                    )
+                    items = provider.fetch(code, start, end)
+                elif re.fullmatch(r"[A-Z][A-Z0-9-]{0,14}", code):
+                    from .us_announcements import SecAnnouncementProvider
+
+                    status["source"] = "sec"
+                    provider = self._us_announcements or SecAnnouncementProvider(
+                        self.config,
+                        http=_AnnouncementBudgetHTTP(
+                            requests.Session(), cancelled, deadline
+                        ),
+                    )
+                    items = provider.fetch(code, start, end)
+                else:
+                    raise ValueError("unsupported disclosure security identity")
+                if not isinstance(items, list):
+                    raise TypeError("disclosure source returned an invalid schema")
+                status.update(available=True, items=items)
+            except Exception as exc:  # noqa: BLE001 - per-security source availability
+                status["error"] = str(exc)
+            result[code] = status
+        return result
+
+    def _fetch_cninfo_status_window(
+        self, code, start, end, *, max_pages, cancelled=None, deadline=None
+    ):
+        from ..instruments.point_in_time import CninfoAnnualReportProvider
+
+        _announcement_budget(cancelled, deadline)
+        provider = CninfoAnnualReportProvider(self.config)
+        if cancelled is not None or deadline is not None:
+            provider.http = _AnnouncementBudgetHTTP(provider.http, cancelled, deadline)
+        org = provider._org_id(code)
+        records, seen, expected_pages, expected_total = [], set(), None, None
+        for page in range(1, max_pages + 1):
+            _announcement_budget(cancelled, deadline)
+            response = provider.http.post(
+                provider.ANNOUNCEMENT_URL,
+                data={
+                    "pageNum": page,
+                    "pageSize": 50,
+                    "column": "sse" if code.startswith(("5", "6", "9")) else "szse",
+                    "tabName": "fulltext",
+                    "stock": f"{code},{org}",
+                    "searchkey": "",
+                    "category": "",
+                    "seDate": f"{start.isoformat()}~{end.isoformat()}",
+                    "sortName": "",
+                    "sortType": "",
+                    "isHLtitle": "false",
+                },
+                headers=provider._headers,
+                timeout=provider.timeout,
+            )
+            response.raise_for_status()
+            body = response.json()
+            if not isinstance(body, dict) or "announcements" not in body:
+                raise TypeError("CNINFO announcement schema missing")
+            total = body.get("totalAnnouncement", body.get("totalRecordNum"))
+            if total is not None and (type(total) is not int or total < 0):
+                raise ValueError("CNINFO invalid total count")
+            if (
+                "totalAnnouncement" in body
+                and "totalRecordNum" in body
+                and body["totalAnnouncement"] != body["totalRecordNum"]
+            ):
+                raise ValueError("CNINFO conflicting total counts")
+            pages = body.get("totalpages")
+            if type(pages) is not int or pages < 0:
+                raise ValueError("CNINFO pagination coverage unavailable")
+            # The live official API returns totalpages=0 even for nonempty
+            # responses; exact total count + requested pageSize proves coverage.
+            if pages == 0 and total is not None:
+                pages = (total + 49) // 50
+            if pages > max_pages:
+                raise ValueError("CNINFO pagination coverage unavailable")
+            if expected_pages is None:
+                expected_pages, expected_total = pages, total
+            elif expected_pages != pages or expected_total != total:
+                raise ValueError("CNINFO pagination changed during observation")
+            rows = body["announcements"]
+            if rows is None and total == 0 and body.get("hasMore") is False:
+                rows = []  # Explicit official empty-result contract, not missing schema.
+            if not isinstance(rows, list):
+                raise TypeError("CNINFO announcement schema missing")
+            if not rows:
+                if page != 1 or pages > 1 or total not in (None, 0):
+                    raise ValueError("CNINFO empty page lacks complete coverage")
+                if body.get("hasMore") is not False:
+                    raise ValueError("CNINFO empty response lacks terminal proof")
+                return []
+            if pages < page or len(rows) > 50:
+                raise ValueError("CNINFO invalid pagination rows")
+            digest = hashlib.sha256(response.content).hexdigest()
+            for row in rows:
+                if not isinstance(row, dict) or str(row.get("secCode")) != code:
+                    raise ValueError("CNINFO announcement security mismatch")
+                title = re.sub(r"<[^>]*>", "", str(row.get("announcementTitle", "")))
+                adjunct = str(row.get("adjunctUrl", ""))
+                url = urljoin(provider.STATIC_ROOT, adjunct)
+                target = urlsplit(url)
+                if (
+                    not title.strip()
+                    or not adjunct
+                    or target.scheme != "https"
+                    or target.hostname != "static.cninfo.com.cn"
+                    or target.username
+                    or target.password
+                    or not target.path.lower().endswith(".pdf")
+                ):
+                    raise ValueError("CNINFO invalid announcement identity")
+                timestamp = row.get("announcementTime")
+                if type(timestamp) not in (int, float):
+                    raise ValueError("CNINFO announcement publication time missing")
+                published = datetime.fromtimestamp(
+                    timestamp / 1000, ZoneInfo("Asia/Shanghai")
+                )
+                if not start <= published.date() <= end:
+                    raise ValueError("CNINFO publication outside requested window")
+                if url in seen:
+                    raise ValueError("CNINFO repeated announcement across pages")
+                seen.add(url)
+                records.append(
+                    {
+                        "stock_code": code,
+                        "title": title.strip(),
+                        "date": published.date().isoformat(),
+                        "published_at": published.isoformat(),
+                        "url": url,
+                        "type": row.get("announcementType", ""),
+                        "exchange": "cninfo",
+                        "source_sha256": digest,
+                        "announcement_id": str(row.get("announcementId", url)),
+                    }
+                )
+            if page == pages:
+                if body.get("hasMore") is True or (
+                    total is not None and len(records) != total
+                ):
+                    raise ValueError("CNINFO terminal coverage count mismatch")
+                return records
+        raise ValueError("CNINFO pagination coverage limit exceeded")
 
     def __init__(self, config):
         """
@@ -699,10 +985,9 @@ class AnnouncementFetcher:
                 elif announcement.get("exchange") == "sec":
                     from .us_announcements import IMPORTANT_FORMS
 
-                    is_important = (
-                        announcement.get("type", "").removesuffix("/A") in IMPORTANT_FORMS
-                        or _is_dividend_announcement(announcement)
-                    )
+                    is_important = announcement.get("type", "").removesuffix(
+                        "/A"
+                    ) in IMPORTANT_FORMS or _is_dividend_announcement(announcement)
                 else:
                     is_important = any(k in title for k in important_keywords)
                 if is_important:

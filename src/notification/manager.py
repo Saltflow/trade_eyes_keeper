@@ -20,6 +20,13 @@ class NotifierManager:
             self.feishu = None
             self.telegram = None
             return
+        if "_trigger_context" in config:
+            from ..triggers.delivery import TriggerChatNotifier
+
+            self.email = None
+            self.telegram = None
+            self.feishu = TriggerChatNotifier(config)
+            return
         if channel_enabled(config, "email"):
             from .email_notifier import EmailNotifier
 
@@ -74,9 +81,7 @@ class NotifierManager:
                         receipt["status"] = "unknown"
                         receipt["reason"] = "transport_receipt_not_recognized"
                 elif (
-                    isinstance(result, tuple)
-                    and result
-                    and isinstance(result[0], bool)
+                    isinstance(result, tuple) and result and isinstance(result[0], bool)
                 ):
                     receipt = {
                         "status": "sent" if result[0] else "failed",
@@ -92,7 +97,8 @@ class NotifierManager:
             except Exception as exc:
                 logger.exception("频道 %s %s 失败", name, method)
                 receipt = {
-                    "status": "unknown", "reason": "transport_exception_unclassified",
+                    "status": "unknown",
+                    "reason": "transport_exception_unclassified",
                     "error": type(exc).__name__,
                 }
             deliveries[name] = receipt

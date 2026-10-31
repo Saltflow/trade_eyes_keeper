@@ -191,6 +191,7 @@ class RuntimeService:
         self.threads: dict[str, threading.Thread] = {}
         self.failure: str | None = None
         self.health_reporter = None
+        self.trigger_runtime = None
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.status_path = runtime_directory(config) / "service_status.json"
         self._execution_started = False
@@ -260,6 +261,8 @@ class RuntimeService:
                 "evidence": "unavailable",
             }
         module_health = {}
+        if self.trigger_runtime is not None:
+            module_health["triggers"] = self.trigger_runtime.health()
         issues = []
         if self.failure:
             issues.append(
@@ -563,6 +566,23 @@ class RuntimeService:
                     register_report_jobs(self.execution_runtime, config=self.config)
                 self._phase = "configure_bots"
                 self._configure_bots()
+                if self.register_reports and "feishu" in self.bots:
+                    from ..triggers.runtime import TriggerRuntime
+                    from .config_store import DEFAULT_CONFIG_PATH, ConfigStore
+
+                    self.trigger_runtime = TriggerRuntime(
+                        self.config,
+                        self.execution_runtime,
+                        config_provider=(
+                            (lambda: ConfigStore(DEFAULT_CONFIG_PATH).load_runtime())
+                            if self.bot_factory is None
+                            else None
+                        ),
+                    )
+                    assistant = self._assistant(self.bots["feishu"])
+                    if assistant is not None:
+                        assistant.trigger_runtime = self.trigger_runtime
+                        assistant.trigger_changed = self.trigger_runtime.kick
                 from .execution_health import HealthReporter
 
                 self._phase = "health_registration"
@@ -580,6 +600,8 @@ class RuntimeService:
                     rejected_owner = True
                     raise RuntimeError("another execution owner is already running")
                 self._execution_started = True
+                if self.trigger_runtime is not None:
+                    self.trigger_runtime.start()
                 with self.execution_runtime.store.connection() as db:
                     owner = db.execute(
                         "SELECT pid,birth FROM execution_owners WHERE id=?",

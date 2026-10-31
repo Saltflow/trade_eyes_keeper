@@ -1805,6 +1805,13 @@ def run_daily_task(
             )
         object.__setattr__(session, "ref_portfolio_status", all_statuses)
 
+        try:
+            from src.triggers.snapshots import capture_report_snapshot
+
+            capture_report_snapshot(config, session, "daily")
+        except Exception:  # Optional trigger observations cannot interrupt reports.
+            logger.exception("Unable to save public daily trigger snapshot")
+
         # Optional trigger mode gates the scheduled report as a whole. Manual
         # runs keep their historical behavior, and an empty trigger list is a no-op.
         trigger_mode = bool(daily_triggers) and not force
@@ -2167,6 +2174,13 @@ def run_brief_report(
 
         # 合并附到 session
         object.__setattr__(session, "ref_portfolio_status", all_statuses)
+
+        try:
+            from src.triggers.snapshots import capture_report_snapshot
+
+            capture_report_snapshot(config, session, "brief")
+        except Exception:  # Optional trigger observations cannot interrupt reports.
+            logger.exception("Unable to save public brief trigger snapshot")
 
         # Trigger rules only gate scheduled sends. Manual /brief stays explicit.
         if not force and brief_triggers:
