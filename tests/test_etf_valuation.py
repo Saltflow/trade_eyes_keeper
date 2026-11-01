@@ -11,7 +11,7 @@ from src.data.web_crawler import StockWebCrawler
 class _Response:
     def __init__(self, *, text="", content=b"", payload=None):
         self.text = text
-        self.content = content
+        self.content = content or text.encode("gbk", errors="replace")
         self._payload = payload
 
     def raise_for_status(self):
@@ -26,14 +26,18 @@ def _qq_line(symbol, pe=None, pb=None):
     if pe is not None:
         fields[39] = str(pe)
     if pb is not None:
-        fields[58 if symbol.startswith("hk") else 51 if symbol.startswith("us") else 46] = str(pb)
+        fields[
+            58 if symbol.startswith("hk") else 51 if symbol.startswith("us") else 46
+        ] = str(pb)
     return f'v_{symbol}="{"~".join(fields)}";\n'
 
 
 def test_csi_etf_uses_weighted_constituent_pe_pb(monkeypatch):
     weights = pd.DataFrame(
-        [[None, None, None, None, "600001", None, None, None, None, 60.0],
-         [None, None, None, None, "000001", None, None, None, None, 40.0]]
+        [
+            [None, None, None, None, "600001", None, None, None, None, 60.0],
+            [None, None, None, None, "000001", None, None, None, None, 40.0],
+        ]
     )
 
     def fake_get(url, **kwargs):
@@ -41,8 +45,7 @@ def test_csi_etf_uses_weighted_constituent_pe_pb(monkeypatch):
             return _Response(content=b"fixture")
         assert "qt.gtimg.cn" in url
         return _Response(
-            text=_qq_line("sh600001", 10.0, 2.0)
-            + _qq_line("sz000001", 20.0, 4.0)
+            text=_qq_line("sh600001", 10.0, 2.0) + _qq_line("sz000001", 20.0, 4.0)
         )
 
     monkeypatch.setattr("src.data.etf_valuation.pd.read_excel", lambda _: weights)
@@ -56,8 +59,10 @@ def test_csi_etf_uses_weighted_constituent_pe_pb(monkeypatch):
 
 def test_low_constituent_coverage_never_claims_etf_valuation(monkeypatch):
     weights = pd.DataFrame(
-        [[None, None, None, None, "600001", None, None, None, None, 60.0],
-         [None, None, None, None, "000001", None, None, None, None, 40.0]]
+        [
+            [None, None, None, None, "600001", None, None, None, None, 60.0],
+            [None, None, None, None, "000001", None, None, None, None, 40.0],
+        ]
     )
 
     def fake_get(url, **kwargs):
@@ -167,7 +172,7 @@ def test_nikkei_block_uses_public_daily_table_fallback():
         return _Response(
             text=(
                 '<table><trclass="hide"><td>9/17</td><td>64,136.25</td>'
-                '<td>213.25</td><td>17.16</td><td>1.88</td></trclass></table>'
+                "<td>213.25</td><td>17.16</td><td>1.88</td></trclass></table>"
             )
         )
 
@@ -190,17 +195,26 @@ def test_gold_and_reit_are_explicitly_not_company_valuations():
     ("code", "market", "pb_index", "pb_value"),
     [("00700", "hk", 58, 2.93), ("GOOG", "us", 51, 6.79)],
 )
-def test_qq_hk_and_us_use_their_real_pb_field(monkeypatch, code, market, pb_index, pb_value):
+def test_qq_hk_and_us_use_their_real_pb_field(
+    monkeypatch, code, market, pb_index, pb_value
+):
     fields = [""] * 60
     fields[39] = "20"
     fields[46] = "company English name"
     fields[pb_index] = str(pb_value)
     text = f'v_{market}{code}="{"~".join(fields)}";'
     monkeypatch.setattr(
-        "src.data.web_crawler.requests.get", lambda *args, **kwargs: _Response(text=text)
+        "src.data.web_crawler.requests.get",
+        lambda *args, **kwargs: _Response(text=text),
     )
 
     result = StockWebCrawler(config={}).fetch_valuation_data(code)
 
     assert result["pe_ratio"] == 20.0
     assert result["pb_ratio"] == pb_value
+
+
+@pytest.fixture(autouse=True)
+def isolated_source_authority(tmp_path, monkeypatch):
+    """Each simulated provider gets durable shared state isolated from other tests."""
+    monkeypatch.setenv("TRADE_EYES_AUTHORITY_ROOT", str(tmp_path / "authority"))

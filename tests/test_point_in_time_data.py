@@ -32,6 +32,12 @@ from src.instruments.point_in_time import (
 )
 
 
+@pytest.fixture(autouse=True)
+def material_authority(tmp_path, monkeypatch):
+    # These tests intentionally reuse fake URLs with different PDF fixtures.
+    monkeypatch.setenv("TRADE_EYES_AUTHORITY_ROOT", str(tmp_path / "authority"))
+
+
 def _bundle(
     code: str = "601088",
     *,
@@ -299,8 +305,7 @@ def test_a_share_stale_primary_end_selects_current_fallback():
     assert len(primary.calls) == 1
     assert len(fallback.calls) == 1
     assert any(
-        "baostock=2020-01-02~2025-10-01" in item
-        for item in selected.diagnostics
+        "baostock=2020-01-02~2025-10-01" in item for item in selected.diagnostics
     )
 
 

@@ -752,7 +752,7 @@ def test_screenshot_budget_is_independent_of_chat_budget(monkeypatch):
         ("connection", "network_timeout"),
     ],
 )
-def test_screenshot_failures_retry_once_and_diagnose_each_actual_attempt(
+def test_screenshot_failures_keep_one_attempt_and_preserve_diagnostics(
     monkeypatch, failure, outcome
 ):
     client = image_client(image_request_retries=1)
@@ -767,21 +767,21 @@ def test_screenshot_failures_retry_once_and_diagnose_each_actual_attempt(
     }
     request = Mock(side_effect=[failures[failure], vision_response()])
     monkeypatch.setattr("src.interactive.assistant.client.requests.post", request)
-    result = client.read_position_images([{"image": PNG}])
-    assert result["positions"][0]["code"] == "601088"
-    assert request.call_count == 2
-    first, second = client.last_image_diagnostics
+    with pytest.raises(AssistantAPIError):
+        client.read_position_images([{"image": PNG}])
+    assert request.call_count == 1
+    assert len(client.last_image_diagnostics) == 1
+    first = client.last_image_diagnostics[0]
     assert (
         first["attempt"] == 1
         and first["outcome"] == outcome
-        and first["will_retry"] is True
+        and first["will_retry"] is False
     )
-    assert second["attempt"] == 2 and second["outcome"] == "success"
     assert "private-key" not in json.dumps(client.last_image_diagnostics)
 
 
 @pytest.mark.parametrize("failure", ["length", "json", "timeout", "503"])
-def test_screenshot_retries_are_exhausted_at_configured_bound(monkeypatch, failure):
+def test_screenshot_old_retry_setting_cannot_resend_a_paid_attempt(monkeypatch, failure):
     client = image_client(image_request_retries=2)
     bad = {
         "length": vision_response(reason="length"),
@@ -797,7 +797,7 @@ def test_screenshot_retries_are_exhausted_at_configured_bound(monkeypatch, failu
     monkeypatch.setattr("src.interactive.assistant.client.requests.post", request)
     with pytest.raises(AssistantAPIError):
         client.read_position_images([{"image": PNG}])
-    assert request.call_count == 3 and len(client.last_image_diagnostics) == 3
+    assert request.call_count == 1 and len(client.last_image_diagnostics) == 1
     assert client.last_image_diagnostics[-1]["retry_available"] is False
     assert all(
         item.get("outcome") != "success" for item in client.last_image_diagnostics
@@ -858,7 +858,7 @@ def test_screenshot_late_response_is_never_accepted(monkeypatch, state):
 
 
 @pytest.mark.parametrize("state", ["stopped", "deadline"])
-def test_retry_backoff_honors_stop_and_remaining_deadline(monkeypatch, state):
+def test_no_paid_retry_backoff_is_entered_after_transport_unknown(monkeypatch, state):
     client = image_client(image_request_retries=2)
     clock = {"now": 100}
     monkeypatch.setattr(
@@ -879,7 +879,9 @@ def test_retry_backoff_honors_stop_and_remaining_deadline(monkeypatch, state):
     with pytest.raises(AssistantAPIError):
         client.read_position_images([{"image": PNG}], deadline=100.5)
     request.assert_called_once()
-    assert client.last_image_diagnostics[0]["abort_reason"] == state
+    client.stopped.wait.assert_not_called()
+    assert client.last_image_diagnostics[0]["outcome"] == "network_timeout"
+    assert client.last_image_diagnostics[0]["retry_available"] is False
 
 
 def test_diagnostics_include_only_safe_numeric_usage_and_reset_each_call(monkeypatch):

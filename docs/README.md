@@ -8,6 +8,8 @@
 |---|---|
 | [架构图独立页](architecture_overview.md) | 全项目、飞书开关与路由、公共层、告警、搜参、财报研究六张图，以及本机/线上环境对照 |
 | [架构与模块职责](architecture.md) | 当前执行机制、业务合同、发布边界与依赖债务 |
+| [数据/Pi/执行底座新旧对比](design/reusable_data_research_runtime.md) | 迁移前重复归属、目标边界与本地实现映射；生产尚未发布 |
+| [共享资料与可复用平台使用](guide/reusable_platform.md) | 本地统一authority、资料引用、全局容量、模型网关、Pi注入和跨命名空间源包导出；生产尚未发布 |
 | [快速开始](guide/quickstart.md) | Python 环境、配置模板、运行和查看结果 |
 | [部署与运行](deployment.md) / [首次部署](guide/setup.md) | 服务、依赖、发布及核验 |
 | [配置参考](configuration.md) | 主配置、环境变量、市场策略与执行设置 |
@@ -20,6 +22,7 @@
 |---|---|
 | [策略搜索与回测](llm/mainline_strategy_search_backtest.md) / [相对晋升](llm/relative_strategy_promotion.md) | 统一策略、回测、搜索窗口与激活合同 |
 | [财报流程](guide/financial_pipeline.md) | 提取、跨年整合、摘要、第三阶段文件交接 |
+| [一键年报研究](guide/research_pipeline.md) / [统一编排设计](design/research_pipeline_orchestration.md) | A/HK/US年报、跨批缓存、共享预算、Pi候选维修、进度和故障隔离 |
 | [正式研究](guide/research_report.md) | 输入驱动的 v6 模板、固定三轮与图表交接 |
 | [单公司摘要](design/company_summary_contract.md) / [横评](design/peer_research_v1.md) | 阶段输入输出合同 |
 | [财报数据 V2](design/fundamental_data_contract_v2.md) | 提取结构与边界 |
@@ -29,6 +32,10 @@
 | [跨股票分派账本](development/in_kind_ledger_20261031.md) | 统一权益与结算、港股通估算政策、真实三事件及完整搜参验收边界 |
 
 ## 变更、验收与退役
+
+- [共享资料与通用平台落地验收](development/reusable_platform_acceptance_20261101.md)：本地真实接入、跨项目源包、共享队列、缓存复用、故障红绿测试及历史保护。
+- [统一研究编排验收](development/research_pipeline_acceptance_20261101.md)：缓存、预算、故障隔离、20路压力、历史保护及实机验收边界。
+- [统一研究实机补验](development/research_pipeline_live_acceptance_20261101.md)：Linux/Pi、Docker候选、真实API、人民币10元合计守卫、零预算复用及交接缺陷修复。
 
 - [v1.20.0实物分派发布](development/in_kind_release_20261031.md)：同一提交对齐本地、GitHub与生产，最小估算开关同步及配置/账户保护证据。
 - [基本面量化实验终止](development/failed_quant_experiments_retirement_20261030.md)：旧估值/行业评分/消融、MOE训练、Ke及状态回放因效果始终未正删除，后续不再尝试。

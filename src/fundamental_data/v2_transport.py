@@ -1,14 +1,11 @@
 """PDF preparation and one-attempt API transport for structured data."""
 
-import base64
 import hashlib
-import io
 import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pypdfium2
 import requests
 from dotenv import dotenv_values
 from tokenizers import Tokenizer
@@ -69,32 +66,10 @@ def prepare_replay(repo, output, source):
 
 
 def read_pdf(path):
-    content, pages = [], []
-    with pypdfium2.PdfDocument(str(path)) as pdf:
-        for page in pdf:
-            textpage = page.get_textpage()
-            text = textpage.get_text_range()
-            pages.append(text)
-            textpage.close()
-            if len(text.strip()) < 80:
-                bitmap = page.render(scale=1.7)
-                picture = bitmap.to_pil().convert("RGB")
-                picture.thumbnail((1600, 1600))
-                buffer = io.BytesIO()
-                picture.save(buffer, format="JPEG", quality=85)
-                content.append(
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": "data:image/jpeg;base64,"
-                            + base64.b64encode(buffer.getvalue()).decode()
-                        },
-                    }
-                )
-                bitmap.close()
-            page.close()
-    content.insert(0, {"type": "text", "text": "\n\n".join(pages)})
-    return content, len(pages)
+    """Compatibility backend; durable callers use the shared data-hub cache."""
+    from src.data_hub.pdf import read_pdf as neutral_read_pdf
+
+    return neutral_read_pdf(path)
 
 
 def payload(config, stage, content):
@@ -155,6 +130,8 @@ def payload(config, stage, content):
 
 
 def implementation_files(repo):
+    from src.model_gateway.integrity import implementation_files as gateway_files
+
     config = json.loads(
         (repo / "config/fundamental_data_v2.json").read_text(encoding="utf8")
     )
@@ -165,6 +142,8 @@ def implementation_files(repo):
         repo / "scripts/build_fundamental_data_v2.py",
         repo / "config/fundamental_data_v2.json",
         repo / config["examples_path"],
+        *gateway_files(),
+        *(repo / "src/data_hub").glob("*.py"),
     ]
 
 
@@ -253,13 +232,43 @@ def call(repo, output, request, parse, replay_source=None):
             receipt["source_record"] = str(replay_source.resolve())
             receipt["historical_usage"] = response.recorded_receipt.get("usage")
         else:
-            response = requests.post(
-                "https://api.deepseek.com/v1/chat/completions",
-                json=request,
-                headers={"Authorization": "Bearer " + key},
-                timeout=(60, 1800),
-                allow_redirects=False,
+            from decimal import Decimal
+
+            from src.model_gateway.json_client import request_json
+            from src.platform_composition import authority_for
+
+            config = json.loads((repo / "config/fundamental_data_v2.json").read_bytes())
+            pricing = config["pricing"]
+            rates = {
+                "input": pricing["input_cache_miss_per_million"],
+                "cached_input": pricing["input_cache_hit_per_million"],
+                "output": pricing["output_per_million"],
+            }
+            run_root = output.parent.parent if output.parent.name == "blocks" else output
+            call_plan_path = run_root / "call_plan.json"
+            call_plan = json.loads(call_plan_path.read_bytes()) if call_plan_path.exists() else {}
+            reservation = (
+                Decimal(frozen.get("input_tokens_estimate", 0)) * Decimal(str(rates["input"]))
+                + Decimal(request["max_tokens"]) * Decimal(str(rates["output"]))
+            ) / 1000000
+            budget = call_plan.get("budget", {}).get("planning_limit_usd")
+            if budget is None:
+                budget = reservation
+            response, gateway = request_json(
+                authority=authority_for(repo),
+                intent="v2_extract:" + hashlib.sha256(
+                    json.dumps(request, ensure_ascii=False, sort_keys=True).encode()
+                ).hexdigest(),
+                producer="v2_extract:" + str(run_root.resolve()),
+                authorization="v2_extract:" + str(run_root.resolve()),
+                budget=budget, reservation=reservation,
+                endpoint="https://api.deepseek.com/v1/chat/completions",
+                payload=request, key=key, rates=rates, capture=output,
+                timeout=(60, 1800), post=requests.post,
             )
+            receipt["gateway"] = gateway
+            if gateway.get("reused"):
+                receipt["reused"] = True
         save(output / "response.body", response.content)
         event(
             output,
@@ -269,8 +278,10 @@ def call(repo, output, request, parse, replay_source=None):
         )
         receipt["http_status"] = response.status_code
         body = json.loads(response.content)
-        if replay_source is None:
+        if replay_source is None and not receipt.get("reused"):
             receipt["usage"] = body.get("usage")
+        elif receipt.get("reused"):
+            receipt["historical_usage"] = body.get("usage")
         response.raise_for_status()
         choice = body["choices"][0]
         raw = choice["message"]["content"]

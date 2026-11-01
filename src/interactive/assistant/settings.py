@@ -16,6 +16,9 @@ class AssistantSettings(BaseModel):
     reasoning_effort: Literal["low", "high", "max"] = "high"
     request_timeout_seconds: int = Field(60, ge=5, le=120)
     request_retries: int = Field(1, ge=0, le=2)
+    # Legacy retry options remain readable, but a sent/unknown POST is not
+    # automatically repeated by the shared gateway.
+    request_budget_usd: float = Field(1.0, gt=0, le=100)
     image_timeout_seconds: int = Field(120, ge=5, le=180)
     image_request_retries: int = Field(1, ge=0, le=2)
     image_max_tokens: int = Field(16384, ge=1024, le=32768)

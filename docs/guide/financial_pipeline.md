@@ -1,5 +1,7 @@
 # 财报流程统一入口
 
+全流程入口新增 `run/status/logs/artifacts/cancel/resume`，使用与后台/Pi相同的领域编排器；旧阶段命令保持兼容。详见[一次运行完整年报研究](research_pipeline.md)，缓存、失败和维修边界见[编排设计](../design/research_pipeline_orchestration.md)。历史批次脚本只作档案，不作为新入口依赖。
+
 2026-10-29核对：正式推荐入口为 `scripts/financial_pipeline.py`。第一、二阶段业务实现保持原合同。该入口负责提取、整合、摘要与第三阶段文件交接；横评使用 `run_peer_research.py`，后续固定三轮研究见[正式研究指南](research_report.md)。这些是显式命令，不会因生成交接包自动执行。完整关系见[架构图](../architecture_overview.md#财报研究链路放大图)。
 
 ## 阶段与参数

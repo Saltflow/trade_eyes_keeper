@@ -37,7 +37,10 @@ SPEC.loader.exec_module(CLI)
 
 
 @pytest.fixture(autouse=True)
-def forbid_real_network(monkeypatch):
+def forbid_real_network(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRADE_EYES_AUTHORITY_ROOT", str(tmp_path / "authority"))
+    monkeypatch.setenv("RESEARCH_PARSED_CACHE_ROOT", str(tmp_path / "parsed_cache"))
+
     def forbidden(*args, **kwargs):
         pytest.fail("Real HTTP/socket connection attempted in offline acceptance")
 
@@ -766,6 +769,43 @@ def prepared_pdf(tmp_path, monkeypatch):
     tokenizer = SimpleNamespace(encode=lambda text: SimpleNamespace(ids=[1] * 100))
     monkeypatch.setattr(v2_transport.Tokenizer, "from_file", lambda path: tokenizer)
     return source
+
+
+def test_single_and_full_runs_reuse_neutral_pdf_parse_without_changing_request(
+    prepared_pdf, tmp_path, monkeypatch
+):
+    original = CLI.read_pdf
+    calls = []
+
+    def counted(path):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(CLI, "read_pdf", counted)
+    arguments = [
+        "extract",
+        "--source",
+        str(prepared_pdf),
+        "--company",
+        "Company A",
+        "--year",
+        "2025",
+        "--profile",
+        "extractives",
+    ]
+    full, single = tmp_path / "full_cached", tmp_path / "single_cached"
+    assert CLI.main([*arguments, "--output", str(full)]) == 0
+    assert CLI.main([*arguments, "--output", str(single), "--block", "capital"]) == 0
+    assert len(calls) == 1
+    assert (full / "blocks/capital/request.json").read_bytes() == (
+        single / "blocks/capital/request.json"
+    ).read_bytes()
+    cache = parse((single / "summary.json").read_text("utf8"))["pdf_parse_cache"]
+    assert cache["hit"] and cache["complete"]
+    neutral = json.loads(Path(cache["path"]).read_text("utf8"))["parsed"]["content"]
+    assert "frozen_job_ownership" not in json.dumps(neutral)
+    frozen = parse((single / "freeze.json").read_text("utf8"))["files"]
+    assert str(Path(cache["path"]).resolve()) in frozen
 
 
 def test_preflight_freezes_all_requests_without_http_or_key(

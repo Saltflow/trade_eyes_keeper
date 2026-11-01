@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -26,6 +27,7 @@ from src.fundamental_data.v2_transport import (
     save,
 )
 from src.fundamental_data.v2_view import publish
+from src.research_pipeline.parsing import ParsedCache
 
 
 def planned_jobs(config, profiles):
@@ -58,11 +60,21 @@ def budget(config, blocks):
 
 
 def freeze_run(repo, output, sources, jobs, names, report_id, max_calls=None):
+    code = implementation_files(repo) + [
+        repo / "src/research_pipeline" / name
+        for name in ("__init__.py", "common.py", "parsing.py")
+    ]
     hashes = {
         str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in [*implementation_files(repo), *sources]
+        for path in [*code, *sources]
     }
     if (output / "call_plan.json").is_file():
+        cache = parse((output / "call_plan.json").read_text("utf8")).get(
+            "pdf_parse_cache"
+        )
+        if cache:
+            path = Path(cache["path"])
+            hashes[str(path.resolve())] = hashlib.sha256(path.read_bytes()).hexdigest()
         hashes[str((output / "call_plan.json").resolve())] = hashlib.sha256(
             (output / "call_plan.json").read_bytes()
         ).hexdigest()
@@ -80,7 +92,7 @@ def freeze_run(repo, output, sources, jobs, names, report_id, max_calls=None):
         "report_id": report_id,
     }
     save(output / "freeze.json", frozen)
-    for path in implementation_files(repo):
+    for path in code:
         save(output / "frozen_code" / path.relative_to(repo), path.read_bytes())
 
 
@@ -130,8 +142,29 @@ def extract(repo, args, config, sources, summary):
             "ownership_blocks": contract_names,
             "execution_blocks": names,
         }
-        content, summary["pdf_pages"] = read_pdf(sources[0])
-        report_id = hashlib.sha256(sources[0].read_bytes()).hexdigest()
+        cache_root = args.parse_cache_root or os.getenv("RESEARCH_PARSED_CACHE_ROOT")
+        if cache_root:
+            cache_root = Path(cache_root)
+        else:
+            from src.platform_composition import authority_for
+
+            central = authority_for(repo).materials_root / "parsed"
+            cache_root = ParsedCache.bind_root(
+                repo / "data/fundamental_data/shared_research/parsed", central
+            )
+        from src.platform_composition import authority_for
+
+        parsed_pdf = ParsedCache(
+            cache_root, pdf_reader=read_pdf, authority=authority_for(repo)
+        ).read(sources[0], "application/pdf")
+        content, summary["pdf_pages"] = parsed_pdf["content"], parsed_pdf["pages"]
+        report_id = parsed_pdf["sha256"]
+        summary["pdf_parse_cache"] = {
+            "hit": parsed_pdf["cache_hit"],
+            "path": parsed_pdf["cache_path"],
+            "sha256": report_id,
+            "complete": parsed_pdf["complete"],
+        }
         content.insert(
             0,
             {
@@ -278,6 +311,7 @@ def main(argv=None):
     parser.add_argument("--company")
     parser.add_argument("--year", type=int)
     parser.add_argument("--profile", action="append", default=[])
+    parser.add_argument("--parse-cache-root", type=Path)
     parser.add_argument("--budget-limit-usd", type=float)
     parser.add_argument("--paid", action="store_true")
     args = parser.parse_args(argv)

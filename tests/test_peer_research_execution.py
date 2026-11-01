@@ -11,7 +11,9 @@ from scripts import run_peer_research as run
 
 
 @pytest.fixture(autouse=True)
-def offline(monkeypatch):
+def offline(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRADE_EYES_AUTHORITY_ROOT", str(tmp_path / "authority"))
+
     def denied(*args, **kwargs):
         pytest.fail("Unexpected network call")
 

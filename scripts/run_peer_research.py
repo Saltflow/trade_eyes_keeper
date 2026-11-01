@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts import run_company_summary as transport
 from src.fundamental_data.handoff import separate
+from src.model_gateway.integrity import implementation_files as gateway_files
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -98,6 +99,7 @@ def prepare(repo: Path, source: Path, output: Path, maximum: Decimal) -> dict:
         repo / "src/fundamental_data/handoff.py",
         repo / "tests/test_peer_research_execution.py",
         repo / "docs/development/peer_research_paid_20261024.md",
+        *gateway_files(),
     ):
         files[str(path.resolve())] = transport.sha(path)
     transport.save(

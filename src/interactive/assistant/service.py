@@ -1443,6 +1443,7 @@ class FeishuAssistant:
         return pairs
 
     def tool_schema(self) -> list[dict]:
+        from ...research_pipeline.tools import research_tool_schema
         from .personal_tools import personal_tool_schema
         from .research import ResearchJobSpec
         from .trigger_tools import trigger_tool_schema
@@ -1456,6 +1457,7 @@ class FeishuAssistant:
         if self.capabilities is not None and "research" not in self.capabilities:
             return personal + triggers
         personal.extend(triggers)
+        personal.extend(research_tool_schema())
         return personal + [
             _tool(
                 "list_datasets",
@@ -1778,6 +1780,34 @@ class FeishuAssistant:
     def _call_tool(self, chat: str, sender: str, name: str, arguments: dict):
         if self._stop.is_set():
             raise ValueError("助手正在停止")
+        if name.startswith("research_pipeline_"):
+            from ...research_pipeline.tools import ResearchTools
+
+            tools = ResearchTools(self.root)
+            if name == "research_pipeline_prepare":
+                action_id = uuid.uuid4().hex[:12]
+                payload = tools.prepare_start(arguments, chat, sender, action_id)
+                item = self.store.create(
+                    "research_pipeline", chat, sender, payload,
+                    self.settings.proposal_ttl_seconds, action_id,
+                )
+                delivered = self._preview(item)
+                return {"proposal_id": action_id, "state": "requires_confirmation",
+                        "preview_delivered": delivered, "preview": payload["preview"]}
+            if name == "research_pipeline_repair_preview":
+                if set(arguments) != {"run_id", "candidate_id"}:
+                    raise ValueError("需要 run_id 和 candidate_id")
+                payload = tools.prepare_repair_confirmation(
+                    arguments["run_id"], arguments["candidate_id"], chat, sender
+                )
+                item = self.store.create(
+                    "research_pipeline_repair", chat, sender, payload,
+                    self.settings.proposal_ttl_seconds,
+                )
+                delivered = self._preview(item)
+                return {"proposal_id": item["id"], "state": "requires_confirmation",
+                        "preview_delivered": delivered, "preview": payload["preview"]}
+            return tools.call(name, arguments, chat, sender)
         if name == "trigger_manage":
             return self._invoke_trigger_tool(chat, sender, arguments)
         if name.startswith("personal_monitor_"):
@@ -2135,7 +2165,7 @@ class FeishuAssistant:
             f"放弃请回复：取消 {item['id']}\n"
             f"有效期 {self.settings.proposal_ttl_seconds // 60} 分钟。",
         )
-        if item["kind"] == "research":
+        if item["kind"] in {"research", "research_pipeline_repair"}:
             delivered = (
                 bool(payload.get("preview_files"))
                 and self._files(
@@ -2230,11 +2260,29 @@ class FeishuAssistant:
                     action_id, "interrupted", ("queued",), "服务正在停止，未开始执行"
                 )
                 return
-            next_status = "applying" if item["kind"] == "config" else "queued"
+            pipeline_action = item["kind"] in {"research_pipeline", "research_pipeline_repair"}
+            next_status = "applying" if item["kind"] == "config" or pipeline_action else "queued"
             if not self.store.transition(action_id, next_status, ("queued",)):
                 self._reply(chat, f"提案 {action_id} 状态已变化，未启动执行。")
                 return
-            if item["kind"] == "config":
+            if pipeline_action:
+                from ...research_pipeline.tools import ResearchTools
+
+                self._reply(
+                    chat,
+                    f"研究操作 {action_id} 已收到确认，正在校验并建立后台任务；"
+                    "此处不会重发已尝试请求，稍后返回研究任务编号。",
+                )
+                try:
+                    result = ResearchTools(self.root).apply_confirmation(
+                        item["payload"], chat, item["sender"]
+                    )
+                    self.store.update(action_id, "succeeded", "研究操作已确认，详情见研究任务状态", result=result)
+                    self._reply(chat, f"研究操作 {action_id} 已确认：\n" + json.dumps(result, ensure_ascii=False))
+                except Exception as exc:  # noqa: BLE001 - preserve confirmed action failure
+                    self.store.update(action_id, "failed", self.redact(str(exc)))
+                    self._reply(chat, f"研究操作 {action_id} 未完成：{self.redact(str(exc))}")
+            elif item["kind"] == "config":
                 try:
                     result = self.configuration.apply(item["payload"])
                     status = (

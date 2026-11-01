@@ -7,6 +7,9 @@ import hashlib
 import os
 import threading
 import time
+import uuid
+from contextlib import contextmanager
+from pathlib import Path
 
 import requests
 
@@ -26,6 +29,54 @@ class DeepSeekAssistantClient:
         self.base_url = str(llm.get("base_url") or "https://api.deepseek.com/v1")
         self.settings = settings
         self.stopped = threading.Event()
+        from ...platform_composition import authority_for
+
+        self.authority = authority_for(
+            Path(__file__).resolve().parents[3], config, scope="assistant_private"
+        )
+        self.gateway_rates = dict(llm.get("execution_rates", {}))
+        self.last_gateway_receipt = None
+
+    @contextmanager
+    def _model_response(self, payload: dict, timeout: float):
+        """Host-owned normal-chat authorization; never a financial-run grant.
+
+        The per-request allowance is a guard/reservation, not actual spend.
+        Unconfigured prices remain unknown; usage is still captured. Tool,
+        image and financial facts are interpreted by their existing callers.
+        """
+        from ...model_gateway.json_client import request_json
+        from ...model_gateway.ledger import GatewayBlocked
+
+        identity = "assistant_" + uuid.uuid4().hex
+        try:
+            response, receipt = request_json(
+                authority=self.authority,
+                intent=identity,
+                producer=identity,
+                authorization=identity,
+                budget=str(self.settings.request_budget_usd),
+                reservation=str(self.settings.request_budget_usd),
+                endpoint=self.base_url.rstrip("/") + "/chat/completions",
+                payload=payload,
+                key=self.api_key,
+                rates=self.gateway_rates,
+                allow_unpriced=True,
+                capture=self.authority.root / "assistant_runs" / identity,
+                timeout=(min(5, timeout), timeout),
+                post=requests.post,
+            )
+            self.last_gateway_receipt = receipt
+        except GatewayBlocked as error:
+            raise AssistantAPIError(
+                "共享模型请求守卫暂停了本次调用；请查看任务日志和账户/预算状态。"
+            ) from error
+        try:
+            yield response
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
 
     def complete(
         self, messages: list[dict], tools: list[dict], *, deadline: float | None = None
@@ -57,7 +108,7 @@ class DeepSeekAssistantClient:
         }
         if tools:
             payload["tools"] = tools
-        for attempt in range(self.settings.request_retries + 1):
+        for attempt in range(1):
             if self.stopped.is_set():
                 raise AssistantAPIError("助手正在停止。")
             remaining = deadline - time.monotonic() if deadline is not None else None
@@ -65,19 +116,8 @@ class DeepSeekAssistantClient:
                 raise AssistantAPIError("本轮问答达到总时间预算，请缩小问题范围。")
             timeout = min(self.settings.request_timeout_seconds, remaining or 120)
             try:
-                with requests.post(
-                    self.base_url.rstrip("/") + "/chat/completions",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json=payload,
-                    timeout=(min(5, timeout), timeout),
-                ) as response:
+                with self._model_response(payload, timeout) as response:
                     code = response.status_code
-                    if (
-                        code == 429 or code >= 500
-                    ) and attempt < self.settings.request_retries:
-                        if self.stopped.wait(2**attempt):
-                            break
-                        continue
                     if code != 200:
                         raise AssistantAPIError(f"DeepSeek 请求失败（HTTP {code}）。")
                     data = response.json()
@@ -107,10 +147,6 @@ class DeepSeekAssistantClient:
                     **({"tool_calls": calls} if calls else {}),
                 }
             except (requests.Timeout, requests.ConnectionError):
-                if attempt < self.settings.request_retries:
-                    if self.stopped.wait(2**attempt):
-                        break
-                    continue
                 raise AssistantAPIError(
                     "DeepSeek 连接失败或超时，请稍后重试。"
                 ) from None
@@ -161,7 +197,7 @@ class DeepSeekAssistantClient:
             "max_tokens": self.settings.max_tokens,
             "stream": False,
         }
-        for attempt in range(self.settings.request_retries + 1):
+        for attempt in range(1):
             remaining = deadline - time.monotonic() if deadline is not None else None
             if self.stopped.is_set():
                 raise AssistantAPIError("助手正在停止。")
@@ -169,19 +205,7 @@ class DeepSeekAssistantClient:
                 raise AssistantAPIError("扫描件视觉解析达到时间预算。")
             timeout = min(self.settings.request_timeout_seconds, remaining or 120)
             try:
-                with requests.post(
-                    self.base_url.rstrip("/") + "/chat/completions",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json=payload,
-                    timeout=(min(5, timeout), timeout),
-                ) as response:
-                    if (
-                        response.status_code in {429, 500, 502, 503, 504}
-                        and attempt < self.settings.request_retries
-                    ):
-                        if self.stopped.wait(2**attempt):
-                            break
-                        continue
+                with self._model_response(payload, timeout) as response:
                     if response.status_code != 200:
                         raise AssistantAPIError(
                             f"DeepSeek 视觉解析失败（HTTP {response.status_code}）。"
@@ -192,10 +216,6 @@ class DeepSeekAssistantClient:
                     raise AssistantAPIError("DeepSeek 未返回扫描页转录文本。")
                 return value
             except (requests.Timeout, requests.ConnectionError):
-                if attempt < self.settings.request_retries:
-                    if self.stopped.wait(2**attempt):
-                        break
-                    continue
                 raise AssistantAPIError("DeepSeek 视觉解析连接失败或超时。") from None
             except (ValueError, KeyError, IndexError, TypeError):
                 raise AssistantAPIError(
@@ -296,7 +316,7 @@ class DeepSeekAssistantClient:
             "max_tokens": self.settings.image_max_tokens,
             "stream": False,
         }
-        for attempt in range(self.settings.image_request_retries + 1):
+        for attempt in range(1):
             remaining = check_budget()
             timeout = min(
                 self.settings.image_timeout_seconds,
@@ -312,36 +332,13 @@ class DeepSeekAssistantClient:
             }
             self.last_image_diagnostics.append(diagnostic)
 
-            def retry(*, backoff=False, _attempt=attempt, _diagnostic=diagnostic):
-                _diagnostic["retry_available"] = (
-                    _attempt < self.settings.image_request_retries
-                )
-                if not _diagnostic["retry_available"]:
-                    return False
-                try:
-                    left = check_budget()
-                    if backoff:
-                        delay = (
-                            min(2**_attempt, left) if left is not None else 2**_attempt
-                        )
-                        if self.stopped.wait(delay):
-                            raise AssistantAPIError("助手正在停止。")
-                    check_budget()
-                except AssistantAPIError:
-                    _diagnostic["abort_reason"] = (
-                        "stopped" if self.stopped.is_set() else "deadline"
-                    )
-                    raise
-                _diagnostic["will_retry"] = True
-                return True
+            def retry(_diagnostic=diagnostic, **_options):
+                _diagnostic["retry_available"] = False
+                _diagnostic["will_retry"] = False
+                return False
 
             try:
-                with requests.post(
-                    self.base_url.rstrip("/") + "/chat/completions",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json=payload,
-                    timeout=(min(5, timeout), timeout),
-                ) as response:
+                with self._model_response(payload, timeout) as response:
                     code = response.status_code
                     diagnostic["http_status"] = code if type(code) is int else None
                     check_budget()

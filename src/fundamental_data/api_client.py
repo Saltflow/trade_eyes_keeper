@@ -1,11 +1,16 @@
 """One attempt per frozen request. No retry, response repair, or fallback."""
 
+import hashlib
 import json
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
 from tokenizers import Tokenizer
+
+from src.model_gateway.json_client import request_json
+from src.platform_composition import authority_for
 
 from .api_io import check_seal, write_once
 
@@ -34,7 +39,7 @@ class Client:
             key,
         )
         self.tokenizer = Tokenizer.from_file(settings["tokenizer"])
-        self.lock, self.reserved, self.receipts = threading.Lock(), 0.0, []
+        self.lock, self.receipts = threading.Lock(), []
 
     def payload(self, stage, content):
         return {
@@ -81,12 +86,8 @@ class Client:
         reserve = (tokens * 0.3 + payload["max_tokens"] * 1.2) / 1000000
         check_seal(self.hashes)
         with self.lock:
-            if (
-                self.reserved + reserve > self.settings["max_usd"]
-                or len(self.receipts) >= self.settings["max_calls"]
-            ):
+            if len(self.receipts) >= self.settings["max_calls"]:
                 raise ValueError("frozen_budget_exhausted")
-            self.reserved += reserve
             receipt = {
                 "stage": stage,
                 "name": name,
@@ -104,17 +105,37 @@ class Client:
         )
         data = None
         try:
-            response = requests.post(
-                self.settings["endpoint"],
-                json=payload,
-                headers={"Authorization": "Bearer " + self.key},
-                timeout=(20, self.settings["timeout_seconds"]),
-                allow_redirects=False,
+            repo = Path(__file__).resolve().parents[2]
+            authority = authority_for(
+                repo, explicit_root=self.settings.get("authority_root")
             )
+            response, gateway = request_json(
+                authority=authority,
+                intent="legacy_data:"
+                + hashlib.sha256(
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()
+                ).hexdigest(),
+                producer="legacy_data:" + str(self.output.resolve()),
+                authorization="legacy_data:" + str(self.output.resolve()),
+                budget=self.settings["max_usd"],
+                reservation=reserve,
+                endpoint=self.settings["endpoint"],
+                payload=payload,
+                key=self.key,
+                rates=self.settings.get("execution_rates")
+                or {"input": ".3", "output": "1.2", "cached_input": ".006"},
+                capture=folder,
+                timeout=(20, self.settings["timeout_seconds"]),
+                post=requests.post,
+            )
+            receipt["gateway"] = gateway
             receipt["http_status"] = response.status_code
             write_once(folder / "response.body", response.content)
             body = strict_json(response.content)
-            receipt["usage"] = body.get("usage")
+            receipt["usage"] = body.get("usage") if not gateway.get("reused") else None
+            if gateway.get("reused"):
+                receipt["historical_usage"] = body.get("usage")
+                receipt["reused"] = True
             if response.status_code != 200:
                 raise ValueError("provider_http_error")
             choice = body["choices"][0]

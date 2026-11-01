@@ -1,14 +1,10 @@
 """Read original PDFs and seal inputs; no research parser or network dependency."""
 
-import base64
 import hashlib
 import importlib.metadata
-import io
 import json
 import sys
 from pathlib import Path
-
-import pypdfium2
 
 
 def write_once(path, value):
@@ -56,27 +52,26 @@ def prepare(source, output):
             "pages": {},
             "images": [],
         }
-        with pypdfium2.PdfDocument(str(path)) as pdf:
-            for number in range(1, len(pdf) + 1):
-                page = pdf[number - 1]
-                textpage = page.get_textpage()
-                text = textpage.get_text_range()
-                textpage.close()
-                doc["pages"][str(number)] = text
-                if len(text.strip()) < 80:
-                    bitmap = page.render(scale=1.7)
-                    image = bitmap.to_pil().convert("RGB")
-                    image.thumbnail((1600, 1600))
-                    stream = io.BytesIO()
-                    image.save(stream, format="JPEG", quality=85)
-                    doc["images"].append(
-                        {
-                            "page": number,
-                            "base64": base64.b64encode(stream.getvalue()).decode(),
-                        }
-                    )
-                    bitmap.close()
-                page.close()
+        from src.data_hub import DataHub
+        from src.platform_composition import authority_for
+
+        hub = DataHub(authority_for(Path(__file__).resolve().parents[2]))
+        parsed = hub.ensure_parsed(path, "application/pdf")
+        if parsed.get("page_texts"):
+            doc["pages"] = dict(parsed["page_texts"])
+        else:
+            # Imported historical content can be complete without recoverable
+            # per-page positions. Preserve it rather than reparsing or guessing.
+            doc["pages"] = {
+                "unpaginated": "\n\n".join(
+                    p.get("text", "")
+                    for p in parsed["content"]
+                    if p.get("type") == "text"
+                )
+            }
+            doc["page_coordinates_unavailable"] = True
+        doc["images"] = list(parsed.get("images", []))
+        doc["neutral_parse_ref"] = parsed["cache_path"]
         write_once(output / "sources" / (doc["document_id"] + ".json"), doc)
         documents.append(doc)
     expected = {
@@ -91,6 +86,8 @@ def prepare(source, output):
 
 
 def seal(source, output, documents, settings):
+    from src.model_gateway.integrity import implementation_files as gateway_files
+
     repo = Path(__file__).resolve().parents[2]
     files = [
         Path(__file__),
@@ -99,6 +96,8 @@ def seal(source, output, documents, settings):
         repo / "src/fundamental_data/__init__.py",
         repo / "config/fundamental_data_api.md",
         Path(settings["tokenizer"]),
+        *gateway_files(),
+        *(repo / "src/data_hub").glob("*.py"),
     ]
     files += list((output / "sources").glob("*.json")) + [
         Path(d["path"]) for d in documents
@@ -108,7 +107,10 @@ def seal(source, output, documents, settings):
     hashes = {str(p.resolve()): sha(p) for p in files}
     for path in sorted(set(files)):
         if path.suffix in {".py", ".md"}:
-            write_once(output / "frozen_code" / path.name, path.read_bytes())
+            relative = (
+                path.relative_to(repo) if path.is_relative_to(repo) else Path(path.name)
+            )
+            write_once(output / "frozen_code" / relative, path.read_bytes())
     frozen = {
         "files": hashes,
         "settings": settings,

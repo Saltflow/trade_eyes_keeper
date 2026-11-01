@@ -37,6 +37,60 @@ from .models import FinancialStatementSnapshot, MetricStatus, MetricValue
 logger = logging.getLogger(__name__)
 
 
+def _authority_http(config):
+    from ..data_hub.http import AuthorityHTTP
+    from ..platform_composition import authority_for
+
+    settings = config or {}
+    project = settings.get("project_root") or Path(__file__).resolve().parents[2]
+    return AuthorityHTTP(authority_for(project, settings))
+
+
+def _provider_hub(config, http):
+    """Keep injected research/frozen workers on their declared authority."""
+    from ..data_hub.materials import DataHub
+    from ..platform_composition import authority_for
+    from ..shared_contracts import AuthorityRef
+
+    authority = getattr(http, "authority", None)
+    if not isinstance(authority, AuthorityRef):
+        authority = getattr(getattr(http, "service", None), "authority", None)
+    if not isinstance(authority, AuthorityRef):
+        authority = getattr(getattr(http, "http", None), "authority", None)
+    if not isinstance(authority, AuthorityRef):
+        settings = config or {}
+        project = settings.get("project_root") or Path(__file__).resolve().parents[2]
+        authority = authority_for(project, settings)
+    return DataHub(authority)
+
+
+def _pit_original(provider, url, *, version=""):
+    """Own the raw once; financial layout parsers remain explicit renditions."""
+    known = provider.material_hub.lookup(url)
+    # These official identities are derived from the immutable URL itself,
+    # unlike a new revision merely appearing at a previously used URL.
+    if (
+        known
+        and version
+        and (
+            version.startswith("hkex:")
+            or version == "cninfo:" + Path(urlsplit(url).path).stem
+        )
+    ):
+        provider.material_hub.register_original(
+            known["path"], url=url, version=version, expected_sha=known["sha256"]
+        )
+
+    def download(_target):
+        response = provider.http.get(
+            url, headers=provider._headers, timeout=max(provider.timeout, 60)
+        )
+        response.raise_for_status()
+        return response.content
+
+    return provider.material_hub.ensure_original(url, download, version=version)
+
+
 def _float(value: Any) -> float | None:
     if value in (None, "", "None", "null"):
         return None
@@ -114,7 +168,8 @@ class BaostockStatementProvider:
                     # A future quarter cannot yet contain a disclosed statement.
                     month = quarter * 3
                     period_end = (
-                        date(year + 1, 1, 1) if month == 12
+                        date(year + 1, 1, 1)
+                        if month == 12
                         else date(year, month + 1, 1)
                     ) - timedelta(days=1)
                     if period_end > end:
@@ -214,7 +269,7 @@ class SseXbrlStatementProvider:
             "user_agent",
             "Mozilla/5.0 (compatible; trade-eyes-keeper instrument audit)",
         )
-        self.http = http or requests.Session()
+        self.http = http if http is not None else _authority_http(config)
 
     def _query(self, url: str, params: dict[str, Any]) -> list[dict[str, Any]]:
         response = self.http.get(
@@ -497,7 +552,8 @@ class CninfoAnnualReportProvider:
             "user_agent",
             "Mozilla/5.0 (compatible; trade-eyes-keeper instrument audit)",
         )
-        self.http = http or requests.Session()
+        self.http = http if http is not None else _authority_http(config)
+        self.material_hub = _provider_hub(config, self.http)
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -511,9 +567,23 @@ class CninfoAnnualReportProvider:
         digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
         return self.pdf_cache_dir / f"{digest}.json"
 
-    def _read_pdf_cache(self, url: str) -> dict[str, Any] | None:
+    def _read_pdf_cache(self, url: str, *, version="") -> dict[str, Any] | None:
+        shared = self.material_hub.rendition_for_url(
+            url, self.PDF_CACHE_CONTRACT, version=version
+        )
+        if shared is not None:
+            return {
+                "contract": self.PDF_CACHE_CONTRACT,
+                "source_url": url,
+                "content_sha256": shared["source_sha256"],
+                **shared["value"],
+            }
         path = self._pdf_cache_path(url)
         if not path.exists():
+            return None
+        # Old cache files only declared URL and content SHA. A different
+        # official revision must not inherit that identity without evidence.
+        if version and version != "cninfo:" + Path(urlsplit(url).path).stem:
             return None
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -523,11 +593,29 @@ class CninfoAnnualReportProvider:
         if (
             payload.get("contract") != self.PDF_CACHE_CONTRACT
             or payload.get("source_url") != url
+            or not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("content_sha256", "")))
             or not isinstance(payload.get("values"), dict)
             or not payload["values"]
         ):
             logger.warning("Ignoring invalid CNINFO PDF cache: %s", path)
             return None
+        digest = payload["content_sha256"]
+        original = self.material_hub.lookup(url, version=version)
+        if original and original["sha256"] != digest:
+            return None
+        self.material_hub.import_rendition(
+            digest,
+            self.PDF_CACHE_CONTRACT,
+            {"values": payload["values"], "parser": payload.get("parser", "unknown")},
+            provenance={
+                "legacy_path": str(path.resolve()),
+                "legacy_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "original_available": False,
+            },
+        )
+        self.material_hub.alias_rendition(
+            url, digest, self.PDF_CACHE_CONTRACT, version=version
+        )
         return payload
 
     def _write_pdf_cache(
@@ -537,26 +625,40 @@ class CninfoAnnualReportProvider:
         values: dict[str, float],
         parser_name: str,
     ) -> Path:
-        self.pdf_cache_dir.mkdir(parents=True, exist_ok=True)
-        path = self._pdf_cache_path(url)
-        temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(
-            json.dumps(
-                {
-                    "contract": self.PDF_CACHE_CONTRACT,
-                    "source_url": url,
-                    "content_sha256": hashlib.sha256(content).hexdigest(),
-                    "parser": parser_name,
-                    "parsed_at": datetime.now().isoformat(),
-                    "values": values,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
+        # Compatibility API for callers with already fetched raw bytes. New
+        # requests go through ensure_original before any native layout parse.
+        original = self.material_hub.import_bytes(content)
+        self.material_hub.register_original(original["path"], url=url)
+        result = self.material_hub.import_rendition(
+            original["sha256"],
+            self.PDF_CACHE_CONTRACT,
+            {"values": values, "parser": parser_name},
+            provenance={"original_available": True},
         )
-        temporary.replace(path)
-        return path
+        self.material_hub.alias_rendition(
+            url, original["sha256"], self.PDF_CACHE_CONTRACT
+        )
+        return Path(result["cache_path"])
+
+    def _report_values(self, url, announcement):
+        identity = announcement.get("announcementId")
+        version = "cninfo:" + str(identity) if identity else ""
+        cached = self._read_pdf_cache(url, version=version)
+        if cached is not None:
+            return cached["values"], str(cached.get("parser", "unknown")), True
+        original = _pit_original(self, url, version=version)
+
+        def build():
+            values, parser_name = self._parse_pdf(Path(original["path"]).read_bytes())
+            return {"values": values, "parser": parser_name}
+
+        parsed = self.material_hub.ensure_rendition(
+            original["sha256"], self.PDF_CACHE_CONTRACT, build
+        )
+        self.material_hub.alias_rendition(
+            url, original["sha256"], self.PDF_CACHE_CONTRACT, version=version
+        )
+        return parsed["value"]["values"], parsed["value"]["parser"], parsed["cache_hit"]
 
     def fetch(self, code: str, start: date, end: date) -> StatementFetchResult:
         normalized = str(code).strip()
@@ -585,28 +687,8 @@ class CninfoAnnualReportProvider:
         for year, announcement in sorted(announcements.items()):
             url = self.STATIC_ROOT + str(announcement["adjunctUrl"]).lstrip("/")
             try:
-                cached = self._read_pdf_cache(url)
-                cache_hit = cached is not None
-                if cached is not None:
-                    values = {
-                        str(key): float(value)
-                        for key, value in cached["values"].items()
-                    }
-                    parser_name = str(cached.get("parser", "unknown"))
-                else:
-                    response = self.http.get(
-                        url,
-                        headers=self._headers,
-                        timeout=max(self.timeout, 60),
-                    )
-                    response.raise_for_status()
-                    values, parser_name = self._parse_pdf(response.content)
-                    self._write_pdf_cache(
-                        url,
-                        response.content,
-                        values,
-                        parser_name,
-                    )
+                values, parser_name, cache_hit = self._report_values(url, announcement)
+                values = {str(key): float(value) for key, value in values.items()}
                 published_at = datetime.fromtimestamp(
                     float(announcement["announcementTime"]) / 1000.0,
                     tz=timezone(timedelta(hours=8)),
@@ -714,7 +796,9 @@ class CninfoAnnualReportProvider:
                     "stock": f"{normalized},{org_id}",
                     "searchkey": "",
                     "secid": "",
-                    "category": "category_ndbg_szsh;" if report_type == "annual" else "",
+                    "category": "category_ndbg_szsh;"
+                    if report_type == "annual"
+                    else "",
                     "trade": "",
                     "seDate": f"{start.isoformat()}~{end.isoformat()}",
                     "sortName": "",
@@ -758,7 +842,9 @@ class CninfoAnnualReportProvider:
             ).date()
             if published < start or published > end:
                 continue
-            current_year = int(re.search(pattern, selected["title"]).group(1)) if selected else -1
+            current_year = (
+                int(re.search(pattern, selected["title"]).group(1)) if selected else -1
+            )
             current_time = _float(selected.get("announcementTime")) if selected else 0
             if (report_year, timestamp) > (current_year, current_time or 0):
                 selected = {
@@ -1152,28 +1238,8 @@ class CninfoInterimReportProvider(CninfoAnnualReportProvider):
         for year, announcement in sorted(announcements.items()):
             url = self.STATIC_ROOT + str(announcement["adjunctUrl"]).lstrip("/")
             try:
-                cached = self._read_pdf_cache(url)
-                cache_hit = cached is not None
-                if cached is not None:
-                    values = {
-                        str(key): float(value)
-                        for key, value in cached["values"].items()
-                    }
-                    parser_name = str(cached.get("parser", "unknown"))
-                else:
-                    response = self.http.get(
-                        url,
-                        headers=self._headers,
-                        timeout=max(self.timeout, 60),
-                    )
-                    response.raise_for_status()
-                    values, parser_name = self._parse_pdf(response.content)
-                    self._write_pdf_cache(
-                        url,
-                        response.content,
-                        values,
-                        parser_name,
-                    )
+                values, parser_name, cache_hit = self._report_values(url, announcement)
+                values = {str(key): float(value) for key, value in values.items()}
                 parent_equity = _float(values.get("parent_equity"))
                 if parent_equity is None:
                     raise ValueError(
@@ -1334,7 +1400,8 @@ class HkexStatementProvider:
                 "hkex_report_kinds must be a non-empty subset of "
                 f"{sorted(self.REPORT_KINDS)}"
             )
-        self.http = http or requests.Session()
+        self.http = http if http is not None else _authority_http(config)
+        self.material_hub = _provider_hub(config, self.http)
         self._stock_ids: dict[str, str] | None = None
 
     @property
@@ -1814,9 +1881,9 @@ class HkexStatementProvider:
                     if "," in token or abs(value) >= 1_000:
                         scale = (
                             1_000_000.0
-                            if re.search(r"\bmillion shares?\b", window, re.I)
+                            if re.search(r"\bmillion shares?\b", window, re.IGNORECASE)
                             else 1_000.0
-                            if re.search(r"\bthousand shares?\b", window, re.I)
+                            if re.search(r"\bthousand shares?\b", window, re.IGNORECASE)
                             else 1.0
                         )
                         return value * scale
@@ -1879,12 +1946,12 @@ class HkexStatementProvider:
 
         for page in text.split("\f"):
             normalized_page = re.sub(r"\s+", " ", page)
-            if not re.search(r"\bfinancial summary\b", normalized_page, re.I):
+            if not re.search(r"\bfinancial summary\b", normalized_page, re.IGNORECASE):
                 continue
             if not re.search(
                 r"\byear ended\b.*?20\d{2}.*?20\d{2}.*?20\d{2}",
                 normalized_page,
-                re.I,
+                re.IGNORECASE,
             ):
                 continue
             for line in page.splitlines():
@@ -2031,15 +2098,27 @@ class HkexStatementProvider:
         for document in documents:
             url = str(document["url"])
             try:
-                response = self.http.get(
-                    url,
-                    headers=self._headers,
-                    timeout=max(self.timeout, 60),
-                )
-                response.raise_for_status()
-                values, parser_name, period_end, currency = self._parse_pdf(
-                    response.content
-                )
+                from ..data_hub.storage import fingerprint
+
+                original = _pit_original(self, url, version="hkex:" + fingerprint(url))
+
+                def build(original=original):
+                    values, parser_name, period_end, currency = self._parse_pdf(
+                        Path(original["path"]).read_bytes()
+                    )
+                    return {
+                        "values": values,
+                        "parser": parser_name,
+                        "period_end": period_end.isoformat(),
+                        "currency": currency,
+                    }
+
+                parsed = self.material_hub.ensure_rendition(
+                    original["sha256"], "hkex-statement-layout-1", build
+                )["value"]
+                values, parser_name = parsed["values"], parsed["parser"]
+                period_end = date.fromisoformat(parsed["period_end"])
+                currency = parsed["currency"]
                 if not start <= period_end <= end:
                     attempts.append(
                         {
@@ -2287,11 +2366,9 @@ class PointInTimeFundamentalStore:
             from .statement_scope import normalize_statement_scope
 
             statement = FinancialStatementSnapshot(**normalize_statement_scope(item))
-            if (
-                {"cninfo_annual_report", "cninfo_interim_report"}
-                .intersection(statement.source.split("+"))
-                and statement.source_url
-            ):
+            if {"cninfo_annual_report", "cninfo_interim_report"}.intersection(
+                statement.source.split("+")
+            ) and statement.source_url:
                 match = re.search(
                     r"/finalpage/(20\d{2}-\d{2}-\d{2})/",
                     statement.source_url,

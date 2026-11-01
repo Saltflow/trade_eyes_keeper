@@ -1,0 +1,130 @@
+{
+  "kind": "real_history_limited_excerpt",
+  "scope": "Only one balance-sheet table with two unchanged rows from archived model extraction, not a complete annual/company, not independently verified against the PDF. Empty values retain original not_found reasons.",
+  "financial_validation": "not_independently_verified",
+  "source": {
+    "annual_json": "data/fundamental_data/energy7_followup_usd5_20261031/inputs/stage1/600348_2025/data.json",
+    "annual_json_sha256": "ef4eb82d6609bdd09447b81b2b6f174e73fe3afc48fe4cdfc3572d3e7900d015",
+    "source_manifest": "data/fundamental_data/energy7_followup_usd5_20261031/inputs/sources.json",
+    "source_manifest_sha256": "467ac3a4f401c54e6d343f1b3f60d3724d9eb548172e1d99cc3a4cec75dfe74e",
+    "pdf_path": "data/dataset_documents/6facc39cf07e9f5dfa29d58439ad77255f7c9fa94d8ef470360538e8474469ca/original.pdf",
+    "pdf_sha256": "8214af8c64e4351b2bfe706971ab4154909248cae82dd4016c85be5af74bc559",
+    "official_url": "https://static.cninfo.com.cn/finalpage/2026-04-27/1225197392.PDF",
+    "instrument": "a_share:600348",
+    "issuer_id": "a_share:600348",
+    "fiscal_year": 2025,
+    "document_id": "cninfo:1225197392"
+  },
+  "fixture": {
+    "path": "history_excerpt.json",
+    "sha256": "5b9fb3417f4f0704ec5d1b1da8eb10b4ff15bc4f5017dafb3d8f2e81aeed283e"
+  },
+  "selections": [
+    {
+      "source_pointer": "/schema_version",
+      "fixture_pointer": "/schema_version",
+      "value_sha256": "d813b7ed683d2ab3b7f4932790cc3bdaa3c343b890d4e164e4f4ce8f67e2959a"
+    },
+    {
+      "source_pointer": "/stage",
+      "fixture_pointer": "/stage",
+      "value_sha256": "a70f3e82cb32b3c2479c869734d608fb39560a52233f2988ad19daa2b51c2011"
+    },
+    {
+      "source_pointer": "/company",
+      "fixture_pointer": "/company",
+      "value_sha256": "1f9cf16c2f930256abe1846f95bd9830cfc70ea2f353302e5079f82fe55940a8"
+    },
+    {
+      "source_pointer": "/report_period",
+      "fixture_pointer": "/report_period",
+      "value_sha256": "a5a5ce2263e21ac9a3fb42b3826bccc22adf626c1bbc86922dab3d1b2f4d5050"
+    },
+    {
+      "source_pointer": "/reports",
+      "fixture_pointer": "/reports",
+      "value_sha256": "228193cba3e735e498455322db25869e55a2ba424bd0255204073dc926f4fd33"
+    },
+    {
+      "source_pointer": "/metadata",
+      "fixture_pointer": "/metadata",
+      "value_sha256": "5b41e5f7896fdbed667bc0825de705bab4d95636a1646c45e80c515533db55df"
+    },
+    {
+      "source_pointer": "/tables/0/kind",
+      "fixture_pointer": "/tables/0/kind",
+      "value_sha256": "b3e0ece164759752ce97c201062e168c637d084a6c3788e1f9c1845877e0ad61"
+    },
+    {
+      "source_pointer": "/tables/0/role",
+      "fixture_pointer": "/tables/0/role",
+      "value_sha256": "d75d8c454c2e7138d6df7ab8c98d581ab0d461f94dd40ae6b368f5c1d9a08d2b"
+    },
+    {
+      "source_pointer": "/tables/0/module",
+      "fixture_pointer": "/tables/0/module",
+      "value_sha256": "eea96276bad0ea13c250c9f7ab7a1d9f8acdc1f2ad51e611df81b8dd41743fcf"
+    },
+    {
+      "source_pointer": "/tables/0/topic",
+      "fixture_pointer": "/tables/0/topic",
+      "value_sha256": "d75d8c454c2e7138d6df7ab8c98d581ab0d461f94dd40ae6b368f5c1d9a08d2b"
+    },
+    {
+      "source_pointer": "/tables/0/title",
+      "fixture_pointer": "/tables/0/title",
+      "value_sha256": "290b0823dd829c299a6ce99faa9929af2cddccee91ba1b6c1a17825e68b847b6"
+    },
+    {
+      "source_pointer": "/tables/0/part",
+      "fixture_pointer": "/tables/0/part",
+      "value_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "source_pointer": "/tables/0/scope",
+      "fixture_pointer": "/tables/0/scope",
+      "value_sha256": "c2a331cbb1f74f50f8340bca468c7c03b6048440b1ef73de5d625e6099498d29"
+    },
+    {
+      "source_pointer": "/tables/0/accounting_basis",
+      "fixture_pointer": "/tables/0/accounting_basis",
+      "value_sha256": "64b1457d6f0fdb2de96b0340da944950ae9debf93616a1e905152e8137ae35c7"
+    },
+    {
+      "source_pointer": "/tables/0/columns",
+      "fixture_pointer": "/tables/0/columns",
+      "value_sha256": "645998adeeb718acb7bd1e4d6f1343b75f4d49f629847c87cbc8cba703bd21f9"
+    },
+    {
+      "source_pointer": "/tables/0/issues",
+      "fixture_pointer": "/tables/0/issues",
+      "value_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "source_pointer": "/tables/0/identity_code",
+      "fixture_pointer": "/tables/0/identity_code",
+      "value_sha256": "d75d8c454c2e7138d6df7ab8c98d581ab0d461f94dd40ae6b368f5c1d9a08d2b"
+    },
+    {
+      "source_pointer": "/tables/0/accounting_basis_code",
+      "fixture_pointer": "/tables/0/accounting_basis_code",
+      "value_sha256": "22fa0a5f4fb86ad60ec4bccbfe7c44bf21f41495bd3102d40ee998ef68bbe40d"
+    },
+    {
+      "source_pointer": "/tables/0/rows/1",
+      "fixture_pointer": "/tables/0/rows/0",
+      "value_sha256": "17d25c84627b2210b14f75c159d713560fb0aa33da554854604f6ad94e0d9151"
+    },
+    {
+      "source_pointer": "/tables/0/rows/2",
+      "fixture_pointer": "/tables/0/rows/1",
+      "value_sha256": "a5d2ce0920b9a0840da2a8723e2713752b9b1c8cd19aab6c4b792cf5f431624f"
+    }
+  ],
+  "retention_expectation": {
+    "numeric_cells": 2,
+    "null_cells": 2,
+    "total_cells": 4
+  },
+  "fixture_model_boundary": "Summary/research responses and quote used by the integration test are explicitly mocked; no such response is represented as financial evidence."
+}

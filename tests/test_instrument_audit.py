@@ -42,9 +42,7 @@ def test_sec_user_agent_falls_back_to_email_sender(monkeypatch):
     monkeypatch.delenv("SEC_USER_AGENT", raising=False)
     monkeypatch.setenv("EMAIL_SENDER", "owner@example.com")
     provider = SecCompanyFactsProvider({})
-    assert provider.sec_user_agent == (
-        "trade-eyes-keeper/1.0 owner@example.com"
-    )
+    assert provider.sec_user_agent == ("trade-eyes-keeper/1.0 owner@example.com")
 
 
 def _statement(
@@ -181,7 +179,8 @@ def test_company_valuation_uses_financial_statement_values():
     assert result.roe_ttm.value == pytest.approx(40 / 450 * 100)
     assert result.dividend_yield.value == pytest.approx(5.0)
     assert result.growth["revenue_qoq"].value_pct == pytest.approx(
-        140 / 130 * 100 - 100)
+        140 / 130 * 100 - 100
+    )
     assert result.growth["revenue_yoy"].value_pct == pytest.approx(40.0)
     assert result.growth["net_income_ttm_yoy"].value_pct == pytest.approx(
         40 / 22 * 100 - 100
@@ -390,7 +389,9 @@ def _qq_payload(code, pe, field_46):
     items[44] = "100"
     items[45] = "120"
     items[46] = str(field_46)
-    return 'v_test="' + "~".join(items) + '";'
+    # Model the actual requested wire identity, not an unrelated v_test symbol.
+    symbol = {"A": "sh601398", "HK": "hk00700"}[code]
+    return "v_" + symbol + '="' + "~".join(items) + '";'
 
 
 def test_qq_field_46_is_only_pb_for_a_shares():
@@ -645,10 +646,7 @@ def test_dual_class_valuation_uses_share_basis_compatible_with_eps():
         evaluation_date=date(2026, 2, 2),
     )
     assert result.total_shares.value == pytest.approx(100_000)
-    assert (
-        result.total_shares.note
-        == "稀释加权股数与报告 EPS/交易股类相容"
-    )
+    assert result.total_shares.note == "稀释加权股数与报告 EPS/交易股类相容"
     assert result.book_value_per_share.value == pytest.approx(2)
     assert result.pb.value == pytest.approx(1)
     assert result.pe_ttm.value == pytest.approx(2)
@@ -908,8 +906,7 @@ def test_sec_quarterly_ytd_cash_flow_is_normalized_to_negative_q2_fcf(
 
     payload = provider.fetch("TEST", date(2026, 8, 18))
     periods = {
-        (item.period_end, item.published_at): item
-        for item in payload.statements
+        (item.period_end, item.published_at): item for item in payload.statements
     }
 
     assert (date(2025, 3, 31), date(2025, 4, 25)) in periods
@@ -938,6 +935,10 @@ def test_sec_quarterly_ytd_cash_flow_is_normalized_to_negative_q2_fcf(
         ),
         evaluation_date=date(2026, 8, 18),
     )
-    assert result.latest_quarter_free_cash_flow.value == pytest.approx(
-        -5_855_000_000.0
-    )
+    assert result.latest_quarter_free_cash_flow.value == pytest.approx(-5_855_000_000.0)
+
+
+@pytest.fixture(autouse=True)
+def isolated_source_authority(tmp_path, monkeypatch):
+    """Each simulated provider gets durable shared state isolated from other tests."""
+    monkeypatch.setenv("TRADE_EYES_AUTHORITY_ROOT", str(tmp_path / "authority"))

@@ -4,12 +4,20 @@ import sys
 import types
 from datetime import date, datetime, timedelta, timezone
 
+import pytest
+
 from src.instruments.models import FinancialStatementSnapshot
 from src.instruments.point_in_time import (
     CninfoAnnualReportProvider,
     CninfoInterimReportProvider,
     PointInTimeFundamentalStore,
 )
+
+
+@pytest.fixture(autouse=True)
+def material_authority(tmp_path, monkeypatch):
+    # Same URL/fake PDF is intentionally paired with different parser fixtures.
+    monkeypatch.setenv("TRADE_EYES_AUTHORITY_ROOT", str(tmp_path / "authority"))
 
 
 class _Response:
@@ -25,7 +33,9 @@ class _Response:
 
 
 class _Http:
-    def __init__(self, provider: CninfoInterimReportProvider, announcements: list[dict]):
+    def __init__(
+        self, provider: CninfoInterimReportProvider, announcements: list[dict]
+    ):
         self.provider = provider
         self.announcements = announcements
         self.post_calls: list[tuple[str, dict]] = []
@@ -142,8 +152,7 @@ def test_store_corrects_disclosure_date_for_interim_composite_source(tmp_path):
                 currency="CNY",
                 source="baostock_profit+cninfo_interim_report",
                 source_url=(
-                    "https://static.cninfo.com.cn/finalpage/2026-08-28/"
-                    "1225522363.PDF"
+                    "https://static.cninfo.com.cn/finalpage/2026-08-28/1225522363.PDF"
                 ),
                 total_shares=1.0,
                 net_income_parent=1.0,
@@ -178,7 +187,9 @@ def test_cninfo_parser_reads_parent_equity_from_interim_summary_without_unit(
         def __exit__(self, exc_type, exc_value, traceback):
             return False
 
-    monkeypatch.setitem(sys.modules, "pdfplumber", types.SimpleNamespace(open=lambda _: _Pdf()))
+    monkeypatch.setitem(
+        sys.modules, "pdfplumber", types.SimpleNamespace(open=lambda _: _Pdf())
+    )
 
     values, parser = CninfoAnnualReportProvider._parse_pdf(b"test")
 

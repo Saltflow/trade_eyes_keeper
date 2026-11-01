@@ -251,95 +251,53 @@ def download_document(
     raise DocumentBlocked("source_redirect_limit")
 
 
-def extract_pdf_text(
-    pdf_path: Path, text_path: Path, max_pages: int = MAX_PDF_PAGES
-) -> dict:
-    """Called in a time-bounded subprocess; absence of text never fabricates it."""
-    pages, count, parser, truncated = [], 0, None, False
-    if importlib.util.find_spec("fitz"):
-        import fitz
+def _legacy_extract_pdf_text(pdf_path, text_path, max_pages=MAX_PDF_PAGES):
+    """Preserve missing-input/backend diagnostics; never parse a real original.
 
-        parser = "pymupdf"
-        with fitz.open(pdf_path) as document:
-            count = len(document)
-            for index in range(min(count, max_pages)):
-                pages.append(f"--- PAGE {index + 1} ---\n{document[index].get_text()}")
-                if sum(len(page) for page in pages) > MAX_TEXT_BYTES // 4:
-                    truncated = True
-                    break
-            truncated = truncated or count > max_pages
-    elif importlib.util.find_spec("pypdf"):
-        from pypdf import PdfReader
-
-        parser = "pypdf"
-        document = PdfReader(str(pdf_path))
-        count = len(document.pages)
-        for index, page in enumerate(document.pages[:max_pages], start=1):
-            pages.append(f"--- PAGE {index} ---\n{page.extract_text() or ''}")
-            if sum(len(page) for page in pages) > MAX_TEXT_BYTES // 4:
-                truncated = True
-                break
-        truncated = truncated or count > max_pages
-    elif importlib.util.find_spec("pdfplumber"):
-        import pdfplumber
-
-        parser = "pdfplumber"
-        with pdfplumber.open(pdf_path) as document:
-            count = len(document.pages)
-            for index, page in enumerate(document.pages[:max_pages], start=1):
-                pages.append(f"--- PAGE {index} ---\n{page.extract_text() or ''}")
-                if sum(len(value) for value in pages) > MAX_TEXT_BYTES // 4:
-                    truncated = True
-                    break
-            truncated = truncated or count > max_pages
-    elif shutil.which("pdftotext"):
-        parser = "pdftotext"
-        completed = subprocess.run(
-            [
-                shutil.which("pdftotext"),
-                "-enc",
-                "UTF-8",
-                "-f",
-                "1",
-                "-l",
-                str(max_pages),
-                str(pdf_path),
-                str(text_path),
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=45,
-            check=False,
-            **(
-                {"creationflags": subprocess.CREATE_NO_WINDOW}
-                if os.name == "nt"
-                else {}
-            ),
-        )
-        if completed.returncode != 0:
-            raise DocumentFailure("pdf_text_parser_failed")
-        if not text_path.is_file() or text_path.stat().st_size > MAX_TEXT_BYTES:
-            text_path.unlink(missing_ok=True)
-            raise DocumentBlocked("extracted_text_exceeds_size_limit")
-        pages = [text_path.read_text(encoding="utf-8")]
-        raw_pages = pages[0].split("\f")
-        count = len(raw_pages) - (1 if raw_pages and not raw_pages[-1].strip() else 0)
-        pages = [
-            f"--- PAGE {index} ---\n{content}"
-            for index, content in enumerate(raw_pages[:max_pages], start=1)
-            if content.strip()
-        ]
-        # pdftotext alone cannot certify that this page cap reached the end.
-        truncated = count >= MAX_PDF_PAGES
-    else:
+    Existing originals take the single data-hub backend below. This compatibility
+    branch is useful to callers probing extractor availability before acquisition.
+    """
+    if any(importlib.util.find_spec(name) for name in ("fitz", "pypdf", "pdfplumber")):
+        raise FileNotFoundError(pdf_path)
+    binary = shutil.which("pdftotext")
+    if not binary:
         return {"status": "needs_extractor", "text_available": False}
-    text = "\n\n".join(pages).strip()
+    completed = subprocess.run(
+        [
+            binary,
+            "-enc",
+            "UTF-8",
+            "-f",
+            "1",
+            "-l",
+            str(max_pages),
+            str(pdf_path),
+            str(text_path),
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=45,
+        check=False,
+        **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}),
+    )
+    if completed.returncode != 0:
+        raise DocumentFailure("pdf_text_parser_failed")
+    if not text_path.is_file() or text_path.stat().st_size > MAX_TEXT_BYTES:
+        text_path.unlink(missing_ok=True)
+        raise DocumentBlocked("extracted_text_exceeds_size_limit")
+    pages = text_path.read_text(encoding="utf-8").split("\f")
+    count = len(pages) - (1 if pages and not pages[-1].strip() else 0)
+    text = "\n\n".join(
+        f"--- PAGE {n} ---\n{page}"
+        for n, page in enumerate(pages[:max_pages], 1)
+        if page.strip()
+    ).strip()
     if not text:
         text_path.unlink(missing_ok=True)
         return {
             "status": "needs_ocr",
-            "parser": parser,
+            "parser": "pdftotext",
             "pages": count,
             "text_available": False,
         }
@@ -348,11 +306,48 @@ def extract_pdf_text(
         raise DocumentBlocked("extracted_text_exceeds_size_limit")
     text_path.write_bytes(encoded)
     return {
-        "status": "text_truncated" if truncated else "text_extracted",
-        "parser": parser,
+        "status": "text_truncated" if count >= MAX_PDF_PAGES else "text_extracted",
+        "parser": "pdftotext",
         "pages": count,
         "text_available": True,
         "text_sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
+def extract_pdf_text(pdf_path, text_path, max_pages=MAX_PDF_PAGES, *, authority=None):
+    """Project text projection of the shared complete neutral material."""
+    pdf_path, text_path = Path(pdf_path), Path(text_path)
+    if not pdf_path.is_file():
+        # Preserve the no-extractor/missing-input diagnostic contract. Existing
+        # real originals always pass through the content-addressed authority.
+        return _legacy_extract_pdf_text(pdf_path, text_path, max_pages)
+    from src.data_hub import DataHub
+    from src.platform_composition import authority_for
+
+    hub = DataHub(authority or authority_for(Path(__file__).resolve().parents[2]))
+    parsed = hub.ensure_parsed(pdf_path, "application/pdf")
+    view = hub.text_view(parsed, max_pages=max_pages)
+    if not view["text"].strip():
+        text_path.unlink(missing_ok=True)
+        return {
+            "status": "needs_ocr",
+            "parser": parsed["parser"],
+            "pages": parsed["pages"],
+            "text_available": False,
+            "parse_ref": parsed["cache_path"],
+        }
+    encoded = view["text"].encode("utf-8")
+    if len(encoded) > MAX_TEXT_BYTES:
+        raise DocumentBlocked("extracted_text_exceeds_size_limit")
+    text_path.write_bytes(encoded)
+    return {
+        "status": "text_truncated" if view["truncated"] else "text_extracted",
+        "parser": parsed["parser"],
+        "pages": parsed["pages"],
+        "text_available": True,
+        "text_sha256": hashlib.sha256(encoded).hexdigest(),
+        "parse_ref": parsed["cache_path"],
+        "neutral_source_sha256": parsed["sha256"],
     }
 
 
@@ -363,14 +358,9 @@ def render_pdf_page_images(
     dpi=120,
     start_page=1,
     page_count=12,
+    authority=None,
 ) -> list[dict]:
-    """Render bounded PDF pages for vision fallback without uploading the PDF."""
-    if importlib.util.find_spec("pdfplumber") is None:
-        raise DocumentBlocked("pdf_page_renderer_unavailable")
-    import io
-
-    import pdfplumber
-
+    """Compatibility image view backed by the same neutral material authority."""
     if (
         type(start_page) is not int
         or type(page_count) is not int
@@ -378,22 +368,23 @@ def render_pdf_page_images(
         or not 1 <= page_count <= 20
     ):
         raise ValueError("invalid page image range")
-    images = []
-    with pdfplumber.open(pdf_path) as document:
-        if len(document.pages) > max_pages:
-            raise DocumentBlocked("pdf_page_limit_exceeded")
-        for index in range(
-            start_page - 1,
-            min(len(document.pages), start_page - 1 + page_count),
-        ):
-            pil_image = document.pages[index].to_image(resolution=dpi).original
-            buffer = io.BytesIO()
-            pil_image.convert("RGB").save(buffer, format="JPEG", quality=75)
-            image = buffer.getvalue()
-            if len(image) > 2 * 1024 * 1024:
-                raise DocumentBlocked("rendered_page_exceeds_size_limit")
-            images.append({"page": index + 1, "image": image})
-    return images
+    from src.data_hub import DataHub, MaterialError
+    from src.platform_composition import authority_for
+
+    try:
+        hub = DataHub(authority or authority_for(Path(__file__).resolve().parents[2]))
+        images = hub.page_images(
+            pdf_path,
+            max_pages=max_pages,
+            dpi=dpi,
+            start_page=start_page,
+            page_count=page_count,
+        )
+        if any(len(image["image"]) > 2 * 1024 * 1024 for image in images):
+            raise DocumentBlocked("rendered_page_exceeds_size_limit")
+        return images
+    except MaterialError as error:
+        raise DocumentBlocked(str(error)) from error
 
 
 class DatasetDocumentWorker:
@@ -435,6 +426,13 @@ class DatasetDocumentWorker:
         self._archive_locks = {}
         self._archive_locks_guard = threading.Lock()
         self.lock_path = self.output / ".worker.lock"
+        from src.data_hub import DataHub
+        from src.platform_composition import authority_for
+
+        self.authority = getattr(catalog, "material_authority", None) or authority_for(
+            self.root
+        )
+        self.hub = DataHub(self.authority)
 
     @contextmanager
     def _db(self):
@@ -487,10 +485,10 @@ class DatasetDocumentWorker:
 
     def _has_cached_pdf(self, job):
         for value in job.get("existing_paths", []):
-            if not str(value).lower().endswith(".pdf"):
+            if not str(value).lower().endswith((".pdf", ".material-ref.json")):
                 continue
             try:
-                path = self._safe_path(value)
+                path = self._resolve_pdf(value)
                 if path.is_file() and (
                     self.max_document_bytes is None
                     or path.stat().st_size <= self.max_document_bytes
@@ -558,25 +556,35 @@ class DatasetDocumentWorker:
             raise DocumentBlocked("document_hardlink_not_allowed")
         return path
 
-    def _wait_request(self, deadline):
-        # Claim a current slot atomically; sleepers recheck provider Retry-After.
-        while not self.stop.is_set():
+    def _wait_request(self, deadline, source="document-archive"):
+        from src.task_runtime.request_policy import RequestPolicy
+
+        policy = RequestPolicy(self.authority)
+        # Read the old ledger as a compatibility floor; it is not erased.
+        while True:
             with self._db() as db:
-                db.execute("BEGIN IMMEDIATE")
                 row = db.execute(
                     "SELECT next_request_at FROM document_download_rate WHERE id=1"
                 ).fetchone()
-                now = time.time()
-                delay = max(0, (row[0] if row else 0) - now)
-                if delay == 0:
-                    db.execute(
-                        "INSERT OR REPLACE INTO document_download_rate VALUES (1,?)",
-                        (now + self.min_interval,),
-                    )
-                    return
-            if delay >= deadline - time.monotonic() or self.stop.wait(delay):
+            delay = max(0, (row[0] if row else 0) - time.time())
+            if not delay:
                 break
-        raise DocumentFailure("rate_wait_interrupted_or_timed_out")
+            if delay >= deadline - time.monotonic() or self.stop.wait(delay):
+                raise DocumentFailure("rate_wait_interrupted_or_timed_out")
+        try:
+            policy.wait(
+                source,
+                min_interval=self.min_interval,
+                deadline=deadline,
+                cancel=self.stop,
+            )
+        except (ValueError, TimeoutError) as error:
+            raise DocumentFailure("rate_wait_interrupted_or_timed_out") from error
+        with self._db() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO document_download_rate VALUES (1,?)",
+                (time.time() + self.min_interval,),
+            )
 
     def _set(self, job_id, status, *, error="", result=None, next_attempt_at=0):
         with self._db() as db:
@@ -598,7 +606,11 @@ class DatasetDocumentWorker:
         try:
             result = json.loads(row["result"])
             for prefix in ("pdf", "text"):
-                path = self._safe_path(result[f"{prefix}_path"])
+                path = (
+                    self._resolve_pdf(result[f"{prefix}_path"])
+                    if prefix == "pdf"
+                    else self._safe_path(result[f"{prefix}_path"])
+                )
                 maximum = self.max_document_bytes if prefix == "pdf" else MAX_TEXT_BYTES
                 if not path.is_file() or (
                     maximum is not None and path.stat().st_size > maximum
@@ -623,6 +635,10 @@ class DatasetDocumentWorker:
             if key.upper() in {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "LANG"}
         }
         environment["PYTHONUTF8"] = "1"
+        environment["DATA_HUB_AUTHORITY_SCOPE"] = self.authority.scope
+        environment["DATA_HUB_AUTHORITY_ISOLATED"] = (
+            "1" if self.authority.isolated else "0"
+        )
         process = subprocess.Popen(
             [
                 sys.executable,
@@ -630,6 +646,7 @@ class DatasetDocumentWorker:
                 str(pdf),
                 str(text),
                 str(self.max_pdf_pages),
+                str(self.authority.root),
             ],
             cwd=self.root,
             env=environment,
@@ -675,6 +692,14 @@ class DatasetDocumentWorker:
                 process.wait(timeout=3)
             process.stdout.close()
 
+    def _resolve_pdf(self, value):
+        if str(value).endswith(".material-ref.json") and hasattr(
+            self.catalog, "resolve_artifact"
+        ):
+            self._safe_path(value)
+            return self.catalog.resolve_artifact(value)
+        return self._safe_path(value)
+
     def _archive(self, job, deadline):
         job_id = job["job_id"]
         source = urlsplit(job.get("source_url") or "")
@@ -694,105 +719,133 @@ class DatasetDocumentWorker:
             self.output / hashlib.sha256(source_identity.encode()).hexdigest()
         )
         directory.mkdir(exist_ok=True)
-        pdf, text = directory / "original.pdf", directory / "document.txt"
+        legacy_pdf, text = directory / "original.pdf", directory / "document.txt"
         receipt = self._safe_path(directory / "extraction.json")
-        existing = job.get("existing_paths", [])
-        original = next(
-            (
-                self._safe_path(path)
-                for path in existing
-                if str(path).lower().endswith(".pdf")
-                and self._safe_path(path).is_file()
-            ),
-            None,
-        )
-        if self._safe_path(pdf).is_file():
-            original = pdf
+        original = None
+        for value in job.get("existing_paths", []):
+            if str(value).lower().endswith((".pdf", ".material-ref.json")):
+                candidate = self._resolve_pdf(value)
+                if candidate.is_file():
+                    original = candidate
+                    break
+        if legacy_pdf.is_file():
+            original = self._safe_path(legacy_pdf)
+        if (
+            original
+            and self.max_document_bytes is not None
+            and original.stat().st_size > self.max_document_bytes
+        ):
+            raise DocumentBlocked("cached_document_exceeds_size_limit")
         result = {
             "job_id": job_id,
             "source_url_missing": not bool(job.get("source_url")),
             "original_pdf_available": False,
             "text_available": False,
         }
-        temporary = directory / "download.part"
-        try:
-            if original is not None:
-                if (
-                    self.max_document_bytes is not None
-                    and original.stat().st_size > self.max_document_bytes
-                ):
-                    raise DocumentBlocked("cached_document_exceeds_size_limit")
-                if original != pdf:
-                    shutil.copyfile(original, self._safe_path(pdf))
-                result["download"] = "reused_cached_pdf"
-            elif not job.get("source_url"):
-                raise DocumentBlocked("needs_source_lookup")
-            else:
-                download_arguments = (
-                    {"max_bytes": self.max_document_bytes}
-                    if self.max_document_bytes != MAX_DOCUMENT_BYTES
-                    else {}
-                )
-                if self.minimum_free_bytes:
-                    download_arguments["minimum_free_bytes"] = self.minimum_free_bytes
-                result["download"] = download_document(
-                    job["source_url"],
-                    self._safe_path(temporary),
-                    deadline,
-                    self.stop,
-                    self._wait_request,
-                    **download_arguments,
-                )
-                with temporary.open("rb") as handle:
-                    magic = handle.read(8)
-                if not magic.startswith(b"%PDF-"):
-                    # Retain the original response for a traceable gap; never
-                    # manufacture a PDF from a returned HTML/login/error page.
-                    html = self._safe_path(directory / "source_response.html")
-                    temporary.replace(html)
-                    self.catalog.record_document(
-                        job_id,
-                        status="blocked",
-                        error="source_not_pdf_needs_source_lookup",
-                    )
-                    raise DocumentBlocked("source_not_pdf_needs_source_lookup")
-                temporary.replace(self._safe_path(pdf))
-            with pdf.open("rb") as handle:
-                if not handle.read(8).startswith(b"%PDF-"):
-                    raise DocumentBlocked("cached_document_is_not_pdf")
-            result.update(
-                original_pdf_available=True,
-                pdf_path=pdf.relative_to(self.root).as_posix(),
-                pdf_sha256=hashlib.sha256(pdf.read_bytes()).hexdigest(),
+        if not original and not job.get("source_url"):
+            raise DocumentBlocked("needs_source_lookup")
+        download_result = {}
+
+        def download(target):
+            kwargs = (
+                {"max_bytes": self.max_document_bytes}
+                if self.max_document_bytes != MAX_DOCUMENT_BYTES
+                else {}
             )
-            self.catalog.record_document(job_id, result["pdf_path"], status="available")
-            saved = None
-            if receipt.is_file() and receipt.stat().st_size < 16384:
-                try:
-                    candidate = json.loads(receipt.read_text(encoding="utf-8"))
-                    if candidate.get(
-                        "status"
-                    ) == "text_extracted" and self._result_intact(
-                        {"result": json.dumps(candidate)}
-                    ):
-                        saved = candidate
-                except (OSError, ValueError):
-                    pass
-            if saved:
-                result.update(saved)
-                result["job_id"] = job_id
-                result["download"] = "reused_url_archive"
-            else:
-                result.update(self._extract(pdf, self._safe_path(text), deadline))
-            if result.get("text_available"):
-                result["text_path"] = text.relative_to(self.root).as_posix()
-                self.catalog.record_document(
-                    job_id, result["text_path"], status="available"
+            if self.minimum_free_bytes:
+                kwargs["minimum_free_bytes"] = self.minimum_free_bytes
+            result = download_document(
+                job["source_url"],
+                target,
+                deadline,
+                self.stop,
+                lambda bound: self._wait_request(bound, job["source_url"]),
+                **kwargs,
+            )
+            download_result.update(result or {})
+
+        try:
+            if job.get("source_url"):
+                stored = self.hub.ensure_original(
+                    job["source_url"],
+                    download,
+                    content_type="application/pdf",
+                    local_path=original,
                 )
-            receipt.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
-            return result
-        finally:
-            temporary.unlink(missing_ok=True)
+            else:
+                stored = {**self.hub.register_original(original), "cache_hit": True}
+        except Exception as error:
+            if "not_pdf" in str(error):
+                from src.data_hub.materials import canonical_url
+                from src.data_hub.storage import fingerprint
+
+                capture = (
+                    self.hub.root
+                    / "attempts"
+                    / (fingerprint([canonical_url(job["source_url"]), ""]) + ".json")
+                )
+                if capture.is_file():
+                    evidence = json.loads(capture.read_text(encoding="utf-8"))
+                    raw_path = Path(evidence.get("raw_path", ""))
+                    if raw_path.is_file():
+                        # A retained failure attachment, not an original-PDF
+                        # cache or a successful source artifact.
+                        shutil.copyfile(raw_path, directory / "source_response.html")
+                self.catalog.record_document(
+                    job_id, status="blocked", error="source_not_pdf_needs_source_lookup"
+                )
+                raise DocumentBlocked("source_not_pdf_needs_source_lookup") from error
+            if "not_retried" in str(error):
+                raise DocumentBlocked(str(error)) from error
+            raise
+        original = Path(stored["path"])
+        with original.open("rb") as handle:
+            if not handle.read(8).startswith(b"%PDF-"):
+                raise DocumentBlocked("cached_document_is_not_pdf")
+        if hasattr(self.catalog, "record_material_reference"):
+            reference = directory / "original.material-ref.json"
+            self.hub.write_reference(reference, stored)
+            pdf_path = reference.relative_to(self.root).as_posix()
+            self.catalog.record_material_reference(job_id, pdf_path)
+        else:
+            # Compatibility export for third-party catalogs without reference
+            # capability. The production DatasetCatalog uses no PDF copy.
+            if original != legacy_pdf:
+                shutil.copyfile(original, legacy_pdf)
+            pdf_path = legacy_pdf.relative_to(self.root).as_posix()
+            self.catalog.record_document(job_id, pdf_path, status="available")
+        result.update(
+            original_pdf_available=True,
+            pdf_path=pdf_path,
+            pdf_sha256=stored["sha256"],
+            material_authority=self.authority.to_dict(),
+            download="reused_cached_pdf"
+            if stored.get("cache_hit")
+            else download_result,
+        )
+        saved = None
+        if receipt.is_file() and receipt.stat().st_size < 16384:
+            try:
+                candidate = json.loads(receipt.read_text(encoding="utf-8"))
+                if candidate.get("status") == "text_extracted" and self._result_intact(
+                    {"result": json.dumps(candidate)}
+                ):
+                    saved = candidate
+            except (OSError, ValueError):
+                pass
+        if saved:
+            result.update(saved)
+            result["job_id"] = job_id
+            result["download"] = "reused_url_archive"
+        else:
+            result.update(self._extract(original, self._safe_path(text), deadline))
+        if result.get("text_available"):
+            result["text_path"] = text.relative_to(self.root).as_posix()
+            self.catalog.record_document(
+                job_id, result["text_path"], status="available"
+            )
+        receipt.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        return result
 
     def _claim_job(self, job):
         job_id = job["job_id"]
@@ -990,7 +1043,8 @@ class DatasetDocumentWorker:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in {3, 4}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    if len(sys.argv) not in {3, 4, 5}:
         raise SystemExit("Internal PDF extractor requires input and output paths")
     if os.name != "nt":
         import resource
@@ -999,7 +1053,9 @@ if __name__ == "__main__":
         # unbounded decompressed text file. No model/user code is executed here.
         for resource_kind, limit in (
             (resource.RLIMIT_AS, 768 * 1024 * 1024),
-            (resource.RLIMIT_FSIZE, MAX_TEXT_BYTES),
+            # The public text view remains capped at MAX_TEXT_BYTES. Complete
+            # neutral sparse-page images may legitimately exceed that view cap.
+            (resource.RLIMIT_FSIZE, 512 * 1024 * 1024),
             (resource.RLIMIT_CPU, 55),
         ):
             _soft, hard = resource.getrlimit(resource_kind)
@@ -1010,7 +1066,18 @@ if __name__ == "__main__":
             extract_pdf_text(
                 Path(sys.argv[1]),
                 Path(sys.argv[2]),
-                int(sys.argv[3]) if len(sys.argv) == 4 else MAX_PDF_PAGES,
+                int(sys.argv[3]) if len(sys.argv) >= 4 else MAX_PDF_PAGES,
+                authority=(
+                    __import__(
+                        "src.shared_contracts", fromlist=["AuthorityRef"]
+                    ).AuthorityRef(
+                        Path(sys.argv[4]),
+                        scope=os.environ.get("DATA_HUB_AUTHORITY_SCOPE", "public"),
+                        isolated=os.environ.get("DATA_HUB_AUTHORITY_ISOLATED") == "1",
+                    )
+                    if len(sys.argv) == 5
+                    else None
+                ),
             ),
             ensure_ascii=False,
         )

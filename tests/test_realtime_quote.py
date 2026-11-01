@@ -1,8 +1,10 @@
 """QQ 实时行情 + 数据源可用性测试"""
 
-from unittest.mock import patch, MagicMock
-import pandas as pd
 from datetime import datetime
+from unittest.mock import MagicMock, patch
+
+import pandas as pd
+import pytest
 
 
 class TestQQRealtimeQuote:
@@ -229,8 +231,9 @@ class TestEastmoneyRemoved:
 
     def test_no_eastmoney_in_any_chain(self):
         """验证所有市场的 data_sources 列表中不含 _fetch_from_eastmoney"""
-        from src.data.web_crawler import StockWebCrawler
         import inspect
+
+        from src.data.web_crawler import StockWebCrawler
 
         # 读取 fetch_stock_data 方法的源码来提取 data_sources 列表
         src = inspect.getsource(StockWebCrawler.fetch_stock_data)
@@ -248,3 +251,9 @@ class TestEastmoneyRemoved:
             assert "_fetch_from_eastmoney" not in block, (
                 f"Eastmoney still in fallback chain:\n{block[:200]}"
             )
+
+
+@pytest.fixture(autouse=True)
+def isolated_source_authority(tmp_path, monkeypatch):
+    """Each simulated provider gets durable shared state isolated from other tests."""
+    monkeypatch.setenv("TRADE_EYES_AUTHORITY_ROOT", str(tmp_path / "authority"))

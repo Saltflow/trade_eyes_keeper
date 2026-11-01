@@ -50,7 +50,12 @@ def chart(data, folder, index):
             raise ValueError("values_require_explicit_numeric_or_null")
     with plt.rc_context(
         {
-            "font.sans-serif": ["Microsoft YaHei", "DejaVu Sans"],
+            "font.sans-serif": [
+                "Microsoft YaHei",
+                "Noto Sans CJK SC",
+                "WenQuanYi Micro Hei",
+                "DejaVu Sans",
+            ],
             "axes.unicode_minus": False,
         }
     ):

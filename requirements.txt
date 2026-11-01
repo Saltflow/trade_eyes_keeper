@@ -18,6 +18,7 @@ pyyaml>=6.0
 python-dotenv>=1.0.0
 # HTTP请求
 requests>=2.31.0
+psutil>=5.9,<8  # Research worker ownership and independent host supervision.
 # 飞书事件长连接（仅启用飞书交互时使用）
 lark-oapi>=1.7.3,<2
 # 网页解析

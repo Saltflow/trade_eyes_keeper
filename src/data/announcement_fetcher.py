@@ -53,6 +53,12 @@ class _AnnouncementBudgetHTTP:
                 kwargs["timeout"] = (
                     min(original, remaining) if original is not None else remaining
                 )
+        from src.data_hub.http import AuthorityHTTP
+
+        if isinstance(self.http, AuthorityHTTP):
+            return self.http.request(
+                method, url, deadline=self.deadline, cancel=self.cancelled, **kwargs
+            )
         return getattr(self.http, method)(url, **kwargs)
 
     def get(self, url, **kwargs):
@@ -153,6 +159,15 @@ except ImportError as e:
 class AnnouncementFetcher:
     """公告抓取器"""
 
+    def _authority_http(self):
+        from pathlib import Path
+
+        from src.data_hub.http import AuthorityHTTP
+        from src.platform_composition import authority_for
+
+        root = self.config.get("project_root") or Path(__file__).resolve().parents[2]
+        return AuthorityHTTP(authority_for(root, self.config))
+
     def fetch_announcements_status(
         self,
         stock_codes,
@@ -210,7 +225,7 @@ class AnnouncementFetcher:
                     provider = self._hk_announcements or HkexAnnouncementProvider(
                         self.config,
                         http=_AnnouncementBudgetHTTP(
-                            requests.Session(), cancelled, deadline
+                            self._authority_http(), cancelled, deadline
                         ),
                     )
                     items = provider.fetch(code, start, end)
@@ -221,7 +236,7 @@ class AnnouncementFetcher:
                     provider = self._us_announcements or SecAnnouncementProvider(
                         self.config,
                         http=_AnnouncementBudgetHTTP(
-                            requests.Session(), cancelled, deadline
+                            self._authority_http(), cancelled, deadline
                         ),
                     )
                     items = provider.fetch(code, start, end)

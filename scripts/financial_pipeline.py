@@ -223,6 +223,11 @@ def prepare_summary(
 
 
 def main(argv=None) -> int:
+    selected = list(sys.argv[1:] if argv is None else argv)
+    if selected and selected[0] in {"run", "status", "logs", "artifacts", "cancel", "resume", "_worker", "_host"}:
+        from src.research_pipeline.cli import main as research_main
+
+        return research_main(selected)
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="stage", required=True)
     for name in ("extract", "context", "summary-prepare", "stage3-input"):

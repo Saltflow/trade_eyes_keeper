@@ -171,3 +171,9 @@ def test_raw_saved_before_parse_and_reorganization_does_not_auto_pass(
     assert result["share_date"] == "20261023150000"
     assert (tmp_path / "financial.response.txt").exists()
     assert (tmp_path / "quote.response.bin").read_bytes() == body
+
+
+@pytest.fixture(autouse=True)
+def isolated_source_authority(tmp_path, monkeypatch):
+    """Each simulated provider gets durable shared state isolated from other tests."""
+    monkeypatch.setenv("TRADE_EYES_AUTHORITY_ROOT", str(tmp_path / "authority"))

@@ -155,7 +155,7 @@ def test_truncated_tool_response_cannot_be_used():
         client.complete([], [])
 
 
-def test_api_retry_is_bounded_and_stop_interrupts_backoff():
+def test_sent_api_failure_is_not_repeated_by_legacy_retry_setting():
     client = DeepSeekAssistantClient(
         {"llm": {"api_key": "test-key"}}, AssistantSettings(request_retries=2)
     )
@@ -166,4 +166,5 @@ def test_api_retry_is_bounded_and_stop_interrupts_backoff():
         AssistantAPIError
     ):
         client.complete([], [])
-    assert post.call_count == 3
+    assert post.call_count == 1
+    client.stopped.wait.assert_not_called()

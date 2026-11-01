@@ -146,7 +146,6 @@ class CacheManager:
         Returns:
             tuple: (数据DataFrame, 元数据dict)，失败返回(None, None)
         """
-        import random  # 随机化导入
 
         cache_path = self._get_historical_cache_path(stock_code, start_date, end_date)
         metadata_path = self._get_historical_metadata_path(stock_code)
@@ -155,10 +154,6 @@ class CacheManager:
             return None, None
 
         try:
-            # 随机化：5%概率模拟读取失败
-            if random.random() < 0.05:
-                logger.debug(f"随机模拟历史缓存读取失败: {stock_code}")
-                return None, None
 
             # 读取元数据
             with open(metadata_path, "r", encoding="utf-8") as f:
@@ -228,7 +223,6 @@ class CacheManager:
             end_date: 结束日期 (YYYYMMDD格式)
             metadata: 元数据字典 (可选)
         """
-        import random  # 随机化导入
 
         if data_df is None or data_df.empty:
             logger.warning(f"无法缓存空数据: {stock_code}")
@@ -238,10 +232,6 @@ class CacheManager:
         metadata_path = self._get_historical_metadata_path(stock_code)
 
         try:
-            # 随机化：2%概率模拟写入失败
-            if random.random() < 0.02:
-                logger.debug(f"随机模拟历史缓存写入失败: {stock_code}")
-                return False
 
             # 准备数据行
             data_lines = []

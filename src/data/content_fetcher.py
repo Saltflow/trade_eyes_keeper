@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 公告内容抓取和文本提取模块
-支持PDF和HTML格式，提供缓存和重试机制
+支持PDF和HTML格式，共用完整资料缓存，预览截断不改原文。
 """
 
-import logging
-import time
-import requests
 import hashlib
-from datetime import datetime
-from urllib.parse import urlparse
-import io
+import logging
 import re
+
+import requests
 
 # 预声明以便静态检查通过
 BeautifulSoup = None  # type: ignore
@@ -69,244 +65,172 @@ class ContentFetcher:
         self.extract_max_length = 128000  # 最大提取字符数
         self.extract_timeout = 60  # 提取超时时间（秒）
 
-        # 缓存管理器（可选）
-        self.cache_manager = None
-        try:
-            from .cache_manager import CacheManager
+        from pathlib import Path
 
-            self.cache_manager = CacheManager(config)
-        except ImportError:
-            logger.warning("CacheManager不可用，内容缓存功能受限")
+        from src.data_hub import DataHub
+        from src.platform_composition import authority_for
+
+        project_root = config.get("project_root") or Path(__file__).resolve().parents[2]
+        self.project_root = Path(project_root).resolve()
+        self.hub = DataHub(authority_for(project_root, config))
+        # Compatibility hook only. New originals and full parses live in DataHub;
+        # a legacy preview cache is not authoritative evidence.
+        self.cache_manager = None
 
     def fetch_content(self, url, stock_code, announcement_date):
-        """
-        抓取并提取公告内容文本
-
-        Args:
-            url: 公告URL
-            stock_code: 股票代码
-            announcement_date: 公告日期（用于日志）
-
-        Returns:
-            dict: 包含提取内容和元数据的字典，格式如下：
-                {
-                    'success': bool,
-                    'content_type': 'pdf'/'html'/'unknown',
-                    'extracted_text': str,
-                    'content_hash': str,
-                    'metadata': dict,
-                    'error': str (如果失败)
-                }
-        """
-        logger.info(f"开始抓取公告内容: {stock_code}, URL: {url}")
-
-        # 检查缓存（如果可用）
-        if self.cache_manager:
-            cached_content = self.cache_manager.get_announcement_content_cache(
-                stock_code, url
-            )
-            if cached_content:
-                logger.debug(f"使用缓存内容: {stock_code}")
-                return {
-                    "success": True,
-                    "content_type": cached_content.get("metadata", {}).get(
-                        "content_type", "unknown"
-                    ),
-                    "extracted_text": cached_content.get("content", ""),
-                    "content_hash": cached_content.get("metadata", {}).get(
-                        "content_hash", ""
-                    ),
-                    "metadata": cached_content.get("metadata", {}),
-                    "cached": True,
-                }
-
-        # 下载内容
-        download_result = self._download_content(url)
-        if not download_result["success"]:
-            logger.error(f"下载公告内容失败: {download_result.get('error')}")
+        try:
+            self._import_legacy_pdf(stock_code, url)
+        except (OSError, ValueError, KeyError, TypeError) as error:
             return {
                 "success": False,
-                "error": f"下载失败: {download_result.get('error')}",
+                "error": str(error),
                 "content_type": "unknown",
                 "extracted_text": "",
                 "content_hash": "",
             }
-
-        content_bytes = download_result["content"]
-        content_type = download_result["content_type"]
-
-        # 计算内容哈希
-        content_hash = hashlib.md5(content_bytes).hexdigest()
-
-        # 如果是PDF文件，保存原始PDF到缓存
-        pdf_file_path = None
-        if content_type == "pdf" and self.cache_manager:
-            try:
-                pdf_metadata = {
-                    "stock_code": stock_code,
-                    "announcement_date": announcement_date,
-                    "content_hash": content_hash,
-                    "content_length": len(content_bytes),
-                }
-                pdf_file_path = self.cache_manager.save_pdf_file(
-                    stock_code, url, content_bytes, pdf_metadata
-                )
-                if pdf_file_path:
-                    logger.info(f"PDF文件已保存到本地: {pdf_file_path}")
-            except Exception as e:
-                logger.warning(f"保存PDF文件失败: {e}")
-
-        # 根据内容类型提取文本
-        extraction_result = self._extract_text(content_bytes, content_type, url)
-
-        if not extraction_result["success"]:
-            logger.warning(f"提取公告文本失败: {extraction_result.get('error')}")
+        download = self._download_content(url)
+        if not download.get("success"):
             return {
                 "success": False,
-                "error": f"提取失败: {extraction_result.get('error')}",
-                "content_type": content_type,
+                "error": download.get("error", "download_failed"),
+                "content_type": "unknown",
                 "extracted_text": "",
-                "content_hash": content_hash,
+                "content_hash": "",
             }
-
-        extracted_text = extraction_result["text"]
-        logger.info(
-            f"提取文本长度: {len(extracted_text)}, 前200字符: {extracted_text[:200]}..."
-        )
-        metadata = extraction_result.get("metadata", {})
-
-        # 构建完整结果
-        result = {
+        raw, kind = download["content"], download["content_type"]
+        extracted = self._extract_text(raw, kind, url)
+        if not extracted.get("success"):
+            return {
+                "success": False,
+                "error": extracted.get("error", "parse_failed"),
+                "content_type": kind,
+                "extracted_text": "",
+                "content_hash": hashlib.md5(raw).hexdigest(),
+            }
+        digest = hashlib.sha256(raw).hexdigest()
+        pdf_path = download.get("original_path") if kind == "pdf" else None
+        metadata = {
+            "url": url,
+            "stock_code": stock_code,
+            "announcement_date": announcement_date,
+            "content_type": kind,
+            "content_length": len(raw),
+            "content_hash": hashlib.md5(raw).hexdigest(),
+            "document_sha256": digest,
+            "pdf_file_path": pdf_path,
+            "authority": self.hub.authority.to_dict(),
+            **extracted.get("metadata", {}),
+        }
+        return {
             "success": True,
-            "content_type": content_type,
-            "extracted_text": extracted_text,
-            "content_hash": content_hash,
-            "pdf_file_path": pdf_file_path,  # 添加PDF文件路径
-            "metadata": {
-                "url": url,
-                "stock_code": stock_code,
-                "announcement_date": announcement_date,
-                "content_type": content_type,
-                "content_length": len(content_bytes),
-                "content_hash": content_hash,
-                "extraction_timestamp": datetime.now().isoformat(),
-                "pdf_file_path": pdf_file_path,  # 也在metadata中添加
-                **metadata,
-            },
+            "content_type": kind,
+            "extracted_text": extracted["text"],
+            "content_hash": metadata["content_hash"],
+            "pdf_file_path": pdf_path,
+            "metadata": metadata,
+            "cached": download.get("cached", False),
         }
 
-        # 缓存结果（如果可用）
-        if self.cache_manager:
-            try:
-                self.cache_manager.set_announcement_content_cache(
-                    stock_code, url, extracted_text, result["metadata"]
-                )
-                logger.debug(f"公告内容已缓存: {stock_code}")
-            except Exception as e:
-                logger.warning(f"缓存公告内容失败: {e}")
+    def _import_legacy_pdf(self, stock_code, url):
+        """Read old URL/PDF evidence without constructing its cleanup manager."""
+        import json
+        from pathlib import Path
 
-        logger.info(
-            f"公告内容抓取完成: {stock_code}, 类型: {content_type}, 长度: {len(extracted_text)}字符"
-        )
-        return result
+        if self.hub.lookup(url):
+            return
+        key = hashlib.md5(f"{stock_code}_{url}".encode()).hexdigest()
+        folder = Path(self.config.get("storage", {}).get("cache_dir", "cache"))
+        if not folder.is_absolute():
+            folder = self.project_root / folder
+        original = folder / "pdf_files" / f"{key}.pdf"
+        metadata = original.with_name(f"{key}_metadata.json")
+        if not original.is_file() or not metadata.is_file():
+            return
+        declared = json.loads(metadata.read_text(encoding="utf-8"))
+        if declared.get("url") != url or str(declared.get("stock_code")) != str(
+            stock_code
+        ):
+            raise ValueError("legacy_pdf_source_identity_mismatch")
+        if declared.get("file_size") != original.stat().st_size:
+            raise ValueError("legacy_pdf_size_changed")
+        with original.open("rb") as stream:
+            raw = stream.read()
+        if not raw.startswith(b"%PDF-"):
+            raise ValueError("legacy_cached_document_is_not_pdf")
+        expected = declared.get("metadata", {}).get("content_hash")
+        if expected and expected != hashlib.md5(raw).hexdigest():
+            raise ValueError("legacy_pdf_hash_changed")
+        self.hub.register_original(original, url=url)
 
     def _download_content(self, url):
-        """
-        下载URL内容，支持重试和大小限制
+        from pathlib import Path
 
-        Returns:
-            dict: 下载结果
-        """
-        for attempt in range(self.retry_times):
-            try:
-                logger.debug(f"下载内容尝试 {attempt + 1}/{self.retry_times}: {url}")
+        from src.task_runtime.request_policy import RequestPolicy
 
-                headers = {
-                    "User-Agent": self.user_agent,
-                    "Accept": "text/html,application/xhtml+xml,application/xml,application/pdf,*/*",
-                    "Accept-Language": "zh-CN,zh;q=0.9",
-                }
-
-                response = requests.get(
-                    url,
-                    headers=headers,
-                    timeout=self.timeout,
-                    stream=True,  # 流式下载以便控制大小
-                )
-                response.raise_for_status()
-
-                # 检查内容类型
-                content_type = response.headers.get("Content-Type", "").lower()
-
-                # 根据内容类型确定大小限制
-                if "pdf" in content_type:
-                    max_size = self.max_pdf_size
-                    detected_type = "pdf"
-                else:
-                    max_size = self.max_html_size
-                    detected_type = (
-                        "html"
-                        if "html" in content_type or "text" in content_type
-                        else "unknown"
-                    )
-
-                # 流式读取，限制大小
-                content_bytes = b""
-                for chunk in response.iter_content(chunk_size=8192):
-                    content_bytes += chunk
-                    if len(content_bytes) > max_size:
-                        logger.warning(
-                            f"内容大小超过限制: {len(content_bytes)} > {max_size}"
-                        )
-                        return {
-                            "success": False,
-                            "error": f"内容大小超过限制 ({len(content_bytes)} > {max_size})",
-                            "content_type": detected_type,
-                        }
-
-                logger.debug(
-                    f"下载成功: {len(content_bytes)}字节, 类型: {detected_type}"
-                )
-                return {
-                    "success": True,
-                    "content": content_bytes,
-                    "content_type": detected_type,
-                    "headers": dict(response.headers),
-                }
-
-            except requests.exceptions.Timeout:
-                logger.warning(f"下载超时 (尝试 {attempt + 1}): {url}")
-                if attempt < self.retry_times - 1:
-                    time.sleep(self.retry_delay)
-                else:
-                    return {
-                        "success": False,
-                        "error": "下载超时",
-                        "content_type": "unknown",
-                    }
-            except requests.exceptions.RequestException as e:
-                logger.warning(f"下载请求错误 (尝试 {attempt + 1}): {e}")
-                if attempt < self.retry_times - 1:
-                    time.sleep(self.retry_delay)
-                else:
-                    return {
-                        "success": False,
-                        "error": f"请求错误: {e}",
-                        "content_type": "unknown",
-                    }
-            except Exception as e:
-                logger.error(f"下载未知错误: {e}")
-                return {
-                    "success": False,
-                    "error": f"未知错误: {e}",
-                    "content_type": "unknown",
-                }
-
-        return {
-            "success": False,
-            "error": "下载失败（重试次数用尽）",
-            "content_type": "unknown",
+        headers = {
+            "User-Agent": self.user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/pdf,*/*",
         }
+        details = {}
+
+        def download(target):
+            policy = RequestPolicy(self.hub.authority)
+            policy.wait(url, min_interval=5.0 if "cninfo.com.cn" in url else 1.0)
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=self.timeout,
+                stream=True,
+                allow_redirects=False,
+            )
+            try:
+                if response.status_code in {401, 403, 429}:
+                    retry = str(response.headers.get("Retry-After", "60"))
+                    policy.block(
+                        url,
+                        f"source_http_{response.status_code}",
+                        retry_after=max(60, int(retry))
+                        if response.status_code == 429 and retry.isdigit()
+                        else None,
+                    )
+                response.raise_for_status()
+                if response.status_code != 200:
+                    raise ValueError("source_redirect_or_incomplete_requires_adapter")
+                mime = response.headers.get("Content-Type", "").lower()
+                maximum = self.max_pdf_size if "pdf" in mime else self.max_html_size
+                count = 0
+                with target.open("xb") as stream:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        count += len(chunk)
+                        if count > maximum:
+                            raise ValueError("content_size_exceeds_limit")
+                        stream.write(chunk)
+                details["headers"] = dict(response.headers)
+            finally:
+                response.close()
+
+        try:
+            stored = self.hub.ensure_original(url, download)
+            raw = Path(stored["path"]).read_bytes()
+            kind = (
+                "pdf"
+                if raw.lstrip().startswith(b"%PDF-")
+                else "html"
+                if raw.lstrip().startswith((b"<", b"\xef\xbb\xbf<"))
+                else "unknown"
+            )
+            if len(raw) > (self.max_pdf_size if kind == "pdf" else self.max_html_size):
+                raise ValueError("cached_content_size_exceeds_limit")
+            return {
+                "success": True,
+                "content": raw,
+                "content_type": kind,
+                "original_path": stored["path"],
+                "cached": stored.get("cache_hit", False),
+                **details,
+            }
+        except (OSError, ValueError, RuntimeError, TimeoutError) as error:
+            return {"success": False, "content_type": "unknown", "error": str(error)}
 
     def _extract_text(self, content_bytes, content_type, url):
         """
@@ -321,13 +245,9 @@ class ContentFetcher:
             dict: 提取结果
         """
         try:
-            if content_type == "pdf" and PDFPLUMBER_AVAILABLE:
+            if content_type == "pdf":
                 return self._extract_text_from_pdf(content_bytes)
             elif content_type == "html" and BEAUTIFULSOUP_AVAILABLE:
-                # HTML先尝试发现内嵌PDF链接，若成功则直接解析PDF
-                pdf_content = self._try_fetch_embedded_pdf(content_bytes, url)
-                if pdf_content:
-                    return self._extract_text_from_pdf(pdf_content)
                 return self._extract_text_from_html(content_bytes, url)
             elif content_type == "html":
                 # 简单文本提取（无BeautifulSoup）
@@ -336,7 +256,14 @@ class ContentFetcher:
                 # 未知类型或缺少库，尝试通用文本提取
                 return self._extract_text_generic(content_bytes, content_type)
 
-        except Exception as e:
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+            ImportError,
+            KeyError,
+            TypeError,
+        ) as e:
             logger.error(f"提取文本时发生错误: {e}")
             return {
                 "success": False,
@@ -346,221 +273,40 @@ class ContentFetcher:
             }
 
     def _extract_text_from_pdf(self, content_bytes):
-        """从PDF提取文本（优先PyMuPDF，失败回退pdfplumber；不做网络回退）"""
-
-        # 1) 首选 PyMuPDF (fitz)
-        try:
-            import fitz  # type: ignore
-
-            doc = fitz.open(stream=content_bytes, filetype="pdf")
-            metadata = {
-                "pdf_page_count": doc.page_count,
-                "pdf_has_text": False,
-                "pdf_has_images": False,
+        parsed = self.hub.parse_bytes(content_bytes, "application/pdf")
+        view = self.hub.text_view(parsed, max_chars=self.extract_max_length)
+        return {
+            "success": bool(view["text"].strip()),
+            "text": view["text"],
+            "metadata": {
+                "pdf_page_count": parsed["pages"],
+                "pdf_has_text": bool(view["text"].strip()),
+                "pdf_has_images": any(
+                    p.get("type") == "image_url" for p in parsed["content"]
+                ),
                 "pdf_tables_extracted": False,
-                "pdf_extractor": "pymupdf",
-            }
-
-            text_parts = []
-            for page_index in range(doc.page_count):
-                page = doc.load_page(page_index)
-                try:
-                    page_text = page.get_text("text")  # type: ignore[attr-defined]
-                    if page_text:
-                        text_parts.append(page_text)
-                        metadata["pdf_has_text"] = True
-                except Exception as e:
-                    logger.debug(f"PyMuPDF提取第{page_index + 1}页失败: {e}")
-
-                try:
-                    if page.get_images(full=True):
-                        metadata["pdf_has_images"] = True
-                except Exception as e:
-                    logger.debug(f"PDF 图片检测跳过: {e}")
-
-            extracted_text = "\n\n".join(text_parts)
-            # 可选：使用camelot解析表格并追加文本，提升数字保留率
-            table_text = ""  # camelot removed (never installed)
-            if table_text:
-                metadata["pdf_tables_extracted"] = True
-                extracted_text += "\n\n" + table_text
-
-            extracted_text = re.sub(r"\n{3,}", "\n\n", extracted_text)
-            extracted_text = re.sub(r"[ \t]{2,}", " ", extracted_text)
-
-            if len(extracted_text) > self.extract_max_length:
-                extracted_text = (
-                    extracted_text[: self.extract_max_length] + "... (内容过长，已截断)"
-                )
-
-            return {"success": True, "text": extracted_text, "metadata": metadata}
-
-        except Exception as e:
-            logger.debug(f"PyMuPDF解析失败，回退pdfplumber: {e}")
-
-        # 2) 回退 pdfplumber
-        try:
-            import pdfplumber
-
-            text_parts = []
-            metadata = {
-                "pdf_page_count": 0,
-                "pdf_has_text": False,
-                "pdf_has_images": False,
-                "pdf_tables_extracted": False,
-                "pdf_extractor": "pdfplumber",
-            }
-
-            with pdfplumber.open(io.BytesIO(content_bytes)) as pdf:
-                metadata["pdf_page_count"] = len(pdf.pages)
-
-                for page_num, page in enumerate(pdf.pages, 1):
-                    try:
-                        page_text = page.extract_text()
-                        if page_text:
-                            text_parts.append(page_text)
-                            metadata["pdf_has_text"] = True
-
-                        try:
-                            tables = page.extract_tables()
-                            if tables:
-                                metadata["pdf_tables_extracted"] = True
-                                for table in tables:
-                                    for row in table:
-                                        if not row:
-                                            continue
-                                        line = "\t".join(cell or "" for cell in row)
-                                        text_parts.append(line)
-                        except Exception as e:
-                            logger.debug(f"提取PDF第{page_num}页表格失败: {e}")
-
-                    except Exception as e:
-                        logger.debug(f"提取PDF第{page_num}页文本失败: {e}")
-
-                for page in pdf.pages:
-                    if page.images:
-                        metadata["pdf_has_images"] = True
-                        break
-
-            extracted_text = "\n\n".join(text_parts)
-            table_text = ""  # camelot removed (never installed)
-            if table_text:
-                metadata["pdf_tables_extracted"] = True
-                extracted_text += "\n\n" + table_text
-
-            extracted_text = re.sub(r"\n{3,}", "\n\n", extracted_text)
-            extracted_text = re.sub(r"[ \t]{2,}", " ", extracted_text)
-
-            if len(extracted_text) > self.extract_max_length:
-                extracted_text = (
-                    extracted_text[: self.extract_max_length] + "... (内容过长，已截断)"
-                )
-
-            logger.debug(
-                f"PDF提取完成: {metadata['pdf_page_count']}页, 文本长度: {len(extracted_text)}"
-            )
-
-            return {"success": True, "text": extracted_text, "metadata": metadata}
-
-        except Exception as e:
-            logger.error(f"PDF解析失败: {e}")
-            return {
-                "success": False,
-                "error": f"PDF解析失败: {e}",
-                "text": "",
-                "metadata": {},
-            }
+                "pdf_extractor": parsed["parser"],
+                "preview_truncated": view["truncated"],
+                "parse_ref": view["parse_ref"],
+                "document_sha256": view["source_sha256"],
+                "source_complete": view["source_complete"],
+            },
+        }
 
     def _extract_text_from_html(self, content_bytes, url):
-        """从HTML提取文本（使用BeautifulSoup）"""
-        # 如果缺少解析库，降级到简易HTML提取，避免运行时错误
-        if not BEAUTIFULSOUP_AVAILABLE or BeautifulSoup is None:
-            return self._extract_text_from_html_fallback(content_bytes)
-
-        try:
-            # 尝试多种编码
-            encodings = ["utf-8", "gbk", "gb2312", "gb18030", "big5"]
-            html_content = None
-
-            for encoding in encodings:
-                try:
-                    html_content = content_bytes.decode(encoding)
-                    break
-                except UnicodeDecodeError:
-                    continue
-
-            if html_content is None:
-                # 如果所有编码都失败，使用utf-8并忽略错误
-                html_content = content_bytes.decode("utf-8", errors="ignore")
-
-            soup = BeautifulSoup(
-                html_content, "lxml" if "lxml" in locals() else "html.parser"
-            )
-
-            # 移除脚本和样式标签
-            for script in soup(["script", "style", "noscript", "iframe"]):
-                script.decompose()
-
-            # 查找主要内容区域（常见模式）
-            main_content = None
-            content_selectors = [
-                ".content",
-                ".article",
-                ".main",
-                ".news_content",
-                "#content",
-                "#article",
-                "#main",
-                'div[class*="content"]',
-                'div[class*="article"]',
-                'div[class*="news"]',
-                'div[class*="detail"]',
-            ]
-
-            for selector in content_selectors:
-                elements = soup.select(selector)
-                if elements:
-                    main_content = elements[0]
-                    break
-
-            # 如果没有找到特定区域，使用body或整个文档
-            if not main_content:
-                main_content = soup.find("body") or soup
-
-            # 提取文本
-            text = main_content.get_text(separator="\n", strip=True)
-
-            # 清理文本
-            lines = [line.strip() for line in text.split("\n") if line.strip()]
-            cleaned_text = "\n".join(lines)
-
-            # 移除过多空行
-            cleaned_text = re.sub(r"\n{3,}", "\n\n", cleaned_text)
-
-            # 限制长度
-            if len(cleaned_text) > self.extract_max_length:
-                cleaned_text = (
-                    cleaned_text[: self.extract_max_length] + "... (内容过长，已截断)"
-                )
-
-            # 提取元数据
-            metadata = {
-                "html_title": soup.title.string if soup.title else "",
-                "html_charset": soup.original_encoding or "unknown",
-                "html_has_main_content": main_content is not None,
-                "url_domain": urlparse(url).netloc if url else "",
-            }
-
-            logger.debug(
-                f"HTML提取完成: 标题: {metadata['html_title'][:50]}..., 长度: {len(cleaned_text)}"
-            )
-
-            return {"success": True, "text": cleaned_text, "metadata": metadata}
-
-        except Exception as e:
-            logger.error(f"HTML解析失败: {e}")
-            # 回退到简单提取
-            return self._extract_text_from_html_fallback(content_bytes)
+        parsed = self.hub.parse_bytes(content_bytes, "text/html")
+        view = self.hub.text_view(parsed, max_chars=self.extract_max_length)
+        return {
+            "success": bool(view["text"].strip()),
+            "text": view["text"],
+            "metadata": {
+                "html_extractor": parsed["parser"],
+                "preview_truncated": view["truncated"],
+                "parse_ref": view["parse_ref"],
+                "document_sha256": view["source_sha256"],
+                "source_complete": view["source_complete"],
+            },
+        }
 
     def _extract_text_from_html_fallback(self, content_bytes):
         """HTML简单文本提取（无BeautifulSoup）"""
@@ -568,7 +314,7 @@ class ContentFetcher:
             # 尝试解码
             try:
                 html_content = content_bytes.decode("utf-8", errors="ignore")
-            except Exception as e:
+            except (AttributeError, UnicodeError, ValueError, TypeError) as e:
                 logger.debug(f"UTF-8 解码失败，回退 GBK: {e}")
                 html_content = content_bytes.decode("gbk", errors="ignore")
 
@@ -607,7 +353,7 @@ class ContentFetcher:
                 "metadata": {"extraction_method": "fallback"},
             }
 
-        except Exception as e:
+        except (AttributeError, UnicodeError, ValueError, TypeError) as e:
             logger.error(f"HTML简单提取失败: {e}")
             return {
                 "success": False,
@@ -620,11 +366,11 @@ class ContentFetcher:
         """在HTML中查找PDF链接并下载，若成功返回PDF字节"""
         try:
             html_text = html_bytes.decode("utf-8", errors="ignore")
-        except Exception as e:
+        except (AttributeError, UnicodeError, ValueError, TypeError) as e:
             try:
                 logger.debug(f"UTF-8 解码失败，回退 GBK: {e}")
                 html_text = html_bytes.decode("gbk", errors="ignore")
-            except Exception as e2:
+            except (AttributeError, UnicodeError, ValueError, TypeError) as e2:
                 logger.debug(f"GBK 解码也失败: {e2}")
                 return None
 
@@ -649,7 +395,7 @@ class ContentFetcher:
                         continue
                     if href.lower().endswith(".pdf") or "pdf" in text:
                         pdf_candidates.append(href)
-            except Exception as e:
+            except (AttributeError, UnicodeError, ValueError, TypeError) as e:
                 logger.debug(f"解析HTML寻找PDF链接失败: {e}")
 
         if not pdf_candidates:
@@ -664,19 +410,9 @@ class ContentFetcher:
 
             pdf_url = urljoin(base_url, pdf_url)
 
-        try:
-            headers = {"User-Agent": self.user_agent}
-            resp = requests.get(pdf_url, headers=headers, timeout=30)
-            resp.raise_for_status()
-            if (
-                resp.headers.get("Content-Type", "")
-                .lower()
-                .startswith("application/pdf")
-            ):
-                logger.info("检测到并下载PDF: %s", pdf_url)
-                return resp.content
-        except Exception as e:
-            logger.debug(f"尝试下载嵌入PDF失败: {e}")
+        downloaded = self._download_content(pdf_url)
+        if downloaded.get("success") and downloaded.get("content_type") == "pdf":
+            return downloaded["content"]
         return None
 
     def _extract_text_generic(self, content_bytes, content_type):
@@ -685,7 +421,7 @@ class ContentFetcher:
             # 尝试解码为文本
             try:
                 text = content_bytes.decode("utf-8", errors="ignore")
-            except Exception as e:
+            except (AttributeError, UnicodeError, ValueError, TypeError) as e:
                 logger.debug(f"UTF-8 解码失败，回退 GBK: {e}")
                 text = content_bytes.decode("gbk", errors="ignore")
 
@@ -712,7 +448,7 @@ class ContentFetcher:
                 },
             }
 
-        except Exception as e:
+        except (AttributeError, UnicodeError, ValueError, TypeError) as e:
             logger.error(f"通用文本提取失败: {e}")
             return {
                 "success": False,

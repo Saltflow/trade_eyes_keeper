@@ -14,6 +14,11 @@ from src.fundamental_data.api_format import FIELDS, METRICS, TOPICS, validate
 from src.fundamental_data.api_io import check_seal, prepare, sha, write_once
 
 
+@pytest.fixture(autouse=True)
+def isolated_model_authority(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRADE_EYES_AUTHORITY_ROOT", str(tmp_path / "authority"))
+
+
 def write_pdf(path, text):
     """Portable one-page fixture; no optional PDF authoring package required."""
     stream = f"BT /F1 12 Tf 30 750 Td ({text}) Tj ET".encode("ascii")

@@ -34,7 +34,13 @@ class CninfoReportService:
         self.catalog = DatasetCatalog(self.root)
         self.vision_client = vision_client
         self.stop = stop or threading.Event()
-        self.provider = provider or CninfoAnnualReportProvider({})
+        if provider is None:
+            from src.data_hub.http import AuthorityHTTP
+
+            provider = CninfoAnnualReportProvider(
+                {}, http=AuthorityHTTP(self.catalog.material_authority)
+            )
+        self.provider = provider
 
     @staticmethod
     def _document_id(report: dict) -> str:
@@ -151,10 +157,12 @@ class CninfoReportService:
 
         pdf_path = self._safe_artifact_path(pdf["relative_path"])
         try:
-            import pdfplumber
+            from src.data_hub import DataHub
 
-            with pdfplumber.open(pdf_path) as document:
-                page_total = len(document.pages)
+            neutral = DataHub(self.catalog.material_authority).ensure_parsed(
+                pdf_path, "application/pdf"
+            )
+            page_total = neutral["pages"]
         except Exception as exc:  # noqa: BLE001 - preserve original and report parser gap
             result = {"reason": "pdf_open_failed", "error_type": type(exc).__name__}
             self.catalog.set_report_parse_state(document_id, "failed", result)
@@ -181,6 +189,7 @@ class CninfoReportService:
                     max_pages=MAX_REPORT_PAGES,
                     start_page=first_page,
                     page_count=12,
+                    authority=self.catalog.material_authority,
                 )
                 transcription = self.vision_client.read_report_images(
                     pages, deadline=deadline
@@ -251,21 +260,12 @@ class CninfoReportService:
         return self._public_result(report, document_id, status, result)
 
     def _safe_artifact_path(self, relative):
-        relative_path = Path(relative)
-        if relative_path.is_absolute() or ".." in relative_path.parts:
-            raise DocumentBlocked("document_path_outside_archive")
-        path = self.root / relative_path
-        expected_root = (self.root / "data" / "dataset_documents").resolve()
-        if not path.is_relative_to(self.root / "data" / "dataset_documents"):
-            raise DocumentBlocked("document_path_outside_archive")
-        if any(
-            part.is_symlink() for part in (path, *path.parents) if part != self.root
-        ):
-            raise DocumentBlocked("document_path_redirected")
-        path = path.resolve()
-        if not path.is_relative_to(expected_root) or not path.is_file():
-            raise DocumentBlocked("document_path_outside_archive")
-        return path
+        try:
+            return self.catalog.resolve_artifact(relative)
+        except (OSError, ValueError, KeyError) as error:
+            raise DocumentBlocked(
+                "document_path_outside_archive_or_invalid_reference"
+            ) from error
 
     def _cached_result_intact(self, document_id, result):
         page = self.catalog.document_jobs(job_ids=[document_id], limit=1)

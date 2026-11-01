@@ -3,12 +3,13 @@
 从公开网站获取股票真实数据
 """
 
-import logging
-import pandas as pd
-from datetime import datetime, timedelta
-import requests
-import re
 import json
+import logging
+import re
+from datetime import datetime, timedelta
+
+import pandas as pd
+import requests
 from bs4 import BeautifulSoup
 
 from .etf_valuation import ETFValuationResolver
@@ -1133,8 +1134,10 @@ class StockWebCrawler:
             param = f"{symbol},day,{start:%Y-%m-%d},{end:%Y-%m-%d},800,qfq"
             try:
                 response = requests.get(
-                    url, params={"param": param, "_var": "kline_day"},
-                    headers=headers, timeout=self.timeout,
+                    url,
+                    params={"param": param, "_var": "kline_day"},
+                    headers=headers,
+                    timeout=self.timeout,
                 )
                 response.raise_for_status()
                 content = response.text
@@ -1254,9 +1257,7 @@ class StockWebCrawler:
             # 获取股票名称（通过QQ实时行情API提取简称）
             try:
                 name_url = f"http://qt.gtimg.cn/q={symbol}"
-                name_resp = requests.get(
-                    name_url, headers=headers, timeout=5
-                )
+                name_resp = requests.get(name_url, headers=headers, timeout=5)
                 name_items = name_resp.text.split("~")
                 if len(name_items) > 1 and name_items[1].strip():
                     df["stock_name"] = name_items[1].strip()
@@ -1298,11 +1299,26 @@ class StockWebCrawler:
             url = f"http://qt.gtimg.cn/q={qq_symbol}"
 
             headers = {"User-Agent": self.user_agent}
-            response = requests.get(url, headers=headers, timeout=10)
+            from pathlib import Path
+
+            from ..data_hub.quotes import fetch_tencent
+            from ..platform_composition import authority_for
+
+            response = fetch_tencent(
+                requests.get,
+                url,
+                authority=authority_for(
+                    Path(__file__).resolve().parents[2], self.config
+                ),
+                headers=headers,
+                timeout=10,
+            )
             response.raise_for_status()
 
-            content = response.text
-            items = content.split("~")
+            from ..data_hub.quotes import require_tencent_quote
+
+            quote = require_tencent_quote(response, qq_symbol, min_fields=40)
+            items = quote.fields
 
             if len(items) < 40:
                 logger.warning(
@@ -1682,7 +1698,7 @@ class StockWebCrawler:
 
             if response.status_code != 200:
                 logger.warning(f"东方财富分红API请求失败: {response.status_code}")
-                return None
+                return
 
             # 尝试解析响应（可能是JSON格式）
             try:
@@ -1695,15 +1711,15 @@ class StockWebCrawler:
                 logger.info(
                     "东方财富分红API返回数据，但解析逻辑需要根据实际API格式实现"
                 )
-                return None
+                return
 
             except Exception as e:
                 logger.warning(f"解析东方财富分红API响应失败: {e}")
-                return None
+                return
 
         except Exception as e:
             logger.warning(f"从东方财富获取分红数据失败: {e}")
-            return None
+            return
 
     def fetch_placement_data(self, stock_code):
         """获取最近一次定向增发(定增)数据。

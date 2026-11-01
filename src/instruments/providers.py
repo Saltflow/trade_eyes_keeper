@@ -82,7 +82,15 @@ class HttpProvider:
         http: requests.Session | None = None,
     ):
         self.config = config
-        self.http = http or requests.Session()
+        if http is None:
+            from pathlib import Path
+
+            from src.data_hub.http import AuthorityHTTP
+            from src.platform_composition import authority_for
+
+            project = config.get("project_root") or Path(__file__).resolve().parents[2]
+            http = AuthorityHTTP(authority_for(project, config))
+        self.http = http
         audit_config = config.get("instrument_audit", {}) or {}
         self.timeout = int(audit_config.get("timeout_seconds", 20))
         self.user_agent = audit_config.get(
@@ -169,15 +177,12 @@ class YahooFinanceProvider(HttpProvider):
                 {
                     "name": exact.get("longname") or exact.get("shortname"),
                     "quote_type": exact.get("quoteType"),
-                    "exchange": exact.get("exchange")
-                    or exact.get("exchDisp"),
+                    "exchange": exact.get("exchange") or exact.get("exchDisp"),
                     "sector": exact.get("sector"),
                     "industry": exact.get("industry"),
                 }
             )
-            payload.attempts.append(
-                {"source": "yahoo_search", "status": "success"}
-            )
+            payload.attempts.append({"source": "yahoo_search", "status": "success"})
         except Exception as exc:
             payload.attempts.append(
                 {
@@ -271,9 +276,7 @@ class YahooFinanceProvider(HttpProvider):
             payload.ttm_dividend = MetricValue(
                 value=total,
                 status=(
-                    MetricStatus.OBSERVED
-                    if total > 0
-                    else MetricStatus.KNOWN_ZERO
+                    MetricStatus.OBSERVED if total > 0 else MetricStatus.KNOWN_ZERO
                 ),
                 as_of=evaluation_date,
                 period="TTM",
@@ -300,9 +303,7 @@ class YahooFinanceProvider(HttpProvider):
                     source_url=response.url,
                     currency=meta.get("currency"),
                 )
-            payload.attempts.append(
-                {"source": "yahoo_chart", "status": "success"}
-            )
+            payload.attempts.append({"source": "yahoo_chart", "status": "success"})
         except Exception as exc:
             payload.attempts.append(
                 {
@@ -349,9 +350,7 @@ class YahooFinanceProvider(HttpProvider):
                 if not type_names:
                     continue
                 type_name = str(type_names[0])
-                frequency = (
-                    "annual" if type_name.startswith("annual") else "quarterly"
-                )
+                frequency = "annual" if type_name.startswith("annual") else "quarterly"
                 metric_name = type_name.removeprefix(frequency)
                 target_field = self.FIELD_MAP.get(metric_name)
                 if not target_field:
@@ -384,17 +383,12 @@ class YahooFinanceProvider(HttpProvider):
             payload.statements.extend(
                 FinancialStatementSnapshot(**record)
                 for record in records.values()
-                if any(
-                    record.get(field)
-                    for field in self.FIELD_MAP.values()
-                )
+                if any(record.get(field) for field in self.FIELD_MAP.values())
             )
             payload.attempts.append(
                 {
                     "source": "yahoo_fundamentals_timeseries",
-                    "status": (
-                        "success" if payload.statements else "empty"
-                    ),
+                    "status": ("success" if payload.statements else "empty"),
                 }
             )
         except Exception as exc:
@@ -425,11 +419,22 @@ class QQQuoteProvider(HttpProvider):
             currency = "USD"
         payload = ProviderPayload()
         try:
-            response = self._get(self.URL.format(symbol=symbol))
-            content = response.text
-            if "=" not in content:
-                raise ValueError("invalid QQ quote response")
-            items = content.split("=", 1)[1].strip('";').split("~")
+            from pathlib import Path
+
+            from ..data_hub.quotes import fetch_tencent
+            from ..platform_composition import authority_for
+
+            response = fetch_tencent(
+                self._get,
+                self.URL.format(symbol=symbol),
+                authority=authority_for(
+                    Path(__file__).resolve().parents[2], self.config
+                ),
+            )
+            from ..data_hub.quotes import require_tencent_quote
+
+            quote = require_tencent_quote(response, symbol, min_fields=47)
+            items = quote.fields
             if len(items) < 47:
                 raise ValueError(f"short QQ quote response ({len(items)} fields)")
             payload.metadata["name"] = items[1] or None
@@ -511,18 +516,14 @@ class SecCompanyFactsProvider(HttpProvider):
         "EarningsPerShareBasic": "basic_eps",
         "EarningsPerShareDiluted": "diluted_eps",
         "NetCashProvidedByUsedInOperatingActivities": "operating_cash_flow",
-        "PaymentsToAcquirePropertyPlantAndEquipment": (
-            "capital_expenditures"
-        ),
+        "PaymentsToAcquirePropertyPlantAndEquipment": ("capital_expenditures"),
     }
 
     def __init__(self, config: dict, http: requests.Session | None = None):
         super().__init__(config, http=http)
         email_sender = os.getenv("EMAIL_SENDER", "").strip()
         email_user_agent = (
-            f"trade-eyes-keeper/1.0 {email_sender}"
-            if email_sender
-            else ""
+            f"trade-eyes-keeper/1.0 {email_sender}" if email_sender else ""
         )
         self.sec_user_agent = (
             os.getenv("SEC_USER_AGENT")
@@ -604,17 +605,21 @@ class SecCompanyFactsProvider(HttpProvider):
                     ):
                         continue
                     frame = str(observation.get("frame", ""))
-                    if form == "10-Q" and frame and not frame.endswith(
-                        (
-                            "Q1",
-                            "Q2",
-                            "Q3",
-                            "Q4",
-                            "Q1I",
-                            "Q2I",
-                            "Q3I",
-                            "Q4I",
-                        ),
+                    if (
+                        form == "10-Q"
+                        and frame
+                        and not frame.endswith(
+                            (
+                                "Q1",
+                                "Q2",
+                                "Q3",
+                                "Q4",
+                                "Q1I",
+                                "Q2I",
+                                "Q3I",
+                                "Q4I",
+                            ),
+                        )
                     ):
                         continue
                     key = (period_end, filed, form)
@@ -637,19 +642,13 @@ class SecCompanyFactsProvider(HttpProvider):
                         if start is not None and start <= period_end
                         else None
                     )
-                    field_durations = record.setdefault(
-                        "_field_durations", {}
-                    )
+                    field_durations = record.setdefault("_field_durations", {})
                     previous_duration = field_durations.get(target_field)
-                    prefer_shortest = (
-                        form == "10-Q"
-                        and target_field
-                        in {
-                            "basic_eps",
-                            "diluted_eps",
-                            "diluted_average_shares",
-                        }
-                    )
+                    prefer_shortest = form == "10-Q" and target_field in {
+                        "basic_eps",
+                        "diluted_eps",
+                        "diluted_average_shares",
+                    }
                     replace_value = record.get(target_field) is None
                     if not replace_value and duration_days is not None:
                         replace_value = previous_duration is None or (
@@ -683,8 +682,7 @@ class SecCompanyFactsProvider(HttpProvider):
                     and record.get("capital_expenditures") is not None
                 ):
                     record["free_cash_flow"] = (
-                        record["operating_cash_flow"]
-                        - record["capital_expenditures"]
+                        record["operating_cash_flow"] - record["capital_expenditures"]
                     )
                     diagnostics.append(
                         "free_cash_flow=operating_cash_flow-capital_expenditures"
@@ -855,8 +853,7 @@ class ConfiguredFundProvider(HttpProvider):
                     "name": row.get(name_key),
                     "weight": weight,
                     "as_of": raw.get("holdings_as_of"),
-                    "source": raw.get("holdings_source")
-                    or "configured_holdings_url",
+                    "source": raw.get("holdings_source") or "configured_holdings_url",
                 }
             )
         return result

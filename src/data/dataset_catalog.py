@@ -710,9 +710,12 @@ def _metadata(path: Path, logical: str, size: int) -> dict:
 
 
 class DatasetCatalog:
-    def __init__(self, project_root: str | Path):
+    def __init__(self, project_root: str | Path, *, material_authority=None):
         self.project_root = Path(project_root).resolve()
         self.root = self.project_root
+        from src.platform_composition import authority_for
+
+        self.material_authority = material_authority or authority_for(self.root)
         self.db_path = self.root / "data" / "dataset_catalog" / "catalog.sqlite3"
         for path in (self.root / "data", self.db_path.parent, self.db_path):
             if path.exists() or path.is_symlink():
@@ -1096,7 +1099,9 @@ class DatasetCatalog:
             or any(not isinstance(value, str) for value in relative_paths)
         ):
             raise ValueError("relative_paths must contain 1 to 100 file paths")
-        normalized = list(dict.fromkeys(_safe_relative(value) for value in relative_paths))
+        normalized = list(
+            dict.fromkeys(_safe_relative(value) for value in relative_paths)
+        )
         for relative in normalized:
             if eligibility_reason(relative):
                 raise ValueError("file is outside the business-data policy")
@@ -1145,7 +1150,11 @@ class DatasetCatalog:
                         ),
                     )
                     results.append(
-                        {"path": relative, "status": "failed", "error": type(exc).__name__}
+                        {
+                            "path": relative,
+                            "status": "failed",
+                            "error": type(exc).__name__,
+                        }
                     )
             summary = {
                 "incremental": True,
@@ -1157,7 +1166,9 @@ class DatasetCatalog:
                 "UPDATE builds SET finished=?,status=?,summary=? WHERE id=?",
                 (
                     time.time(),
-                    "incremental_with_gaps" if counts["index_failures"] else "incremental",
+                    "incremental_with_gaps"
+                    if counts["index_failures"]
+                    else "incremental",
                     _json(summary),
                     build_id,
                 ),
@@ -1547,8 +1558,7 @@ class DatasetCatalog:
             total = db.execute(
                 "SELECT COUNT(DISTINCT d.document_id) FROM documents d "
                 "JOIN document_sources s ON s.document_id=d.document_id "
-                "LEFT JOIN files f ON f.file_id=s.file_id AND f.present=1"
-                + where,
+                "LEFT JOIN files f ON f.file_id=s.file_id AND f.present=1" + where,
                 args,
             ).fetchone()[0]
             rows = db.execute(
@@ -1640,7 +1650,10 @@ class DatasetCatalog:
         ):
             raise ValueError("invalid CNINFO report source")
         try:
-            if date.fromisoformat(str(publication_date)).isoformat() != publication_date:
+            if (
+                date.fromisoformat(str(publication_date)).isoformat()
+                != publication_date
+            ):
                 raise ValueError
         except ValueError as exc:
             raise ValueError("publication_date must be YYYY-MM-DD") from exc
@@ -1758,6 +1771,63 @@ class DatasetCatalog:
             db.execute(
                 "UPDATE documents SET status=?,error=?,updated=? WHERE document_id=?",
                 (status, str(error)[:2000], time.time(), job_id),
+            )
+            return self._document(
+                db,
+                db.execute(
+                    "SELECT * FROM documents WHERE document_id=?", (job_id,)
+                ).fetchone(),
+            )
+
+    def resolve_artifact(self, relative_path):
+        """Resolve only indexed archive files or scope-checked material refs."""
+        relative_path = _safe_relative(relative_path)
+        if not relative_path.startswith("data/dataset_documents/"):
+            raise ValueError("document artifact outside archive")
+        path = _checked_file(self.root, relative_path)
+        if path.name.endswith(".material-ref.json"):
+            from src.data_hub import DataHub
+
+            result = DataHub(self.material_authority).resolve_reference(path)
+            resolved = Path(result["path"])
+            if result["kind"] == "pdf":
+                with resolved.open("rb") as stream:
+                    if stream.read(5) != b"%PDF-":
+                        raise ValueError("material reference has no PDF header")
+            return resolved
+        if path.suffix.lower() not in {".pdf", ".txt", ".md"}:
+            raise ValueError("unsupported document artifact")
+        return path
+
+    def record_material_reference(self, job_id, relative_path):
+        """Index a tiny reference, retaining the old catalog's root ownership."""
+        relative_path = _safe_relative(relative_path)
+        if not relative_path.endswith(".material-ref.json"):
+            raise ValueError("material reference suffix required")
+        self.resolve_artifact(relative_path)
+        marker = json.loads(_checked_file(self.root, relative_path).read_text("utf-8"))
+        if marker.get("kind") != "pdf":
+            raise ValueError("document material reference must identify a PDF")
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM documents WHERE document_id=?", (job_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError("unknown document job")
+            info = self._index(
+                db,
+                {"relative_path": relative_path, "logical_path": relative_path},
+                "document-material-reference",
+                discover_documents=False,
+            )
+            db.execute(
+                "INSERT OR IGNORE INTO document_artifacts VALUES(?,?,?)",
+                (job_id, info["file_id"], "pdf"),
+            )
+            self._sync_artifact_sources(db, info["file_id"])
+            db.execute(
+                "UPDATE documents SET status='available',error='',updated=? WHERE document_id=?",
+                (time.time(), job_id),
             )
             return self._document(
                 db,
@@ -1905,9 +1975,8 @@ class DatasetCatalog:
 
     def search_document_text(self, document_id, query, limit=8):
         """Search indexed text for one archived document and keep page evidence."""
-        if (
-            not isinstance(document_id, str)
-            or not re.fullmatch(r"cninfo_[0-9a-f]{64}", document_id)
+        if not isinstance(document_id, str) or not re.fullmatch(
+            r"cninfo_[0-9a-f]{64}", document_id
         ):
             raise ValueError("invalid document_id")
         if not isinstance(query, str) or not query.strip() or len(query) > 120:

@@ -20,7 +20,6 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -134,7 +133,9 @@ class ETFValuationResolver:
             else:
                 result = None
         except Exception as exc:
-            logger.warning("ETF %s %s 估值补全失败: %s", normalized, reference.label, exc)
+            logger.warning(
+                "ETF %s %s 估值补全失败: %s", normalized, reference.label, exc
+            )
             result = None
 
         self._cache[normalized] = result
@@ -182,9 +183,7 @@ class ETFValuationResolver:
         self, reference: ETFValuationReference
     ) -> Optional[Dict[str, Optional[float]]]:
         try:
-            response = self._get(
-                YAHOO_QUOTE_URL.format(ticker=reference.yahoo_ticker)
-            )
+            response = self._get(YAHOO_QUOTE_URL.format(ticker=reference.yahoo_ticker))
             soup = BeautifulSoup(response.text, "html.parser")
             result = None
             for tag in soup.find_all("script", type="application/json"):
@@ -210,9 +209,7 @@ class ETFValuationResolver:
                 (holdings.get("priceToBook") or {}).get("raw"), 1.0
             )
             trailing_pe = _positive_ratio(
-                (result.get("summaryDetail", {}).get("trailingPE") or {}).get(
-                    "raw"
-                ),
+                (result.get("summaryDetail", {}).get("trailingPE") or {}).get("raw"),
                 1000.0,
             )
             pe = trailing_pe or (1.0 / earnings_yield if earnings_yield else None)
@@ -322,17 +319,29 @@ class ETFValuationResolver:
     def _qq_valuations(self, symbols: Sequence[str]) -> Dict[str, Dict[str, float]]:
         result: Dict[str, Dict[str, float]] = {}
         for start in range(0, len(symbols), QQ_BATCH_SIZE):
-            response = self._get(
-                "http://qt.gtimg.cn/q=" + ",".join(symbols[start : start + QQ_BATCH_SIZE])
+            from pathlib import Path
+
+            from ..data_hub.quotes import fetch_tencent
+            from ..platform_composition import authority_for
+
+            response = fetch_tencent(
+                self._get,
+                "http://qt.gtimg.cn/q="
+                + ",".join(symbols[start : start + QQ_BATCH_SIZE]),
+                authority=authority_for(Path(__file__).resolve().parents[2]),
             )
-            for line in response.text.splitlines():
-                match = re.match(r'v_([^=]+)="(.*)";', line)
-                if match is None:
-                    continue
-                symbol, raw = match.groups()
-                fields = raw.split("~")
+            from ..data_hub.quotes import parse_tencent_quotes
+
+            for symbol, quote in parse_tencent_quotes(response).items():
+                fields = quote.fields
                 pe = _positive_ratio(fields[39] if len(fields) > 39 else None, 1000.0)
-                pb_index = 58 if symbol.startswith("hk") else 51 if symbol.startswith("us") else 46
+                pb_index = (
+                    58
+                    if symbol.startswith("hk")
+                    else 51
+                    if symbol.startswith("us")
+                    else 46
+                )
                 pb = _positive_ratio(
                     fields[pb_index] if len(fields) > pb_index else None, 100.0
                 )

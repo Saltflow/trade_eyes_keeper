@@ -141,10 +141,20 @@ def fetch_fields(row, folder, wait):
     if not records or any(str(r.get("SECURITY_CODE")) != code for r in records):
         raise ValueError("financial_response_empty_or_code_mismatch")
     wait()
-    response = requests.get(f"https://qt.gtimg.cn/q={prefix}{code}", timeout=(10, 20))
+    from ..data_hub.quotes import fetch_tencent
+    from ..platform_composition import authority_for
+
+    response = fetch_tencent(
+        requests.get,
+        f"https://qt.gtimg.cn/q={prefix}{code}",
+        authority=authority_for(Path(__file__).resolve().parents[2]),
+        timeout=(10, 20),
+    )
     (folder / "quote.response.bin").write_bytes(response.content)
     response.raise_for_status()
-    parts = response.content.decode("gbk", errors="replace").split('"')[1].split("~")
+    from ..data_hub.quotes import require_tencent_quote
+
+    parts = require_tencent_quote(response, prefix + code, min_fields=74).fields
     if len(parts) <= 73 or parts[2] != code or number(parts[3]) is None:
         raise ValueError("quote_response_invalid_or_code_mismatch")
     quote = {

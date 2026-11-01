@@ -1,0 +1,215 @@
+{
+  "schema_version": "4.0",
+  "stage": "extract",
+  "company": {
+    "name": "山西华阳集团新能股份有限公司",
+    "code": "600348"
+  },
+  "report_period": "FY2025",
+  "reports": [
+    {
+      "report_id": "8214af8c64e4351b2bfe706971ab4154909248cae82dd4016c85be5af74bc559",
+      "report_period": "FY2025",
+      "company": {
+        "name": "山西华阳集团新能股份有限公司",
+        "code": "600348"
+      }
+    }
+  ],
+  "metadata": [
+    {
+      "period": {
+        "kind": "duration",
+        "start": "2025-01-01",
+        "end": "2025-12-31",
+        "coverage": "full_year"
+      },
+      "scope": {
+        "kind": "group",
+        "entity": "山西华阳集团新能股份有限公司",
+        "entity_code": "group"
+      },
+      "industry_classifications": [
+        {
+          "system": "公司披露行业分类",
+          "label": "采掘业",
+          "code": null
+        }
+      ],
+      "businesses": [
+        "煤炭开采、洗选、销售及相关配套业务",
+        "新能源新材料业务"
+      ],
+      "products_services": [
+        "无烟煤（洗块煤、洗末煤、末煤、煤泥）",
+        "电力",
+        "供热",
+        "钠离子电池电芯、模组及储能系统",
+        "高性能碳纤维"
+      ],
+      "operating_model": [
+        "煤炭生产销售",
+        "电力热力供应",
+        "新能源新材料制造",
+        "直销"
+      ],
+      "customers": [
+        "大型电力企业集团",
+        "冶金企业集团",
+        "化工企业集团",
+        "中国华能集团有限公司",
+        "国家电网有限公司",
+        "中国华电集团有限公司",
+        "河北建设投资集团有限责任公司",
+        "鞍钢集团有限公司"
+      ],
+      "geographies": [
+        "国内",
+        "河北、山东、东北等地区",
+        "境外（香港）"
+      ],
+      "share_classes": [
+        "A股普通股"
+      ],
+      "accounting_basis": "中国企业会计准则",
+      "fiscal_year_end": "12-31",
+      "issues": [
+        {
+          "target": "industry_classifications.0.code",
+          "reason": "not_found",
+          "detail": "本次未取得行业代码"
+        }
+      ],
+      "reported_in": {
+        "report_id": "8214af8c64e4351b2bfe706971ab4154909248cae82dd4016c85be5af74bc559",
+        "report_period": "FY2025"
+      }
+    }
+  ],
+  "tables": [
+    {
+      "kind": "numeric",
+      "role": "BS",
+      "module": "common",
+      "topic": "BS",
+      "title": "合并资产负债表",
+      "part": null,
+      "scope": {
+        "kind": "group",
+        "entity": "山西华阳集团新能股份有限公司",
+        "entity_code": "group"
+      },
+      "accounting_basis": "中国企业会计准则",
+      "columns": {
+        "c1": {
+          "label": "2025年12月31日",
+          "period": {
+            "kind": "instant",
+            "start": null,
+            "end": "2025-12-31",
+            "coverage": "not_applicable"
+          },
+          "adjustment": {
+            "status": "original",
+            "label": null
+          },
+          "comparison": null,
+          "identity_code": "VALUE",
+          "reported_in": {
+            "report_id": "8214af8c64e4351b2bfe706971ab4154909248cae82dd4016c85be5af74bc559",
+            "report_period": "FY2025"
+          }
+        },
+        "c2": {
+          "label": "2024年12月31日",
+          "period": {
+            "kind": "instant",
+            "start": null,
+            "end": "2024-12-31",
+            "coverage": "not_applicable"
+          },
+          "adjustment": {
+            "status": "not_specified",
+            "label": null
+          },
+          "comparison": null,
+          "identity_code": "VALUE",
+          "reported_in": {
+            "report_id": "8214af8c64e4351b2bfe706971ab4154909248cae82dd4016c85be5af74bc559",
+            "report_period": "FY2025"
+          }
+        }
+      },
+      "rows": [
+        {
+          "row_kind": "detail",
+          "path": [
+            "流动资产",
+            "货币资金"
+          ],
+          "dimensions": [],
+          "unit": "元",
+          "currency": "CNY",
+          "statistic": {
+            "kind": "point",
+            "method": {
+              "state": "not_applicable",
+              "text": null
+            },
+            "annualized": "not_applicable"
+          },
+          "definition": null,
+          "values": {
+            "c1": "11,882,237,496.43",
+            "c2": "11,619,833,086.12"
+          },
+          "missing_reasons": {},
+          "issues": [],
+          "identity_code": "BS_CASH",
+          "unit_code": "CURRENCY_1",
+          "period_overrides": {}
+        },
+        {
+          "row_kind": "detail",
+          "path": [
+            "流动资产",
+            "结算备付金"
+          ],
+          "dimensions": [],
+          "unit": "元",
+          "currency": "CNY",
+          "statistic": {
+            "kind": "point",
+            "method": {
+              "state": "not_applicable",
+              "text": null
+            },
+            "annualized": "not_applicable"
+          },
+          "definition": null,
+          "values": {
+            "c1": null,
+            "c2": null
+          },
+          "missing_reasons": {
+            "c1": {
+              "reason": "not_found",
+              "detail": "原表空白"
+            },
+            "c2": {
+              "reason": "not_found",
+              "detail": "原表空白"
+            }
+          },
+          "issues": [],
+          "identity_code": null,
+          "unit_code": "CURRENCY_1",
+          "period_overrides": {}
+        }
+      ],
+      "issues": [],
+      "identity_code": "BS",
+      "accounting_basis_code": "CAS"
+    }
+  ]
+}
