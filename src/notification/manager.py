@@ -26,6 +26,19 @@ class NotifierManager:
             self.email = None
             self.telegram = None
             self.feishu = TriggerChatNotifier(config)
+            email_settings = (config.get("notification") or {}).get("email") or {}
+            if (
+                isinstance(email_settings, dict)
+                and email_settings.get("trigger_report_routes")
+                and channel_enabled(config, "email")
+            ):
+                from ..triggers.email_delivery import (
+                    TriggerEmailNotifier,
+                    trigger_email_route_allowed,
+                )
+
+                if trigger_email_route_allowed(config):
+                    self.email = TriggerEmailNotifier(config)
             return
         if channel_enabled(config, "email"):
             from .email_notifier import EmailNotifier

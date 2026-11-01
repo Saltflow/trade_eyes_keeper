@@ -2762,6 +2762,9 @@ class EmailNotifier(BaseNotifier):
 
     # ────────────────────────────────────
 
+    def _delivery_guard(self):
+        """Optional authenticated-route guard; ordinary mail needs no binding."""
+
     def _send_email(
         self,
         subject,
@@ -2783,6 +2786,10 @@ class EmailNotifier(BaseNotifier):
             pdf_bytes: 日报 PDF 附件 bytes（可选）
             candlestick_png: 周K蜡烛图 bytes（可选），CID=candlestick
         """
+
+        guard = self._delivery_guard()
+        if guard:
+            return guard
 
         # 保存邮件副本（无论是否跳过发送）
         copy_path = self._save_email_copy(subject, body)
@@ -2930,6 +2937,10 @@ class EmailNotifier(BaseNotifier):
             ):
                 return {"status": "failed", "reason": "smtp_configuration_incomplete"}
 
+            guard = self._delivery_guard()
+            if guard:
+                return guard
+
             # 连接到SMTP服务器并发送邮件
             if self.enable_ssl:
                 context = ssl.create_default_context()
@@ -2942,6 +2953,10 @@ class EmailNotifier(BaseNotifier):
                 if self.enable_tls and not self.enable_ssl:
                     server.starttls()
                 server.login(self.sender_email, self.sender_password)
+                guard = self._delivery_guard()
+                if guard:
+                    receipt = guard
+                    return receipt
                 submitted = True
                 try:
                     refused = server.send_message(msg)

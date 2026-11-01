@@ -1507,6 +1507,12 @@ def run_daily_task(
         from src.notification.report_triggers import required_report_data_roots
 
         daily_trigger_roots = required_report_data_roots(daily_triggers)
+        from src.triggers.report_context import (
+            is_managed_daily,
+            populate_trigger_announcements,
+        )
+
+        managed_daily = is_managed_daily(config)
         event_triggers_need_announcements = bool(
             daily_trigger_roots & {"announcements", "dividend_events"}
         )
@@ -1529,6 +1535,11 @@ def run_daily_task(
             except Exception as e:  # noqa: BLE001
                 logger.error(f"获取公告信息失败: {e}")
                 session.errors.append(f"获取公告信息失败: {e}")
+
+        # Official evidence captured by the triggering event stays visible even
+        # when the optional recent-announcement feed does not return that row.
+        if managed_daily:
+            populate_trigger_announcements(session, config)
 
         # 1b. 获取 A 股定增(定向增发)数据 — 展示未解禁定增
         try:
@@ -1819,7 +1830,10 @@ def run_daily_task(
             progress("daily_notifications")
         delivery = None
         skip_reason = "daily_frequency_or_trigger_not_met"
-        if trigger_mode:
+        if managed_daily:
+            skip_reason = ""
+            delivery = notifier.send_daily_report_from_session(session)
+        elif trigger_mode:
             from src.notification.report_triggers import evaluate_report_triggers
 
             evaluation = evaluate_report_triggers(session, daily_triggers)

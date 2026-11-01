@@ -1276,6 +1276,7 @@ def build_daily_events_text(session, stock_data=None) -> str:
     return "\n".join(
         f"{_html_escape(row['date'] or '—')} · {_html_escape(row['code'])} · "
         f"{_html_escape(row['kind'])}\n{_html_escape(row['title'])}"
+        + (f"\n原文：{_html_escape(row['url'])}" if row.get("url") else "")
         for row in rows
     )
 

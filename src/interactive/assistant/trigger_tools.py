@@ -49,6 +49,19 @@ _PUBLIC_FAILURE_REASONS = {
     "trigger_binding_invalid",
     "trigger_configuration_unavailable",
     "configuration_missing",
+    "smtp_configuration_incomplete",
+    "smtp_acknowledgement_missing",
+    "recipient_rejected",
+    "smtp_accepted",
+    "smtp_rejected",
+    "smtp_submission_unknown",
+    "smtp_pre_submit_failed",
+    "email_preparation_failed",
+    "email_channel_disabled",
+    "trigger_email_unauthorized",
+    "trigger_email_profile_changed",
+    "trigger_profile_changed",
+    "trigger_chat_unauthorized",
 }
 
 TRIGGER_PROMPT = """
@@ -64,7 +77,7 @@ personal_monitor保留持仓及既有账户规则；新的通用条件/定时提
 编号是持久number，不是列表行号；先list/get取得真实状态，不猜编号或他人身份。
 删除区分已删除、已不存在与已提交将尽力停止；正在投递或已送达可能无法撤回，未知投递不得声称已撤回。
 只依据工具成功回执声称已创建或更改；复杂自然语言应转结构化规则，缺失条件明确询问。
-list/get按action_results逐动作解释状态；last_result只兼容最新一条，不代表其他报告无记录。报告数据未就绪与是否投递成功分别说明。
+list/get按action_results逐动作、channels逐渠道解释状态；飞书成功不代表邮件成功。last_result只兼容最新一条，不代表其他报告无记录。报告数据未就绪与是否投递成功分别说明。
 """.strip()
 
 
@@ -515,10 +528,12 @@ class TriggerTools:
             elif isinstance(item, dict):
                 for key, child in item.items():
                     if (
-                        key in {"http_status", "code", "provider_code"}
+                        key in {"http_status", "code", "provider_code", "smtp_code"}
                         and type(child) is int
                     ):
-                        prefix = "HTTP " if key == "http_status" else "平台code="
+                        prefix = {"http_status": "HTTP ", "smtp_code": "SMTP "}.get(
+                            key, "平台code="
+                        )
                         public.append(prefix + str(child))
                     elif key == "reason" and isinstance(child, str):
                         public.extend(
@@ -530,6 +545,93 @@ class TriggerTools:
                         pending.append(child)
         return list(dict.fromkeys(public))[:12]
 
+    @classmethod
+    def _channel_results(cls, deliveries, kind):
+        """Expose channel acknowledgements, never recipients or raw SMTP text."""
+        channels = {}
+        if not isinstance(deliveries, dict):
+            return channels
+        for name in ("email", "feishu", "telegram"):
+            receipt = deliveries.get(name)
+            if not isinstance(receipt, dict):
+                continue
+            status = receipt.get("status", "unknown")
+            piece_states = {
+                item.get("status")
+                for item in receipt.get("pieces", [])
+                if isinstance(item, dict)
+            }
+            if status == "sent":
+                message = "已发送（SMTP已接收）" if name == "email" else "已送达"
+            elif status == "failed":
+                message = "失败"
+            elif status == "skipped":
+                message = "未发送"
+            elif status == "not_requested":
+                message = "未请求"
+            elif (
+                status == "partial"
+                and "failed" in piece_states
+                and not piece_states & {"unknown", "partial"}
+            ):
+                status, message = (
+                    "failed",
+                    "部分发送，其他发送失败"
+                    if name == "email"
+                    else "部分送达，其他发送失败",
+                )
+            else:
+                status, message = (
+                    "unknown",
+                    "部分发送，其他结果不明" if "sent" in piece_states else "结果不明",
+                )
+            diagnostics = cls._safe_delivery_diagnostics(receipt)
+            if name == "email" and status != "sent":
+                causes = {
+                    "smtp_configuration_incomplete": "邮件配置未就绪",
+                    "smtp_acknowledgement_missing": "缺少服务器确认",
+                    "recipient_rejected": "服务器拒绝部分收件地址",
+                    "smtp_rejected": "邮件服务器拒绝",
+                    "smtp_submission_unknown": "提交后确认不明",
+                    "smtp_pre_submit_failed": "提交前失败",
+                    "email_preparation_failed": "邮件生成失败",
+                    "email_channel_disabled": "邮件渠道已停用",
+                    "trigger_email_unauthorized": "此会话未获邮件路由授权",
+                    "trigger_email_profile_changed": "邮件配置已更改",
+                    "trigger_revoked": "触发器已撤销或变更",
+                    "trigger_configuration_unavailable": "发送配置暂不可核对",
+                    "trigger_chat_unauthorized": "此会话无投递权限",
+                }
+                notes = list(
+                    dict.fromkeys(
+                        causes[code] for code in diagnostics if code in causes
+                    )
+                )
+                if notes:
+                    message += "：" + "、".join(notes)
+            display = sorted(
+                (
+                    item
+                    for item in diagnostics
+                    if item.startswith(("HTTP ", "SMTP ", "平台code="))
+                ),
+                key=lambda item: (not item.startswith("HTTP "), item),
+            )
+            if display:
+                message += "（" + "，".join(display) + "）"
+            channels[name] = {
+                "status": status,
+                "message": message,
+                "diagnostics": diagnostics,
+            }
+        if kind in {"brief", "daily"} and channels and "email" not in channels:
+            channels["email"] = {
+                "status": "not_requested",
+                "message": "未请求",
+                "diagnostics": [],
+            }
+        return channels
+
     def _action_result(self, action, index, kind):
         if action is None:
             return {
@@ -538,14 +640,14 @@ class TriggerTools:
                 "status": "not_triggered",
                 "message": "尚未触发",
                 "diagnostics": [],
+                "channels": {},
             }
         run = self._execution_result(action)
         state = action["state"]
         result = run.get("result") or action.get("result") or {}
         run_status = run.get("status")
         deliveries = result.get("deliveries")
-        channel = deliveries.get("feishu") if isinstance(deliveries, dict) else None
-        delivered = [channel.get("status")] if isinstance(channel, dict) else []
+        channels = self._channel_results(deliveries, kind)
         terminal = {
             "succeeded",
             "failed",
@@ -571,33 +673,33 @@ class TriggerTools:
                     "generating",
                     "正在生成" if kind != "reminder" else "正在准备提醒",
                 )
-        elif delivered and all(value == "sent" for value in delivered):
-            status, message = "sent", "已送达"
-        elif (
-            "partial" in delivered
-            and isinstance(channel.get("pieces"), list)
-            and any(
-                item.get("status") == "failed"
-                for item in channel["pieces"]
-                if isinstance(item, dict)
-            )
-            and not any(
-                item.get("status") in {"unknown", "partial"}
-                for item in channel["pieces"]
-                if isinstance(item, dict)
-            )
-        ):
-            status, message = "failed", "部分送达，其他发送失败"
-        elif "unknown" in delivered or "partial" in delivered:
-            status, message = (
-                "unknown",
-                "结果不明" if "sent" not in delivered else "部分送达，其他结果不明",
-            )
-        elif "failed" in delivered:
-            status, message = (
-                "failed",
-                "失败" if "sent" not in delivered else "部分送达，其他发送失败",
-            )
+        elif channels:
+            requested = {
+                name: item
+                for name, item in channels.items()
+                if item["status"] != "not_requested"
+            }
+            statuses = {item["status"] for item in requested.values()}
+            if statuses == {"sent"}:
+                status = "sent"
+            elif "unknown" in statuses:
+                status = "unknown"
+            elif "sent" in statuses:
+                status = "partial"
+            elif "failed" in statuses:
+                status = "failed"
+            else:
+                status = "skipped"
+            if len(requested) == 1:
+                message = next(iter(requested.values()))["message"]
+                if len(channels) != len(requested):
+                    message += "；邮件未请求"
+            else:
+                names = {"email": "邮件", "feishu": "飞书", "telegram": "Telegram"}
+                message = "；".join(
+                    names[name] + "：" + item["message"]
+                    for name, item in channels.items()
+                )
         elif state == "pending":
             status, message = "pending", "待发送"
         elif state == "submitting":
@@ -626,10 +728,12 @@ class TriggerTools:
         if "report_data_not_ready" in diagnostics or "data_not_ready" in diagnostics:
             message += "；报告数据未就绪"
         display = [
-            item for item in diagnostics if item.startswith(("HTTP ", "平台code="))
+            item
+            for item in diagnostics
+            if item.startswith(("HTTP ", "SMTP ", "平台code="))
         ]
         display.sort(key=lambda item: (not item.startswith("HTTP "), item))
-        if display:
+        if display and not channels:
             message += "（" + "，".join(display) + "）"
         return {
             "action_index": index,
@@ -637,6 +741,7 @@ class TriggerTools:
             "status": status,
             "message": message,
             "diagnostics": diagnostics,
+            "channels": channels,
             "updated_at": action.get("updated_at"),
         }
 
@@ -732,7 +837,15 @@ class TriggerTools:
         latest = record.get("last_result")
         action_results = self._action_results(record)
         if len(action_results) == 1:
-            recent = action_results[0]["message"].replace("已送达", "已发送", 1)
+            recent = action_results[0]["message"]
+            if (
+                sum(
+                    item["status"] != "not_requested"
+                    for item in action_results[0]["channels"].values()
+                )
+                <= 1
+            ):
+                recent = recent.replace("已送达", "已发送", 1)
         else:
             names = {"brief": "简报", "daily": "日报", "reminder": "提醒"}
             parts = []

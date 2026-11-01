@@ -97,6 +97,9 @@ stocks: []           # 代码使用字符串，例如 ["601728", "000001", "VOO"
 notification:
   email:
     enabled: true
+    # 触发报表联发到已配置邮箱；仅由受信任配置精确授权，默认不跨会话广播。
+    # 每项为 {owner: "认证用户标识", chat_id: "原认证会话标识"}；不支持通配符。
+    trigger_report_routes: []
   feishu:
     enabled: false
     msg_type: interactive

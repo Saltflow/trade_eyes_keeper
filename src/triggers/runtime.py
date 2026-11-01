@@ -447,6 +447,13 @@ class TriggerRuntime:
             "reason": f"触发器 #{action['number']}：{label}"
             + (" · " + " · ".join(details) if details else ""),
         }
+        # Keep the actual disclosure evidence with the durable report request;
+        # tomorrow's report must not rely on another provider finding it again.
+        result["events"] = [
+            copy.deepcopy(item.get("context", {}))
+            for item in (grouped or [action])
+            if item.get("context", {}).get("event_id")
+        ]
         if grouped and len(grouped) > 1:
             result["action_ids"] = sorted(item["id"] for item in grouped)
             symbols = sorted(

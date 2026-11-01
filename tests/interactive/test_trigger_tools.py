@@ -725,10 +725,12 @@ def test_report_data_not_ready_is_distinct_from_acknowledged_delivery(
         now=NOW,
     )
     reply = tools.handle_text("get trigger 1")
-    assert "简报：已送达；报告数据未就绪" in reply["message"]
+    assert "飞书：已送达；报告数据未就绪" in reply["message"]
+    assert "邮件：未发送" in reply["message"]
     results = reply["data"]["trigger"]["action_results"]
     assert (
-        results[0]["status"] == "sent" and "data_not_ready" in results[0]["diagnostics"]
+        results[0]["status"] == "partial"
+        and "data_not_ready" in results[0]["diagnostics"]
     )
     assert results[1]["status"] == "pending"
 
@@ -808,3 +810,128 @@ def test_confirmed_partial_failure_does_not_become_an_unknown_delivery(
     first = reply["data"]["trigger"]["action_results"][0]
     assert first["status"] == "failed"
     assert "部分送达，其他发送失败（HTTP 400）" in reply["message"]
+
+
+@pytest.mark.parametrize(
+    "email_status,expected",
+    [
+        ("failed", "partial"),
+        ("unknown", "unknown"),
+        ("skipped", "partial"),
+        ("sent", "sent"),
+    ],
+)
+def test_email_and_feishu_are_independent_channels_with_no_private_receipt_leak(
+    tools, shared_execution, email_status, expected
+):
+    multi_actions(tools, ("daily",))
+    action, run = submit_first(tools, shared_execution)
+    email = {
+        "status": email_status,
+        "reason": {
+            "failed": "smtp_rejected",
+            "unknown": "smtp_submission_unknown",
+            "skipped": "trigger_email_unauthorized",
+            "sent": "smtp_accepted",
+        }[email_status],
+        "archive": "private-archive-path",
+        "message_id": "private-email-message-id",
+        "error": "raw-secret-smtp-error",
+        "pieces": [
+            {
+                "recipient": "private-recipient@example.test",
+                "status": email_status,
+                **(
+                    {"smtp_code": 550 if email_status == "failed" else 250}
+                    if email_status in {"failed", "sent"}
+                    else {}
+                ),
+            }
+        ],
+    }
+    tools.store.mark_completed(
+        action["id"],
+        status="partial" if email_status != "sent" else "succeeded",
+        deliveries={"email": email, "feishu": {"status": "sent"}},
+        now=NOW,
+    )
+    reply = tools.handle_text("get trigger 1")
+    result = reply["data"]["trigger"]["action_results"][0]
+    assert result["status"] == expected
+    assert result["channels"]["feishu"]["status"] == "sent"
+    assert result["channels"]["email"]["status"] == email_status
+    assert "飞书：已送达" in reply["message"] and "邮件：" in reply["message"]
+    if email_status == "failed":
+        assert "邮件：失败：邮件服务器拒绝（SMTP 550）" in reply["message"]
+    if email_status == "sent":
+        assert "邮件：已发送（SMTP已接收）" in reply["message"]
+    public = json.dumps(reply, ensure_ascii=False)
+    assert all(
+        value not in public
+        for value in (
+            run,
+            "private-archive-path",
+            "private-email-message-id",
+            "raw-secret-smtp-error",
+            "private-recipient@example.test",
+            tools.owner,
+            tools.chat,
+        )
+    )
+
+
+def test_partial_smtp_recipient_rejection_is_not_hidden_by_feishu_success(
+    tools, shared_execution
+):
+    multi_actions(tools, ("daily",))
+    action, _ = submit_first(tools, shared_execution)
+    tools.store.mark_completed(
+        action["id"],
+        status="partial",
+        deliveries={
+            "email": {
+                "status": "partial",
+                "pieces": [
+                    {
+                        "recipient": "private-sent@example.test",
+                        "status": "sent",
+                        "reason": "smtp_accepted",
+                    },
+                    {
+                        "recipient": "private-refused@example.test",
+                        "status": "failed",
+                        "reason": "recipient_rejected",
+                        "smtp_code": 553,
+                    },
+                ],
+            },
+            "feishu": {"status": "sent"},
+        },
+        now=NOW,
+    )
+    reply = tools.handle_text("get trigger 1")
+    result = reply["data"]["trigger"]["action_results"][0]
+    assert result["status"] == "partial"
+    assert result["channels"]["email"]["status"] == "failed"
+    assert (
+        "部分发送，其他发送失败" in reply["message"] and "SMTP 553" in reply["message"]
+    )
+    assert "private-" not in json.dumps(reply, ensure_ascii=False)
+
+
+def test_historical_feishu_only_result_marks_email_not_requested_not_sent(
+    tools, shared_execution
+):
+    multi_actions(tools, ("daily",))
+    action, _ = submit_first(tools, shared_execution)
+    tools.store.mark_completed(
+        action["id"],
+        status="succeeded",
+        deliveries={"feishu": {"status": "sent"}},
+        now=NOW,
+    )
+    reply = tools.handle_text("get trigger 1")
+    channels = reply["data"]["trigger"]["action_results"][0]["channels"]
+    assert channels["email"]["status"] == "not_requested"
+    assert channels["feishu"]["status"] == "sent"
+    assert "邮件未请求" in reply["message"]

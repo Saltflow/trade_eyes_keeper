@@ -248,6 +248,18 @@ def event_occurrences(rule, snapshot, now: datetime, *, future=False):
                         "kind": rule["kind"],
                         "symbol": _get(event, "symbol"),
                         "report_period": actual,
+                        "title": _get(event, "title", ""),
+                        "url": _get(event, "url", ""),
+                        "published_at": publication.isoformat(),
+                        "publication_date": (
+                            str(_get(event, "publication_date"))
+                            if _get(event, "publication_date")
+                            else publication.astimezone(zone).date().isoformat()
+                        ),
+                        "source": _get(event, "source", ""),
+                        "source_documents": list(
+                            _get(event, "source_documents", ()) or ()
+                        ),
                         "day_offset": offset,
                         "date": day.isoformat(),
                     },
