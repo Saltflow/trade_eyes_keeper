@@ -45,6 +45,14 @@ from .report_builders import (  # noqa: F401
     optimizer_notification_title,
     pick_best_anchor,
 )
+from .report_policy import (
+    fundamental_html,
+    generate_return_curve_png,
+    report_view,
+    return_curves_html,
+    returns_only,
+    technical_signals_enabled,
+)
 from .settings import channel_enabled
 
 logger = logging.getLogger(__name__)
@@ -112,6 +120,8 @@ class EmailNotifier(BaseNotifier):
         Args:
             session: SessionContext对象
         """
+        if not technical_signals_enabled(self.config) or returns_only(self.config):
+            return self._send_returns_report(session)
         try:
             # 从Session读取所有数据
             alert_stocks = session.get_alerts_as_dicts()
@@ -213,6 +223,8 @@ class EmailNotifier(BaseNotifier):
         Args:
             session: SessionContext对象
         """
+        if not technical_signals_enabled(self.config) or returns_only(self.config):
+            return self._send_returns_report(session)
         try:
             # 从Session读取所有数据
             stock_data = session.get_all_dataframe()
@@ -1309,7 +1321,44 @@ class EmailNotifier(BaseNotifier):
             + "</section>"
         )
 
+    def _returns_report_body(self, stock_data, curves=None, *, session=None,
+                             announcements=None, placements=None, dividend_events=None,
+                             image_source=None):
+        if session is not None:
+            announcements = getattr(session, "announcements", None)
+            placements = getattr(session, "placements", None)
+            dividend_events = getattr(session, "dividend_events", None)
+        return (
+            '<html><meta charset="utf-8"><body><h2>监控报告</h2>'
+            + fundamental_html(stock_data)
+            + return_curves_html(curves, image_source)
+            + self._build_daily_events_section(
+                announcements, placements, stock_data, dividend_events
+            )
+            + "</body></html>"
+        )
+
+    def _send_returns_report(self, session):
+        """Explicit curve-only strategy view; never renders cached old signals."""
+        try:
+            view = report_view(session, self.config)
+            stock_data = view.get_all_dataframe()
+            curves = getattr(view, "strategy_return_curves", None)
+            png = generate_return_curve_png(curves)
+            body = self._returns_report_body(stock_data, curves, session=view,
+                image_source="cid:chart002" if png else None)
+            pdf = self._generate_daily_pdf(view, [], None, None, stock_data)
+            subject = f"股票日报 - {datetime.now().astimezone():%Y-%m-%d}"
+            return self._send_email(subject, body,
+                portfolio_chart_dict={"overview": png} if png else None,
+                pdf_bytes=pdf)
+        except Exception as exc:  # noqa: BLE001 - classify preparation before SMTP
+            logger.error("收益曲线日报准备失败: %s", type(exc).__name__)
+            return {"status": "failed", "reason": "email_preparation_failed"}
+
     def _build_daily_signal_section(self, signal_scan, stock_data) -> str:
+        if not technical_signals_enabled(self.config):
+            return ""
         """Show scan details even when historical evaluation reports are absent."""
         parts = [
             ('<section class="daily-section signal-section">'
@@ -1397,6 +1446,8 @@ class EmailNotifier(BaseNotifier):
         signal_codes=None,
     ) -> str:
         """Render one compact decision card per independent market."""
+        if returns_only(self.config) or not technical_signals_enabled(self.config):
+            return ""
         reports = evaluation_reports if isinstance(evaluation_reports, dict) else {}
         alert_codes = set(alert_codes or ())
         signal_codes = set(signal_codes or ())
@@ -1604,6 +1655,9 @@ class EmailNotifier(BaseNotifier):
         instrument_audit=None,
         ref_portfolio_html="",
     ):
+        if returns_only(self.config) or not technical_signals_enabled(self.config):
+            return self._returns_report_body(stock_data, announcements=announcements,
+                placements=placements, dividend_events=dividend_events)
         template_dir = Path(__file__).parent.parent / "templates"
         template = (template_dir / "daily_email_mobile.html").read_text(
             encoding="utf-8"
@@ -1682,6 +1736,9 @@ class EmailNotifier(BaseNotifier):
         Returns:
             str: 邮件正文（HTML格式）
         """
+        if returns_only(self.config) or not technical_signals_enabled(self.config):
+            return self._returns_report_body(stock_data, announcements=announcements,
+                placements=placements, dividend_events=dividend_events)
         if daily_mode:
             return self._build_mobile_daily_email_body(
                 alert_stocks,
@@ -2662,6 +2719,14 @@ class EmailNotifier(BaseNotifier):
             session: SessionContext
             report_config: 简报配置 {"id": "morning_snapshot", "label": "早盘简报", ...}
         """
+        from datetime import datetime
+
+        if returns_only(self.config) or not technical_signals_enabled(self.config):
+            view = report_view(session, self.config)
+            label = report_config.get("label", "简报")
+            return (f"{label} - {datetime.now().astimezone():%Y-%m-%d}",
+                self._returns_report_body(view.get_all_dataframe(),
+                    getattr(view, "strategy_return_curves", None), session=view))
         from datetime import datetime
         from pathlib import Path
 

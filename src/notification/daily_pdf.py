@@ -24,6 +24,63 @@ from .report_builders import (
 logger = logging.getLogger(__name__)
 
 
+def _generate_returns_pdf(session, stock_data) -> bytes | None:
+    """Keep the full fundamental/event report without legacy technical sections."""
+    import tempfile
+
+    from .report_policy import (
+        FUNDAMENTAL_COLUMNS,
+        build_return_curves_text,
+        fundamental_rows,
+        generate_return_curve_png,
+    )
+
+    def esc(value):
+        replacements = {"\\": r"\textbackslash{}", "&": r"\&", "%": r"\%",
+            "#": r"\#", "$": r"\$", "_": r"\_", "{": r"\{", "}": r"\}",
+            "~": r"\textasciitilde{}", "^": r"\textasciicircum{}"}
+        return "".join(replacements.get(char, char) for char in str(value))
+
+    curves = getattr(session, "strategy_return_curves", None)
+    png = generate_return_curve_png(curves)
+    lines = [r"\documentclass[10pt,a4paper]{article}",
+        r"\usepackage{xeCJK,graphicx,longtable,hyperref}",
+        r"\setCJKmainfont{Noto Sans CJK SC}",
+        r"\usepackage[margin=1.2cm]{geometry}", r"\begin{document}",
+        r"\section*{监控报告}", r"\section*{价格与基本面}",
+        r"\small\setlength{\tabcolsep}{3pt}",
+        r"\begin{longtable}{p{1.45cm}p{3.2cm}p{2cm}rrrrr}",
+        " & ".join(esc(label) for _, label in FUNDAMENTAL_COLUMNS) + r" \\ \hline"]
+    lines.extend(" & ".join(esc(value) for value in row) + r" \\"
+        for row in fundamental_rows(stock_data))
+    lines.extend([r"\end{longtable}", r"\section*{Ke策略收益曲线}"])
+    lines.extend(esc(line) + r"\par" for line in build_return_curves_text(curves).splitlines()
+        if not any(char in line for char in "▁▂▃▄▅▆▇█"))
+    lines.append("%%KE_RETURN_CURVE_IMAGE%%")
+    events = build_daily_event_rows(getattr(session, "announcements", None),
+        getattr(session, "placements", None), stock_data,
+        getattr(session, "dividend_events", None))
+    if events:
+        lines.append(r"\section*{事件速览}")
+        for event in events:
+            lines.append(esc(" · ".join(str(event.get(key) or "—")
+                for key in ("date", "code", "kind", "title"))) + r"\par")
+            if event.get("url"):
+                lines.append(esc("原文：" + event["url"]) + r"\par")
+    with tempfile.TemporaryDirectory() as directory:
+        if png:
+            image = Path(directory) / "ke_returns.png"
+            image.write_bytes(png)
+            lines[lines.index("%%KE_RETURN_CURVE_IMAGE%%")] = (
+                r"\includegraphics[width=\textwidth]{" + image.as_posix() + "}")
+        else:
+            lines.remove("%%KE_RETURN_CURVE_IMAGE%%")
+        lines.append(r"\end{document}")
+        tex = Path(directory) / "report.tex"
+        tex.write_text("\n".join(lines).replace("\r\n", "\n"), encoding="utf-8")
+        return _compile_pdf(tex)
+
+
 def _converter_probe_preamble() -> str:
     """Cache the real driver probe before a large Unix TeX process can fork."""
     import re
@@ -151,6 +208,15 @@ def generate_daily_pdf(
     import re
     import tempfile
 
+    from .report_policy import returns_only, technical_signals_enabled
+
+    config = getattr(session, "config", {})
+    if returns_only(config) or not technical_signals_enabled(config):
+        try:
+            return _generate_returns_pdf(session, stock_data)
+        except Exception as exc:  # noqa: BLE001 - optional PDF cannot block delivery
+            logger.error("收益曲线 PDF 准备失败: %s", type(exc).__name__)
+            return None
     chart_path = None
     try:
         # 1. 图表 PNG

@@ -570,9 +570,17 @@ if HAS_NUMBA:
         commission_rate,
         min_holding_calendar_days,
         snapshot_mask,
+        ke_equal_batch=False,
+        max_new_entries=5,
+        symbol_tie_rank=None,
     ):
         """Shared-cap target-weight execution without symbol-order allocation."""
         rows, columns = entry_events.shape
+        tie_rank = (
+            np.arange(columns, dtype=np.int64)
+            if symbol_tie_rank is None
+            else symbol_tie_rank
+        )
         if in_kind_events.shape[1] != 30:
             raise ValueError("unsupported in-kind numerical event schema")
         shares = np.zeros(columns, dtype=np.float64)
@@ -611,6 +619,8 @@ if HAS_NUMBA:
         desired_buys = np.zeros(columns, dtype=np.float64)
         symbol_caps = np.zeros(columns, dtype=np.float64)
         locked_symbol_values = np.zeros(columns, dtype=np.float64)
+        new_candidates = np.zeros(columns, dtype=np.bool_)
+        batch_selected = np.zeros(columns, dtype=np.bool_)
 
         for row in range(rows):
             in_kind_cash, in_kind_value = _advance_in_kind_numba(
@@ -650,7 +660,7 @@ if HAS_NUMBA:
                     ordinary and held_days >= min_holding_calendar_days
                 ):
                     continue
-                if active[column]:
+                if active[column] and not ke_equal_batch:
                     active[column] = False
                     active_score[column] = 0.0
                     state_changed = True
@@ -673,12 +683,110 @@ if HAS_NUMBA:
                 if shares[column] <= 0.0:
                     shares[column] = 0.0
                     cost_basis[column] = 0.0
+                if ke_equal_batch:
+                    active[column] = shares[column] > 0.0
+                    if not active[column]:
+                        active_score[column] = 0.0
                 total_trades += 1
+
+            if ke_equal_batch:
+                # Only actual fills own a slot. Neither a pending order nor a
+                # persistent signal is a holding, and old holdings never join
+                # this new-entry batch or get reduced to fund it.
+                security_value = 0.0
+                for column in range(columns):
+                    security_value += shares[column] * valuation_prices[row, column]
+                    new_candidates[column] = False
+                    batch_selected[column] = False
+                    locked_symbol_values[column] = 0.0
+                for event in range(len(in_kind_events)):
+                    column = int(in_kind_events[event, 13])
+                    if 0 <= column < columns:
+                        forced_value = (
+                            in_kind_quantities[event] * in_kind_prices[row, event]
+                        )
+                        if row < int(in_kind_events[event, 12]):
+                            forced_value += (
+                                in_kind_fractions[event] * in_kind_prices[row, event]
+                            )
+                        locked_symbol_values[column] += forced_value
+                nav = cash + security_value + in_kind_value
+                market_budget = nav * total_exposure_cap
+                available = min(
+                    cash,
+                    max(market_budget - security_value - in_kind_value, 0.0),
+                )
+                if available > 0.0:
+                    for column in range(columns):
+                        if (
+                            not entry_events[row, column]
+                            or shares[column] > 0.0
+                            or locked_symbol_values[column] > 0.0
+                            or not np.isfinite(conviction[row, column])
+                        ):
+                            continue
+                        price = buy_prices[row, column]
+                        if (
+                            not tradable[row, column]
+                            or not np.isfinite(price)
+                            or price <= 0.0
+                            or valuation_prices[row, column] <= 0.0
+                        ):
+                            pending_orders += 1
+                            continue
+                        new_candidates[column] = True
+                    selected_count = 0
+                    for slot in range(max_new_entries):
+                        best = -1
+                        for column in range(columns):
+                            if not new_candidates[column] or batch_selected[column]:
+                                continue
+                            if (
+                                best < 0
+                                or conviction[row, column] > conviction[row, best]
+                                or (
+                                    conviction[row, column] == conviction[row, best]
+                                    and tie_rank[column] < tie_rank[best]
+                                )
+                            ):
+                                best = column
+                        if best < 0:
+                            break
+                        batch_selected[best] = True
+                        selected_count += 1
+                    if selected_count:
+                        # Equal fee-inclusive cash budgets; unused lot/cap
+                        # residues stay in cash, never refill an old position.
+                        per_entry_budget = min(
+                            available / selected_count, market_budget * per_symbol_cap
+                        )
+                        for column in range(columns):
+                            if not batch_selected[column]:
+                                continue
+                            price = buy_prices[row, column]
+                            quantity = int(
+                                per_entry_budget
+                                / (price * (1.0 + commission_rate)) / lot_size
+                            ) * lot_size
+                            if quantity <= 0:
+                                cash_rejected_order_count += 1
+                                continue
+                            cost = quantity * price * (1.0 + commission_rate)
+                            if cost > cash + 0.000001:
+                                cash_rejected_order_count += 1
+                                continue
+                            shares[column] = quantity
+                            cost_basis[column] = price
+                            cash -= cost
+                            active[column] = True
+                            active_score[column] = conviction[row, column]
+                            entry_date[column] = date_ordinals[row]
+                            total_trades += 1
 
             # A missing t+1 stress price means the one-shot event is pending,
             # not a fill.  It never enters target allocation for this window.
             for column in range(columns):
-                if not entry_events[row, column] or active[column]:
+                if ke_equal_batch or not entry_events[row, column] or active[column]:
                     continue
                 execution_price = buy_prices[row, column]
                 if (
@@ -693,7 +801,7 @@ if HAS_NUMBA:
                 entry_date[column] = date_ordinals[row]
                 state_changed = True
 
-            if state_changed:
+            if state_changed and not ke_equal_batch:
                 for column in range(columns):
                     targets[column] = 0.0
                 nav_for_cap = cash + in_kind_value
@@ -925,6 +1033,54 @@ else:
 # FastEvaluator — 统一评估入口
 # ═══════════════════════════════════════════════════════════════
 
+def _target_allocation_options(trade_plan):
+    """Validate explicit Ke batch execution; ordinary plans retain old defaults.
+
+    Entry/exit booleans own the strategy's Ke thresholds. Conviction contains
+    unrounded Ke for ranking only. Budgets are fee-inclusive cash amounts:
+    available cash is shared equally by at most five NEW candidates, capped at
+    per_symbol_cap * (entry-day NAV * total_exposure_cap) per new position.
+    """
+    mode = trade_plan.execution.get("allocation_mode")
+    columns = trade_plan.buy_signals.shape[1]
+    if mode in (None, ""):
+        return False, 5, np.arange(columns, dtype=np.int64)
+    if mode != "ke_equal_batch":
+        raise ValueError("unknown target allocation_mode")
+    if trade_plan.execution.get("model") != "target_weight":
+        raise ValueError("ke_equal_batch requires target_weight execution")
+    maximum = trade_plan.execution.get("max_new_entries", 5)
+    if type(maximum) is not int or not 1 <= maximum <= 5:
+        raise ValueError("ke_equal_batch max_new_entries must be 1 through 5")
+    cap = float(trade_plan.execution.get("per_symbol_cap", 0.20))
+    exposure = float(trade_plan.execution.get("total_exposure_cap", 1.0))
+    if (
+        not np.isfinite(cap) or not 0 < cap <= 0.20
+        or not np.isfinite(exposure) or not 0 <= exposure <= 1
+    ):
+        raise ValueError("invalid Ke entry or market exposure cap")
+    if trade_plan.target_weights is not None:
+        raise ValueError("Ke batches must use actual filled holdings, not target_weights")
+    if (
+        trade_plan.force_exit_signals is not None
+        and np.any(trade_plan.force_exit_signals)
+    ):
+        raise ValueError("Ke threshold exits cannot bypass the holding lock")
+    if (
+        trade_plan.conviction is None
+        or np.asarray(trade_plan.conviction).shape != trade_plan.buy_signals.shape
+    ):
+        raise ValueError("Ke conviction must contain the full original Ke matrix")
+    symbols = list(map(str, trade_plan.symbols))
+    if len(symbols) != columns or len(set(symbols)) != columns:
+        raise ValueError("Ke batching requires unique symbol codes for stable ties")
+    ranks = np.empty(columns, dtype=np.int64)
+    ordered_columns = sorted(range(columns), key=lambda index: symbols[index])
+    for rank, column in enumerate(ordered_columns):
+        ranks[column] = rank
+    return True, maximum, ranks
+
+
 class FastEvaluator:
     """向量化快速评估器 — 所有搜参模式共用。"""
 
@@ -975,6 +1131,7 @@ class FastEvaluator:
         buy_cash_limit = float(trade_plan.buy_cash_limit)
         sell_cash_limit = float(trade_plan.sell_cash_limit)
         execution_model = str(trade_plan.execution.get("model", "cash_cap"))
+        ke_equal_batch, max_new_entries, symbol_tie_rank = _target_allocation_options(trade_plan)
         if (
             execution_model == "cash_cap"
             and (buy_cash_limit <= 0.0 or sell_cash_limit <= 0.0)
@@ -1070,7 +1227,7 @@ class FastEvaluator:
                 np.ascontiguousarray(entry_events, dtype=np.bool_),
                 np.ascontiguousarray(exit_events, dtype=np.bool_),
                 np.ascontiguousarray(force_exits, dtype=np.bool_),
-                np.ascontiguousarray(conviction, dtype=np.float32),
+                np.ascontiguousarray(conviction, dtype=np.float64 if ke_equal_batch else np.float32),
                 np.ascontiguousarray(declared_target_weights, dtype=np.float32),
                 trade_plan.target_weights is not None,
                 np.ascontiguousarray(valuation_prices, dtype=np.float32),
@@ -1096,7 +1253,7 @@ class FastEvaluator:
                 np.ascontiguousarray(date_ordinals, dtype=np.int64),
                 float(self.initial_cash),
                 float(trade_plan.execution.get("per_symbol_cap", 0.20)),
-                float(trade_plan.execution.get("total_exposure_cap", 0.80)),
+                float(trade_plan.execution.get("total_exposure_cap", 1.0 if ke_equal_batch else 0.80)),
                 int(self.lot_size),
                 float(self.commission_rate),
                 int(
@@ -1105,6 +1262,7 @@ class FastEvaluator:
                     )
                 ),
                 np.zeros(T, dtype=np.bool_),
+                ke_equal_batch, max_new_entries, symbol_tie_rank,
             )
         elif HAS_NUMBA:
             (
@@ -1540,6 +1698,7 @@ def simulate_portfolio(
     buy_cash_limit = float(trade_plan.buy_cash_limit)
     sell_cash_limit = float(trade_plan.sell_cash_limit)
     execution_model = str(trade_plan.execution.get("model", "cash_cap"))
+    ke_equal_batch, max_new_entries, symbol_tie_rank = _target_allocation_options(trade_plan)
     if execution_prices is None:
         execution_prices = DEFAULT_FILL_PRICE_POLICY.build(
             price,
@@ -1650,7 +1809,7 @@ def simulate_portfolio(
             np.ascontiguousarray(entry_events, dtype=np.bool_),
             np.ascontiguousarray(exit_events, dtype=np.bool_),
             np.ascontiguousarray(force_exits, dtype=np.bool_),
-            np.ascontiguousarray(conviction, dtype=np.float32),
+            np.ascontiguousarray(conviction, dtype=np.float64 if ke_equal_batch else np.float32),
             np.ascontiguousarray(declared_target_weights, dtype=np.float32),
             trade_plan.target_weights is not None,
             np.ascontiguousarray(valuation_price, dtype=np.float32),
@@ -1676,7 +1835,7 @@ def simulate_portfolio(
             np.ascontiguousarray(date_ordinals, dtype=np.int64),
             float(initial_cash),
             float(trade_plan.execution.get("per_symbol_cap", 0.20)),
-            float(trade_plan.execution.get("total_exposure_cap", 0.80)),
+            float(trade_plan.execution.get("total_exposure_cap", 1.0 if ke_equal_batch else 0.80)),
             int(lot_size),
             float(commission_rate),
             int(
@@ -1685,6 +1844,7 @@ def simulate_portfolio(
                 )
             ),
             np.ascontiguousarray(snapshot_mask),
+            ke_equal_batch, max_new_entries, symbol_tie_rank,
         )
     elif HAS_NUMBA:
         (

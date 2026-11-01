@@ -16,6 +16,13 @@ import requests
 
 from .base import BaseNotifier
 from .receipts import combine_receipts, legacy_tuple, normalize_receipt
+from .report_policy import (
+    build_return_curves_text,
+    fundamental_text,
+    report_view,
+    returns_only,
+    technical_signals_enabled,
+)
 from .settings import channel_enabled
 
 logger = logging.getLogger(__name__)
@@ -163,10 +170,12 @@ class TelegramNotifier(BaseNotifier):
         return self._send_report(session, alert_only=False)
 
     def _send_report(self, session, *, alert_only: bool) -> dict:
+        session = report_view(session, self.config)
+        simple = returns_only(self.config) or not technical_signals_enabled(self.config)
         try:
             df = session.get_all_dataframe()
             alerts = session.get_alerts_as_dicts() if alert_only else None
-            sections = list(self._build_daily_sections(df, alerts))
+            sections = [("价格与基本面", f"<pre>{_esc(fundamental_text(df))}</pre>")] if simple else list(self._build_daily_sections(df, alerts))
         except Exception as exc:  # noqa: BLE001 - no HTTP call has started
             return {
                 "status": "failed",
@@ -178,7 +187,7 @@ class TelegramNotifier(BaseNotifier):
         try:
             from .report_builders import build_daily_events_text
 
-            events = "" if alert_only else build_daily_events_text(session, df)
+            events = "" if alert_only and not simple else build_daily_events_text(session, df)
             if events:
                 sections.append(("事件速览", events))
         except Exception as exc:  # noqa: BLE001 - preparation before transport
@@ -191,7 +200,7 @@ class TelegramNotifier(BaseNotifier):
 
             summary = build_strategy_text_summary(session, markdown=False)
             if summary:
-                sections.append(("策略与信号", f"<pre>{_esc(summary)}</pre>"))
+                sections.append(("收益曲线" if simple else "策略与信号", f"<pre>{_esc(summary)}</pre>"))
         except Exception as exc:  # noqa: BLE001 - retain other report sections
             preparation_failures.append(
                 {
@@ -245,6 +254,12 @@ class TelegramNotifier(BaseNotifier):
         return normalize_receipt(self._send(title, body, classified=True))
 
     def _prepare_brief_report(self, session, report_config: dict):
+        if returns_only(self.config) or not technical_signals_enabled(self.config):
+            session = report_view(session, self.config)
+            title = report_config.get("label", "简报")
+            text = fundamental_text(session.get_all_dataframe())
+            text += "\n\n" + build_return_curves_text(getattr(session, "strategy_return_curves", None))
+            return title, f"<pre>{_esc(text)}</pre>"
         label = report_config.get("label", "简报")
         from .report_builders import get_brief_dataframe
 

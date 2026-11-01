@@ -55,6 +55,7 @@ from src.instruments import InstrumentAuditService
 from src.instruments.audit import load_latest_audit
 from src.markets import _detect_fine_group, get_skip_search, get_skip_signals
 from src.notification.manager import NotifierManager
+from src.notification.report_policy import returns_only, technical_signals_enabled
 from src.search import (
     get_market_optimizer_config,
     get_market_optimizer_configs,
@@ -81,6 +82,7 @@ from src.search.promotion import (
 from src.search.run_diagnostics import persist_run_summary, summarize_ranking_archive
 from src.session.session_manager import SessionManager
 from src.strategy import Params
+from src.strategy.return_curves import load_return_curves
 
 OPTIMIZER_GROUPS = ("a_share", "hk", "us")
 DEFAULT_OPTIMIZER_GROUPS = OPTIMIZER_GROUPS
@@ -88,6 +90,34 @@ DAILY_REPORT_FREQUENCIES = {"daily", "weekly", "off"}
 # Keep the existing three-year daily decision-history chart.
 DAILY_PORTFOLIO_HISTORY_MONTHS = 36
 DAILY_PORTFOLIO_HISTORY_BUFFER_DAYS = 35
+
+
+def _prepare_report_signals(session, session_manager, config, *, brief=False):
+    """Keep retired technical scans out of reports and reference orders."""
+    if not technical_signals_enabled(config):
+        session.signal_scan = None
+        logger.info("技术信号已停用，跳过条件检查和策略扫描")
+        return
+    if not brief:
+        ConditionChecker(config).check_from_session(session, session_manager)
+    try:
+        strategies, params, timestamp, _ = _get_active_group_context(config)
+        if timestamp:
+            logger.info("Report scan uses active optimizer run from %s", timestamp)
+        session.signal_scan = _collect_signal_scan(
+            session, strategies, params, config,
+            skip_codes=get_skip_signals(config) if brief else None,
+        )
+        if not brief:
+            session.alerts.extend(session.signal_scan.alerts)
+    except Exception:  # The optional scan cannot abort report delivery.
+        logger.exception("报告技术信号扫描失败")
+        session.signal_scan = None
+
+
+def _attach_return_curves(session, config):
+    if returns_only(config):
+        object.__setattr__(session, "strategy_return_curves", load_return_curves(config))
 
 
 
@@ -1606,153 +1636,129 @@ def run_daily_task(
                     len(audit.profiles),
                 )
 
-        # 3. 检查条件并存入Session
         if progress:
             progress("daily_evaluation")
-        logger.info("开始检查交易条件")
-        checker = ConditionChecker(config)
-        checker.check_from_session(session, session_manager)
-        logger.info(f"条件检查完成: {len(session.alerts)}个警报")
-
-        # 3b. 策略信号扫描
-        try:
-            logger.info("开始策略信号扫描")
-            scan_strategies, scan_params, scan_timestamp, _ = (
-                _get_active_group_context(config)
-            )
-            if scan_timestamp:
-                logger.info("Signal scan uses active optimizer run from %s", scan_timestamp)
-            session.signal_scan = _collect_signal_scan(
-                session, scan_strategies, scan_params, config
-            )
-            session.alerts.extend(session.signal_scan.alerts)
-            logger.info(
-                "策略信号扫描结果: %s; %s 个策略告警",
-                session.signal_scan.group_outcomes,
-                len(session.signal_scan.alerts),
-            )
-        # Signal scan failure must not abort reporting.
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"策略信号扫描失败 (非致命): {e}")
-            session.signal_scan = None
+        _prepare_report_signals(session, session_manager, config)
+        _attach_return_curves(session, config)
 
         # 4. 创建通知管理器（统一入口）
         notifier = NotifierManager(config)
 
-        # 5. 投资组合策略分析（参数唯一来源: data/optimizer/{group}_best_params.yaml）
-        try:
-            logger.info("开始投资组合策略分析")
+        if not returns_only(config):
+            # 5. 投资组合策略分析（参数唯一来源: data/optimizer/{group}_best_params.yaml）
+            try:
+                logger.info("开始投资组合策略分析")
 
-            strategies_by_group, active_params, active_timestamp, active_run = (
-                _get_active_group_context(config)
-            )
-
-            if not strategies_by_group:
-                logger.warning("未找到有效策略，跳过策略评估")
-            else:
-                market_configs = get_market_optimizer_configs(
-                    config, groups=OPTIMIZER_GROUPS
+                strategies_by_group, active_params, active_timestamp, active_run = (
+                    _get_active_group_context(config)
                 )
-                stocks_data = {}
-                for configured_stock in config.get("stocks", []):
-                    code = _stock_code(configured_stock)
-                    df = getattr(session, "_historical", {}).get(code)
-                    if df is not None and len(df) >= 60:
-                        stocks_data[code] = df
 
-                benchmark_data = _fetch_benchmarks(config, session)
-                reports = {}
-                if active_timestamp:
-                    logger.info("Portfolio evaluation uses active optimizer run from %s", active_timestamp)
-                active_run = load_latest_strategy_run(
-                    groups=tuple(
-                        group
-                        for group in _configured_optimizer_groups(config)
-                        if group in active_params
+                if not strategies_by_group:
+                    logger.warning("未找到有效策略，跳过策略评估")
+                else:
+                    market_configs = get_market_optimizer_configs(
+                        config, groups=OPTIMIZER_GROUPS
                     )
-                )
-                for group in OPTIMIZER_GROUPS:
-                    strategy = strategies_by_group.get(group)
-                    if strategy is None:
-                        continue
-                    if not strategy.supports_market(group):
-                        logger.info(
-                            "Strategy %s does not support %s; skip evaluation",
-                            strategy.name,
-                            group,
+                    stocks_data = {}
+                    for configured_stock in config.get("stocks", []):
+                        code = _stock_code(configured_stock)
+                        df = getattr(session, "_historical", {}).get(code)
+                        if df is not None and len(df) >= 60:
+                            stocks_data[code] = df
+
+                    benchmark_data = _fetch_benchmarks(config, session)
+                    reports = {}
+                    if active_timestamp:
+                        logger.info("Portfolio evaluation uses active optimizer run from %s", active_timestamp)
+                    active_run = load_latest_strategy_run(
+                        groups=tuple(
+                            group
+                            for group in _configured_optimizer_groups(config)
+                            if group in active_params
                         )
-                        continue
-                    params = active_params.get(group)
-                    if params is None:
-                        logger.warning(
-                            "No %s parameters for %s; skip this group. "
-                            "Run python main.py --optimize to generate them.",
-                            strategy.name,
-                            group,
-                        )
-                        continue
-                    exec_cfg = market_configs[group].execution
-                    group_last_dates = []
-                    for code, frame in stocks_data.items():
-                        if _detect_fine_group(code) != group or frame.empty:
+                    )
+                    for group in OPTIMIZER_GROUPS:
+                        strategy = strategies_by_group.get(group)
+                        if strategy is None:
                             continue
-                        raw_dates = frame["date"] if "date" in frame.columns else frame.index
-                        parsed_dates = pd.to_datetime(raw_dates, errors="coerce")
-                        if len(parsed_dates):
-                            group_last_dates.append(pd.Timestamp(parsed_dates.max()))
-                    validation_end = max(group_last_dates) if group_last_dates else None
-                    validation_start = (
-                        _daily_portfolio_evaluation_start(validation_end)
-                        if validation_end is not None
-                        else None
-                    )
-                    group_reports = evaluate_all_groups(
-                        stocks_data,
-                        list(stocks_data),
-                        strategy,
-                        params,
-                        exec_cfg,
-                        benchmark_data=benchmark_data,
-                        target_groups=[group],
-                        start_date=(
-                            validation_start.strftime("%Y-%m-%d")
-                            if validation_start is not None
-                            else None
-                        ),
-                        end_date=(
-                            validation_end.strftime("%Y-%m-%d")
+                        if not strategy.supports_market(group):
+                            logger.info(
+                                "Strategy %s does not support %s; skip evaluation",
+                                strategy.name,
+                                group,
+                            )
+                            continue
+                        params = active_params.get(group)
+                        if params is None:
+                            logger.warning(
+                                "No %s parameters for %s; skip this group. "
+                                "Run python main.py --optimize to generate them.",
+                                strategy.name,
+                                group,
+                            )
+                            continue
+                        exec_cfg = market_configs[group].execution
+                        group_last_dates = []
+                        for code, frame in stocks_data.items():
+                            if _detect_fine_group(code) != group or frame.empty:
+                                continue
+                            raw_dates = frame["date"] if "date" in frame.columns else frame.index
+                            parsed_dates = pd.to_datetime(raw_dates, errors="coerce")
+                            if len(parsed_dates):
+                                group_last_dates.append(pd.Timestamp(parsed_dates.max()))
+                        validation_end = max(group_last_dates) if group_last_dates else None
+                        validation_start = (
+                            _daily_portfolio_evaluation_start(validation_end)
                             if validation_end is not None
                             else None
-                        ),
-                        context_enricher=_strategy_context_enricher(
-                            strategy, config, group, list(stocks_data)
-                        ),
-                        market_constraints=market_configs[group].constraints,
-                    )
-                    for report in group_reports.values():
-                        if active_run is not None:
-                            report.selection_diagnostics = dict(
-                                active_run.selection_by_group.get(group, {})
-                            )
-                    reports.update(group_reports)
-
-                if reports:
-                    object.__setattr__(session, "evaluation_reports", reports)
-                    object.__setattr__(session, "_yaml_eval_cache", {
-                        gk: report.to_cache_dict() for gk, report in reports.items()
-                    })
-                    logger.info(
-                        f"投资组合策略分析完成 ({len(reports)}组: "
-                        + ", ".join(
-                            f"{group}:{report.total_return:+.1f}%"
-                            for group, report in reports.items()
                         )
-                        + ")"
-                    )
-                else:
-                    logger.warning("无可用回测结果，跳过投资组合分析")
-        except Exception:
-            logger.exception("投资组合策略分析失败")
+                        group_reports = evaluate_all_groups(
+                            stocks_data,
+                            list(stocks_data),
+                            strategy,
+                            params,
+                            exec_cfg,
+                            benchmark_data=benchmark_data,
+                            target_groups=[group],
+                            start_date=(
+                                validation_start.strftime("%Y-%m-%d")
+                                if validation_start is not None
+                                else None
+                            ),
+                            end_date=(
+                                validation_end.strftime("%Y-%m-%d")
+                                if validation_end is not None
+                                else None
+                            ),
+                            context_enricher=_strategy_context_enricher(
+                                strategy, config, group, list(stocks_data)
+                            ),
+                            market_constraints=market_configs[group].constraints,
+                        )
+                        for report in group_reports.values():
+                            if active_run is not None:
+                                report.selection_diagnostics = dict(
+                                    active_run.selection_by_group.get(group, {})
+                                )
+                        reports.update(group_reports)
+
+                    if reports:
+                        object.__setattr__(session, "evaluation_reports", reports)
+                        object.__setattr__(session, "_yaml_eval_cache", {
+                            gk: report.to_cache_dict() for gk, report in reports.items()
+                        })
+                        logger.info(
+                            f"投资组合策略分析完成 ({len(reports)}组: "
+                            + ", ".join(
+                                f"{group}:{report.total_return:+.1f}%"
+                                for group, report in reports.items()
+                            )
+                            + ")"
+                        )
+                    else:
+                        logger.warning("无可用回测结果，跳过投资组合分析")
+            except Exception:
+                logger.exception("投资组合策略分析失败")
 
         # ── 参考持仓状态（只读，日报不做调仓，三分仓）──
 
@@ -1953,28 +1959,8 @@ def run_brief_report(
 
         logger.info(f"简报：获取到 {len(session.stocks_data)} 只股票数据")
 
-        # 策略信号扫描
-        try:
-            (
-                brief_strategies,
-                brief_params,
-                brief_timestamp,
-                _,
-            ) = _get_active_group_context(config)
-            if brief_timestamp:
-                logger.info(
-                    "Brief scan uses active optimizer run from %s",
-                    brief_timestamp,
-                )
-            brief_skipped_signals = get_skip_signals(config)
-            session.signal_scan = _collect_signal_scan(
-                session, brief_strategies, brief_params, config,
-                skip_codes=brief_skipped_signals,
-            )
-            logger.info("简报策略信号扫描结果: %s", session.signal_scan.group_outcomes)
-        # Optional scan failure leaves the brief partial.
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"简报策略信号扫描失败 (非致命): {e}")
+        _prepare_report_signals(session, session_manager, config, brief=True)
+        _attach_return_curves(session, config)
 
         brief_triggers = report_config.get("triggers", {})
         from src.notification.report_triggers import required_report_data_roots
@@ -2055,6 +2041,8 @@ def run_brief_report(
                     pool["label"],
                     exc,
                 )
+            if not technical_signals_enabled(config):
+                trading_blocked_reason = "技术信号已停用，保留已有持仓，不自动调仓"
             if trading_blocked_reason:
                 pass
             elif not pf.is_bound:

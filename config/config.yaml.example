@@ -1,3 +1,11 @@
+# 报告中的策略部分仅显示明确来源的 Ke 收益曲线。
+report:
+  technical_signals:
+    enabled: false
+  strategy_display: returns_only
+  return_curve_artifact: data/strategy_returns/ke_24m.json
+  return_curve_max_age_days: 7
+
 # 股票量化系统配置文件示例
 # 复制为 config/config.yaml 并修改
 

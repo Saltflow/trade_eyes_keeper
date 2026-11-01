@@ -278,7 +278,9 @@ def _per_share_amounts(text: str, currency: str) -> set[Decimal]:
     return {
         Decimal(amount) / (10 if unit else 1)
         for amount, unit in re.findall(
-            token + r"\s*(\d+(?:\.\d+)?)\s*per\s*(?:(10|ten)\s+)?"
+            token + r"\s*(\d+(?:\.\d+)?)\s*"
+            r"(?:\(\s*(?:tax\s+inclusive|inclusive\s+of\s+tax)\s*\)\s*)?"
+            r"(?:per|for\s+(?:every|each))\s*(?:(10|ten)\s+)?"
             r"(?:(?:H|ordinary|existing)\s+)*shares?\b",
             text,
             re.IGNORECASE,
@@ -336,8 +338,8 @@ def match_hkex_cash_notice(
     weekday = r"(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+)?"
     payment_patterns = (
         r"Payment date\s*[:：]?\s*(?:(?:is expected to be|will be|is)\s+)?(?:on\s+)?(" + _NAMED_DATE + ")",
-        r"\b(?:pay|paid|payable|distribute)\b(?:(?![.!?]\s).){0,200}?"
-        r"\b(?:on(?:\s+or)?(?:\s+around)?|around)\s+"
+        r"\b(?:pay|paid|payable|distribute(?:d)?)\b(?:(?![.!?]\s).){0,200}?"
+        r"\b(?:on(?:\s+(?:or\s+)?(?:around|about))?|around|about)\s+"
         + weekday
         + "("
         + _NAMED_DATE
@@ -350,7 +352,7 @@ def match_hkex_cash_notice(
     approximate_payment_dates = {
         _named_day(value)
         for value in re.findall(
-            r"\b(?:on\s+(?:or\s+)?around|around)\s+"
+            r"\b(?:on\s+(?:or\s+)?(?:around|about)|around|about)\s+"
             + weekday
             + "("
             + _NAMED_DATE

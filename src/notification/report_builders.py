@@ -607,6 +607,15 @@ def build_strategy_text_summary(session, markdown: bool = False) -> str:
         session: SessionContext（读 evaluation_reports/signal_scan/placements）
         markdown: True=飞书(**粗体**), False=Telegram(纯文本)
     """
+    from .report_policy import (
+        build_return_curves_text,
+        returns_only,
+        technical_signals_enabled,
+    )
+
+    config = getattr(session, "config", {})
+    if returns_only(config) or not technical_signals_enabled(config):
+        return build_return_curves_text(getattr(session, "strategy_return_curves", None))
     b = "**" if markdown else ""
     reports = getattr(session, "evaluation_reports", {}) or {}
     signal_scan = getattr(session, "signal_scan", None)
@@ -1294,7 +1303,9 @@ def report_data_readiness(session) -> dict:
     available = set(data) if isinstance(data, dict) else set()
     missing = sorted(expected - available)
     errors = getattr(session, "errors", []) or []
-    outcomes = getattr(getattr(session, "signal_scan", None), "group_outcomes", {}) or {}
+    from .report_policy import technical_signals_enabled
+
+    outcomes = (getattr(getattr(session, "signal_scan", None), "group_outcomes", {}) or {}) if technical_signals_enabled(config) else {}
     analysis_issues = {
         group: value.get("status") for group, value in outcomes.items()
         if isinstance(value, dict) and value.get("status") in {"failed", "blocked", "not_run"}

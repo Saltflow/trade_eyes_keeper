@@ -15,6 +15,14 @@ import requests
 
 from .base import BaseNotifier
 from .receipts import combine_receipts, legacy_tuple, normalize_receipt
+from .report_policy import (
+    FUNDAMENTAL_COLUMNS,
+    build_return_curves_text,
+    fundamental_rows,
+    report_view,
+    returns_only,
+    technical_signals_enabled,
+)
 from .settings import channel_enabled
 
 logger = logging.getLogger(__name__)
@@ -76,10 +84,13 @@ class FeishuNotifier(BaseNotifier):
         return self._send_report(session, alert_only=False)
 
     def _send_report(self, session, *, alert_only: bool) -> dict:
+        session = report_view(session, self.config)
+        simple = returns_only(self.config) or not technical_signals_enabled(self.config)
         try:
             stock_data = session.get_all_dataframe()
             alerts = session.get_alerts_as_dicts() if alert_only else None
-            sections = list(
+            sections = [("价格与基本面", "**完整监控股票池**",
+                [self._fundamental_table(stock_data)])] if simple else list(
                 self._build_report_sections(
                     stock_data, alerts=alerts, alert_only=alert_only
                 )
@@ -95,7 +106,7 @@ class FeishuNotifier(BaseNotifier):
         try:
             from .report_builders import build_daily_events_text
 
-            events = "" if alert_only else build_daily_events_text(session, stock_data)
+            events = "" if alert_only and not simple else build_daily_events_text(session, stock_data)
             if events:
                 sections.append(("事件速览", events, None))
         except Exception as exc:  # noqa: BLE001 - preparation before transport
@@ -108,7 +119,7 @@ class FeishuNotifier(BaseNotifier):
 
             strat_body = build_strategy_text_summary(session, markdown=True)
             if strat_body:
-                sections.append(("策略与信号", strat_body, None))
+                sections.append(("收益曲线" if simple else "策略与信号", strat_body, None))
         except Exception as exc:  # noqa: BLE001 - retain other report sections
             preparation_failures.append(
                 {
@@ -168,6 +179,13 @@ class FeishuNotifier(BaseNotifier):
         return combine_receipts([{**receipt, "ordinal": 0, "label": "brief"}])
 
     def _prepare_brief_report(self, session, report_config: dict) -> dict:
+        if returns_only(self.config) or not technical_signals_enabled(self.config):
+            session = report_view(session, self.config)
+            table = self._fundamental_table(session.get_all_dataframe())
+            body = build_return_curves_text(getattr(session, "strategy_return_curves", None))
+            card = _build_interactive_card(report_config.get("label", "简报"), body,
+                extra_elements=[table])
+            return {"msg_type": "interactive", "card": card}
         label = report_config.get("label", "简报")
         from .report_builders import get_brief_dataframe
 
@@ -335,6 +353,14 @@ class FeishuNotifier(BaseNotifier):
             logger.error("Feishu optimizer notification failed: %s", detail)
 
     # ── 辅助 ──────────────────────────────────
+
+    @staticmethod
+    def _fundamental_table(stock_data):
+        columns = [(f"value{index}", label, "left", "text")
+            for index, (_, label) in enumerate(FUNDAMENTAL_COLUMNS)]
+        rows = [{f"value{index}": value for index, value in enumerate(row)}
+            for row in fundamental_rows(stock_data)]
+        return _build_native_table(columns, rows) or {"tag": "markdown", "content": "暂无监控数据"}
 
     @staticmethod
     def _build_report_sections(

@@ -327,6 +327,7 @@ class SessionContext(BaseModel):
     announcements: dict[str, list] = Field(default_factory=dict)
     portfolio_results: Optional[dict] = None
     signal_scan: Optional["object"] = None  # 信号扫描结果
+    strategy_return_curves: Optional[dict] = None  # 明确标识来源的 Ke 模拟收益曲线
     backtest: Optional[dict] = None  # backtest results {group: dict}
     opt_data_a: Optional[dict] = None  # A股最新优化器 YAML (供邮件展示预估收益)
     opt_data_non_a: Optional[dict] = None  # 非A股最新优化器 YAML (向后兼容)
