@@ -39,6 +39,7 @@ def _stock_data():
                 "date": pd.Timestamp.now().strftime("%Y-%m-%d"),
                 "close": 10.2,
                 "open": 10.0,
+                "prev_close": 9.75,
                 "high": 10.5,
                 "low": 9.8,
                 "ma60": 10.0,
@@ -82,6 +83,17 @@ def _daily_body(notifier, *, alerts=None, signal_scan=None, ref_html=""):
         ref_portfolio_html=ref_html,
         daily_mode=True,
     )
+
+
+def test_daily_matrix_shows_open_previous_close_and_current_price(monkeypatch):
+    soup = BeautifulSoup(_daily_body(_notifier(monkeypatch)), "html.parser")
+    table = soup.select_one(".watchlist-table")
+    headers = table.select("thead th")
+    assert [item.get_text() for item in headers[:4]] == ["标的", "今开", "昨收", "现价"]
+    assert "股息率" not in table.get_text()
+    assert all("mobile-hide" not in item.get("class", []) for item in headers[1:4])
+    cells = table.select_one("tbody tr").select("td")
+    assert [cell.get_text() for cell in cells[1:4]] == ["10.00", "9.75", "10.20"]
 
 
 def test_daily_alert_and_empty_paths_share_one_mobile_document(monkeypatch):

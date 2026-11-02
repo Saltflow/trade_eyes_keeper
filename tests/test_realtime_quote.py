@@ -33,7 +33,7 @@ class TestQQRealtimeQuote:
         fields[34] = low  # 最低
         fields[37] = "107740"  # 成交额
         fields[38] = "0.23"  # 换手率
-        return "v_sh{}=".format(code) + "~".join(fields)
+        return f"v_sh{code}=" + "~".join(fields)
 
     @patch("requests.get")
     def test_returns_source_date_and_previous_close(self, mock_get):
@@ -224,6 +224,69 @@ class TestRealtimeModeInSession:
 
         fetcher.fetch_to_session(session, session_manager, realtime_mode=False)
         mock_qq.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "rows,expected",
+    [
+        (
+            [{"date": "2026-06-26", "close": 9.7}, {"date": "2026-06-29", "close": 10}],
+            9.7,
+        ),
+        (
+            [
+                {"date": "2026-06-26", "close": 9.7},
+                {"date": "2026-06-29", "close": 10, "prev_close": 9.8},
+            ],
+            9.8,
+        ),
+        ([{"date": "2026-06-29", "close": 10}], None),
+        (
+            [{"date": "2026-06-29", "close": 9.9}, {"date": "2026-06-29", "close": 10}],
+            None,
+        ),
+        (
+            [
+                {"date": "2026-06-26", "close": float("nan")},
+                {"date": "2026-06-29", "close": 10},
+            ],
+            None,
+        ),
+    ],
+)
+def test_previous_close_uses_prior_trading_bar_without_guessing(rows, expected):
+    from src.core.data_fetcher import StockDataFetcher
+
+    assert StockDataFetcher._previous_close(pd.DataFrame(rows)) == expected
+
+
+def test_daily_fetch_keeps_previous_close_from_existing_history(monkeypatch):
+    fetcher = TestRealtimeModeInSession._make_fetcher()
+    fetcher._data_source.fetch_stock_data.return_value = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2026-06-26"), "close": 9.7},
+            {"date": pd.Timestamp("2026-06-29"), "open": 9.8, "close": 10},
+        ]
+    )
+    monkeypatch.setattr(fetcher, "_add_extended_indicators", lambda frame: frame)
+    monkeypatch.setattr(
+        fetcher,
+        "_fetch_fundamental_data",
+        lambda code: dict.fromkeys(
+            ["dividend_per_share", "pe_ratio", "pb_ratio", "roe"]
+        ),
+    )
+    monkeypatch.setattr(fetcher, "_save_to_csv", lambda *args: None)
+    quote = MagicMock(side_effect=AssertionError("daily must reuse loaded history"))
+    monkeypatch.setattr(fetcher.web_crawler, "fetch_realtime_quote", quote)
+    manager, session = MagicMock(), MagicMock()
+    session._historical = {}
+    fetcher.fetch_to_session(session, manager, realtime_mode=False)
+    frame = manager.update_stock_from_dataframe.call_args.args[2]
+    assert frame.iloc[-1]["prev_close"] == 9.7
+    assert frame.iloc[-1]["open"] == 9.8
+    assert frame.iloc[-1]["close"] == 10
+    quote.assert_not_called()
 
 
 class TestEastmoneyRemoved:

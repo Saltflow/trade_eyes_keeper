@@ -16,11 +16,15 @@ FUNDAMENTAL_COLUMNS = (
     ("stock_code", "代码"),
     ("stock_name", "名称"),
     ("date", "行情日期"),
+    ("open", "今开"),
+    ("prev_close", "昨收"),
     ("close", "现价"),
-    ("dividend_yield", "股息率%"),
     ("pe_ratio", "PE"),
     ("pb_ratio", "PB"),
     ("roe", "ROE%"),
+)
+ROE_ESTIMATE_NOTE = (
+    "ROE 带“估”的数值按 PB÷PE×100% 粗估，可能存在口径或时点差异；无标记的值为已有 ROE。"
 )
 
 
@@ -196,6 +200,26 @@ def generate_return_curve_png(payload) -> bytes | None:
         plt.close(fig)
 
 
+def format_roe(row) -> str:
+    """Keep reported ROE; label the requested PB/PE display fallback explicitly."""
+
+    def number(value):
+        try:
+            result = float(value)
+            return result if np.isfinite(result) else None
+        except (TypeError, ValueError):
+            return None
+
+    reported = number(row.get("roe"))
+    if reported is not None:
+        return f"{reported:.2f}"
+    pe, pb = number(row.get("pe_ratio")), number(row.get("pb_ratio"))
+    if pe is None or pe == 0 or pb is None or pb <= 0:
+        return "—"
+    estimate = pb / pe * 100
+    return f"{estimate:.2f}(估)" if np.isfinite(estimate) else "—"
+
+
 def fundamental_rows(stock_data) -> list[list[str]]:
     if stock_data is None or not hasattr(stock_data, "iterrows"):
         return []
@@ -204,7 +228,9 @@ def fundamental_rows(stock_data) -> list[list[str]]:
         values = []
         for key, _ in FUNDAMENTAL_COLUMNS:
             value = row.get(key)
-            if value is None or (np.isscalar(value) and pd.isna(value)):
+            if key == "roe":
+                values.append(format_roe(row))
+            elif value is None or (np.isscalar(value) and pd.isna(value)):
                 values.append("—")
             elif key in {"stock_code", "stock_name", "date"}:
                 values.append(str(value))
@@ -220,16 +246,8 @@ def fundamental_rows(stock_data) -> list[list[str]]:
 def fundamental_text(stock_data) -> str:
     lines = [" / ".join(label for _, label in FUNDAMENTAL_COLUMNS)]
     lines.extend(" / ".join(row) for row in fundamental_rows(stock_data))
+    lines.append(ROE_ESTIMATE_NOTE)
     return "\n".join(lines)
-
-
-def fundamental_html(stock_data) -> str:
-    header = "".join(f"<th>{label}</th>" for _, label in FUNDAMENTAL_COLUMNS)
-    rows = "".join(
-        "<tr>" + "".join(f"<td>{html.escape(value)}</td>" for value in row) + "</tr>"
-        for row in fundamental_rows(stock_data)
-    )
-    return f"<h3>监控价格与基本面</h3><table><tr>{header}</tr>{rows}</table>"
 
 
 def return_curves_html(payload, image_source: str | None = None) -> str:
@@ -242,4 +260,7 @@ def return_curves_html(payload, image_source: str | None = None) -> str:
         if image_source
         else ""
     )
-    return f"<section><h3>Ke策略收益曲线</h3>{image}<pre>{text}</pre></section>"
+    return (
+        f"<section><h3>Ke策略收益曲线</h3>{image}"
+        f'<pre style="white-space:pre-wrap;overflow-wrap:anywhere">{text}</pre></section>'
+    )

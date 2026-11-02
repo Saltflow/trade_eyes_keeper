@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, cast
@@ -21,6 +22,30 @@ logger = logging.getLogger(__name__)
 
 class StockDataFetcher:
     """股票数据获取器"""
+
+    @staticmethod
+    def _previous_close(history: pd.DataFrame) -> float | None:
+        """Use the quote's reference close, or the preceding dated trading bar."""
+        if history.empty:
+            return None
+
+        def price(value):
+            try:
+                number = float(value)
+                return number if math.isfinite(number) and number > 0 else None
+            except (TypeError, ValueError):
+                return None
+
+        quoted = price(history.iloc[-1].get("prev_close"))
+        if quoted is not None:
+            return quoted
+        if "date" not in history or "close" not in history:
+            return None
+        dates = pd.to_datetime(history["date"], errors="coerce", utc=True)
+        previous = history.assign(_quote_date=dates).loc[dates < dates.iloc[-1]]
+        if previous.empty:
+            return None
+        return price(previous.sort_values("_quote_date").iloc[-1]["close"])
 
     def __init__(self, config):
         """
@@ -346,6 +371,8 @@ class StockDataFetcher:
                     if realtime_mode:
                         latest_data["quote_time"] = None
                         latest_data["prev_close"] = None
+                    else:
+                        latest_data["prev_close"] = self._previous_close(stock_data)
 
                     # 检查数据日期
                     if not latest_data.empty:

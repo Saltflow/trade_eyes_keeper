@@ -2,6 +2,7 @@
 
 import json
 from copy import deepcopy
+from datetime import datetime
 from types import SimpleNamespace
 
 import pandas as pd
@@ -16,6 +17,7 @@ from src.notification.report_builders import (
 )
 from src.notification.report_policy import (
     build_return_curves_text,
+    format_roe,
     generate_return_curve_png,
     report_view,
     return_curve_markets,
@@ -64,7 +66,7 @@ def session():
             {
                 "stock_code": "601088",
                 "stock_name": "合成公司",
-                "date": "2026-01-01",
+                "date": datetime.now().astimezone().date().isoformat(),
                 "close": 10,
                 "dividend_yield": 4.2,
                 "pe_ratio": 9,
@@ -74,7 +76,12 @@ def session():
                 "ma60": 88,
                 "macd_hist": 66,
             },
-            {"stock_code": "00700", "stock_name": "无均线合成公司", "close": 12},
+            {
+                "stock_code": "00700",
+                "stock_name": "无均线合成公司",
+                "close": 12,
+                "date": datetime.now().astimezone().date().isoformat(),
+            },
         ]
     )
     scan = SimpleNamespace(
@@ -127,7 +134,7 @@ def assert_clean(text):
     ):
         assert forbidden not in text
     assert "601088" in text and "00700" in text
-    assert "股息率" in text and "ROE" in text
+    assert "股息率" not in text and "ROE" in text
 
 
 def test_default_legacy_policy_and_non_mutating_stale_session_projection():
@@ -142,6 +149,27 @@ def test_default_legacy_policy_and_non_mutating_stale_session_projection():
     assert original.evaluation_reports
     assert projected.announcements is original.announcements
     assert report_view(original, {}) is original
+
+
+@pytest.mark.parametrize(
+    "roe,pe,pb,expected",
+    [
+        (12, 10, 1.5, "12.00"),
+        (0, 10, 1.5, "0.00"),
+        (None, 10, 1.5, "15.00(估)"),
+        (float("nan"), -10, 1.5, "-15.00(估)"),
+        (None, 0, 1.5, "—"),
+        (None, float("inf"), 1.5, "—"),
+        (None, 10, None, "—"),
+        (None, 10, -1, "—"),
+    ],
+)
+def test_roe_display_prefers_reported_and_labels_finite_pb_pe_estimates(
+    roe, pe, pb, expected
+):
+    row = {"roe": roe, "pe_ratio": pe, "pb_ratio": pb}
+    assert format_roe(row) == expected
+    assert row["roe"] is roe
 
 
 def test_return_identity_coverage_and_initial_capital_are_not_inferred():
@@ -197,10 +225,18 @@ def test_png_has_partial_watermark_and_no_unavailable_zero_return_line(monkeypat
 @pytest.mark.parametrize(
     "method", ["send_from_session", "send_daily_report_from_session"]
 )
+@pytest.mark.parametrize(
+    "report_config",
+    [
+        CONFIG["report"],
+        {"technical_signals": {"enabled": False}},
+        {"strategy_display": "returns_only"},
+    ],
+)
 def test_daily_email_uses_only_ke_curve_and_retains_full_fundamentals_events(
-    monkeypatch, method
+    monkeypatch, method, report_config
 ):
-    notifier = EmailNotifier(deepcopy(CONFIG))
+    notifier = EmailNotifier({"report": deepcopy(report_config)})
     sent = []
     monkeypatch.setattr(
         notifier,
@@ -219,6 +255,10 @@ def test_daily_email_uses_only_ke_curve_and_retains_full_fundamentals_events(
     original = session()
     assert getattr(notifier, method)(original)["status"] == "sent"
     body = sent[0][0][1]
+    assert "<style>" in body and 'name="viewport"' in body
+    assert 'class="shell"' in body and "max-width:680px" in body
+    assert "股票量化日报" in body and "完整行情矩阵" in body
+    assert "扫描未完成" not in body
     assert_clean(body)
     assert "合成三季报_全文" in body and "fixture.pdf" in body
     assert "cid:chart002" in body and "Ke策略收益曲线" in body
@@ -244,6 +284,9 @@ def test_manual_brief_has_full_price_fundamental_pool_without_technical_fields(k
     assert_clean(text)
     assert "Ke策略收益曲线" in text
     assert "暂不可用" in text
+    if kind == "email":
+        assert "<style>" in text and "检测时间" in text
+        assert "<th>ROE%" in text and "股息率" not in text
 
 
 @pytest.mark.parametrize("cls", [FeishuNotifier, TelegramNotifier])
@@ -272,7 +315,9 @@ def test_bot_daily_retains_events_and_never_calls_legacy_technical_builder(
     assert "历史Ke覆盖不完整" in text
 
 
-def test_pdf_uses_returns_branch_and_keeps_escaped_fundamentals_and_events(monkeypatch):
+def test_pdf_uses_original_template_and_keeps_escaped_fundamentals_and_events(
+    monkeypatch,
+):
     captured = []
 
     def compile_pdf(path):
@@ -298,6 +343,8 @@ def test_pdf_uses_returns_branch_and_keeps_escaped_fundamentals_and_events(monke
         get_server_info=dict,
     )
     assert result == b"%PDF-synthetic"
+    assert "Stock Quant Report" in captured[0]
+    assert "\\VAR{" not in captured[0]
     assert_clean(captured[0])
     assert "三季报\\_全文" in captured[0] and "fixture.pdf" in captured[0]
     assert "\\includegraphics" in captured[0] and "历史Ke覆盖不完整" in captured[0]
@@ -308,3 +355,18 @@ def test_disabled_scan_does_not_make_fundamental_data_readiness_blocked():
     source = session()
     source.config["stocks"] = [{"code": "601088"}, {"code": "00700"}]
     assert report_data_readiness(source)["status"] == "ready"
+
+
+def test_missing_ke_curve_keeps_daily_template_and_full_pool():
+    source = session()
+    body = EmailNotifier(deepcopy(CONFIG))._build_email_body(
+        [],
+        source.get_all_dataframe(),
+        daily_mode=True,
+        signal_scan=source.signal_scan,
+        evaluation_reports=source.evaluation_reports,
+    )
+    assert "<style>" in body and 'class="shell"' in body
+    assert "完整行情矩阵" in body and "Ke策略收益曲线" in body
+    assert "暂不可用" in body and "cid:chart002" not in body
+    assert_clean(body)

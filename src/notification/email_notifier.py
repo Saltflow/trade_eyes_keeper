@@ -46,7 +46,9 @@ from .report_builders import (  # noqa: F401
     pick_best_anchor,
 )
 from .report_policy import (
-    fundamental_html,
+    ROE_ESTIMATE_NOTE,
+    format_roe,
+    fundamental_rows,
     generate_return_curve_png,
     report_view,
     return_curves_html,
@@ -120,23 +122,27 @@ class EmailNotifier(BaseNotifier):
         Args:
             session: SessionContext对象
         """
-        if not technical_signals_enabled(self.config) or returns_only(self.config):
-            return self._send_returns_report(session)
+        session = report_view(session, self.config)
+        curves_only = returns_only(self.config) or not technical_signals_enabled(
+            self.config
+        )
         try:
             # 从Session读取所有数据
-            alert_stocks = session.get_alerts_as_dicts()
+            alert_stocks = [] if curves_only else session.get_alerts_as_dicts()
             stock_data = session.get_all_dataframe()
             announcements = session.announcements
             # 历史数据（由 data_fetcher 暂存，供图表使用）
             historical_data = getattr(session, "_historical", {})
 
             # 生成走势图表（PNG bytes + CID 内嵌，兼容 Gmail）
-            _, chart_png_bytes = generate_combined_chart(
-                historical_data=historical_data,
-                alerts=alert_stocks,
-                stock_data=stock_data,
-                trading_days=60,
-            )
+            chart_png_bytes = None
+            if not curves_only:
+                _, chart_png_bytes = generate_combined_chart(
+                    historical_data=historical_data,
+                    alerts=alert_stocks,
+                    stock_data=stock_data,
+                    trading_days=60,
+                )
 
             # 构建邮件主题
             subject = f"股票日报 - {datetime.now().astimezone().strftime('%Y-%m-%d')}"
@@ -146,9 +152,15 @@ class EmailNotifier(BaseNotifier):
 
             # 日报只嵌入一张归一化三市场总览图，避免三张纵向大图淹没正文。
             portfolio_chart_dict = None
-            if evaluation_reports:
+            if curves_only or evaluation_reports:
                 try:
-                    overview_png = generate_portfolio_overview_chart(evaluation_reports)
+                    overview_png = (
+                        generate_return_curve_png(
+                            getattr(session, "strategy_return_curves", None)
+                        )
+                        if curves_only
+                        else generate_portfolio_overview_chart(evaluation_reports)
+                    )
                     portfolio_chart_dict = (
                         {"overview": overview_png} if overview_png else None
                     )
@@ -195,6 +207,7 @@ class EmailNotifier(BaseNotifier):
                 placements=getattr(session, "placements", None),
                 dividend_events=getattr(session, "dividend_events", None),
                 instrument_audit=getattr(session, "instrument_audit", None),
+                strategy_return_curves=getattr(session, "strategy_return_curves", None),
             )
 
             # 发送邮件（PDF 作为附件）
@@ -223,8 +236,10 @@ class EmailNotifier(BaseNotifier):
         Args:
             session: SessionContext对象
         """
-        if not technical_signals_enabled(self.config) or returns_only(self.config):
-            return self._send_returns_report(session)
+        session = report_view(session, self.config)
+        curves_only = returns_only(self.config) or not technical_signals_enabled(
+            self.config
+        )
         try:
             # 从Session读取所有数据
             stock_data = session.get_all_dataframe()
@@ -240,9 +255,15 @@ class EmailNotifier(BaseNotifier):
 
             # 无告警日报同样使用单张三市场组合总览图。
             portfolio_chart_dict = None
-            if evaluation_reports:
+            if curves_only or evaluation_reports:
                 try:
-                    overview_png = generate_portfolio_overview_chart(evaluation_reports)
+                    overview_png = (
+                        generate_return_curve_png(
+                            getattr(session, "strategy_return_curves", None)
+                        )
+                        if curves_only
+                        else generate_portfolio_overview_chart(evaluation_reports)
+                    )
                     portfolio_chart_dict = (
                         {"overview": overview_png} if overview_png else None
                     )
@@ -280,6 +301,7 @@ class EmailNotifier(BaseNotifier):
                 placements=getattr(session, "placements", None),
                 dividend_events=getattr(session, "dividend_events", None),
                 instrument_audit=getattr(session, "instrument_audit", None),
+                strategy_return_curves=getattr(session, "strategy_return_curves", None),
             )
 
             # 发送邮件
@@ -1053,6 +1075,7 @@ class EmailNotifier(BaseNotifier):
                     "pb_ratio": source_row.get("pb_ratio")
                     if source_row is not None
                     else None,
+                    "roe": source_row.get("roe") if source_row is not None else None,
                     "priority": priority,
                     "sort_key": entry.get("sort_key", float("inf"))
                     if entry
@@ -1119,6 +1142,13 @@ class EmailNotifier(BaseNotifier):
                 else f"{len(signal_codes)}（扫描未完成）",
             ),
         ]
+        if returns_only(self.config) or not technical_signals_enabled(self.config):
+            cells = [
+                ("行情就绪", f"{active_count}/{len(rows)}"),
+                ("监控标的", len(rows)),
+                ("策略展示", "Ke收益曲线"),
+                ("技术信号", "已停用"),
+            ]
         html = [
             ('<section class="daily-section summary-section">'
             '<div class="section-heading">今日概览</div>'
@@ -1153,17 +1183,21 @@ class EmailNotifier(BaseNotifier):
             sections.append(
                 f'<div class="group-heading">{_html_escape(labels[group])} · {len(rows)}只</div>'
                 '<table role="presentation" class="watchlist-table">'
-                '<thead><tr><th>标的</th><th class="mobile-hide">开盘</th><th>收盘</th>'
-                '<th>PE</th><th class="mobile-hide">PB</th><th>隐含 Ke</th></tr></thead><tbody>'
+                "<thead><tr><th>标的</th><th>今开</th><th>昨收</th><th>现价</th>"
+                '<th>PE</th><th class="mobile-hide">PB</th><th>隐含 Ke</th>'
+                '<th class="mobile-hide">ROE%</th></tr></thead><tbody>'
             )
             for row in rows:
                 entry = row["entry"]
                 if entry is None:
-                    open_text = close_text = pe_text = pb_text = implied_ke_text = "—"
+                    open_text = prev_close_text = close_text = pe_text = pb_text = (
+                        implied_ke_text
+                    ) = "—"
                     row_class = " watch-row-stale"
                     status = '<span class="status-badge status-stale">未就绪</span>'
                 else:
                     open_text = self._daily_metric(entry.get("open"), "", 2)
+                    prev_close_text = self._daily_metric(entry.get("prev_close"), "", 2)
                     close_text = self._daily_metric(entry.get("close"), "", 2)
                     pe_text = self._daily_metric(row.get("pe_ratio"), "", 1)
                     pb_text = self._daily_metric(row.get("pb_ratio"), "", 2)
@@ -1179,17 +1213,22 @@ class EmailNotifier(BaseNotifier):
                     f'<tr class="{row_class.strip()}"><td class="watch-instrument">'
                     f"<strong>{_html_escape(row['code'])}</strong><span>"
                     f"{_html_escape(row['name'])}</span>{status}</td>"
-                    f'<td class="mobile-hide">{_html_escape(open_text)}</td>'
+                    f"<td>{_html_escape(open_text)}</td>"
+                    f"<td>{_html_escape(prev_close_text)}</td>"
                     f"<td>{_html_escape(close_text)}</td>"
                     f"<td>{_html_escape(pe_text)}</td>"
                     f'<td class="mobile-hide">{_html_escape(pb_text)}</td>'
-                    f"<td>{_html_escape(implied_ke_text)}</td></tr>"
+                    f"<td>{_html_escape(implied_ke_text)}</td>"
+                    f'<td class="mobile-hide">{_html_escape(format_roe(row))}</td></tr>'
                 )
             sections.append("</tbody></table>")
         sections.append(
-            '<div class="muted-note">隐含 Ke = TTM 每股收益 ÷ 收盘价 + 2% '
+            '<div class="muted-note">价格对应各市场最近行情交易日。昨收优先使用行情源前收盘价，'
+            "缺失时取同口径前一交易日收盘。隐含 Ke = TTM 每股收益 ÷ 收盘价 + 2% "
             "（即 1 ÷ PE + 2%；PE≤0 或缺失时不显示）。ETF 的 PE/PB 按跟踪指数或"
-            "公开成分股权重聚合；黄金、REIT 等非企业资产不展示企业 PE/PB。</div>"
+            "公开成分股权重聚合；黄金、REIT 等非企业资产不展示企业 PE/PB。"
+            + _html_escape(ROE_ESTIMATE_NOTE)
+            + "</div>"
         )
         sections.append("</section>")
         return "".join(sections)
@@ -1321,43 +1360,8 @@ class EmailNotifier(BaseNotifier):
             + "</section>"
         )
 
-    def _returns_report_body(self, stock_data, curves=None, *, session=None,
-                             announcements=None, placements=None, dividend_events=None,
-                             image_source=None):
-        if session is not None:
-            announcements = getattr(session, "announcements", None)
-            placements = getattr(session, "placements", None)
-            dividend_events = getattr(session, "dividend_events", None)
-        return (
-            '<html><meta charset="utf-8"><body><h2>监控报告</h2>'
-            + fundamental_html(stock_data)
-            + return_curves_html(curves, image_source)
-            + self._build_daily_events_section(
-                announcements, placements, stock_data, dividend_events
-            )
-            + "</body></html>"
-        )
-
-    def _send_returns_report(self, session):
-        """Explicit curve-only strategy view; never renders cached old signals."""
-        try:
-            view = report_view(session, self.config)
-            stock_data = view.get_all_dataframe()
-            curves = getattr(view, "strategy_return_curves", None)
-            png = generate_return_curve_png(curves)
-            body = self._returns_report_body(stock_data, curves, session=view,
-                image_source="cid:chart002" if png else None)
-            pdf = self._generate_daily_pdf(view, [], None, None, stock_data)
-            subject = f"股票日报 - {datetime.now().astimezone():%Y-%m-%d}"
-            return self._send_email(subject, body,
-                portfolio_chart_dict={"overview": png} if png else None,
-                pdf_bytes=pdf)
-        except Exception as exc:  # noqa: BLE001 - classify preparation before SMTP
-            logger.error("收益曲线日报准备失败: %s", type(exc).__name__)
-            return {"status": "failed", "reason": "email_preparation_failed"}
-
     def _build_daily_signal_section(self, signal_scan, stock_data) -> str:
-        if not technical_signals_enabled(self.config):
+        if returns_only(self.config) or not technical_signals_enabled(self.config):
             return ""
         """Show scan details even when historical evaluation reports are absent."""
         parts = [
@@ -1596,8 +1600,19 @@ class EmailNotifier(BaseNotifier):
             '<div class="chart-card"><img src="cid:chart001" alt="关键价格与锚点图表" style="display:block;width:100%;max-width:100%;height:auto;"></div></section>'
         )
 
-    @staticmethod
-    def _daily_portfolio_chart_section(portfolio_chart_dict):
+    def _daily_portfolio_chart_section(
+        self, portfolio_chart_dict, strategy_return_curves=None
+    ):
+        if returns_only(self.config) or not technical_signals_enabled(self.config):
+            source = (
+                "cid:chart002" if (portfolio_chart_dict or {}).get("overview") else None
+            )
+            return (
+                '<section class="daily-section portfolio-overview-section">'
+                '<div class="section-heading">策略收益展示</div><div class="chart-card">'
+                + return_curves_html(strategy_return_curves, source)
+                + "</div></section>"
+            )
         if not isinstance(portfolio_chart_dict, dict) or not portfolio_chart_dict.get(
             "overview"
         ):
@@ -1654,10 +1669,8 @@ class EmailNotifier(BaseNotifier):
         dividend_events=None,
         instrument_audit=None,
         ref_portfolio_html="",
+        strategy_return_curves=None,
     ):
-        if returns_only(self.config) or not technical_signals_enabled(self.config):
-            return self._returns_report_body(stock_data, announcements=announcements,
-                placements=placements, dividend_events=dividend_events)
         template_dir = Path(__file__).parent.parent / "templates"
         template = (template_dir / "daily_email_mobile.html").read_text(
             encoding="utf-8"
@@ -1699,7 +1712,7 @@ class EmailNotifier(BaseNotifier):
                 chart_png_bytes, portfolio_chart_dict
             ),
             portfolio_chart_section=self._daily_portfolio_chart_section(
-                portfolio_chart_dict
+                portfolio_chart_dict, strategy_return_curves
             ),
             events_section=self._build_daily_events_section(
                 announcements, placements, stock_data, dividend_events
@@ -1722,6 +1735,7 @@ class EmailNotifier(BaseNotifier):
         dividend_events=None,
         instrument_audit=None,
         ref_portfolio_html="",
+        strategy_return_curves=None,
     ):
         """
         构建邮件正文（完整版：表格 + 公告 + 图表）
@@ -1736,9 +1750,6 @@ class EmailNotifier(BaseNotifier):
         Returns:
             str: 邮件正文（HTML格式）
         """
-        if returns_only(self.config) or not technical_signals_enabled(self.config):
-            return self._returns_report_body(stock_data, announcements=announcements,
-                placements=placements, dividend_events=dividend_events)
         if daily_mode:
             return self._build_mobile_daily_email_body(
                 alert_stocks,
@@ -1753,6 +1764,7 @@ class EmailNotifier(BaseNotifier):
                 dividend_events=dividend_events,
                 instrument_audit=instrument_audit,
                 ref_portfolio_html=ref_portfolio_html,
+                strategy_return_curves=strategy_return_curves,
             )
         from datetime import datetime
         from pathlib import Path
@@ -2720,16 +2732,12 @@ class EmailNotifier(BaseNotifier):
             report_config: 简报配置 {"id": "morning_snapshot", "label": "早盘简报", ...}
         """
         from datetime import datetime
-
-        if returns_only(self.config) or not technical_signals_enabled(self.config):
-            view = report_view(session, self.config)
-            label = report_config.get("label", "简报")
-            return (f"{label} - {datetime.now().astimezone():%Y-%m-%d}",
-                self._returns_report_body(view.get_all_dataframe(),
-                    getattr(view, "strategy_return_curves", None), session=view))
-        from datetime import datetime
         from pathlib import Path
 
+        session = report_view(session, self.config)
+        curves_only = returns_only(self.config) or not technical_signals_enabled(
+            self.config
+        )
         label = report_config.get("label", "简报")
         from .report_builders import get_brief_dataframe
 
@@ -2738,7 +2746,7 @@ class EmailNotifier(BaseNotifier):
         today_date = today.date()
 
         # ── 构建每只股票的行 ──
-        rows_data = build_brief_entries(stock_data, today)
+        rows_data = [] if curves_only else build_brief_entries(stock_data, today)
 
         # ── 策略信号（直接用 SignalScanner 结果，和日报一致）──
         signal_scan = getattr(session, "signal_scan", None)
@@ -2770,7 +2778,9 @@ class EmailNotifier(BaseNotifier):
             strat_html = "<h3>策略信号</h3><p>当前无活跃信号</p><br>"
 
         # ── 参考持仓状态 ──
-        ref_html = self._build_ref_portfolio_html(session, today_date)
+        ref_html = (
+            "" if curves_only else self._build_ref_portfolio_html(session, today_date)
+        )
 
         # ── 渲染 HTML ──
         html_rows = []
@@ -2805,6 +2815,29 @@ class EmailNotifier(BaseNotifier):
 
         rows = "".join(html_rows)
         active_count = len(rows_data)
+        columns = ["代码", "名称", "昨收", "开盘", "现价", "锚点", "锚值", "偏离率"]
+        note = (
+            "偏离率 = (现价 - 锚点值) / 锚点值 × 100% | "
+            "每只标的标注实际回溯交易日最短且落入警报阈值区间的锚点 "
+            "(ma60=60天 < wma20≈100天 < wma30≈150天 < wma50≈250天)"
+        )
+        if curves_only:
+            from .report_policy import FUNDAMENTAL_COLUMNS
+
+            columns = [label for _, label in FUNDAMENTAL_COLUMNS]
+            entries = fundamental_rows(stock_data)
+            rows = "".join(
+                "<tr>" + "".join(f"<td>{_html_escape(v)}</td>" for v in row) + "</tr>"
+                for row in entries
+            )
+            active_count = len(entries)
+            note = (
+                "技术信号已停用；缺失指标显示为 —，行情日期按各市场实际交易日展示。"
+                + ROE_ESTIMATE_NOTE
+            )
+            strat_html = return_curves_html(
+                getattr(session, "strategy_return_curves", None)
+            )
         template_dir = Path(__file__).parent.parent / "templates"
         template = (template_dir / "brief_email.html").read_text(encoding="utf-8")
 
@@ -2818,6 +2851,8 @@ class EmailNotifier(BaseNotifier):
             active_count=active_count,
             total_count=active_count,
             brief_rows=rows,
+            brief_columns="".join(f"<th>{label}</th>" for label in columns),
+            brief_note=note,
             strategy_suggestions=strat_html,
             ref_portfolio=ref_html,
         )

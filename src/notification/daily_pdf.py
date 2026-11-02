@@ -24,63 +24,6 @@ from .report_builders import (
 logger = logging.getLogger(__name__)
 
 
-def _generate_returns_pdf(session, stock_data) -> bytes | None:
-    """Keep the full fundamental/event report without legacy technical sections."""
-    import tempfile
-
-    from .report_policy import (
-        FUNDAMENTAL_COLUMNS,
-        build_return_curves_text,
-        fundamental_rows,
-        generate_return_curve_png,
-    )
-
-    def esc(value):
-        replacements = {"\\": r"\textbackslash{}", "&": r"\&", "%": r"\%",
-            "#": r"\#", "$": r"\$", "_": r"\_", "{": r"\{", "}": r"\}",
-            "~": r"\textasciitilde{}", "^": r"\textasciicircum{}"}
-        return "".join(replacements.get(char, char) for char in str(value))
-
-    curves = getattr(session, "strategy_return_curves", None)
-    png = generate_return_curve_png(curves)
-    lines = [r"\documentclass[10pt,a4paper]{article}",
-        r"\usepackage{xeCJK,graphicx,longtable,hyperref}",
-        r"\setCJKmainfont{Noto Sans CJK SC}",
-        r"\usepackage[margin=1.2cm]{geometry}", r"\begin{document}",
-        r"\section*{监控报告}", r"\section*{价格与基本面}",
-        r"\small\setlength{\tabcolsep}{3pt}",
-        r"\begin{longtable}{p{1.45cm}p{3.2cm}p{2cm}rrrrr}",
-        " & ".join(esc(label) for _, label in FUNDAMENTAL_COLUMNS) + r" \\ \hline"]
-    lines.extend(" & ".join(esc(value) for value in row) + r" \\"
-        for row in fundamental_rows(stock_data))
-    lines.extend([r"\end{longtable}", r"\section*{Ke策略收益曲线}"])
-    lines.extend(esc(line) + r"\par" for line in build_return_curves_text(curves).splitlines()
-        if not any(char in line for char in "▁▂▃▄▅▆▇█"))
-    lines.append("%%KE_RETURN_CURVE_IMAGE%%")
-    events = build_daily_event_rows(getattr(session, "announcements", None),
-        getattr(session, "placements", None), stock_data,
-        getattr(session, "dividend_events", None))
-    if events:
-        lines.append(r"\section*{事件速览}")
-        for event in events:
-            lines.append(esc(" · ".join(str(event.get(key) or "—")
-                for key in ("date", "code", "kind", "title"))) + r"\par")
-            if event.get("url"):
-                lines.append(esc("原文：" + event["url"]) + r"\par")
-    with tempfile.TemporaryDirectory() as directory:
-        if png:
-            image = Path(directory) / "ke_returns.png"
-            image.write_bytes(png)
-            lines[lines.index("%%KE_RETURN_CURVE_IMAGE%%")] = (
-                r"\includegraphics[width=\textwidth]{" + image.as_posix() + "}")
-        else:
-            lines.remove("%%KE_RETURN_CURVE_IMAGE%%")
-        lines.append(r"\end{document}")
-        tex = Path(directory) / "report.tex"
-        tex.write_text("\n".join(lines).replace("\r\n", "\n"), encoding="utf-8")
-        return _compile_pdf(tex)
-
-
 def _converter_probe_preamble() -> str:
     """Cache the real driver probe before a large Unix TeX process can fork."""
     import re
@@ -208,20 +151,31 @@ def generate_daily_pdf(
     import re
     import tempfile
 
-    from .report_policy import returns_only, technical_signals_enabled
+    from .report_policy import (
+        FUNDAMENTAL_COLUMNS,
+        ROE_ESTIMATE_NOTE,
+        build_return_curves_text,
+        fundamental_rows,
+        generate_return_curve_png,
+        report_view,
+        return_curve_markets,
+        returns_only,
+        technical_signals_enabled,
+    )
 
     config = getattr(session, "config", {})
-    if returns_only(config) or not technical_signals_enabled(config):
-        try:
-            return _generate_returns_pdf(session, stock_data)
-        except Exception as exc:  # noqa: BLE001 - optional PDF cannot block delivery
-            logger.error("收益曲线 PDF 准备失败: %s", type(exc).__name__)
-            return None
+    curves_only = returns_only(config) or not technical_signals_enabled(config)
+    session = report_view(session, config)
+    if curves_only:
+        signal_scan, backtest = None, {}
     chart_path = None
     try:
         # 1. 图表 PNG
-        chart_buf = chart_deviation_timeline(
-            signal_scan, backtest, base64=False
+        curves = getattr(session, "strategy_return_curves", None)
+        chart_buf = (
+            generate_return_curve_png(curves)
+            if curves_only
+            else chart_deviation_timeline(signal_scan, backtest, base64=False)
         )
         chart_path = None
         if chart_buf and not isinstance(chart_buf, str):
@@ -235,7 +189,9 @@ def generate_daily_pdf(
                     else chart_buf
                 )
                 f.write(data)
-            chart_section = f"\\includegraphics[width=\\textwidth]{{{chart_path}}}"
+            chart_section = (
+                f"\\includegraphics[width=\\textwidth]{{{Path(chart_path).as_posix()}}}"
+            )
         else:
             chart_section = "{\\color{gray}\\small 今日无图表数据}"
 
@@ -270,6 +226,13 @@ def generate_daily_pdf(
         if not evaluation_reports:
             ta = bt_a.get("total_return")
             tu = bt_n.get("total_return")
+        if curves_only:
+            ta, th, tu = [
+                float(item["values"][-1] / item["initial_capital"] * 100 - 100)
+                if item["status"] != "unavailable"
+                else None
+                for item in return_curve_markets(curves)
+            ]
         has_backtest = any(value is not None for value in (ta, th, tu))
         kpi_buy = str(buy_count)
         kpi_a = f"{ta:+.1f}\\%" if ta is not None else "—"
@@ -285,6 +248,9 @@ def generate_daily_pdf(
         kpi_color_h = "green" if th is not None and th > 0 else "red"
         kpi_color_u = "green" if tu is not None and tu > 0 else "red"
         kpi_color_s = "green" if buy_count > 0 else "red"
+        if curves_only:
+            kpi_buy = str(len(stock_data))
+            kpi_s, kpi_color_s = "历史模拟", "navy"
         readiness = report_data_readiness(session)
         readiness_section = ""
         if readiness["status"] == "not_ready":
@@ -325,7 +291,16 @@ def generate_daily_pdf(
                 r"\toprule 日期 & 标的 & 事项 & 详情 \\ \midrule\endhead",
             ]
             event_lines.extend(
-                " & ".join(_esc(row.get(key) or "—") for key in ("date", "code", "kind", "title")) + r" \\"
+                " & ".join(
+                    _esc(row.get(key) or "—")
+                    for key in ("date", "code", "kind", "title")
+                )
+                + (
+                    r"\newline\href{" + _esc(row["url"]) + r"}{原文}"
+                    if row.get("url")
+                    else ""
+                )
+                + r" \\"
                 for row in events
             )
             event_lines.extend([r"\bottomrule\end{longtable}", r"\endgroup"])
@@ -346,6 +321,13 @@ def generate_daily_pdf(
             if trigger_lines
             else "{\\color{gray}\\small 今日无触发信号}"
         )
+        trigger_section = (
+            ""
+            if curves_only
+            else r"\section*{\color{navy}\rule[-4pt]{4pt}{14pt}\quad 触发信号}"
+            + "\n"
+            + trigger_section
+        )
 
         # 4. 表: 合并 indicator_snapshot + fundamentals
         snapshot = (
@@ -365,7 +347,9 @@ def generate_daily_pdf(
                 pb = row.get("pb_ratio")
                 dy = row.get("dividend_yield")
                 anchors = {}
-                for anchor_key in ("ma60", "wma20", "wma30", "wma50"):
+                for anchor_key in (
+                    () if curves_only else ("ma60", "wma20", "wma30", "wma50")
+                ):
                     anchor_value = row.get(anchor_key)
                     if anchor_value is not None and not pd.isna(anchor_value):
                         anchors[anchor_key] = float(anchor_value)
@@ -389,15 +373,9 @@ def generate_daily_pdf(
                     "anchor_deviation": f"{anchor_deviation:+.1f}\\%"
                     if anchor_deviation is not None
                     else "—",
-                    "pe": f"{pe:.1f}"
-                    if pe is not None and not pd.isna(pe)
-                    else "—",
-                    "pb": f"{pb:.2f}"
-                    if pb is not None and not pd.isna(pb)
-                    else "—",
-                    "dy": f"{dy:.2f}"
-                    if dy is not None and not pd.isna(dy)
-                    else "—",
+                    "pe": f"{pe:.1f}" if pe is not None and not pd.isna(pe) else "—",
+                    "pb": f"{pb:.2f}" if pb is not None and not pd.isna(pb) else "—",
+                    "dy": f"{dy:.2f}" if dy is not None and not pd.isna(dy) else "—",
                 }
 
         header_cols = ["标的", "收盘", "锚点", "锚值", "偏离\\%"] + cons_inds + ["息\\%", "PE", "PB", "信号"]
@@ -473,6 +451,16 @@ def generate_daily_pdf(
             row_color = "\\rowcolor{bg!30}" if sig else ""
             table_rows += f"{row_color}{' & '.join(cells)} \\\\\n"
 
+        if curves_only:
+            header_cols = [_esc(label) for _, label in FUNDAMENTAL_COLUMNS]
+            col_fmt = "lll" + "r" * (len(FUNDAMENTAL_COLUMNS) - 3)
+            table_rows = "".join(
+                " & ".join(_esc(value) for value in row)
+                + r" \\"
+                + "\n"
+                for row in fundamental_rows(stock_data)
+            )
+
         table_section = (
             "\\scriptsize\n"
             "\\rowcolors{2}{white}{stripe}\n"
@@ -509,6 +497,14 @@ def generate_daily_pdf(
                 for bn, bv in bt_a["benchmarks"].items():
                     beat = "✓" if (ta is not None and ta > bv) else "✗"
                     bt_text += f"\\quad vs {bn} {bv:+.1f}\\% {beat}"
+        if curves_only:
+            strat_note = "Ke策略收益曲线（历史模拟；非实盘收益）"
+            bt_text = "\\par\n".join(
+                _esc(line)
+                for line in build_return_curves_text(curves).splitlines()
+                if not any(char in line for char in "▁▂▃▄▅▆▇█")
+            )
+            bt_text += "\\par\n" + _esc(ROE_ESTIMATE_NOTE)
 
         # 统一 EvaluationReport 附录：PDF 不再二次计算周线或持仓。
         evaluation_report_section = ""
@@ -627,7 +623,7 @@ def generate_daily_pdf(
             Path(__file__).parent.parent / "templates" / "appendix_methodology.md"
         )
         appendix_section = ""
-        if md_path.exists():
+        if md_path.exists() and not curves_only:
             md_text = md_path.read_text(encoding="utf-8")
             # 简单的 MD → LaTeX 转换
             latex_lines = []
@@ -710,6 +706,13 @@ def generate_daily_pdf(
             "\\VAR{release_label}", _esc(info.get("release_label", "未登记发布"))
         )
         html = html.replace("\\VAR{kpi_buy}", kpi_buy)
+        html = html.replace(
+            "\\VAR{kpi_buy_label}", "监控标的" if curves_only else "今日买入"
+        )
+        html = html.replace(
+            "\\VAR{chart_title}",
+            "Ke策略收益曲线" if curves_only else "偏离度 30 日走势",
+        )
         html = html.replace("\\VAR{kpi_a}", kpi_a)
         html = html.replace("\\VAR{kpi_h}", kpi_h)
         html = html.replace("\\VAR{kpi_u}", kpi_u)
