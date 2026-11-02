@@ -1,8 +1,8 @@
 """Send only to a trigger's authenticated chat, with durable revocation checks.
 
 This adapter owns no receiver, WebSocket, retry loop or account state. A report
-worker can reuse the regular card builders without broadcasting a personal
-trigger to the globally configured email/webhook destinations.
+worker can reuse the regular card builders while keeping chat replies in the
+original conversation. Configured email is handled by its guarded adapter.
 """
 
 from __future__ import annotations

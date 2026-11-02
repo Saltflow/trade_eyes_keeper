@@ -15,6 +15,7 @@ class NotifierManager:
     """按配置选择渠道，汇总每个渠道可验证的投递结果。"""
 
     def __init__(self, config: dict):
+        self.trigger_delivery = "_trigger_context" in config
         if env_flag("SKIP_NOTIFICATIONS"):
             self.email = None
             self.feishu = None
@@ -26,12 +27,7 @@ class NotifierManager:
             self.email = None
             self.telegram = None
             self.feishu = TriggerChatNotifier(config)
-            email_settings = (config.get("notification") or {}).get("email") or {}
-            if (
-                isinstance(email_settings, dict)
-                and email_settings.get("trigger_report_routes")
-                and channel_enabled(config, "email")
-            ):
+            if channel_enabled(config, "email"):
                 from ..triggers.email_delivery import (
                     TriggerEmailNotifier,
                     trigger_email_route_allowed,
@@ -118,8 +114,10 @@ class NotifierManager:
         statuses = {item["status"] for item in deliveries.values()}
         if not statuses or statuses == {"skipped"}:
             status, reason = "skipped", "notifications_disabled"
-        elif "partial" in statuses or (
-            "sent" in statuses and bool(statuses & {"failed", "unknown"})
+        elif (
+            "partial" in statuses
+            or ("sent" in statuses and bool(statuses & {"failed", "unknown"}))
+            or (self.trigger_delivery and "sent" in statuses and "skipped" in statuses)
         ):
             status, reason = "partial", "some_channels_not_confirmed"
         elif "unknown" in statuses:
@@ -138,6 +136,9 @@ class NotifierManager:
 
     def send_brief_report(self, session, report_config: dict) -> dict:
         return self._dispatch("send_brief_report", session, report_config)
+
+    def send_reminder(self, text: str) -> dict:
+        return self._dispatch("send_reminder", text)
 
     def send_deployment_notification(
         self, status: str, version: str = "", summary: str = ""

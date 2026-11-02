@@ -1,9 +1,10 @@
 """Synthetic trigger receipts exercise the real shared queue without networks."""
 
+import smtplib
 import threading
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 import yaml
@@ -221,6 +222,7 @@ def test_stateless_chat_http_has_classified_receipts(
 ):
     from src.triggers import delivery
 
+    profile["notification"]["email"]["enabled"] = False
     calls = []
 
     def post(url, **kwargs):
@@ -256,6 +258,7 @@ def test_stateless_chat_http_has_classified_receipts(
 def test_delete_while_auth_in_flight_prevents_external_message(profile, monkeypatch):
     from src.triggers import delivery
 
+    profile["notification"]["email"]["enabled"] = False
     trigger, execution = make_runtime(profile)
     dated(trigger)
     action = admit(trigger)[0]
@@ -298,6 +301,7 @@ def test_idle_timer_does_not_write_runs_and_future_date_has_no_provider_work(pro
 def test_current_allowlist_revocation_during_auth_prevents_send(profile, monkeypatch):
     from src.triggers import delivery
 
+    profile["notification"]["email"]["enabled"] = False
     trigger, execution = make_runtime(profile)
     dated(trigger)
     action = admit(trigger)[0]
@@ -317,6 +321,74 @@ def test_current_allowlist_revocation_during_auth_prevents_send(profile, monkeyp
     assert result.status == "failed"
     assert result.reason == "trigger_chat_unauthorized"
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "mail_status,expected",
+    [
+        ("sent", "succeeded"),
+        ("failed", "partial"),
+        ("unknown", "partial"),
+        ("skipped", "partial"),
+    ],
+)
+def test_reminder_queue_fans_out_persists_receipts_and_never_replays(
+    profile, monkeypatch, mail_status, expected
+):
+    profile["email"] = {
+        "smtp_server": "smtp.invalid",
+        "sender_email": "sender@example.invalid",
+        "sender_password": "synthetic-password",
+        "receiver_email": "configured@example.invalid",
+        "archive_dir": profile["storage"]["data_dir"] + "/mail_archive",
+    }
+    # Missing extra route configuration must inherit the enabled email channel.
+    assert "trigger_report_routes" not in profile["notification"]["email"]
+    connection = MagicMock()
+    server = connection.__enter__.return_value
+    server.send_message.return_value = {}
+    if mail_status == "failed":
+        server.login.side_effect = smtplib.SMTPAuthenticationError(535, b"synthetic")
+    elif mail_status == "unknown":
+        server.send_message.side_effect = smtplib.SMTPServerDisconnected("synthetic")
+    factory = Mock(return_value=connection)
+    monkeypatch.setattr(smtplib, "SMTP_SSL", factory)
+    monkeypatch.setattr(smtplib, "SMTP", factory)
+    chat = Mock(return_value={"status": "sent", "platform_message_id": "fixture"})
+    monkeypatch.setattr(TriggerChatNotifier, "send_reminder", chat)
+    trigger, execution = make_runtime(profile)
+    if mail_status == "skipped":
+
+        def revoke_email(*_):
+            current = yaml.safe_load(trigger.config_path.read_text(encoding="utf8"))
+            current["notification"]["email"]["trigger_report_routes"] = []
+            trigger.config_path.write_text(yaml.safe_dump(current), encoding="utf8")
+
+        server.login.side_effect = revoke_email
+    dated(trigger)
+    action = admit(trigger)[0]
+    result = run_and_settle(trigger, execution, action)
+    assert result.status == expected
+    assert {name: item["status"] for name, item in result.deliveries.items()} == {
+        "email": mail_status,
+        "feishu": "sent",
+    }
+    saved = trigger.store.actions("alice")[0]["result"]["deliveries"]
+    assert saved["email"]["status"] == mail_status
+    assert saved["feishu"]["status"] == "sent"
+    from src.interactive.assistant.trigger_tools import TriggerTools
+
+    channels = TriggerTools._channel_results(saved, "reminder")
+    assert channels["email"]["status"] == mail_status
+    assert channels["feishu"]["status"] == "sent"
+    chat.assert_called_once()
+    expected_smtp = 0 if mail_status in {"failed", "skipped"} else 1
+    assert server.send_message.call_count == expected_smtp
+    reboot, _ = make_runtime(profile)
+    admit(reboot)
+    reboot.reconcile()
+    chat.assert_called_once()
+    assert server.send_message.call_count == expected_smtp
 
 
 def test_minimal_fact_dependencies_latest_price_edge_and_recovery(profile, monkeypatch):

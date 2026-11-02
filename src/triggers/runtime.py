@@ -549,7 +549,8 @@ class TriggerRuntime:
         self.execution.wake()
 
     def _reminder(self, payload, ctx):
-        from .delivery import TriggerChatNotifier, binding_status
+        from ..notification.manager import NotifierManager
+        from .delivery import binding_status
 
         config = copy.deepcopy(self.config_provider())
         config["_trigger_context"] = payload["binding"]
@@ -561,18 +562,25 @@ class TriggerRuntime:
             )
         if not ctx.mark_side_effect("trigger_message_starting"):
             return RunResult("skipped", "trigger_message_cancelled")
-        notifier = (self.notifier_factory or TriggerChatNotifier)(config)
+        notifier = (self.notifier_factory or NotifierManager)(config)
         result = notifier.send_reminder(str(payload["text"]))
+        deliveries = result.get("deliveries")
+        if not isinstance(deliveries, dict):
+            deliveries = {"feishu": result}
+        reason = result.get("reason", "delivery_receipt_missing")
+        if len(deliveries) == 1:
+            reason = next(iter(deliveries.values())).get("reason") or reason
         return RunResult(
             {
                 "sent": "succeeded",
+                "succeeded": "succeeded",
                 "failed": "failed",
                 "skipped": "skipped",
                 "unknown": "unknown",
                 "partial": "partial",
             }.get(result.get("status"), "unknown"),
-            result.get("reason", "delivery_receipt_missing"),
-            deliveries={"feishu": result},
+            reason,
+            deliveries=deliveries,
         )
 
     def reconcile(self):
