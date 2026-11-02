@@ -80,6 +80,9 @@ def test_explicit_create_uses_real_shared_store_without_model_or_research(
     assistant.trigger_changed = kick
     send(assistant, text)
     assert len(assistant.trigger_store.list("owner")) == 1
+    if "逆回购到期" in text:
+        rule = assistant.trigger_store.get("owner", 1)
+        assert [action["kind"] for action in rule["spec"]["actions"]] == ["daily"]
     assert assistant.trigger_store.path == assistant.execution_runtime.store.path
     assert "已保存触发器 1" in assistant.send_message.call_args.args[1]
     assistant.harness.run.assert_not_called()

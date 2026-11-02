@@ -15,9 +15,9 @@ def test_today_recurring_slot_already_admitted_does_not_create_empty_runs(tmp_pa
     trigger.store.create(
         "alice",
         {
-            "label": "每日提醒",
+            "label": "每日日报",
             "schedule": {"kind": "daily", "at": "09:50"},
-            "actions": [{"kind": "reminder", "payload": {"chat_id": "chat"}}],
+            "actions": [{"kind": "daily", "payload": {"chat_id": "chat"}}],
         },
         "recurring",
     )

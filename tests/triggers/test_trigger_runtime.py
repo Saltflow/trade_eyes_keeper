@@ -1,10 +1,9 @@
 """Synthetic trigger receipts exercise the real shared queue without networks."""
 
-import smtplib
 import threading
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock, Mock
+from unittest.mock import Mock
 
 import pytest
 import yaml
@@ -47,16 +46,13 @@ def make_runtime(config, **kwargs):
     return trigger, execution
 
 
-def dated(trigger, *, kinds=("reminder",), key="date", owner="alice", chat="chat-a"):
+def dated(trigger, *, kinds=("daily",), key="date", owner="alice", chat="chat-a"):
     return trigger.store.create(
         owner,
         {
             "label": "逆回购到期",
             "schedule": {"at": NOW.isoformat()},
-            "actions": [
-                {"kind": kind, "payload": {"chat_id": chat, "text": "逆回购到期"}}
-                for kind in kinds
-            ],
+            "actions": [{"kind": kind, "payload": {"chat_id": chat}} for kind in kinds],
         },
         key,
         now=NOW - timedelta(days=1),
@@ -81,22 +77,6 @@ def run_and_settle(trigger, execution, action):
         execution.stop(drain=True)
 
 
-def test_atomic_admission_restart_and_unknown_never_replay(profile):
-    notifier = Mock()
-    notifier.send_reminder.return_value = {"status": "unknown", "reason": "timeout"}
-    trigger, execution = make_runtime(profile, notifier_factory=lambda _: notifier)
-    dated(trigger)
-    action = admit(trigger)[0]
-    assert action["state"] == "submitted"
-    assert run_and_settle(trigger, execution, action).status == "unknown"
-    assert trigger.store.actions("alice")[0]["state"] == "uncertain"
-    reboot, _ = make_runtime(profile, notifier_factory=lambda _: notifier)
-    admit(reboot)
-    reboot.reconcile()
-    assert len(reboot.store.actions("alice")) == 1
-    notifier.send_reminder.assert_called_once()
-
-
 def test_atomic_enqueue_failure_rolls_back_claim(profile, monkeypatch):
     trigger, execution = make_runtime(profile)
     dated(trigger)
@@ -111,28 +91,6 @@ def test_atomic_enqueue_failure_rolls_back_claim(profile, monkeypatch):
     monkeypatch.setattr(execution.store, "submit", original)
     trigger._submit_pending(profile)
     assert trigger.store.actions("alice")[0]["state"] == "submitted"
-
-
-def test_delete_after_enqueue_before_send_blocks_reminder(profile):
-    notifier = Mock()
-    trigger, execution = make_runtime(profile, notifier_factory=lambda _: notifier)
-    dated(trigger)
-    action = admit(trigger)[0]
-    trigger.store.remove("alice", [1])
-    result = run_and_settle(trigger, execution, action)
-    assert result.status == "skipped"
-    assert result.reason == "trigger_revoked"
-    notifier.send_reminder.assert_not_called()
-
-
-def test_edit_queued_revision_blocks_old_action(profile):
-    notifier = Mock()
-    trigger, execution = make_runtime(profile, notifier_factory=lambda _: notifier)
-    item = dated(trigger)
-    action = admit(trigger)[0]
-    trigger.store.update("alice", 1, {"label": "新提醒"}, item["revision"])
-    assert run_and_settle(trigger, execution, action).reason == "trigger_revoked"
-    notifier.send_reminder.assert_not_called()
 
 
 def test_report_actions_reuse_report_lane_full_pool_and_private_route(
@@ -195,7 +153,9 @@ def test_forged_route_cannot_borrow_someone_elses_action(profile):
     trigger, execution = make_runtime(profile)
     dated(trigger)
     action = admit(trigger)[0]
-    original = execution.store.get(action["run_id"])["payload"]["binding"]
+    original = execution.store.get(action["run_id"])["payload"]["config_snapshot"][
+        "_trigger_context"
+    ]
     assert (
         binding_status(
             {**profile, "_trigger_context": {**original, "chat_id": "chat-b"}}
@@ -206,74 +166,6 @@ def test_forged_route_cannot_borrow_someone_elses_action(profile):
         binding_status({**profile, "_trigger_context": {**original, "owner": "bob"}})
         == "invalid"
     )
-
-
-@pytest.mark.parametrize(
-    "outcome,expected",
-    [
-        ("success", "succeeded"),
-        ("timeout", "unknown"),
-        ("invalid_ack", "unknown"),
-        ("reject", "failed"),
-    ],
-)
-def test_stateless_chat_http_has_classified_receipts(
-    profile, monkeypatch, outcome, expected
-):
-    from src.triggers import delivery
-
-    profile["notification"]["email"]["enabled"] = False
-    calls = []
-
-    def post(url, **kwargs):
-        calls.append((url, kwargs))
-        if "/auth/" in url:
-            return SimpleNamespace(
-                status_code=200,
-                json=lambda: {"code": 0, "tenant_access_token": "synthetic-token"},
-            )
-        if outcome == "timeout":
-            raise delivery.requests.ReadTimeout()
-        data = {"code": 0, "data": {"message_id": "test-message"}}
-        if outcome == "invalid_ack":
-            data = {}
-        if outcome == "reject":
-            data = {"code": 999}
-        return SimpleNamespace(status_code=200, json=lambda: data)
-
-    monkeypatch.setattr(delivery.requests, "post", post)
-    trigger, execution = make_runtime(profile)
-    dated(trigger)
-    action = admit(trigger)[0]
-    result = run_and_settle(trigger, execution, action)
-    assert result.status == expected
-    assert len(calls) == 2
-    assert calls[1][1]["json"]["receive_id"] == "chat-a"
-    assert "逆回购到期" in calls[1][1]["json"]["content"]
-    assert calls[1][1]["allow_redirects"] is False
-    if outcome == "success":
-        assert result.deliveries["feishu"]["platform_message_id"] == "test-message"
-
-
-def test_delete_while_auth_in_flight_prevents_external_message(profile, monkeypatch):
-    from src.triggers import delivery
-
-    profile["notification"]["email"]["enabled"] = False
-    trigger, execution = make_runtime(profile)
-    dated(trigger)
-    action = admit(trigger)[0]
-    calls = []
-
-    def post(url, **kwargs):
-        calls.append(url)
-        trigger.store.remove("alice", [1])
-        return SimpleNamespace(
-            status_code=200, json=lambda: {"code": 0, "tenant_access_token": "test"}
-        )
-
-    monkeypatch.setattr(delivery.requests, "post", post)
-    assert run_and_settle(trigger, execution, action).status == "skipped"
-    assert len(calls) == 1
 
 
 def test_idle_timer_does_not_write_runs_and_future_date_has_no_provider_work(profile):
@@ -289,106 +181,13 @@ def test_idle_timer_does_not_write_runs_and_future_date_has_no_provider_work(pro
         {
             "label": "未来",
             "schedule": {"at": (NOW + timedelta(days=18)).isoformat()},
-            "actions": [{"kind": "reminder", "payload": {"chat_id": "chat-a"}}],
+            "actions": [{"kind": "daily", "payload": {"chat_id": "chat-a"}}],
         },
         "future",
     )
     trigger._timer()
     with execution.store.connection() as db:
         assert db.execute("SELECT count(*) FROM execution_runs").fetchone()[0] == 0
-
-
-def test_current_allowlist_revocation_during_auth_prevents_send(profile, monkeypatch):
-    from src.triggers import delivery
-
-    profile["notification"]["email"]["enabled"] = False
-    trigger, execution = make_runtime(profile)
-    dated(trigger)
-    action = admit(trigger)[0]
-    calls = []
-
-    def post(url, **kwargs):
-        calls.append(url)
-        current = yaml.safe_load(trigger.config_path.read_text(encoding="utf-8"))
-        current["interactive"]["feishu"]["allowed_chat_ids"] = ["chat-b"]
-        trigger.config_path.write_text(yaml.safe_dump(current), encoding="utf-8")
-        return SimpleNamespace(
-            status_code=200, json=lambda: {"code": 0, "tenant_access_token": "test"}
-        )
-
-    monkeypatch.setattr(delivery.requests, "post", post)
-    result = run_and_settle(trigger, execution, action)
-    assert result.status == "failed"
-    assert result.reason == "trigger_chat_unauthorized"
-    assert len(calls) == 1
-
-
-@pytest.mark.parametrize(
-    "mail_status,expected",
-    [
-        ("sent", "succeeded"),
-        ("failed", "partial"),
-        ("unknown", "partial"),
-        ("skipped", "partial"),
-    ],
-)
-def test_reminder_queue_fans_out_persists_receipts_and_never_replays(
-    profile, monkeypatch, mail_status, expected
-):
-    profile["email"] = {
-        "smtp_server": "smtp.invalid",
-        "sender_email": "sender@example.invalid",
-        "sender_password": "synthetic-password",
-        "receiver_email": "configured@example.invalid",
-        "archive_dir": profile["storage"]["data_dir"] + "/mail_archive",
-    }
-    # Missing extra route configuration must inherit the enabled email channel.
-    assert "trigger_report_routes" not in profile["notification"]["email"]
-    connection = MagicMock()
-    server = connection.__enter__.return_value
-    server.send_message.return_value = {}
-    if mail_status == "failed":
-        server.login.side_effect = smtplib.SMTPAuthenticationError(535, b"synthetic")
-    elif mail_status == "unknown":
-        server.send_message.side_effect = smtplib.SMTPServerDisconnected("synthetic")
-    factory = Mock(return_value=connection)
-    monkeypatch.setattr(smtplib, "SMTP_SSL", factory)
-    monkeypatch.setattr(smtplib, "SMTP", factory)
-    chat = Mock(return_value={"status": "sent", "platform_message_id": "fixture"})
-    monkeypatch.setattr(TriggerChatNotifier, "send_reminder", chat)
-    trigger, execution = make_runtime(profile)
-    if mail_status == "skipped":
-
-        def revoke_email(*_):
-            current = yaml.safe_load(trigger.config_path.read_text(encoding="utf8"))
-            current["notification"]["email"]["trigger_report_routes"] = []
-            trigger.config_path.write_text(yaml.safe_dump(current), encoding="utf8")
-
-        server.login.side_effect = revoke_email
-    dated(trigger)
-    action = admit(trigger)[0]
-    result = run_and_settle(trigger, execution, action)
-    assert result.status == expected
-    assert {name: item["status"] for name, item in result.deliveries.items()} == {
-        "email": mail_status,
-        "feishu": "sent",
-    }
-    saved = trigger.store.actions("alice")[0]["result"]["deliveries"]
-    assert saved["email"]["status"] == mail_status
-    assert saved["feishu"]["status"] == "sent"
-    from src.interactive.assistant.trigger_tools import TriggerTools
-
-    channels = TriggerTools._channel_results(saved, "reminder")
-    assert channels["email"]["status"] == mail_status
-    assert channels["feishu"]["status"] == "sent"
-    chat.assert_called_once()
-    expected_smtp = 0 if mail_status in {"failed", "skipped"} else 1
-    assert server.send_message.call_count == expected_smtp
-    reboot, _ = make_runtime(profile)
-    admit(reboot)
-    reboot.reconcile()
-    chat.assert_called_once()
-    assert server.send_message.call_count == expected_smtp
 
 
 def test_minimal_fact_dependencies_latest_price_edge_and_recovery(profile, monkeypatch):
@@ -467,19 +266,6 @@ def test_slow_free_indicator_is_not_overwritten_by_empty_fast_report_snapshot(
     assert facts.resolve("stocks_data.601088.ma60").status == "available"
 
 
-def test_disabled_reports_do_not_block_independent_reminders(profile):
-    notifier = Mock()
-    notifier.send_reminder.return_value = {"status": "sent", "reason": "ack"}
-    trigger, execution = make_runtime(profile, notifier_factory=lambda _: notifier)
-    dated(trigger, kinds=("brief", "reminder"))
-    reports.register_report_jobs(execution, config=profile)
-    execution.disable("reports")
-    actions = admit(trigger)
-    assert actions[0]["state"] == "pending"
-    assert actions[1]["state"] == "submitted"
-    assert run_and_settle(trigger, execution, actions[1]).status == "succeeded"
-
-
 def test_due_clock_lane_delivers_while_market_collection_is_blocked(
     profile, monkeypatch
 ):
@@ -493,22 +279,18 @@ def test_due_clock_lane_delivers_while_market_collection_is_blocked(
         assert release.wait(8), "test did not release its source stub"
         return FactSnapshot(NOW, NOW)
 
-    notifier = Mock()
-
-    def send(_):
+    def report(payload, ctx):
         sent.set()
-        return {"status": "sent", "reason": "ack"}
+        return RunResult("succeeded", "synthetic_report")
 
-    notifier.send_reminder.side_effect = send
-    trigger, execution = make_runtime(
-        profile, fact_loader=loader, notifier_factory=lambda _: notifier
-    )
+    monkeypatch.setattr(reports, "_report_handler", report)
+    trigger, execution = make_runtime(profile, fact_loader=loader)
     trigger.store.create(
         "alice",
         {
             "label": "慢源",
             "condition": {"field": "quotes.601088.last", "op": "lt", "value": 50},
-            "actions": [{"kind": "reminder", "payload": {"chat_id": "chat-a"}}],
+            "actions": [{"kind": "daily", "payload": {"chat_id": "chat-a"}}],
         },
         "slow",
     )
@@ -520,7 +302,7 @@ def test_due_clock_lane_delivers_while_market_collection_is_blocked(
         dated(trigger)
         trigger.kick()
         trigger._timer()
-        assert sent.wait(3), "clock/reminder was blocked by market facts"
+        assert sent.wait(3), "clock/report was blocked by market facts"
         assert not release.is_set()
     finally:
         release.set()
@@ -544,16 +326,12 @@ def test_slow_history_collection_does_not_block_fresh_quote_action(
             NOW, NOW, facts={"quotes.601088.last": FactValue(49, "available", NOW, NOW)}
         )
 
-    notifier = Mock()
-
-    def send(_):
+    def report(payload, ctx):
         sent.set()
-        return {"status": "sent", "reason": "ack"}
+        return RunResult("succeeded", "synthetic_report")
 
-    notifier.send_reminder.side_effect = send
-    trigger, execution = make_runtime(
-        profile, fact_loader=loader, notifier_factory=lambda _: notifier
-    )
+    monkeypatch.setattr(reports, "_report_handler", report)
+    trigger, execution = make_runtime(profile, fact_loader=loader)
     for key, field in (
         ("slow", "stocks_data.601088.ma60"),
         ("fast", "quotes.601088.last"),
@@ -563,7 +341,7 @@ def test_slow_history_collection_does_not_block_fresh_quote_action(
             {
                 "label": key,
                 "condition": {"field": field, "op": "lt", "value": 50},
-                "actions": [{"kind": "reminder", "payload": {"chat_id": "chat-a"}}],
+                "actions": [{"kind": "daily", "payload": {"chat_id": "chat-a"}}],
             },
             key,
         )
@@ -577,3 +355,29 @@ def test_slow_history_collection_does_not_block_fresh_quote_action(
     finally:
         release.set()
         execution.stop(drain=True)
+
+
+def test_disabled_report_module_leaves_actions_pending(profile):
+    trigger, execution = make_runtime(profile)
+    dated(trigger, kinds=("brief", "daily"))
+    reports.register_report_jobs(execution, config=profile)
+    execution.disable("reports")
+    actions = admit(trigger)
+    assert [action["state"] for action in actions] == ["pending", "pending"]
+    with execution.store.connection() as db:
+        assert db.execute("SELECT count(*) FROM execution_runs").fetchone()[0] == 0
+
+
+def test_unknown_report_receipt_survives_restart_without_replay(profile, monkeypatch):
+    handler = Mock(return_value=RunResult("unknown", "unconfirmed_delivery"))
+    monkeypatch.setattr(reports, "_report_handler", handler)
+    trigger, execution = make_runtime(profile)
+    dated(trigger)
+    action = admit(trigger)[0]
+    assert run_and_settle(trigger, execution, action).status == "unknown"
+    assert trigger.store.actions("alice")[0]["state"] == "uncertain"
+    reboot, _ = make_runtime(profile)
+    admit(reboot)
+    reboot.reconcile()
+    assert len(reboot.store.actions("alice")) == 1
+    handler.assert_called_once()

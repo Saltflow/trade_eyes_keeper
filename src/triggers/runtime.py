@@ -41,7 +41,6 @@ class TriggerRuntime:
         config_path=DEFAULT_CONFIG_PATH,
         config_provider=None,
         fact_loader=None,
-        notifier_factory=None,
         clock=None,
     ):
         if runtime_path(config).resolve() != execution.store.path.resolve():
@@ -53,7 +52,6 @@ class TriggerRuntime:
         self.config_path = config_path
         self.config_provider = config_provider or (lambda: self.config)
         self.fact_loader = fact_loader or load_trigger_facts
-        self.notifier_factory = notifier_factory
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._lock = threading.RLock()
         self.started = False
@@ -96,13 +94,6 @@ class TriggerRuntime:
                         handler=self._due,
                         lane="trigger_clock",
                         concurrency_key="triggers.due",
-                        timeout_seconds=60,
-                        recovery="unknown",
-                    ),
-                    JobSpec(
-                        id="triggers.reminder",
-                        handler=self._reminder,
-                        lane="trigger_delivery",
                         timeout_seconds=60,
                         recovery="unknown",
                     ),
@@ -210,7 +201,8 @@ class TriggerRuntime:
         with self.store._connection() as db:
             return bool(
                 db.execute(
-                    "SELECT 1 FROM trigger_actions WHERE state='pending' LIMIT 1"
+                    "SELECT 1 FROM trigger_actions "
+                    "WHERE state='pending' AND kind IN ('daily','brief') LIMIT 1"
                 ).fetchone()
             )
 
@@ -473,10 +465,12 @@ class TriggerRuntime:
         # Register outside the shared transaction: registration owns its writes.
         register_report_jobs(self.execution, config=config)
         reports_enabled = bool(self.execution.module_status("reports")["enabled"])
+        if not reports_enabled:
+            return
         with self.store.transaction() as db:
             actions = self.store.claim_pending(
                 limit=100,
-                kinds=None if reports_enabled else ["reminder"],
+                kinds=set(REPORT_JOB_IDS),
                 db=db,
                 now=self.clock(),
             )
@@ -507,27 +501,18 @@ class TriggerRuntime:
                             member["id"], "authenticated_chat_missing", db=db
                         )
                     continue
-                if action["kind"] == "reminder":
-                    job = "triggers.reminder"
-                    payload = {
-                        "binding": binding,
-                        "text": action["payload"].get("text") or trigger["label"],
-                    }
-                else:
-                    job = REPORT_JOB_IDS[action["kind"]]
-                    routed = copy.deepcopy(config)
-                    routed["_trigger_context"] = binding
-                    # No stock subset override: report config remains the full pool.
-                    payload = build_report_payload(
-                        routed,
-                        self.execution,
-                        kind=action["kind"],
-                        force=True,
-                        report_id=action["payload"].get(
-                            "report_id", "morning_snapshot"
-                        ),
-                        config_path=self.config_path,
-                    )
+                job = REPORT_JOB_IDS[action["kind"]]
+                routed = copy.deepcopy(config)
+                routed["_trigger_context"] = binding
+                # The existing report pipeline owns the full configured pool.
+                payload = build_report_payload(
+                    routed,
+                    self.execution,
+                    kind=action["kind"],
+                    force=True,
+                    report_id=action["payload"].get("report_id", "morning_snapshot"),
+                    config_path=self.config_path,
+                )
                 identity = (
                     hashlib.sha256(
                         "|".join(sorted(item["id"] for item in grouped)).encode()
@@ -547,41 +532,6 @@ class TriggerRuntime:
                         member["id"], run_id, db=db, now=self.clock()
                     )
         self.execution.wake()
-
-    def _reminder(self, payload, ctx):
-        from ..notification.manager import NotifierManager
-        from .delivery import binding_status
-
-        config = copy.deepcopy(self.config_provider())
-        config["_trigger_context"] = payload["binding"]
-        state = binding_status(config, run_id=ctx.run_id)
-        if state != "allowed":
-            return RunResult(
-                "skipped" if state == "revoked" else "failed",
-                "trigger_revoked" if state == "revoked" else "trigger_binding_invalid",
-            )
-        if not ctx.mark_side_effect("trigger_message_starting"):
-            return RunResult("skipped", "trigger_message_cancelled")
-        notifier = (self.notifier_factory or NotifierManager)(config)
-        result = notifier.send_reminder(str(payload["text"]))
-        deliveries = result.get("deliveries")
-        if not isinstance(deliveries, dict):
-            deliveries = {"feishu": result}
-        reason = result.get("reason", "delivery_receipt_missing")
-        if len(deliveries) == 1:
-            reason = next(iter(deliveries.values())).get("reason") or reason
-        return RunResult(
-            {
-                "sent": "succeeded",
-                "succeeded": "succeeded",
-                "failed": "failed",
-                "skipped": "skipped",
-                "unknown": "unknown",
-                "partial": "partial",
-            }.get(result.get("status"), "unknown"),
-            reason,
-            deliveries=deliveries,
-        )
 
     def reconcile(self):
         """Settle from durable run receipts, including recovery after a restart."""

@@ -20,16 +20,18 @@ def test_delivery_guard_closes_its_readonly_connection(tmp_path, monkeypatch, ca
     runtime.store.create(
         "alice",
         {
-            "label": "Synthetic reminder",
+            "label": "Synthetic report",
             "schedule": {"at": now.isoformat()},
-            "actions": [{"kind": "reminder", "payload": {"chat_id": "synthetic-chat"}}],
+            "actions": [{"kind": "daily", "payload": {"chat_id": "synthetic-chat"}}],
         },
         "test",
     )
     runtime.evaluator.evaluate(None, now=now)
     runtime._submit_pending(config)
     action = runtime.store.actions("alice")[0]
-    binding = execution.store.get(action["run_id"])["payload"]["binding"]
+    binding = execution.store.get(action["run_id"])["payload"]["config_snapshot"][
+        "_trigger_context"
+    ]
     # Synthetic run state, without starting a host or any network job.
     with execution.store.connection() as db:
         db.execute(

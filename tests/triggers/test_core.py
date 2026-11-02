@@ -237,7 +237,7 @@ def test_manual_two_maturities_and_recurring_calendar(store):
         "schedule": {
             "times": ["2026-11-02T09:50:00+08:00", "2026-11-20T09:50:00+08:00"]
         },
-        "actions": [{"kind": "reminder", "text": "到期检查"}],
+        "actions": [{"kind": "daily"}],
     }
     store.create("alice", spec, "maturities")
     engine = TriggerEvaluator(store)
@@ -454,7 +454,7 @@ def test_all_dated_occurrences_settle_before_done_and_edit_can_add_future_time(s
         "alice",
         {
             "schedule": {"times": ["2026-11-02T09:50+08:00", "2026-11-20T09:50+08:00"]},
-            "actions": [{"kind": "reminder"}, {"kind": "brief"}],
+            "actions": [{"kind": "daily"}, {"kind": "brief"}],
         },
         "dates",
     )
@@ -497,21 +497,19 @@ def test_two_evaluators_cannot_double_admit_same_crossing(store):
     assert len(store.actions("alice")) == 1
 
 
-def test_kind_filter_keeps_disabled_reports_pending_without_blocking_reminders(store):
+def test_kind_filter_selects_report_types_without_consuming_other_reports(store):
     store.create(
         "alice",
-        price_spec(
-            actions=[{"kind": "daily"}, {"kind": "reminder"}, {"kind": "brief"}]
-        ),
+        price_spec(actions=[{"kind": "daily"}, {"kind": "brief"}]),
         "mixed",
     )
     TriggerEvaluator(store).evaluate(Snapshot({"quotes.601088.last": fact(49)}), NOW)
-    claimed = store.claim_pending(kinds={"reminder"})
-    assert [action["kind"] for action in claimed] == ["reminder"]
+    claimed = store.claim_pending(kinds={"daily"})
+    assert [action["kind"] for action in claimed] == ["daily"]
     remaining = [
         action for action in store.actions("alice") if action["state"] == "pending"
     ]
-    assert {action["kind"] for action in remaining} == {"daily", "brief"}
+    assert {action["kind"] for action in remaining} == {"brief"}
     assert store.claim_pending(kinds=[]) == []
     with pytest.raises(ValueError, match="kind"):
         store.claim_pending(kinds=["shell"])
@@ -568,7 +566,7 @@ def test_edit_finished_once_date_rearms_only_new_date_and_retains_old_history(st
         {
             "schedule": {"at": NOW.isoformat()},
             "match_policy": "once",
-            "actions": [{"kind": "reminder"}],
+            "actions": [{"kind": "daily"}],
         },
         "once-date",
     )
@@ -701,3 +699,16 @@ def test_explicit_event_symbol_uses_same_canonical_identity_as_facts(store):
         ]
     )
     assert len(TriggerEvaluator(store).evaluate(snapshot, NOW)) == 1
+
+
+def test_report_action_contract_has_only_two_active_types_and_reserved_optimize():
+    from src.triggers.models import ACTION_KINDS
+
+    assert ACTION_KINDS == {"daily", "brief", "optimize"}
+    for kind in ("daily", "brief"):
+        assert (
+            normalize_spec(price_spec(actions=[{"kind": kind}]))["actions"][0]["kind"]
+            == kind
+        )
+    with pytest.raises(ValueError, match="reserv|预留|未启用"):
+        normalize_spec(price_spec(actions=[{"kind": "optimize"}]))

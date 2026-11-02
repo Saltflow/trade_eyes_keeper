@@ -19,7 +19,7 @@ import requests
 
 from ..core.report_execution import runtime_path
 from ..interactive.security import BotAccess
-from ..notification.feishu_notifier import FeishuNotifier, _build_interactive_card
+from ..notification.feishu_notifier import FeishuNotifier
 from ..notification.receipts import legacy_tuple
 from ..notification.settings import env_flag
 
@@ -75,16 +75,10 @@ def binding_status(config: dict, *, run_id: str | None = None) -> str:
             return "invalid"
         payload = json.loads(row["payload"])
         queued = json.loads(row["run_payload"] or "{}")
-        expected = (
-            "triggers.reminder"
-            if row["kind"] == "reminder"
-            else "reports." + row["kind"]
-        )
-        stored_binding = (
-            queued.get("binding")
-            if row["kind"] == "reminder"
-            else queued.get("config_snapshot", {}).get("_trigger_context")
-        )
+        if row["kind"] not in {"daily", "brief"}:
+            return "invalid"
+        expected = "reports." + row["kind"]
+        stored_binding = queued.get("config_snapshot", {}).get("_trigger_context")
         if (
             binding != stored_binding
             or binding.get("owner") != row["owner"]
@@ -126,16 +120,6 @@ class TriggerChatNotifier(FeishuNotifier):
         )
         self.binding = config.get("_trigger_context") or {}
         self._token = ""
-
-    def send_reminder(self, text: str) -> dict:
-        return self._post_card(
-            {
-                "msg_type": "interactive",
-                "card": _build_interactive_card(
-                    f"触发器 #{self.binding.get('number', '?')}", text
-                ),
-            }
-        )
 
     def _send_card(self, payload: dict, *, classified: bool = False):
         result = self._post_card(payload)

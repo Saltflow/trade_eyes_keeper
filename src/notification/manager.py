@@ -137,9 +137,6 @@ class NotifierManager:
     def send_brief_report(self, session, report_config: dict) -> dict:
         return self._dispatch("send_brief_report", session, report_config)
 
-    def send_reminder(self, text: str) -> dict:
-        return self._dispatch("send_reminder", text)
-
     def send_deployment_notification(
         self, status: str, version: str = "", summary: str = ""
     ) -> dict[str, bool]:

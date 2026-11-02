@@ -40,7 +40,7 @@ def price_spec():
 
 
 @pytest.mark.parametrize("day", [2, 20])
-def test_reminder_defaults_echo_complete_date_and_timezone(tools, day):
+def test_maturity_defaults_to_complete_daily_report(tools, day):
     reply = tools.handle_text(f"11月{day}号逆回购到期")
     assert reply["status"] == "created"
     assert f"2026年11月{day:02d}日 09:50" in reply["message"]
@@ -48,7 +48,10 @@ def test_reminder_defaults_echo_complete_date_and_timezone(tools, day):
     item = tools.store.get(tools.owner, reply["data"]["trigger"]["number"])
     assert item["spec"]["schedule"]["times"] == [f"2026-11-{day:02d}T01:50:00+00:00"]
     assert item["spec"]["actions"] == [
-        {"kind": "reminder", "payload": {"text": "逆回购到期", "chat_id": "chat-A"}}
+        {
+            "kind": "daily",
+            "payload": {"trigger_reason": "逆回购到期", "chat_id": "chat-A"},
+        }
     ]
     assert "chat-A" not in json.dumps(reply, ensure_ascii=False)
     assert "feishu:owner-A" not in json.dumps(reply, ensure_ascii=False)
@@ -62,10 +65,18 @@ def test_reminder_defaults_echo_complete_date_and_timezone(tools, day):
         ("提醒我在11月2号10点逆回购到期", "2026年11月02日 10:00"),
     ],
 )
-def test_explicit_or_chinese_reminder_dates(tools, text, expected):
+def test_explicit_or_chinese_maturity_dates(tools, text, expected):
     result = tools.handle_text(text)
     assert result["status"] == "created"
     assert expected in result["message"]
+
+
+def test_explicit_brief_for_maturity_uses_existing_brief_action(tools):
+    result = tools.handle_text("11月2号逆回购到期发简报")
+    assert result["status"] == "created"
+    assert [
+        item["kind"] for item in tools.store.get(tools.owner, 1)["spec"]["actions"]
+    ] == ["brief"]
 
 
 @pytest.mark.parametrize(
@@ -328,7 +339,7 @@ def test_list_shows_chinese_schedule_actions_next_date_and_recent_result(tools):
     message = result["message"]
     assert "1. 逆回购到期【生效中】" in message
     assert "2026年11月02日 09:50" in message
-    assert "Asia/Shanghai" in message and "提醒：逆回购到期" in message
+    assert "Asia/Shanghai" in message and "日报（完整监控池）" in message
     assert "最近结果：尚未触发" in message
     assert "[active]" not in message
 
@@ -549,6 +560,18 @@ def test_explicit_daily_weekly_schedule(tools, command, kind, days):
     schedule = tools.store.get(tools.owner, 1)["spec"]["schedule"]
     assert schedule["kind"] == kind and schedule["weekdays"] == days
     assert "Asia/Shanghai" in result["message"]
+    actions = tools.store.get(tools.owner, 1)["spec"]["actions"]
+    expected = "brief" if command == "每天9:50发简报" else "daily"
+    assert [action["kind"] for action in actions] == [expected]
+
+
+def test_reserved_optimize_cannot_create_a_live_rule(tools):
+    spec = price_spec()
+    spec["actions"] = [{"kind": "optimize"}]
+    result = tools.execute({"action": "create", "spec": spec})
+    assert result["status"] == "needs_clarification"
+    assert "预留" in result["message"] and "未启用" in result["message"]
+    assert tools.store.list(tools.owner, include_inactive=True) == []
 
 
 def test_schema_and_prompt_do_not_allow_authentication_or_arbitrary_jobs():
@@ -558,7 +581,7 @@ def test_schema_and_prompt_do_not_allow_authentication_or_arbitrary_jobs():
     assert not {"owner", "chat", "chat_id", "sender"} & set(props)
     assert set(
         props["spec"]["properties"]["actions"]["items"]["properties"]["kind"]["enum"]
-    ) == {"brief", "daily", "reminder"}
+    ) == {"daily", "brief", "optimize"}
     assert "完整监控池" in TRIGGER_PROMPT
     assert "action_results逐动作" in TRIGGER_PROMPT
 

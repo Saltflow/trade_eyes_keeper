@@ -8,7 +8,8 @@ from datetime import date, datetime, timezone
 
 from zoneinfo import ZoneInfo
 
-ACTION_KINDS = frozenset({"reminder", "brief", "daily"})
+ACTION_KINDS = frozenset({"daily", "brief", "optimize"})
+ACTIVE_ACTION_KINDS = frozenset({"daily", "brief"})
 OPERATORS = frozenset(
     {
         "lt",
@@ -157,17 +158,16 @@ def normalize_spec(spec: dict) -> dict:
             "kind",
             "type",
             "payload",
-            "text",
         }:
             raise ValueError("invalid trigger action")
         kind = action.get("kind", action.get("type"))
         if kind not in ACTION_KINDS:
-            raise ValueError("action must be reminder, brief or daily")
+            raise ValueError("report kind must be daily, brief or optimize")
+        if kind not in ACTIVE_ACTION_KINDS:
+            raise ValueError("optimize is reserved and not enabled")
         payload = action.get("payload", {})
         if not isinstance(payload, dict):
             raise TypeError("action payload must be an object")
-        if "text" in action:
-            payload = {**payload, "text": action["text"]}
         normalized_actions.append({"kind": kind, "payload": _json(payload, 65536)})
     result = {
         "label": label.strip(),

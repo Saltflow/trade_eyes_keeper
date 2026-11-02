@@ -1,4 +1,4 @@
-"""Schema-only transport contract using real reminder/brief/daily builders.
+"""Schema-only transport contract using real brief/daily builders.
 
 All market rows below are explicitly synthetic unit fixtures. No report job,
 optimizer, HTML, production profile or live delivery is run. The binding guard
@@ -197,37 +197,32 @@ def test_real_card_builder_uses_schema2_body_for_markdown_and_table():
     ]
 
 
-@pytest.mark.parametrize("kind", ["reminder", "brief", "daily"])
+@pytest.mark.parametrize("kind", ["brief", "daily"])
 def test_real_report_builders_reach_strict_schema2_http_boundary(
     schema_transport, kind
 ):
     transport = schema_transport
     notifier = transport.notifier
     session = report_session()
-    if kind == "reminder":
-        receipt = notifier.send_reminder("合成逆回购到期正文")
-    elif kind == "brief":
+    if kind == "brief":
         receipt = notifier.send_brief_report(session, {"label": "合同完整简报"})
     else:
         receipt = notifier.send_daily_report_from_session(session)
     assert_preserved(transport)
     assert receipt["status"] == "sent", receipt
     blob = json.dumps(transport.transmitted, ensure_ascii=False)
-    if kind == "reminder":
-        assert "合成逆回购到期正文" in blob
-    else:
-        tables = [
-            element
-            for card in transport.transmitted
-            for element in card["body"]["elements"]
-            if element["tag"] == "table"
-        ]
-        assert tables
-        assert all(
-            code in json.dumps(tables, ensure_ascii=False)
-            for code in ("601088", "00700", "VOO")
-        )
-        assert "合成参考组合" in blob
+    tables = [
+        element
+        for card in transport.transmitted
+        for element in card["body"]["elements"]
+        if element["tag"] == "table"
+    ]
+    assert tables
+    assert all(
+        code in json.dumps(tables, ensure_ascii=False)
+        for code in ("601088", "00700", "VOO")
+    )
+    assert "合成参考组合" in blob
     if kind == "daily":
         assert len(transport.transmitted) >= 4
         assert all(

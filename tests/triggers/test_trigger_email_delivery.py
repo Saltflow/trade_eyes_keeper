@@ -106,15 +106,10 @@ def route(tmp_path, monkeypatch, request):
             ],
         }
         routed = {**deepcopy(config), "_trigger_context": binding}
-        payload = (
-            {"binding": binding, "text": "synthetic reminder"}
-            if kind == "reminder"
-            else build_report_payload(
-                routed, SimpleNamespace(store=execution), kind=kind, config_path=path
-            )
+        payload = build_report_payload(
+            routed, SimpleNamespace(store=execution), kind=kind, config_path=path
         )
-        job_id = "triggers.reminder" if kind == "reminder" else "reports." + kind
-        run_id = execution.submit(job_id, payload, db=db)
+        run_id = execution.submit("reports." + kind, payload, db=db)
         store.mark_submitted(action["id"], run_id, db=db)
         db.execute("UPDATE execution_runs SET status='running' WHERE id=?", (run_id,))
     connection = MagicMock()
@@ -158,7 +153,7 @@ def test_only_exact_trusted_owner_chat_pair_can_enable_mail(route, routes):
     route.factory.assert_not_called()
 
 
-@pytest.mark.parametrize("route", ["brief", "daily", "reminder"], indirect=True)
+@pytest.mark.parametrize("route", ["brief", "daily"], indirect=True)
 def test_authorized_manager_keeps_personal_chat_and_configured_email_only(route):
     manager = NotifierManager(route.routed)
     assert isinstance(manager.email, TriggerEmailNotifier)
@@ -255,7 +250,7 @@ def test_changes_during_smtp_login_revoke_only_email_before_submission(route, ch
 
 
 @pytest.mark.parametrize("name", ["SKIP_EMAIL", "SKIP_NOTIFICATIONS"])
-@pytest.mark.parametrize("route", ["brief", "daily", "reminder"], indirect=True)
+@pytest.mark.parametrize("route", ["brief", "daily"], indirect=True)
 def test_environment_switch_prevents_smtp(route, monkeypatch, name):
     notifier = TriggerEmailNotifier(route.routed)
     monkeypatch.setenv(name, "true")
@@ -319,7 +314,7 @@ def test_plain_email_has_no_trigger_authorization_requirement(route):
     )
 
 
-@pytest.mark.parametrize("route", ["brief", "daily", "reminder"], indirect=True)
+@pytest.mark.parametrize("route", ["brief", "daily"], indirect=True)
 def test_default_trigger_delivery_inherits_configured_email(route, monkeypatch):
     for config in (route.config, route.routed):
         config["notification"]["email"].pop("trigger_report_routes")
@@ -332,23 +327,19 @@ def test_default_trigger_delivery_inherits_configured_email(route, monkeypatch):
     method = {
         "brief": "send_brief_report",
         "daily": "send_daily_report_from_session",
-        "reminder": "send_reminder",
     }[kind]
     chat = Mock(return_value={"status": "sent"})
     monkeypatch.setattr(manager.feishu, method, chat)
-    if kind == "reminder":
-        receipt = manager.send_reminder('到期提醒 <img src=x onerror="alert(1)">')
-    else:
-        monkeypatch.setattr(
-            manager.email,
-            method,
-            lambda *args: manager.email._send_email("synthetic report", "body"),
-        )
-        receipt = (
-            getattr(manager, method)(object(), {})
-            if kind == "brief"
-            else (getattr(manager, method)(object()))
-        )
+    monkeypatch.setattr(
+        manager.email,
+        method,
+        lambda *args: manager.email._send_email("synthetic report", "body"),
+    )
+    receipt = (
+        getattr(manager, method)(object(), {})
+        if kind == "brief"
+        else (getattr(manager, method)(object()))
+    )
     assert receipt["status"] == "succeeded"
     assert {name: item["status"] for name, item in receipt["deliveries"].items()} == {
         "email": "sent",
@@ -359,16 +350,10 @@ def test_default_trigger_delivery_inherits_configured_email(route, monkeypatch):
     route.server.send_message.assert_called_once()
     message = route.server.send_message.call_args.args[0]
     assert message["To"] == "configured@example.invalid"
-    assert {"brief": "触发简报", "daily": "触发日报", "reminder": "触发提醒"}[
-        kind
-    ] in str(message["Subject"])
-    if kind == "reminder":
-        body = next(p for p in message.walk() if p.get_content_type() == "text/html")
-        body = body.get_payload(decode=True).decode("utf8")
-        assert "到期提醒" in body and "&lt;img" in body and "<img" not in body
+    assert {"brief": "触发简报", "daily": "触发日报"}[kind] in str(message["Subject"])
 
 
-@pytest.mark.parametrize("route", ["daily", "reminder"], indirect=True)
+@pytest.mark.parametrize("route", ["daily", "brief"], indirect=True)
 def test_default_email_still_rejects_forged_trigger_binding(route):
     route.routed["notification"]["email"].pop("trigger_report_routes")
     route.config["notification"]["email"].pop("trigger_report_routes")
@@ -379,7 +364,7 @@ def test_default_email_still_rejects_forged_trigger_binding(route):
     route.factory.assert_not_called()
 
 
-@pytest.mark.parametrize("route", ["brief", "daily", "reminder"], indirect=True)
+@pytest.mark.parametrize("route", ["brief", "daily"], indirect=True)
 def test_explicit_empty_routes_keep_email_off(route):
     route.routed["notification"]["email"]["trigger_report_routes"] = []
     assert NotifierManager(route.routed).email is None

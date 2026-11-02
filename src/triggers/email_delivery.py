@@ -35,7 +35,7 @@ def trigger_email_route_allowed(config: dict) -> bool:
     settings = notification.get("email", {}) if isinstance(notification, dict) else None
     if (
         not isinstance(binding, dict)
-        or binding.get("kind") not in ("brief", "daily", "reminder")
+        or binding.get("kind") not in ("brief", "daily")
         or any(
             not isinstance(binding.get(key), str) or not binding[key].strip()
             for key in ("owner", "chat_id")
@@ -179,17 +179,11 @@ class TriggerEmailNotifier(EmailNotifier):
         guard = self._delivery_guard()
         return guard if guard else super().send_brief_report(session, report_config)
 
-    def send_reminder(self, text: str) -> dict:
-        body = "<p>" + html.escape(text, quote=True).replace("\n", "<br>") + "</p>"
-        return self._send_email("到期 / 条件提醒", body)
-
     def _send_email(self, subject, body, *args, **kwargs):
         guard = self._delivery_guard()
         if guard:
             return guard
-        prefix = {"daily": "触发日报", "brief": "触发简报", "reminder": "触发提醒"}[
-            self.binding["kind"]
-        ]
+        prefix = {"daily": "触发日报", "brief": "触发简报"}[self.binding["kind"]]
         subject = f"{prefix} #{self.binding.get('number', '?')} · {subject}"
         context = _trigger_context_html(self.binding)
         match = re.search(r"<body\b[^>]*>", body, re.IGNORECASE)

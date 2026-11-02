@@ -66,14 +66,16 @@ _PUBLIC_FAILURE_REASONS = {
 
 TRIGGER_PROMPT = """
 持久触发器使用trigger_manage；明确创建、暂停、恢复、删除直接执行，不要求多轮确认。
-personal_monitor保留持仓及既有账户规则；新的通用条件/定时提醒使用trigger_manage，不创建为账户提醒。
+personal_monitor保留持仓及既有账户规则；投资条件和到期事件使用trigger_manage触发已有报告链路。
+报表类型只有daily、brief、optimize三种；daily/brief生效，optimize仅预留且禁止创建执行任务。
+未明确报告类型的资金到期、条件或定时事件默认daily，明确要求简报时用brief；不得创建独立提醒动作。
 先用catalog查询真实字段。条件支持递归all/any及field/op/value/max_age_seconds，禁止代码表达式。
 数值遵循catalog.unit：percent_0_100字段的5%=5，ratio_0_1字段的5%=0.05；未知单位不能自行换算。
 身份和回复位置由认证消息注入；不得在spec或payload指定owner、chat、sender或route。
 价格条件使用quotes.<证券代码>.last；日报字段以catalog返回路径为准，未知字段说明缺项。
 触发brief/daily时始终运行完整监控池；标的只作为条件、触发原因和高亮，不能缩成单股报告。
 三季报事件使用announcement.q3_report、report_period=Q3、day_offsets=[0,1]，按监控池动态匹配。
-提醒缺时刻默认Asia/Shanghai 09:50；回执必须给出完整年月日和时区。未给年份且今年日期已过时询问年份，不偷偷跨年。
+到期事件缺时刻默认Asia/Shanghai 09:50，命中后生成完整日报；回执必须给出完整年月日和时区。未给年份且今年日期已过时询问年份，不偷偷跨年。
 编号是持久number，不是列表行号；先list/get取得真实状态，不猜编号或他人身份。
 删除区分已删除、已不存在与已提交将尽力停止；正在投递或已送达可能无法撤回，未知投递不得声称已撤回。
 只依据工具成功回执声称已创建或更改；复杂自然语言应转结构化规则，缺失条件明确询问。
@@ -146,17 +148,13 @@ def trigger_tool_schema() -> list[dict]:
                                         "properties": {
                                             "kind": {
                                                 "type": "string",
-                                                "enum": ["brief", "daily", "reminder"],
+                                                "enum": ["daily", "brief", "optimize"],
+                                                "description": "daily/brief调用现有报告链路；optimize仅预留，尚未启用。",
                                             },
                                             "payload": {
                                                 "type": "object",
                                                 "additionalProperties": False,
                                                 "properties": {
-                                                    "text": {
-                                                        "type": "string",
-                                                        "minLength": 1,
-                                                        "maxLength": 2000,
-                                                    },
                                                     "trigger_reason": {
                                                         "type": "string",
                                                         "minLength": 1,
@@ -171,7 +169,7 @@ def trigger_tool_schema() -> list[dict]:
                                                         },
                                                     },
                                                 },
-                                                "description": "提醒只用text；报告只用trigger_reason/highlight_symbols；身份及投递位置由认证会话注入。",
+                                                "description": "报告只用trigger_reason/highlight_symbols；身份及投递位置由认证会话注入。",
                                             },
                                         },
                                     },
@@ -332,32 +330,28 @@ class TriggerTools:
         value = deepcopy(spec)
         actions = value.get("actions")
         if not isinstance(actions, list) or not 1 <= len(actions) <= 10:
-            raise ValueError("请提供1至10个brief、daily或reminder动作")
+            raise ValueError("请提供1至10个daily或brief报告动作；optimize仅预留")
         for action in actions:
             if not isinstance(action, dict) or set(action) - {"kind", "payload"}:
                 raise ValueError("动作仅允许kind和payload")
-            if action.get("kind") not in {"brief", "daily", "reminder"}:
-                raise ValueError("动作必须是brief、daily或reminder")
+            if action.get("kind") == "optimize":
+                raise ValueError("optimize仅预留，尚未启用；当前只能创建daily或brief")
+            if action.get("kind") not in {"brief", "daily"}:
+                raise ValueError("动作必须是daily或brief；optimize仅预留")
             payload = action.setdefault("payload", {})
             if not isinstance(payload, dict):
                 raise TypeError("动作payload必须是对象")
-            allowed = (
-                {"text"}
-                if action["kind"] == "reminder"
-                else {"trigger_reason", "highlight_symbols"}
-            )
+            allowed = {"trigger_reason", "highlight_symbols"}
             if set(payload) - allowed:
                 raise ValueError(
-                    "动作payload仅允许提醒text或报告trigger_reason/highlight_symbols；报告使用完整监控池"
+                    "动作payload仅允许trigger_reason/highlight_symbols；报告使用完整监控池"
                 )
-            for key in ("text", "trigger_reason"):
+            for key in ("trigger_reason",):
                 if key in payload and (
                     not isinstance(payload[key], str)
                     or not 1 <= len(payload[key]) <= 2000
                 ):
                     raise ValueError(f"{key}需要1至2000字的文本")
-            if action["kind"] == "reminder" and not payload.get("text"):
-                raise ValueError("提醒动作需要text内容")
             highlights = payload.get("highlight_symbols", [])
             if (
                 not isinstance(highlights, list)
@@ -369,8 +363,7 @@ class TriggerTools:
                 )
             ):
                 raise ValueError("highlight_symbols需要证券代码列表")
-            if action["kind"] in {"brief", "daily"}:
-                payload.setdefault("trigger_reason", str(value.get("label", "")))
+            payload.setdefault("trigger_reason", str(value.get("label", "")))
             payload["chat_id"] = self.chat
         from ...triggers.models import normalize_spec
 
@@ -492,11 +485,9 @@ class TriggerTools:
         """Read the shared run without creating stores, reconciling or waking jobs."""
         if not action.get("run_id"):
             return {}
-        expected = (
-            "triggers.reminder"
-            if action["kind"] == "reminder"
-            else "reports." + action["kind"]
-        )
+        if action["kind"] not in {"daily", "brief"}:
+            return {}
+        expected = "reports." + action["kind"]
         try:
             uri = Path(self.store.path).resolve().as_uri() + "?mode=ro"
             with closing(sqlite3.connect(uri, uri=True, timeout=1)) as db:
@@ -665,14 +656,10 @@ class TriggerTools:
             if stage in {
                 "brief_notifications",
                 "daily_notifications",
-                "trigger_message_starting",
             }:
                 status, message = "delivering", "正在投递"
             else:
-                status, message = (
-                    "generating",
-                    "正在生成" if kind != "reminder" else "正在准备提醒",
-                )
+                status, message = "generating", "正在生成"
         elif channels:
             requested = {
                 name: item
@@ -823,10 +810,13 @@ class TriggerTools:
             next_label = "等待符合规则的正式公告；按原披露日计算"
         if record["state"] != "active":
             next_label = "已停止后续触发"
-        kinds = {"brief": "简报（完整监控池）", "daily": "日报（完整监控池）"}
+        kinds = {
+            "brief": "简报（完整监控池）",
+            "daily": "日报（完整监控池）",
+            "optimize": "优化报告（预留，未启用）",
+        }
         actions = "、".join(
-            kinds.get(item["kind"], "提醒：" + item["payload"].get("text", ""))
-            for item in spec["actions"]
+            kinds.get(item["kind"], "历史动作（不再执行）") for item in spec["actions"]
         )
         evaluation = self.store.evaluation_state(self.owner, record["number"])
         try:
@@ -847,10 +837,10 @@ class TriggerTools:
             ):
                 recent = recent.replace("已送达", "已发送", 1)
         else:
-            names = {"brief": "简报", "daily": "日报", "reminder": "提醒"}
+            names = {"brief": "简报", "daily": "日报", "optimize": "优化报告（预留）"}
             parts = []
             for item in action_results:
-                name = names[item["kind"]]
+                name = names.get(item["kind"], "历史动作")
                 if sum(other["kind"] == item["kind"] for other in action_results) > 1:
                     name += f"（动作{item['action_index'] + 1}）"
                 parts.append(name + "：" + item["message"])
@@ -1216,39 +1206,44 @@ class TriggerTools:
                 now=now,
             )
         number = r"[\d一二三四五六七八九十零〇两廿卅]{1,4}"
-        reminder = re.fullmatch(
+        maturity = re.fullmatch(
             rf"(?:提醒我(?:在)?)?(?:(?P<year>{number})年)?(?P<month>{number})月(?P<day>{number})(?:日|号)"
-            r"(?:\s*(?P<hour>\d{1,2})(?::|点)(?P<minute>\d{1,2})?分?)?\s*(?P<label>(?:国债)?逆回购到期)(?:提醒我)?",
+            r"(?:\s*(?P<hour>\d{1,2})(?::|点)(?P<minute>\d{1,2})?分?)?\s*(?P<label>(?:国债)?逆回购到期)(?:提醒我|(?:发|发送|推送)(?P<report>日报|简报))?",
             normalized,
         )
-        if reminder:
+        if maturity:
             try:
                 current = _clock(now or self.now)
                 year = (
-                    _chinese_number(reminder["year"])
-                    if reminder["year"]
+                    _chinese_number(maturity["year"])
+                    if maturity["year"]
                     else current.year
                 )
                 month, day = (
-                    _chinese_number(reminder["month"]),
-                    _chinese_number(reminder["day"]),
+                    _chinese_number(maturity["month"]),
+                    _chinese_number(maturity["day"]),
                 )
-                hour = int(reminder["hour"]) if reminder["hour"] else 9
-                minute = int(reminder["minute"] or 0) if reminder["hour"] else 50
+                hour = int(maturity["hour"]) if maturity["hour"] else 9
+                minute = int(maturity["minute"] or 0) if maturity["hour"] else 50
                 moment = datetime.combine(
                     date(year, month, day), time(hour, minute), BEIJING
                 )
                 if moment <= current:
                     return _reply(
                         "needs_clarification",
-                        "该日期/时刻已经过去，请明确年份或新的提醒时间；未创建触发器。",
+                        "该日期/时刻已经过去，请明确年份或新的触发时间；未创建触发器。",
                     )
                 spec = {
-                    "label": reminder["label"],
+                    "label": maturity["label"],
                     "schedule": {"at": moment.isoformat(), "timezone": "Asia/Shanghai"},
                     "match_policy": "once",
                     "actions": [
-                        {"kind": "reminder", "payload": {"text": reminder["label"]}}
+                        {
+                            "kind": "brief"
+                            if maturity["report"] == "简报"
+                            else "daily",
+                            "payload": {"trigger_reason": maturity["label"]},
+                        }
                     ],
                 }
                 return self.execute(
@@ -1335,12 +1330,13 @@ class TriggerTools:
                 "日报": ["daily"],
                 "简报和日报": ["brief", "daily"],
                 "日报和简报": ["daily", "brief"],
+                "优化报告": ["optimize"],
+                "optimize": ["optimize"],
             }
-            actions = (
-                [{"kind": kind, "payload": {}} for kind in report_kinds[body]]
-                if recurring[4] != "提醒我" and body in report_kinds
-                else [{"kind": "reminder", "payload": {"text": body}}]
-            )
+            actions = [
+                {"kind": kind, "payload": {"trigger_reason": body}}
+                for kind in report_kinds.get(body, ["daily"])
+            ]
             return self.execute(
                 {
                     "action": "create",
