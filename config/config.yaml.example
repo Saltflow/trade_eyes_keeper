@@ -1,5 +1,8 @@
 # 报告中的策略部分仅显示明确来源的 Ke 收益曲线。
 report:
+  events:
+    # 仅限制已采集公告在日报中的展示；不删除原文，不影响待派息/未解禁事项。
+    announcement_lookback_months: 2
   technical_signals:
     enabled: false
   strategy_display: returns_only

@@ -59,7 +59,7 @@ def _stock_data():
     )
 
 
-def _daily_body(notifier, *, alerts=None, signal_scan=None, ref_html=""):
+def _daily_body(notifier, *, alerts=None, signal_scan=None):
     return notifier._build_email_body(
         alerts or [],
         _stock_data(),
@@ -68,20 +68,18 @@ def _daily_body(notifier, *, alerts=None, signal_scan=None, ref_html=""):
                 {
                     "title": "<b>恶意公告</b>" + "公告标题" * 30,
                     "url": "javascript:alert(1)",
-                    "date": "2026-08-22",
+                    "date": pd.Timestamp.now().strftime("%Y-%m-%d"),
                     "exchange": "SSE",
                 },
                 {
                     "title": "安全公告",
                     "url": "https://example.com/notice",
-                    "date": "2026-08-22",
+                    "date": pd.Timestamp.now().strftime("%Y-%m-%d"),
                     "exchange": "SSE",
                 },
             ]
         },
         signal_scan=signal_scan,
-        ref_portfolio_html=ref_html,
-        daily_mode=True,
     )
 
 
@@ -93,7 +91,10 @@ def test_daily_matrix_shows_open_previous_close_and_current_price(monkeypatch):
     assert "股息率" not in table.get_text()
     assert all("mobile-hide" not in item.get("class", []) for item in headers[1:4])
     cells = table.select_one("tbody tr").select("td")
-    assert [cell.get_text() for cell in cells[1:4]] == ["10.00", "9.75", "10.20"]
+    assert [cell.get_text() for cell in cells[1:3]] == ["10.00", "9.75"]
+    assert cells[3].strong.get_text() == "10.20"
+    assert cells[3].select_one(".price-change").get_text() == "+4.62%"
+    assert "#c43c45" in cells[3]["style"]
 
 
 def test_daily_alert_and_empty_paths_share_one_mobile_document(monkeypatch):
@@ -133,29 +134,7 @@ def test_daily_alert_and_empty_paths_share_one_mobile_document(monkeypatch):
 
 def test_daily_data_is_escaped_and_reference_portfolio_is_not_in_body(monkeypatch):
     notifier = _notifier(monkeypatch)
-    session = SimpleNamespace(
-        ref_portfolio_status={
-            "a_share": {
-                "_label": "A股参考组合",
-                "inception_date": "2026-01-01",
-                "nav": 100000,
-                "nav_return_pct": 3.2,
-                "trading_days": 100,
-                "holdings": [
-                    {
-                        "code": "601728",
-                        "shares": 100,
-                        "price": 10.2,
-                        "market_value": 1020,
-                        "avg_cost": 9.9,
-                    }
-                ],
-                "cash": 98980,
-            }
-        }
-    )
-    ref_html = notifier._build_daily_ref_portfolio_html(session)
-    body = _daily_body(notifier, ref_html=ref_html)
+    body = _daily_body(notifier)
     soup = BeautifulSoup(body, "html.parser")
 
     assert soup.find("script") is None
@@ -185,7 +164,6 @@ def test_daily_missing_values_and_long_text_do_not_break_html(monkeypatch):
         [],
         sparse,
         announcements={"000001": [{"title": "标题" * 200}]},
-        daily_mode=True,
     )
     soup = BeautifulSoup(body, "html.parser")
     assert soup.find("script") is None

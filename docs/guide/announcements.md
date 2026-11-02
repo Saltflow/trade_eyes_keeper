@@ -92,7 +92,7 @@ ETF 使用 SEC 基金目录解析具体份额 class ID，再查询该类别的 E
 
 所以“邮件把收到的公告都展示出来”和“抓取时完全不筛选”是两回事：邮件保留上游结果，但上游已执行日期、标题和每股条数筛选。分红事项的状态筛选也是另一条事件逻辑，不能等同于公告标题筛选。
 
-当前主链是 `main.py` 采集公告 → `session.announcements` → 日报邮件 `_build_mobile_daily_email_body` → `_build_daily_events_section`。依据：`main.py:1372`、`src/notification/email_notifier.py:1622`、`:1657`。文件中另有旧公告展示函数，不能拿它们的展示条数替代当前日报链路规则。
+当前主链是 `main.py` 采集公告 → `session.announcements` → 共享 `build_daily_event_rows` 分类、过滤和合并 → 各渠道渲染。邮件正文统一由 `_build_email_body` 读取 `daily_email_mobile.html`，事件段由 `_build_daily_events_section` 渲染；PDF与Bot使用同一批共享事件。旧公告卡片及备用邮件正文生成器已删除。公告展示期限默认两个自然月，可通过机器人调整 `report.events.announcement_lookback_months`；该期限不改变采集窗口，也不清除待派息分红或未解禁事项。
 
 ## 时效性：多久更新、能看到多早的公告
 

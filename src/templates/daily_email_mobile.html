@@ -14,7 +14,8 @@
   .section-heading {{ padding:8px 0 7px; border-bottom:2px solid #dce6f0;
     color:#173b62; font-size:15px; font-weight:700; }}
   .section-count {{ float:right; color:#718096; font-size:11px; font-weight:400; }}
-  .group-heading {{ margin:10px 0 5px; color:#56708d; font-size:12px; font-weight:700; }}
+  .group-heading {{ margin:14px 0 5px; padding:7px 9px; border-radius:5px;
+    background:#eaf1f8; color:#315574; font-size:12px; font-weight:700; }}
   .deployment-strip {{ margin-bottom:12px; padding:8px 10px; border:1px solid #c9d8e7;
     border-radius:7px; background:#f5f9fd; color:#53687d; font-size:11px; overflow-wrap:anywhere; }}
   .deployment-strip strong {{ color:#173b62; }}
@@ -50,13 +51,26 @@
   .watchlist-table {{ margin-top:3px; font-size:11px; }}
   .watchlist-table th {{ padding:5px 4px; border-bottom:1px solid #cfdde9; color:#718096;
     font-size:10px; font-weight:600; text-align:right; }}
-  .watchlist-table th:first-child {{ width:36%; text-align:left; }}
+  .watchlist-table th:first-child {{ width:28%; text-align:left; }}
   .watchlist-table td {{ padding:5px 4px; border-bottom:1px solid #edf1f5; text-align:right;
     vertical-align:top; overflow-wrap:anywhere; }}
   .watchlist-table td:first-child {{ text-align:left; }}
   .watch-row-stale {{ background:#fffdf7; color:#8a7a58; }}
   .watch-instrument strong {{ display:block; color:#173b62; font-size:11px; }}
   .watch-instrument span {{ display:block; color:#4a5c70; overflow-wrap:anywhere; }}
+  .watch-instrument strong {{ font-size:12px; }}
+  .watch-instrument span {{ margin-top:2px; font-size:11px; line-height:1.55; }}
+  .current-quote strong {{ font-size:12px; }}
+  .price-change {{ display:block; margin-top:2px; font-size:10px; white-space:nowrap; }}
+  .curve-notes {{ margin-top:8px; padding:7px 9px; background:#f0f5fa; border-radius:5px; }}
+  .curve-note {{ color:#667c92; font-size:10px; line-height:1.65; overflow-wrap:anywhere; }}
+  .curve-note:first-child {{ color:#315574; font-weight:600; }}
+  .event-category {{ margin-top:16px; padding:7px 9px; background:#eaf1f8;
+    border-left:3px solid #315a82; color:#173b62; font-size:13px; font-weight:700; }}
+  .event-market {{ padding:9px 1px 2px; color:#718096; font-size:10px; font-weight:700; }}
+  .event-instrument {{ padding:4px 1px; color:#244969; font-weight:700; font-size:12px; }}
+  .event-dates {{ margin-top:4px; line-height:1.9; }}
+  .event-routine {{ padding:7px 8px; background:#f8fafc; }}
   .chart-card {{ margin-top:8px; padding:8px; border:1px solid #e0e8f0;
     border-radius:8px; background:#fbfdff; }}
   .chart-card img {{ display:block; width:100%; max-width:100%; height:auto; }}
@@ -69,16 +83,12 @@
     font-size:11px; overflow-wrap:anywhere; }}
   .event-row:last-of-type {{ border-bottom:0; }}
   .event-date {{ display:inline-block; min-width:72px; color:#718096; }}
-  .event-kind {{ display:inline-block; margin-right:4px; padding:1px 4px; border-radius:4px;
-    background:#eef6ff; color:#315a82; font-size:10px; }}
   .muted-note {{ margin-top:6px; color:#7a8998; font-size:10px; overflow-wrap:anywhere; }}
-  .link-card {{ margin-top:8px; padding:9px 10px; border-radius:7px; background:#eef6ff;
-    color:#315a82; font-size:11px; overflow-wrap:anywhere; }}
   a {{ color:#1769aa; text-decoration:none; }}
   @media screen and (max-width:480px) {{
     .content {{ padding:10px 12px 14px !important; }}
     .mobile-hide {{ display:none !important; }}
-    .watchlist-table th:first-child {{ width:43% !important; }}
+    .watchlist-table th:first-child {{ width:28% !important; }}
     .watchlist-table th,.watchlist-table td {{ padding:5px 3px !important; }}
     .market-title {{ display:block !important; }}
     .market-title span {{ display:block; margin-top:2px; text-align:left !important; }}

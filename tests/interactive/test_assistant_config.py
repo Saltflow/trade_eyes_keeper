@@ -92,6 +92,44 @@ def _announcement_fields(tools):
     }
 
 
+def test_report_announcement_display_months_preview_and_apply(config_tools):
+    key = "report.events.announcement_lookback_months"
+    description = next(
+        item for item in config_tools.describe()["fields"] if item["key"] == key
+    )
+    assert description["value"] == 2 and "已采集" in description["description"]
+    before = _app_store(config_tools).path.read_bytes()
+    (proposal,) = config_tools.propose([_change(key, 3)])
+    assert _app_store(config_tools).path.read_bytes() == before
+    assert "下次任务" in proposal["effect"]
+    config_tools.apply(proposal)
+    assert (
+        _app_store(config_tools).load_raw()["report"]["events"][
+            "announcement_lookback_months"
+        ]
+        == 3
+    )
+    for value in (0, 25, True, "2", 1.5):
+        with pytest.raises((ValueError, TypeError)):
+            config_tools.propose([_change(key, value)])
+    _app_store(config_tools).update(lambda raw: raw["report"].pop("events"))
+    assert (
+        next(item for item in config_tools.describe()["fields"] if item["key"] == key)[
+            "value"
+        ]
+        == 2
+    )
+    for value in (1, 24):
+        (proposal,) = config_tools.propose([_change(key, value)])
+        config_tools.apply(proposal)
+        assert (
+            _app_store(config_tools).load_raw()["report"]["events"][
+                "announcement_lookback_months"
+            ]
+            == value
+        )
+
+
 def test_announcement_writable_fields_refresh_from_live_config(config_tools):
     values = {
         "enable": True,

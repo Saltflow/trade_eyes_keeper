@@ -3,7 +3,7 @@
 覆盖:
 1. web_crawler._parse_placement_row 解析 + 占比 + 解禁日期计算
 2. _parse_lockin_years 锁定期文本解析
-3. email_notifier._build_placement_section 展示表格
+3. 共享日报事件模块展示未解禁定增
 """
 
 import sys
@@ -111,8 +111,8 @@ class TestPlacementSection:
 
     def test_empty_placements_returns_blank(self):
         n = self._notifier()
-        assert n._build_placement_section(None, None) == ""
-        assert n._build_placement_section({}, None) == ""
+        assert n._build_daily_events_section({}, None, None) == ""
+        assert n._build_daily_events_section({}, {}, None) == ""
 
     def test_placement_table_content(self):
         n = self._notifier()
@@ -126,8 +126,8 @@ class TestPlacementSection:
             }
         }
         stock_data = pd.DataFrame([{"stock_code": "601088", "stock_name": "中国神华"}])
-        html = n._build_placement_section(placements, stock_data)
-        assert "未解禁定增" in html
+        html = n._build_daily_events_section({}, placements, stock_data)
+        assert "股权融资与解禁" in html
         assert "601088" in html
         assert "中国神华" in html
         assert "4.58亿股" in html  # 457665903 / 1e8
@@ -168,7 +168,6 @@ class TestPlacementSection:
             alert_stocks=[],
             stock_data=stock_data,
             placements=placements,
-            daily_mode=True,
         )
-        assert "未解禁定增" in html
+        assert "股权融资与解禁" in html
         assert "4.58亿股" in html

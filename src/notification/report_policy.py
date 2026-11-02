@@ -26,6 +26,38 @@ FUNDAMENTAL_COLUMNS = (
 ROE_ESTIMATE_NOTE = (
     "ROE 带“估”的数值按 PB÷PE×100% 粗估，可能存在口径或时点差异；无标记的值为已有 ROE。"
 )
+PRICE_COLORS = {
+    "up": "#c43c45",
+    "down": "#21865c",
+    "flat": "#63758a",
+    "unknown": "#8995a3",
+}
+
+
+def price_movement(close, prev_close) -> tuple[str, str]:
+    """Compare original quotes; never derive a direction from rounded display values."""
+    try:
+        current, previous = float(close), float(prev_close)
+        if (
+            not np.isfinite(current)
+            or not np.isfinite(previous)
+            or previous <= 0
+            or current <= 0
+        ):
+            raise ValueError("invalid comparison price")
+    except (TypeError, ValueError):
+        return "unknown", "涨跌未知"
+    direction = "up" if current > previous else "down" if current < previous else "flat"
+    return direction, f"{(current / previous - 1) * 100:+.2f}%"
+
+
+def implied_ke(pe_ratio) -> float | None:
+    try:
+        pe = float(pe_ratio)
+        result = 100 * (0.02 + 1 / pe) if np.isfinite(pe) and pe > 0 else None
+        return result if result is not None and np.isfinite(result) else None
+    except (TypeError, ValueError):
+        return None
 
 
 def technical_signals_enabled(config: dict | None) -> bool:
@@ -163,35 +195,32 @@ def generate_return_curve_png(payload) -> bytes | None:
     from ..utils.font_setup import setup_cjk_font
 
     setup_cjk_font()
-    fig, axes = plt.subplots(3, 1, figsize=(9, 8), constrained_layout=True)
-    for axis, item in zip(axes, items):
-        axis.set_title(f"{item['label']} · Ke策略（历史模拟）")
+    fig, axis = plt.subplots(figsize=(7, 3.2), constrained_layout=True)
+    colors = {"a_share": "#d6a72a", "hk": "#2ca02c", "us": "#1f77b4"}
+    for item in items:
         if item["status"] == "unavailable":
-            axis.text(
-                0.5,
-                0.5,
-                "暂不可用：等待历史Ke数据",
-                ha="center",
-                transform=axis.transAxes,
-            )
-            axis.set_axis_off()
             continue
+        returns = item["values"] / item["initial_capital"] * 100 - 100
         axis.plot(
             pd.to_datetime(item["dates"]),
-            item["values"] / item["initial_capital"] * 100 - 100,
+            returns,
+            color=colors[item["group"]],
+            linewidth=1.8,
+            label=f"{item['label']} {returns[-1]:+.2f}%",
         )
-        axis.set_ylabel("税费后收益 %")
-        axis.grid(alpha=0.2)
-        if item["status"] == "partial":
-            axis.text(
-                0.5,
-                0.5,
-                item["coverage_label"],
-                color="darkred",
-                alpha=0.7,
-                ha="center",
-                transform=axis.transAxes,
-            )
+    axis.set_ylabel("税费后收益 %")
+    axis.grid(alpha=0.15)
+    axis.legend(
+        loc="lower left",
+        bbox_to_anchor=(0, 1.01),
+        ncol=3,
+        frameon=False,
+        fontsize=14,
+        columnspacing=1,
+        borderaxespad=0,
+    )
+    axis.margins(x=0.01)
+    axis.spines[["top", "right"]].set_visible(False)
     output = io.BytesIO()
     try:
         fig.savefig(output, format="png", dpi=120)
@@ -250,7 +279,38 @@ def fundamental_text(stock_data) -> str:
     return "\n".join(lines)
 
 
-def return_curves_html(payload, image_source: str | None = None) -> str:
+def return_curve_notes(payload) -> list[str]:
+    """Coverage annotations accompany the plot, never obscure or duplicate it."""
+    notes = ["历史模拟，非实盘收益"]
+    for item in return_curve_markets(payload):
+        if item["status"] == "unavailable":
+            notes.append(
+                f"{item['label']}：暂不可用；{item['message'] or '等待历史Ke数据'}"
+            )
+            continue
+        coverage = "完整" if item["status"] == "complete" else item["coverage_label"]
+        line = f"{item['label']}：{coverage} · 数据截至 {item['data_as_of'] or str(item['dates'][-1])[:10]}"
+        if item["message"]:
+            line += f" · {item['message']}"
+        notes.append(line)
+    return notes
+
+
+def return_curves_html(
+    payload, image_source: str | None = None, *, compact=False
+) -> str:
+    if compact:
+        image = (
+            f'<img alt="Ke策略收益曲线" src="{html.escape(image_source, quote=True)}" '
+            'style="max-width:100%;height:auto">'
+            if image_source
+            else ""
+        )
+        notes = "".join(
+            f'<div class="curve-note">{html.escape(line)}</div>'
+            for line in return_curve_notes(payload)
+        )
+        return image + f'<div class="curve-notes">{notes}</div>'
     text = html.escape(build_return_curves_text(payload))
     image = (
         (

@@ -6,7 +6,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from src.notification.email_notifier import EmailNotifier
+from src.notification.report_policy import implied_ke
 from src.strategy import Params, StrategyMarketData, get_strategy, list_strategy_ids
 from src.strategy.fundamental_context import FundamentalStrategyMarketData
 from src.strategy.plugins.ke_threshold_allocation import KE_PANEL_CONTRACT
@@ -50,15 +50,14 @@ def test_fixed_strategy_is_registered_for_all_markets_without_search_dimensions(
 
 
 def test_matches_existing_daily_ke_percentage_presentation_without_recomputing_history():
-    # A renderer object is sufficient: no configuration/archive/SMTP is opened.
-    renderer = EmailNotifier.__new__(EmailNotifier)
+    # The shared display calculation opens no archive/SMTP and recomputes no history.
     pe = 1 / (0.09 - 0.02)
-    assert renderer._daily_implied_ke(pe) == pytest.approx(9.0)
+    assert implied_ke(pe) == pytest.approx(9.0)
     plan = _strategy().make_signals(
-        Params({}), _panel((renderer._daily_implied_ke(pe) / 100,))
+        Params({}), _panel((implied_ke(pe) / 100,))
     )
     assert plan.buy_signals.all()
-    assert renderer._daily_implied_ke(-10) is None
+    assert implied_ke(-10) is None
 
 
 def test_thresholds_are_inclusive_with_only_small_equality_tolerance():

@@ -60,7 +60,6 @@ def test_mobile_daily_renders_signal_details_without_evaluation_reports(notifier
         pd.DataFrame([{"stock_code": "VOO", "stock_name": "标普500<script>"}]),
         signal_scan=scan,
         evaluation_reports={},
-        daily_mode=True,
     )
 
     signal_section = body.split('class="daily-section signal-section"', 1)[1]
@@ -82,7 +81,7 @@ def test_mobile_daily_renders_signal_details_without_evaluation_reports(notifier
 
 
 def test_mobile_daily_distinguishes_missing_scan_from_no_signals(notifier):
-    missing = notifier._build_email_body([], pd.DataFrame(), daily_mode=True)
+    missing = notifier._build_email_body([], pd.DataFrame())
     completed = notifier._build_email_body(
         [],
         pd.DataFrame(),
@@ -93,7 +92,6 @@ def test_mobile_daily_distinguishes_missing_scan_from_no_signals(notifier):
                 for group in ("a_share", "hk", "us")
             },
         ),
-        daily_mode=True,
     )
 
     assert "策略扫描结果不可用" in missing
@@ -112,7 +110,7 @@ def test_mobile_daily_keeps_every_supplied_signal(notifier):
         for index in range(35)
     ]
     body = notifier._build_email_body(
-        [], pd.DataFrame(), signal_scan=SimpleNamespace(alerts=alerts), daily_mode=True
+        [], pd.DataFrame(), signal_scan=SimpleNamespace(alerts=alerts)
     )
 
     assert body.count('class="signal-row"') == len(alerts)

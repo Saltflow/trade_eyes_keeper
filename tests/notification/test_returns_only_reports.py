@@ -94,6 +94,7 @@ def session():
         group_outcomes={"hk": {"status": "blocked"}},
     )
     return SimpleNamespace(
+        created_at="2026-01-03T19:00:00+08:00",
         config=deepcopy(CONFIG),
         signal_scan=scan,
         evaluation_reports={
@@ -204,7 +205,10 @@ def test_malformed_curve_fails_closed(field, value):
     assert return_curve_markets(payload)[0]["status"] == "unavailable"
 
 
-def test_png_has_partial_watermark_and_no_unavailable_zero_return_line(monkeypatch):
+@pytest.mark.parametrize("us_available", [False, True])
+def test_png_uses_one_axis_no_watermark_and_no_unavailable_zero_return_line(
+    monkeypatch, us_available
+):
     import matplotlib.pyplot as plt
 
     original = plt.subplots
@@ -212,14 +216,21 @@ def test_png_has_partial_watermark_and_no_unavailable_zero_return_line(monkeypat
 
     def subplots(*args, **kwargs):
         figure, axes = original(*args, **kwargs)
-        captured.extend(axes)
+        captured.append(axes)
         return figure, axes
 
     monkeypatch.setattr(plt, "subplots", subplots)
-    assert generate_return_curve_png(curves()).startswith(b"\x89PNG")
+    payload = curves()
+    if us_available:
+        payload["markets"]["us"]["coverage"] = {"status": "complete"}
+    assert generate_return_curve_png(payload).startswith(b"\x89PNG")
     assert captured[0].lines[0].get_ydata().tolist() == [-1, 5, pytest.approx(10)]
-    assert any("覆盖不完整" in text.get_text() for text in captured[1].texts)
-    assert not captured[2].lines
+    assert len(captured) == 1 and len(captured[0].lines) == (3 if us_available else 2)
+    assert [line.get_color() for line in captured[0].lines] == (
+        ["#d6a72a", "#2ca02c", "#1f77b4"] if us_available else ["#d6a72a", "#2ca02c"]
+    )
+    assert not captured[0].texts
+    assert len(captured[0].lines[1].get_xdata()) == 2
 
 
 @pytest.mark.parametrize(
@@ -362,7 +373,6 @@ def test_missing_ke_curve_keeps_daily_template_and_full_pool():
     body = EmailNotifier(deepcopy(CONFIG))._build_email_body(
         [],
         source.get_all_dataframe(),
-        daily_mode=True,
         signal_scan=source.signal_scan,
         evaluation_reports=source.evaluation_reports,
     )

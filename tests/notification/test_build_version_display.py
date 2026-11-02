@@ -21,7 +21,7 @@ def test_daily_html_keeps_visible_and_escaped_build_label(monkeypatch):
             "ip_address": "local",
         },
     )
-    body = notifier._build_mobile_daily_email_body([], pd.DataFrame())
+    body = notifier._build_email_body([], pd.DataFrame())
     assert "<strong>版本 " + label + "</strong>" in body
     assert "&lt;untrusted&gt;" in body
     assert "{release_label}" not in body

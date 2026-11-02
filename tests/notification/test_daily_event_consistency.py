@@ -180,9 +180,10 @@ def test_event_rows_keep_finite_missing_amounts_and_safe_links(session):
     )
     assert len(rows) == 3
     assert rows[0]["kind"] == "未除权"
-    assert "1.00亿股" in rows[1]["title"]
-    assert "定增价 —" in rows[1]["title"]
-    assert rows[2]["url"] == "https://example.invalid/notice?a=1&b=2"
+    placement = next(row for row in rows if row["kind"] == "未解禁定增")
+    assert "1.00亿股" in placement["title"]
+    assert "定增价 —" in placement["title"]
+    assert next(row for row in rows if row["url"])["url"] == "https://example.invalid/notice?a=1&b=2"
 
 
 def test_readiness_reuses_execution_contract_for_missing_and_failed_data(session):

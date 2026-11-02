@@ -14,10 +14,12 @@ from pathlib import Path
 
 import pandas as pd
 
+from ..markets import _detect_fine_group
 from .report_builders import (
     _alert_value,
     _benchmark_label,
     build_daily_event_rows,
+    group_daily_event_rows,
     report_data_readiness,
 )
 
@@ -153,12 +155,15 @@ def generate_daily_pdf(
 
     from .report_policy import (
         FUNDAMENTAL_COLUMNS,
+        PRICE_COLORS,
         ROE_ESTIMATE_NOTE,
-        build_return_curves_text,
         fundamental_rows,
         generate_return_curve_png,
+        implied_ke,
+        price_movement,
         report_view,
         return_curve_markets,
+        return_curve_notes,
         returns_only,
         technical_signals_enabled,
     )
@@ -281,28 +286,59 @@ def generate_daily_pdf(
             getattr(session, "placements", None),
             stock_data,
             getattr(session, "dividend_events", None),
+            as_of=getattr(session, "created_at", None),
+            config=config,
         )
         events_section = ""
         if events:
             event_lines = [
                 r"\begingroup",
                 r"\section*{\color{navy}事件速览}",
-                r"\small\begin{longtable}{p{.14\textwidth}p{.12\textwidth}p{.13\textwidth}p{.49\textwidth}}",
-                r"\toprule 日期 & 标的 & 事项 & 详情 \\ \midrule\endhead",
+                r"\small\begin{longtable}{p{.14\textwidth}p{.80\textwidth}}",
+                r"\toprule 日期 & 详情 \\ \midrule\endhead",
             ]
-            event_lines.extend(
-                " & ".join(
-                    _esc(row.get(key) or "—")
-                    for key in ("date", "code", "kind", "title")
+            heading = None
+            for group in group_daily_event_rows(events):
+                current = (group["category"], group["market"])
+                if current != heading:
+                    event_lines.append(
+                        r"\rowcolor{navy!8}\multicolumn{2}{l}{\textbf{"
+                        + _esc(" · ".join(current))
+                        + r"}} \\*"
+                    )
+                    heading = current
+                event_lines.append(
+                    r"\multicolumn{2}{l}{\color{navy}\textbf{"
+                    + _esc(group["code"] + " " + group["name"])
+                    + r"}} \\*"
                 )
-                + (
-                    r"\newline\href{" + _esc(row["url"]) + r"}{原文}"
-                    if row.get("url")
-                    else ""
-                )
-                + r" \\"
-                for row in events
-            )
+                for row in group["rows"]:
+                    members = row.get("members") or [row]
+                    if len(members) > 1:
+                        links = [
+                            r"\href{"
+                            + _esc(member["url"])
+                            + "}{"
+                            + _esc(member["date"] or "日期待确认")
+                            + "}"
+                            if member["url"]
+                            else _esc(member["date"] or "日期待确认")
+                            for member in members
+                        ]
+                        event_lines.append(
+                            "— & "
+                            + _esc(f"{row['kind']} · {len(members)}份")
+                            + r"\newline "
+                            + " / ".join(links)
+                            + r" \\"
+                        )
+                    else:
+                        detail = _esc(row["title"])
+                        if row["url"]:
+                            detail += r"\newline\href{" + _esc(row["url"]) + r"}{原文}"
+                        event_lines.append(
+                            _esc(row["date"] or "日期待确认") + " & " + detail + r" \\"
+                        )
             event_lines.extend([r"\bottomrule\end{longtable}", r"\endgroup"])
             events_section = "\n".join(event_lines)
 
@@ -329,147 +365,211 @@ def generate_daily_pdf(
             + trigger_section
         )
 
-        # 4. 表: 合并 indicator_snapshot + fundamentals
-        snapshot = (
-            getattr(signal_scan, "indicator_snapshot", {}) if signal_scan else {}
-        )
         consensus = getattr(signal_scan, "consensus", None) if signal_scan else None
-        cons_inds = (
-            consensus.consensus_indicators if consensus else ["deviation", "rsi"]
-        )
-        fundamentals = {}
-        if stock_data is not None and hasattr(stock_data, "iterrows"):
-            for _, row in stock_data.iterrows():
-                code = str(row.get("stock_code", ""))
-                if not code:
-                    continue
-                pe = row.get("pe_ratio")
-                pb = row.get("pb_ratio")
-                dy = row.get("dividend_yield")
-                anchors = {}
-                for anchor_key in (
-                    () if curves_only else ("ma60", "wma20", "wma30", "wma50")
-                ):
-                    anchor_value = row.get(anchor_key)
-                    if anchor_value is not None and not pd.isna(anchor_value):
-                        anchors[anchor_key] = float(anchor_value)
-                close = row.get("close")
-                best_anchor = (
-                    pick_best_anchor(float(close), anchors)
-                    if close is not None and not pd.isna(close) and anchors
-                    else None
-                )
-                anchor_name, anchor_value, anchor_deviation = (
-                    best_anchor if best_anchor else ("—", None, None)
-                )
-                fundamentals[code] = {
-                    "close": f"{close:.2f}"
-                    if close is not None and not pd.isna(close)
-                    else "—",
-                    "anchor_name": _esc(anchor_name),
-                    "anchor_value": f"{anchor_value:.2f}"
-                    if anchor_value is not None
-                    else "—",
-                    "anchor_deviation": f"{anchor_deviation:+.1f}\\%"
-                    if anchor_deviation is not None
-                    else "—",
-                    "pe": f"{pe:.1f}" if pe is not None and not pd.isna(pe) else "—",
-                    "pb": f"{pb:.2f}" if pb is not None and not pd.isna(pb) else "—",
-                    "dy": f"{dy:.2f}" if dy is not None and not pd.isna(dy) else "—",
-                }
-
-        header_cols = ["标的", "收盘", "锚点", "锚值", "偏离\\%"] + cons_inds + ["息\\%", "PE", "PB", "信号"]
-        # 列格式: l for 标的, c for signal, r for numbers
-        col_fmt = "l" + "r" * (len(cons_inds) + 7) + "c"
-        table_rows = ""
-        alert_codes = {getattr(a, "stock_code", "") for a in sa}
-
-        from src.markets import _detect_fine_group
-
-        report_codes = list(fundamentals)
-        a_codes = sorted(
-            [c for c in report_codes if _detect_fine_group(c) == "a_share"],
-            key=lambda c: abs(snapshot.get(c, {}).get("deviation", 0) or 0),
-            reverse=True,
-        )
-        for code in a_codes:
-            vals = snapshot.get(code, {})
-            sig = "●" if code in alert_codes else ""
-            fund = fundamentals.get(code, {})
-            cells = [
-                _esc(code),
-                fund.get("close", "—"),
-                fund.get("anchor_name", "—"),
-                fund.get("anchor_value", "—"),
-                fund.get("anchor_deviation", "—"),
-            ]
-            for ind in cons_inds:
-                v = vals.get(ind)  # None = 缺失, 0 = 真实零
-                if v is None:
-                    cells.append("—")
-                elif ind == "deviation":
-                    cells.append(f"{v * 100:+.1f}\\%")
-                else:
-                    cells.append(f"{v:.2f}")
-            cells.append(fund.get("dy", "—"))
-            cells.append(fund.get("pe", "—"))
-            cells.append(fund.get("pb", "—"))
-            cells.append(sig)
-            row_color = "\\rowcolor{bg!30}" if sig else ""
-            table_rows += f"{row_color}{' & '.join(cells)} \\\\\n"
-
-        nona_codes = sorted(
-            [c for c in report_codes if c not in a_codes],
-            key=lambda c: abs(snapshot.get(c, {}).get("deviation", 0) or 0),
-            reverse=True,
-        )
-        if nona_codes:
-            table_rows += f"\\multicolumn{{{len(header_cols)}}}{{l}}{{\\color{{navy}}\\textbf{{境外 · {len(nona_codes)} 只}}}}\\\\\n"
-        for code in nona_codes:
-            vals = snapshot.get(code, {})
-            sig = "●" if code in alert_codes else ""
-            fund = fundamentals.get(code, {})
-            cells = [
-                _esc(code),
-                fund.get("close", "—"),
-                fund.get("anchor_name", "—"),
-                fund.get("anchor_value", "—"),
-                fund.get("anchor_deviation", "—"),
-            ]
-            for ind in cons_inds:
-                v = vals.get(ind)  # None = 缺失, 0 = 真实零
-                if v is None:
-                    cells.append("—")
-                elif ind == "deviation":
-                    cells.append(f"{v * 100:+.1f}\\%")
-                else:
-                    cells.append(f"{v:.2f}")
-            cells.append(fund.get("dy", "—"))
-            cells.append(fund.get("pe", "—"))
-            cells.append(fund.get("pb", "—"))
-            cells.append(sig)
-            row_color = "\\rowcolor{bg!30}" if sig else ""
-            table_rows += f"{row_color}{' & '.join(cells)} \\\\\n"
-
         if curves_only:
-            header_cols = [_esc(label) for _, label in FUNDAMENTAL_COLUMNS]
-            col_fmt = "lll" + "r" * (len(FUNDAMENTAL_COLUMNS) - 3)
-            table_rows = "".join(
-                " & ".join(_esc(value) for value in row)
-                + r" \\"
-                + "\n"
+            header_cols = [
+                "标的",
+                "今开",
+                "昨收",
+                "现价",
+                "PE",
+                "PB",
+                "隐含 Ke",
+                "ROE%",
+            ]
+            table_rows = []
+            by_code = {str(row["stock_code"]): row for _, row in stock_data.iterrows()}
+            fundamental = {
+                row[0]: dict(zip((key for key, _ in FUNDAMENTAL_COLUMNS), row))
                 for row in fundamental_rows(stock_data)
+            }
+            for group, label in (("a_share", "A股"), ("hk", "港股"), ("us", "美股")):
+                codes = sorted(
+                    code for code in by_code if _detect_fine_group(code) == group
+                )
+                if not codes:
+                    continue
+                table_rows.append(
+                    r"\rowcolor{navy!8}\multicolumn{8}{l}{\textbf{"
+                    + label
+                    + f" · {len(codes)}只"
+                    + r"}} \\*"
+                )
+                for code in codes:
+                    row, display = by_code[code], fundamental[code]
+                    direction, change = price_movement(
+                        row.get("close"), row.get("prev_close")
+                    )
+                    color = PRICE_COLORS[direction].lstrip("#")
+                    current = (
+                        r"\textcolor[HTML]{"
+                        + color
+                        + r"}{\shortstack[r]{\textbf{"
+                        + _esc(display["close"])
+                        + r"}\\{\tiny "
+                        + _esc(change)
+                        + "}}}"
+                    )
+                    ke = implied_ke(row.get("pe_ratio"))
+                    instrument = (
+                        r"\textbf{"
+                        + _esc(code)
+                        + r"}\newline "
+                        + _esc(display["stock_name"])
+                    )
+                    cells = [
+                        instrument,
+                        _esc(display["open"]),
+                        _esc(display["prev_close"]),
+                        current,
+                        _esc(display["pe_ratio"]),
+                        _esc(display["pb_ratio"]),
+                        _esc(f"{ke:.1f}%" if ke is not None else "—"),
+                        _esc(display["roe"]),
+                    ]
+                    table_rows.append(" & ".join(cells) + r" \\")
+            table_section = (
+                r"\scriptsize\renewcommand{\arraystretch}{1.35}\rowcolors{2}{white}{stripe}"
+                + "\n"
+                + r"\begin{longtable}{p{.25\textwidth}rrrrrrr}"
+                + "\n"
+                + r"\toprule "
+                + " & ".join(_esc(label) for label in header_cols)
+                + r" \\ \midrule\endhead"
+                + "\n"
+                + "\n".join(table_rows)
+                + "\n"
+                + r"\bottomrule\end{longtable}"
             )
 
-        table_section = (
-            "\\scriptsize\n"
-            "\\rowcolors{2}{white}{stripe}\n"
-            "\\resizebox{\\textwidth}{!}{%\n"
-            f"\\begin{{tabular}}{{{col_fmt}}}\n"
-            "\\toprule\n" + " & ".join(header_cols) + " \\\\\n"
-            "\\midrule\n" + table_rows + "\\bottomrule\n"
-            "\\end{tabular}}"
-        )
+        else:
+            # 4. 表: 合并 indicator_snapshot + fundamentals
+            snapshot = (
+                getattr(signal_scan, "indicator_snapshot", {}) if signal_scan else {}
+            )
+            cons_inds = (
+                consensus.consensus_indicators if consensus else ["deviation", "rsi"]
+            )
+            fundamentals = {}
+            if stock_data is not None and hasattr(stock_data, "iterrows"):
+                for _, row in stock_data.iterrows():
+                    code = str(row.get("stock_code", ""))
+                    if not code:
+                        continue
+                    pe = row.get("pe_ratio")
+                    pb = row.get("pb_ratio")
+                    dy = row.get("dividend_yield")
+                    anchors = {}
+                    for anchor_key in ("ma60", "wma20", "wma30", "wma50"):
+                        anchor_value = row.get(anchor_key)
+                        if anchor_value is not None and not pd.isna(anchor_value):
+                            anchors[anchor_key] = float(anchor_value)
+                    close = row.get("close")
+                    best_anchor = (
+                        pick_best_anchor(float(close), anchors)
+                        if close is not None and not pd.isna(close) and anchors
+                        else None
+                    )
+                    anchor_name, anchor_value, anchor_deviation = (
+                        best_anchor if best_anchor else ("—", None, None)
+                    )
+                    fundamentals[code] = {
+                        "close": f"{close:.2f}"
+                        if close is not None and not pd.isna(close)
+                        else "—",
+                        "anchor_name": _esc(anchor_name),
+                        "anchor_value": f"{anchor_value:.2f}"
+                        if anchor_value is not None
+                        else "—",
+                        "anchor_deviation": f"{anchor_deviation:+.1f}\\%"
+                        if anchor_deviation is not None
+                        else "—",
+                        "pe": f"{pe:.1f}" if pe is not None and not pd.isna(pe) else "—",
+                        "pb": f"{pb:.2f}" if pb is not None and not pd.isna(pb) else "—",
+                        "dy": f"{dy:.2f}" if dy is not None and not pd.isna(dy) else "—",
+                    }
+
+            header_cols = ["标的", "收盘", "锚点", "锚值", "偏离\\%"] + cons_inds + ["息\\%", "PE", "PB", "信号"]
+            # 列格式: l for 标的, c for signal, r for numbers
+            col_fmt = "l" + "r" * (len(cons_inds) + 7) + "c"
+            table_rows = ""
+            alert_codes = {getattr(a, "stock_code", "") for a in sa}
+
+
+            report_codes = list(fundamentals)
+            a_codes = sorted(
+                [c for c in report_codes if _detect_fine_group(c) == "a_share"],
+                key=lambda c: abs(snapshot.get(c, {}).get("deviation", 0) or 0),
+                reverse=True,
+            )
+            for code in a_codes:
+                vals = snapshot.get(code, {})
+                sig = "●" if code in alert_codes else ""
+                fund = fundamentals.get(code, {})
+                cells = [
+                    _esc(code),
+                    fund.get("close", "—"),
+                    fund.get("anchor_name", "—"),
+                    fund.get("anchor_value", "—"),
+                    fund.get("anchor_deviation", "—"),
+                ]
+                for ind in cons_inds:
+                    v = vals.get(ind)  # None = 缺失, 0 = 真实零
+                    if v is None:
+                        cells.append("—")
+                    elif ind == "deviation":
+                        cells.append(f"{v * 100:+.1f}\\%")
+                    else:
+                        cells.append(f"{v:.2f}")
+                cells.append(fund.get("dy", "—"))
+                cells.append(fund.get("pe", "—"))
+                cells.append(fund.get("pb", "—"))
+                cells.append(sig)
+                row_color = "\\rowcolor{bg!30}" if sig else ""
+                table_rows += f"{row_color}{' & '.join(cells)} \\\\\n"
+
+            nona_codes = sorted(
+                [c for c in report_codes if c not in a_codes],
+                key=lambda c: abs(snapshot.get(c, {}).get("deviation", 0) or 0),
+                reverse=True,
+            )
+            if nona_codes:
+                table_rows += f"\\multicolumn{{{len(header_cols)}}}{{l}}{{\\color{{navy}}\\textbf{{境外 · {len(nona_codes)} 只}}}}\\\\\n"
+            for code in nona_codes:
+                vals = snapshot.get(code, {})
+                sig = "●" if code in alert_codes else ""
+                fund = fundamentals.get(code, {})
+                cells = [
+                    _esc(code),
+                    fund.get("close", "—"),
+                    fund.get("anchor_name", "—"),
+                    fund.get("anchor_value", "—"),
+                    fund.get("anchor_deviation", "—"),
+                ]
+                for ind in cons_inds:
+                    v = vals.get(ind)  # None = 缺失, 0 = 真实零
+                    if v is None:
+                        cells.append("—")
+                    elif ind == "deviation":
+                        cells.append(f"{v * 100:+.1f}\\%")
+                    else:
+                        cells.append(f"{v:.2f}")
+                cells.append(fund.get("dy", "—"))
+                cells.append(fund.get("pe", "—"))
+                cells.append(fund.get("pb", "—"))
+                cells.append(sig)
+                row_color = "\\rowcolor{bg!30}" if sig else ""
+                table_rows += f"{row_color}{' & '.join(cells)} \\\\\n"
+
+            table_section = (
+                "\\scriptsize\n"
+                "\\rowcolors{2}{white}{stripe}\n"
+                "\\resizebox{\\textwidth}{!}{%\n"
+                f"\\begin{{tabular}}{{{col_fmt}}}\n"
+                "\\toprule\n" + " & ".join(header_cols) + " \\\\\n"
+                "\\midrule\n" + table_rows + "\\bottomrule\n"
+                "\\end{tabular}}"
+            )
 
         # 5. 脚注
         buy_sigs = consensus.buy_signal_counts if consensus else {}
@@ -498,13 +598,8 @@ def generate_daily_pdf(
                     beat = "✓" if (ta is not None and ta > bv) else "✗"
                     bt_text += f"\\quad vs {bn} {bv:+.1f}\\% {beat}"
         if curves_only:
-            strat_note = "Ke策略收益曲线（历史模拟；非实盘收益）"
-            bt_text = "\\par\n".join(
-                _esc(line)
-                for line in build_return_curves_text(curves).splitlines()
-                if not any(char in line for char in "▁▂▃▄▅▆▇█")
-            )
-            bt_text += "\\par\n" + _esc(ROE_ESTIMATE_NOTE)
+            strat_note = "Ke阈值配置"
+            bt_text = _esc(ROE_ESTIMATE_NOTE) + r"\par 价格对应各市场最近行情交易日；红涨绿跌，以现价相比昨收计算。"
 
         # 统一 EvaluationReport 附录：PDF 不再二次计算周线或持仓。
         evaluation_report_section = ""
@@ -698,8 +793,10 @@ def generate_daily_pdf(
         template = tex_path.read_text(encoding="utf-8").replace("\r\n", "\n")
 
         info = get_server_info()
+        report_time = pd.Timestamp(getattr(session, "created_at", None) or datetime.now().astimezone())
+        report_time = report_time.tz_localize("Asia/Shanghai") if report_time.tzinfo is None else report_time.tz_convert("Asia/Shanghai")
         html = template.replace(
-            "\\VAR{report_date}", datetime.now().astimezone().strftime("%Y-%m-%d %A")
+            "\\VAR{report_date}", report_time.strftime("%Y-%m-%d %A")
         )
         html = html.replace("\\VAR{server_hostname}", info.get("hostname", ""))
         html = html.replace(
@@ -724,6 +821,7 @@ def generate_daily_pdf(
         html = html.replace("\\VAR{readiness_section}", readiness_section)
         html = html.replace("\\VAR{events_section}", events_section)
         html = html.replace("\\VAR{chart_section}", chart_section)
+        html = html.replace("\\VAR{curve_notes}", "\\par\n".join(_esc(line) for line in return_curve_notes(curves)) if curves_only else "")
         html = html.replace("\\VAR{trigger_section}", trigger_section)
         html = html.replace("\\VAR{table_section}", table_section)
         html = html.replace("\\VAR{strategy_note}", strat_note)

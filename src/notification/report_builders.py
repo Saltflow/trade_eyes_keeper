@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import html as html_lib
 import logging
-from datetime import datetime
+from datetime import date, datetime
+from itertools import groupby
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from zoneinfo import ZoneInfo
 
+from ..markets import _detect_fine_group
 from ..utils.in_kind_reporting import render_in_kind_ledger
 
 logger = logging.getLogger(__name__)
@@ -1172,13 +1175,208 @@ def _event_number(value):
     return number if np.isfinite(number) else None
 
 
-def build_daily_event_rows(announcements, placements, stock_data, dividend_events=None):
+EVENT_CATEGORIES = (
+    "重组并购与重大事项",
+    "财报业绩",
+    "分红派息",
+    "股权融资与解禁",
+    "例行披露",
+    "其他",
+)
+EVENT_MARKETS = {"a_share": "A股", "hk": "港股", "us": "美股"}
+
+
+def _event_category(item):
+    """Specific filing forms win over incidental words such as annual/dividend."""
+    title = str(item.get("title") or "").lower()
+    source = " ".join(str(item.get(key) or "") for key in ("category", "type")).lower()
+    routine_forms = (
+        ("翌日披露", ("翌日披露", "next day disclosure", "next-day disclosure")),
+        ("证券变动月报表", ("月報表", "月报表", "monthly return")),
+        ("业绩说明会", ("业绩说明会", "業績說明會", "earnings call")),
+        (
+            "投票结果",
+            ("投票表决结果", "投票表決結果", "投票结果", "投票結果", "voting results"),
+        ),
+    )
+    for label, words in routine_forms:
+        if any(word in title or word in source for word in words):
+            return 4, label
+    rules = (
+        (
+            0,
+            (
+                "重组",
+                "重組",
+                "收购",
+                "收購",
+                "并购",
+                "併購",
+                "合并",
+                "合併",
+                "控制权",
+                "控制權",
+                "重大资产",
+                "重大資產",
+                "关联交易",
+                "關連交易",
+                "merger",
+                "acquisition",
+                "restructuring",
+                "material agreement",
+            ),
+        ),
+        (
+            2,
+            (
+                "分红",
+                "分紅",
+                "派息",
+                "股息",
+                "权益分派",
+                "權益分派",
+                "利润分配",
+                "利潤分配",
+                "dividend",
+                "distribution",
+            ),
+        ),
+        (
+            3,
+            (
+                "定增",
+                "增发",
+                "增發",
+                "配售",
+                "解禁",
+                "回购",
+                "回購",
+                "增持",
+                "减持",
+                "減持",
+                "repurchase",
+                "buyback",
+                "placing",
+                "lock-up",
+            ),
+        ),
+        (
+            1,
+            (
+                "季度报告",
+                "季度報告",
+                "季度财务",
+                "季度財務",
+                "年度报告",
+                "年度報告",
+                "年报",
+                "年報",
+                "季报",
+                "季報",
+                "中期报告",
+                "中期報告",
+                "半年度报告",
+                "半年度報告",
+                "季度业绩",
+                "季度業績",
+                "年度业绩",
+                "年度業績",
+                "中期业绩",
+                "中期業績",
+                "業績公佈",
+                "业绩预告",
+                "業績預告",
+                "业绩快报",
+                "業績快報",
+                "盈利预警",
+                "盈利預警",
+                "10-k",
+                "10-q",
+                "20-f",
+                "quarterly results",
+                "annual results",
+                "interim results",
+                "earnings",
+                "financial statements",
+                "产销快报",
+                "產銷快報",
+                "经营数据",
+                "經營數據",
+                "operating results",
+            ),
+        ),
+        (
+            4,
+            (
+                "通函",
+                "投票表决",
+                "投票表決",
+                "投票结果",
+                "投票結果",
+                "会议通知",
+                "會議通告",
+                "业绩说明会",
+                "業績說明會",
+                "circular",
+                "notice of meeting",
+                "voting results",
+            ),
+        ),
+    )
+    # Reliable provider categories take precedence; generic categories fall back to titles.
+    for text in (source, title):
+        for category, words in rules:
+            if any(word in text for word in words):
+                return category, EVENT_CATEGORIES[category]
+    return 5, "其他"
+
+
+def _event_date(value):
+    if value is None or not isinstance(value, (str, date, pd.Timestamp)):
+        return None
+    try:
+        day = pd.Timestamp(value)
+        if pd.isna(day):
+            return None
+        if day.tzinfo is not None:
+            day = day.tz_convert("Asia/Shanghai")
+        return day.date()
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def group_daily_event_rows(events):
+    """Stable category/market/instrument groups for every presentation channel."""
+    for _, rows in groupby(
+        events, key=lambda row: (row["category"], row["market"], row["code"])
+    ):
+        rows = list(rows)
+        first = rows[0]
+        yield {
+            "category": first["category_label"],
+            "market": first["market_label"],
+            "code": first["code"],
+            "name": first["name"],
+            "rows": rows,
+        }
+
+
+def build_daily_event_rows(
+    announcements,
+    placements,
+    stock_data,
+    dividend_events=None,
+    *,
+    as_of=None,
+    config=None,
+):
     """Share the complete, ordered event feed across report channels."""
     events = []
-    row_map = {
-        str(row.get("stock_code", "")): row
-        for _, row in stock_data.iterrows()
-    } if stock_data is not None and hasattr(stock_data, "iterrows") else {}
+    row_map = (
+        {str(row.get("stock_code", "")): row for _, row in stock_data.iterrows()}
+        if stock_data is not None and hasattr(stock_data, "iterrows")
+        else {}
+    )
     for item in dividend_events or []:
         if not isinstance(item, dict):
             continue
@@ -1206,25 +1404,52 @@ def build_daily_event_rows(announcements, placements, stock_data, dividend_event
                 "kind": status,
                 "title": f"{name} · {amount} · {schedule}",
                 "url": "",
-                "priority": 0 if status == "已除权未派息" else 1,
+                "category": 2,
             }
         )
+    months = (
+        ((config or {}).get("report") or {})
+        .get("events", {})
+        .get("announcement_lookback_months", 2)
+    )
+    if type(months) is not int or not 1 <= months <= 24:
+        raise ValueError("公告展示期限要求1–24个自然月")
+    report_date = (
+        _event_date(as_of)
+        if as_of is not None
+        else datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    )
+    if report_date is None:
+        raise ValueError("报表日期无效")
+    cutoff = (pd.Timestamp(report_date) - pd.DateOffset(months=months)).date()
+    seen = set()
     for code, items in (announcements or {}).items():
         for item in items or []:
             if isinstance(item, dict):
-                date = str(item.get("date", "") or "")
+                published = _event_date(item.get("published_at")) or _event_date(
+                    item.get("date")
+                )
+                date = published.isoformat() if published else ""
+                if published is not None and published < cutoff:
+                    continue
                 title = str(item.get("title", "未命名公告") or "未命名公告")
                 url = html_lib.unescape(_safe_html_url(item.get("url")))
+                category, subtype = _event_category(item)
             else:
                 date, title, url = "", str(item), ""
+                category, subtype = 5, "其他"
+            identity = (str(code), date, url or title)
+            if identity in seen:
+                continue
+            seen.add(identity)
             events.append(
                 {
                     "date": date,
                     "code": str(code),
-                    "kind": "公告",
+                    "kind": subtype,
                     "title": title,
                     "url": url,
-                    "priority": 3,
+                    "category": category,
                 }
             )
     for code, item in (placements or {}).items():
@@ -1252,26 +1477,38 @@ def build_daily_event_rows(announcements, placements, stock_data, dividend_event
                     f"解禁 {unlock_date or '待确认'}"
                 ),
                 "url": "",
-                "priority": 2,
+                "category": 3,
             }
         )
-    if not events:
-        return []
-    dividend = sorted(
-        (item for item in events if int(item.get("priority", 9)) < 2),
-        key=lambda item: (int(item["priority"]), item["date"], item["code"]),
+    for event in events:
+        event["category_label"] = EVENT_CATEGORIES[event["category"]]
+        event["market"] = _detect_fine_group(event["code"])
+        event["market_label"] = EVENT_MARKETS[event["market"]]
+        event["name"] = str(
+            row_map.get(event["code"], {}).get("stock_name") or event["code"]
+        )
+    events.sort(
+        key=lambda row: (
+            row["category"],
+            tuple(EVENT_MARKETS).index(row["market"]),
+            row["code"],
+            not bool(_event_date(row["date"])),
+            -(_event_date(row["date"]).toordinal() if _event_date(row["date"]) else 0),
+            row["title"],
+            row["url"],
+        )
     )
-    placements = sorted(
-        (item for item in events if int(item.get("priority", 9)) == 2),
-        key=lambda item: (item["date"], item["code"]),
-        reverse=True,
-    )
-    announcements = sorted(
-        (item for item in events if int(item.get("priority", 9)) >= 3),
-        key=lambda item: (item["date"], item["code"]),
-        reverse=True,
-    )
-    return dividend + placements + announcements
+    combined, routine = [], {}
+    for row in events:
+        if row["category"] == 4 and row["kind"] in {"翌日披露", "证券变动月报表"}:
+            key = (row["market"], row["code"], row["kind"])
+            if key in routine:
+                routine[key]["members"].append(row)
+                continue
+            row = {**row, "members": [row]}
+            routine[key] = row
+        combined.append(row)
+    return combined
 
 
 def build_daily_events_text(session, stock_data=None) -> str:
@@ -1281,13 +1518,31 @@ def build_daily_events_text(session, stock_data=None) -> str:
         getattr(session, "placements", None),
         stock_data,
         getattr(session, "dividend_events", None),
+        as_of=getattr(session, "created_at", None),
+        config=getattr(session, "config", None),
     )
-    return "\n".join(
-        f"{_html_escape(row['date'] or '—')} · {_html_escape(row['code'])} · "
-        f"{_html_escape(row['kind'])}\n{_html_escape(row['title'])}"
-        + (f"\n原文：{_html_escape(row['url'])}" if row.get("url") else "")
-        for row in rows
-    )
+    lines = []
+    last = None
+    for group in group_daily_event_rows(rows):
+        heading = (group["category"], group["market"])
+        if heading != last:
+            lines.append(_html_escape(" · ".join(heading)))
+            last = heading
+        lines.append(f"{_html_escape(group['code'])} {_html_escape(group['name'])}")
+        for row in group["rows"]:
+            members = row.get("members") or [row]
+            if len(members) > 1:
+                lines.append(f"{_html_escape(row['kind'])} {len(members)}份")
+            for member in members:
+                lines.append(
+                    f"{_html_escape(member['date'] or '日期待确认')} · {_html_escape(member['title'])}"
+                    + (
+                        f"\n原文：{_html_escape(member['url'])}"
+                        if member.get("url")
+                        else ""
+                    )
+                )
+    return "\n".join(lines)
 
 
 def report_data_readiness(session) -> dict:
@@ -1305,14 +1560,26 @@ def report_data_readiness(session) -> dict:
     errors = getattr(session, "errors", []) or []
     from .report_policy import technical_signals_enabled
 
-    outcomes = (getattr(getattr(session, "signal_scan", None), "group_outcomes", {}) or {}) if technical_signals_enabled(config) else {}
-    analysis_issues = {
-        group: value.get("status") for group, value in outcomes.items()
-        if isinstance(value, dict) and value.get("status") in {"failed", "blocked", "not_run"}
-    } if isinstance(outcomes, dict) else {}
+    outcomes = (
+        (getattr(getattr(session, "signal_scan", None), "group_outcomes", {}) or {})
+        if technical_signals_enabled(config)
+        else {}
+    )
+    analysis_issues = (
+        {
+            group: value.get("status")
+            for group, value in outcomes.items()
+            if isinstance(value, dict)
+            and value.get("status") in {"failed", "blocked", "not_run"}
+        }
+        if isinstance(outcomes, dict)
+        else {}
+    )
     return {
         "status": "not_ready" if missing or errors or analysis_issues else "ready",
-        "expected_codes": sorted(expected), "available_codes": sorted(available),
-        "missing_codes": missing, "error_count": len(errors),
+        "expected_codes": sorted(expected),
+        "available_codes": sorted(available),
+        "missing_codes": missing,
+        "error_count": len(errors),
         "analysis_issues": analysis_issues,
     }

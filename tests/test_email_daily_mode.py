@@ -52,139 +52,26 @@ class TestDailyModeEmail:
     def test_daily_mode_hides_alert_section(self):
         notifier = _make_notifier()
         html = notifier._build_email_body(
-            [], pd.DataFrame(), daily_mode=True,
+            [], pd.DataFrame(),
         )
         assert "策略报警" not in html
         assert "策略信号扫描" not in html
 
-    def test_today_signals_in_strategy_results(self):
-        """信号展示在策略结果段内。"""
-        from unittest.mock import MagicMock
-        notifier = _make_notifier()
 
-        mock_alert = MagicMock()
-        mock_alert.stock_code = "601728"
-        mock_alert.rule_label = "buy_1"
-        mock_alert.current_value = "-9.1%"
-        mock_scan = MagicMock()
-        mock_scan.alerts = [mock_alert]
-        mock_scan.consensus = None
-        mock_scan.indicator_snapshot = {}
-        mock_scan.divergence_warnings = []
 
-        r = _make_report()
-        reports = {"a_share": r}
-
-        section = notifier._build_strategy_results_section(
-            reports, signal_scan=mock_scan,
-        )
-        assert "601728" in section
-        assert "今日信号" in section
-
-    def test_no_signal_crash(self):
-        notifier = _make_notifier()
-        r = _make_report()
-        reports = {"a_share": r}
-        section = notifier._build_strategy_results_section(reports)
-        assert "无触发" in section
-
-    def test_strategy_results_header(self):
-        notifier = _make_notifier()
-        r = _make_report()
-        reports = {"a_share": r}
-        section = notifier._build_strategy_results_section(reports)
-        assert "搜参策略结果" in section
-        assert "分位评分" in section
 
     def test_daily_decision_board_precedes_full_watchlist(self):
         notifier = _make_notifier()
         html = notifier._build_email_body(
             [],
             pd.DataFrame(),
-            daily_mode=True,
             evaluation_reports={"a_share": _make_report()},
         )
 
         assert html.index("三市场决策板") < html.index("完整行情矩阵")
 
-    def test_daily_strategy_section_keeps_ranking_selection_diagnostics(self):
-        notifier = _make_notifier()
-        report = _make_report()
-        report.selection_diagnostics = {
-            "wf_score": 3.5,
-            "ranking_diagnostics": {
-                "weighted_strategy_return": 4.2,
-                "positive_return_windows": 10,
-                "ranking_window_count": 13,
-            },
-            "sensitivity": {
-                "worst_score": -1.0,
-                "drop": 4.5,
-                "selection_score": -1.0,
-            },
-            "selection_score": -1.0,
-        }
 
-        section = notifier._build_strategy_results_section({"a_share": report})
 
-        assert "排名筛选" in section
-        assert "加权绝对收益 +4.20%" in section
-        assert "正收益窗口 10/13" in section
-        assert "最终选择分 -1.000" in section
-
-    def test_quarterly_holdings_rendered(self):
-        notifier = _make_notifier()
-        qh = [{
-            "quarter": 1, "cash": 30000, "pos_pct": 70,
-            "nav": 100000,
-            "positions": [{
-                "code": "601728", "shares": 1000, "cost": 10.0,
-                "price": 12.0, "value": 12000, "pnl": 2000, "pnl_pct": 20.0,
-            }],
-        }]
-        r = _make_report(quarterly_holdings=qh)
-        reports = {"a_share": r}
-        section = notifier._build_strategy_results_section(reports)
-        assert "601728" in section
-        assert "1000股" in section
-
-    def test_unified_weekly_quarterly_and_final_report_rendered(self, monkeypatch):
-        notifier = _make_notifier()
-        monkeypatch.setattr(
-            "src.notification.chart_generator.generate_candlestick_chart",
-            lambda weekly: ("data:image/png;base64,AAAA", b"fake"),
-        )
-        position = {
-            "code": "601728", "shares": 1000, "cost": 10.0,
-            "price": 12.0, "value": 12000, "weight": 11.11,
-            "pnl": 2000, "pnl_pct": 20.0,
-        }
-        report = _make_report(
-            weekly_nav_ohlc={
-                "labels": ["2026-W01", "2026-W02", "2026-W03"],
-                "open": [100000.0, 100500.0, 101000.0],
-                "high": [101000.0, 101500.0, 102000.0],
-                "low": [99000.0, 100000.0, 100500.0],
-                "close": [100500.0, 101000.0, 101500.0],
-            },
-            quarterly_holdings=[{
-                "quarter": "2026Q1", "date": "2026-03-31",
-                "cash": 88000, "pos_pct": 12.0, "nav": 100000,
-                "positions": [position],
-            }],
-            final_holdings=[position],
-        )
-
-        section = notifier._build_strategy_results_section({"a_share": report})
-
-        assert "周 NAV K线" in section
-        assert 'src="data:image/png;base64,AAAA"' in section
-        assert "<th>自然周</th>" not in section
-        assert "季末持仓（自然季度最后有效交易日）" in section
-        assert "2026-03-31" in section
-        assert "期末持仓" in section
-        assert "期末资产" in section
-        assert "11.1%" in section
 
     def test_pdf_template_receives_unified_evaluation_appendix(self, monkeypatch):
         notifier = _make_notifier()
@@ -230,7 +117,7 @@ class TestDailyModeEmail:
     def test_empty_body_no_crash(self):
         notifier = _make_notifier()
         html = notifier._build_email_body(
-            [], pd.DataFrame(), daily_mode=True, evaluation_reports={},
+            [], pd.DataFrame(), evaluation_reports={},
         )
         assert "股票日报" in html or "股票提醒" in html or "<html" in html.lower()
 
@@ -260,7 +147,7 @@ class TestDailyModeEmail:
             }]
         )
 
-        html = notifier._build_email_body([], stock_data, daily_mode=True)
+        html = notifier._build_email_body([], stock_data)
 
         assert "完整行情矩阵" in html
         assert "PE" in html
@@ -297,7 +184,7 @@ class TestDailyModeEmail:
             final_holdings=[position],
         )
         html = notifier._build_email_body(
-            [], pd.DataFrame(), daily_mode=True, evaluation_reports={"a_share": report}
+            [], pd.DataFrame(), evaluation_reports={"a_share": report}
         )
 
         assert "周 NAV 箱线图" not in html
@@ -306,25 +193,3 @@ class TestDailyModeEmail:
         assert "2026-W01 100500" not in html
         assert "期末持仓" not in html
         assert "1000股" not in html
-
-    def test_daily_reference_portfolio_hides_holding_details(self):
-        notifier = _make_notifier()
-        session = type("Session", (), {
-            "ref_portfolio_status": {
-                "a_share": {
-                    "_label": "A股",
-                    "inception_date": "2026-07-14",
-                    "nav": 101000.0,
-                    "nav_return_pct": 1.0,
-                    "trading_days": 3,
-                    "cash": 50000.0,
-                    "holdings": [{"code": "601728", "shares": 1000}],
-                }
-            }
-        })()
-
-        html = notifier._build_daily_ref_portfolio_html(session)
-
-        assert "示例账户" in html
-        assert "101,000" in html
-        assert "601728" not in html

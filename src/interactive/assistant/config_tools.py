@@ -539,6 +539,12 @@ class ConfigurationTools:
         ):
             add(key, _Rule("symbols"), label, default=[])
         announcement_values = _announcement_values(app)
+        add(
+            "report.events.announcement_lookback_months",
+            _Rule("integer", 1, 24),
+            "日报公告展示期限（自然月）；仅过滤已采集公告，不改变采集窗口，待派息与未解禁事项保留",
+            default=2,
+        )
         for name, rule, _default, description, _source in _ANNOUNCEMENT_FIELDS:
             # Preserve absent values as None in the diff; defaults are metadata.
             key = f"announcements.{name}"

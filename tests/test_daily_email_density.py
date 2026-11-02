@@ -121,7 +121,6 @@ def test_daily_matrix_keeps_all_markets_prioritizes_actions_without_badges(monke
         _stock_data(),
         signal_scan=scan,
         evaluation_reports={"a_share": _report()},
-        daily_mode=True,
     )
 
     assert "完整行情矩阵" in body
@@ -166,7 +165,7 @@ def test_daily_matrix_uses_configured_pool_and_keeps_missing_data(monkeypatch):
         ignore_index=True,
     )
 
-    body = notifier._build_email_body([], source_data, daily_mode=True)
+    body = notifier._build_email_body([], source_data)
 
     assert "完整行情矩阵<span class=\"section-count\">2只" in body
     assert "601728" in body
@@ -216,13 +215,13 @@ def test_daily_events_are_complete_and_urls_are_sanitized(monkeypatch):
         _stock_data(),
         announcements=announcements,
         placements={"000001": {"unlock_date": "2026-10-01"}},
-        daily_mode=True,
+        report_as_of="2026-09-30T19:00:00+08:00",
     )
 
     assert body.count('class="event-row"') == 9
     assert "javascript:" not in body
     assert "<script>" not in body
-    assert "PDF 附件" in body
+    assert "公告展示近2个自然月" in body
 
 
 def test_daily_events_render_pending_stock_and_etf_dividends(monkeypatch):
@@ -247,12 +246,12 @@ def test_daily_events_render_pending_stock_and_etf_dividends(monkeypatch):
                 "currency": "USD",
             },
         ],
-        daily_mode=True,
     )
 
     assert "行动清单" not in body
-    assert "未除权" in body
-    assert "已除权未派息" in body
+    assert "分红派息" in body
+    assert "除权 2026-09-24 · 派息 2026-09-30" in body
+    assert "除权 2026-09-18 · 派息 2026-09-22" in body
     assert "每股/份现金 0.2000" in body
     assert "每股/份现金 USD 1.5000" in body
 
@@ -262,6 +261,7 @@ def test_daily_events_keep_all_event_types_without_truncation(monkeypatch):
     body = notifier._build_email_body(
         [],
         _stock_data(),
+        report_as_of="2026-09-30T19:00:00+08:00",
         announcements={
             "601728": [
                 {
@@ -286,12 +286,11 @@ def test_daily_events_keep_all_event_types_without_truncation(monkeypatch):
             }
             for index in range(1, 4)
         ],
-        daily_mode=True,
     )
 
     assert body.count('class="event-row"') == 10
-    assert "未除权" in body
-    assert "未解禁定增" in body
+    assert "分红派息" in body
+    assert "股权融资与解禁" in body
     assert "公告 4" in body
 
 

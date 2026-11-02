@@ -42,14 +42,18 @@ from .report_builders import (  # noqa: F401
     build_optimizer_summary,
     build_strategy_suggestions,
     build_strategy_text_summary,
+    group_daily_event_rows,
     optimizer_notification_title,
     pick_best_anchor,
 )
 from .report_policy import (
+    PRICE_COLORS,
     ROE_ESTIMATE_NOTE,
     format_roe,
     fundamental_rows,
     generate_return_curve_png,
+    implied_ke,
+    price_movement,
     report_view,
     return_curves_html,
     returns_only,
@@ -197,17 +201,15 @@ class EmailNotifier(BaseNotifier):
                 alert_stocks,
                 stock_data,
                 announcements,
-                historical_data=historical_data,
                 chart_png_bytes=chart_png_bytes,
                 portfolio_chart_dict=portfolio_chart_dict,
                 signal_scan=signal_scan,
                 backtest=backtest,
                 evaluation_reports=evaluation_reports,
-                daily_mode=True,
                 placements=getattr(session, "placements", None),
                 dividend_events=getattr(session, "dividend_events", None),
-                instrument_audit=getattr(session, "instrument_audit", None),
                 strategy_return_curves=getattr(session, "strategy_return_curves", None),
+                report_as_of=getattr(session, "created_at", None),
             )
 
             # 发送邮件（PDF 作为附件）
@@ -244,8 +246,6 @@ class EmailNotifier(BaseNotifier):
             # 从Session读取所有数据
             stock_data = session.get_all_dataframe()
             announcements = session.announcements
-            # 历史数据（由 data_fetcher 暂存，供图表使用）
-            historical_data = getattr(session, "_historical", {})
 
             # 构建邮件主题
             subject = f"股票日报 - {datetime.now().astimezone().strftime('%Y-%m-%d')}"
@@ -292,16 +292,14 @@ class EmailNotifier(BaseNotifier):
                 [],
                 stock_data,
                 announcements,
-                historical_data=historical_data,
                 portfolio_chart_dict=portfolio_chart_dict,
                 signal_scan=signal_scan,
                 backtest=backtest,
                 evaluation_reports=evaluation_reports,
-                daily_mode=True,
                 placements=getattr(session, "placements", None),
                 dividend_events=getattr(session, "dividend_events", None),
-                instrument_audit=getattr(session, "instrument_audit", None),
                 strategy_return_curves=getattr(session, "strategy_return_curves", None),
+                report_as_of=getattr(session, "created_at", None),
             )
 
             # 发送邮件
@@ -318,593 +316,6 @@ class EmailNotifier(BaseNotifier):
         except Exception as e:  # noqa: BLE001 -- contain optional report/OS/archive failures
             logger.error("每日报告邮件准备失败: %s", type(e).__name__)
             return {"status": "failed", "reason": "email_preparation_failed"}
-
-    def _build_strategy_alert_section(
-        self, signal_scan, alert_stocks, stock_data
-    ) -> str:
-        """构建策略信号报警 + 共识指标快照"""
-        if not signal_scan:
-            return ""
-
-        consensus = getattr(signal_scan, "consensus", None)
-        alerts = getattr(signal_scan, "alerts", None) or []
-        snapshot = getattr(signal_scan, "indicator_snapshot", None) or {}
-        warnings = getattr(signal_scan, "divergence_warnings", None) or []
-
-        # 区分边界报警和策略报警
-        boundary_codes = set()
-        if alert_stocks:
-            for a in alert_stocks:
-                if isinstance(a, dict) and a.get("type") != "strategy":
-                    boundary_codes.add(a.get("stock_code", ""))
-                elif not isinstance(a, dict):
-                    boundary_codes.add(getattr(a, "stock_code", ""))
-
-        strategy_codes = set()
-        for a in alerts:
-            code = a.stock_code if hasattr(a, "stock_code") else a.get("stock_code", "")
-            strategy_codes.add(code)
-
-        html = "<h3>策略信号扫描</h3>\n"
-
-        # 报警部分
-        if alerts:
-            html += f"<p><strong>策略报警 ({len(alerts)} 条 / {len(strategy_codes)} 只标的)</strong></p>\n"
-            html += '<table style="border-collapse:collapse;width:100%;margin:10px 0;font-size:12px" cellpadding="6" cellspacing="0" border="0">\n'
-            html += '<tr style="background:#34495e;color:#fff"><th>标的</th><th>规则</th><th>条件</th><th>当前值</th><th>来源</th></tr>\n'
-            for a in alerts[:12]:
-                code = (
-                    a.stock_code
-                    if hasattr(a, "stock_code")
-                    else a.get("stock_code", "?")
-                )
-                label = (
-                    a.rule_label
-                    if hasattr(a, "rule_label")
-                    else a.get("rule_label", "?")
-                )
-                cond = (
-                    a.condition_str
-                    if hasattr(a, "condition_str")
-                    else a.get("condition", "?")
-                )
-                cv = (
-                    a.current_value
-                    if hasattr(a, "current_value")
-                    else a.get("current_value", "-")
-                )
-                rank = (
-                    a.strategy_rank
-                    if hasattr(a, "strategy_rank")
-                    else a.get("strategy_rank", "?")
-                )
-                html += (
-                    f'<tr style="background:#e8f6f3">'
-                    f"<td>[策略] {code}</td>"
-                    f"<td>{label}</td>"
-                    f'<td style="font-size:11px">{cond[:60]}</td>'
-                    f"<td>{cv}</td>"
-                    f"<td>Rank {rank}</td>"
-                    f"</tr>\n"
-                )
-            html += "</table>\n"
-        else:
-            html += "<p>策略信号: 无触发</p>\n"
-
-        # 共识指标快照
-        if consensus and consensus.consensus_indicators and snapshot:
-            ind_cols = consensus.consensus_indicators
-            html += f"<p><strong>共识指标快照 ({len(snapshot)} 只)</strong></p>\n"
-            html += '<table style="border-collapse:collapse;width:auto;margin:10px 0;font-size:12px" cellpadding="6" cellspacing="0" border="0">\n'
-            header = '<tr style="background:#34495e;color:#fff"><th>标的</th>'
-            for ind in ind_cols:
-                label = {
-                    "rsi": "RSI",
-                    "vol_ratio": "量比",
-                    "boll_pct_b": "布林%B",
-                    "adx": "ADX",
-                    "macd_hist": "MACD柱",
-                    "deviation": "偏差%",
-                    "atr": "ATR",
-                }.get(ind, ind)
-                header += f"<th>{label}</th>"
-            header += "</tr>\n"
-            html += header
-
-            # 按标的在报警池内优先排序
-            consensus_stocks = set(consensus.consensus_stocks or [])
-            sorted_codes = sorted(
-                snapshot.keys(),
-                key=lambda c: (
-                    0 if c in strategy_codes else 1 if c in consensus_stocks else 2
-                ),
-            )
-
-            for code in sorted_codes[:20]:
-                vals = snapshot.get(code, {})
-                html += f"<tr><td>{code}</td>"
-                for ind in ind_cols:
-                    v = vals.get(ind)
-                    if v is not None:
-                        if ind == "deviation":
-                            html += f"<td>{v * 100:.1f}%</td>"
-                        else:
-                            html += f"<td>{v:.2f}</td>"
-                    else:
-                        html += "<td>-</td>"
-                html += "</tr>\n"
-            html += "</table>\n"
-
-        # 背离警告
-        if warnings:
-            html += "<p style='color:#c44e52;font-size:12px'><strong>⚠ 背离警告:</strong><br>"
-            html += "<br>".join(warnings)
-            html += "<br><em>建议以共识信号为准，不盲从单一名次</em></p>\n"
-
-        return html
-
-    def _build_backtest_section(self, backtest) -> str:
-        """构建回测结果 HTML"""
-        if not backtest:
-            return (
-                "<h3>历史回测</h3>\n"
-                '<p style="color:#888;font-size:13px">优化策略未生成（每日 02:00 自动运行 <code>main.py --optimize</code>）。'
-                "首次部署后可手动触发: <code>python main.py --optimize</code></p>\n"
-            )
-
-        html = "<h3>历史回测</h3>\n"
-        group_labels = {"a_share": "A股", "non_a_share": "境外"}
-
-        for group, bt in backtest.items():
-            if not bt:
-                continue
-            label = group_labels.get(group, group)
-            html += f"<p><strong>{label} — 基于最新优化策略 (Rank {bt.get('strategy_rank', '?')})</strong></p>\n"
-            html += '<table style="border-collapse:collapse;width:100%;margin:8px 0;font-size:12px" cellpadding="6" cellspacing="0" border="0">\n'
-            html += '<tr style="background:#34495e;color:#fff"><th>指标</th><th>全期</th><th>Ranking</th><th>Purged</th><th>Holdout</th></tr>\n'
-
-            phases = bt.get("phase_metrics", {})
-            ranking_phase = phases.get("ranking", phases.get("observe"))
-            purged_phase = phases.get("purged", phases.get("deploy"))
-            holdout_phase = phases.get("holdout", phases.get("test"))
-            # 全期总收益含资金注入，无直接可比超额 → 各阶段超额见分列
-            _excess_all = "—"
-            total_excess_col = _excess_all
-            dd = f"{bt.get('max_drawdown', 0):.1f}%"
-            sp = f"{bt.get('sharpe', 0):.3f}"
-            trades = str(bt.get("trade_count", 0))
-
-            def _pval(p_obj, key):
-                if p_obj is None:
-                    return "-"
-                v = getattr(p_obj, key, 0)
-                if key in ("total_return", "excess_return"):
-                    return f"{v:+.1f}%"
-                if key == "max_drawdown":
-                    return f"{v:.1f}%"
-                if key == "sharpe_ratio":
-                    return f"{v:.3f}"
-                return str(v)
-
-            html += (
-                f"<tr><td>超额收益</td><td>{total_excess_col}</td>"
-                f"<td>{_pval(ranking_phase, 'excess_return')}</td>"
-                f"<td>{_pval(purged_phase, 'excess_return')}</td>"
-                f"<td>{_pval(holdout_phase, 'excess_return')}</td></tr>\n"
-            )
-            html += (
-                f"<tr><td>最大回撤</td><td>{dd}</td>"
-                f"<td>{_pval(ranking_phase, 'max_drawdown')}</td>"
-                f"<td>{_pval(purged_phase, 'max_drawdown')}</td>"
-                f"<td>{_pval(holdout_phase, 'max_drawdown')}</td></tr>\n"
-            )
-            html += (
-                f"<tr><td>Sharpe</td><td>{sp}</td>"
-                f"<td>{_pval(ranking_phase, 'sharpe_ratio')}</td>"
-                f"<td>{_pval(purged_phase, 'sharpe_ratio')}</td>"
-                f"<td>{_pval(holdout_phase, 'sharpe_ratio')}</td></tr>\n"
-            )
-            html += (
-                f"<tr><td>交易次数</td><td>{trades}</td>"
-                f"<td>{getattr(ranking_phase, 'trade_count', '-')}</td>"
-                f"<td>{getattr(purged_phase, 'trade_count', '-')}</td>"
-                f"<td>{getattr(holdout_phase, 'trade_count', '-')}</td></tr>\n"
-            )
-
-            # 基准对比
-            bm = bt.get("benchmarks", {})
-            if bm:
-                test_excess = getattr(holdout_phase, "excess_return", 0)
-                html += "<tr><td>vs基准</td><td colspan='4'>"
-                parts = []
-                for name, val in bm.items():
-                    beat = "✓" if test_excess > val else "✗"
-                    parts.append(f"{name}: {val:+.1f}% {beat}")
-                html += " | ".join(parts)
-                html += "</td></tr>\n"
-
-            html += "</table>\n"
-
-            stocks = bt.get("stocks", [])
-            if stocks:
-                html += (
-                    f"<p style='font-size:12px;color:#888'>入选标的: "
-                    f"{', '.join(stocks[:8])}"
-                    f"{' +' + str(len(stocks) - 8) if len(stocks) > 8 else ''}</p>\n"
-                )
-
-        return html
-
-    @staticmethod
-    def _build_placement_section(placements, stock_data):
-        """构建未解禁定增表 HTML。
-
-        列：标的编号 | 名称 | 未解禁定增数额 | 占总股本 | 定增价格 | 解禁时间
-        """
-        if not placements:
-            return ""
-
-        # 从 stock_data 取名称
-        name_map = {}
-        try:
-            if stock_data is not None and hasattr(stock_data, "iterrows"):
-                for _, row in stock_data.iterrows():
-                    name_map[str(row.get("stock_code", ""))] = row.get("stock_name", "")
-        except Exception as exc:  # noqa: BLE001 -- optional placement metadata
-            logger.debug("Unable to build placement stock-name mapping: %s", exc)
-
-        rows = ""
-        for code, p in sorted(placements.items()):
-            name = name_map.get(code, "")
-            issue_num = p.get("issue_num")
-            issue_price = p.get("issue_price")
-            pct = p.get("pct_of_total")
-            unlock = p.get("unlock_date") or "—"
-            # 数额格式化：亿股
-            if issue_num:
-                num_str = f"{issue_num / 1e8:.2f}亿股"
-            else:
-                num_str = "—"
-            price_str = f"{issue_price:.2f}元" if issue_price else "—"
-            pct_str = f"{pct:.2f}%" if pct is not None else "—"
-            rows += (
-                f"<tr>"
-                f'<td style="padding:8px">{code}</td>'
-                f'<td style="padding:8px">{name}</td>'
-                f'<td style="text-align:right;padding:8px">{num_str}</td>'
-                f'<td style="text-align:right;padding:8px">{pct_str}</td>'
-                f'<td style="text-align:right;padding:8px">{price_str}</td>'
-                f'<td style="text-align:right;padding:8px">{unlock}</td>'
-                f"</tr>\n"
-            )
-
-        return (
-            '<tr><td style="padding:16px 24px 4px;border-bottom:2px solid #ecf0f1">'
-            '<div style="font-size:15px;font-weight:600;color:#2c3e50">'
-            "未解禁定增</div></td></tr>\n"
-            '<tr><td style="padding:8px 24px 16px">'
-            '<table role="presentation" style="width:100%;border-collapse:collapse;'
-            'font-size:12px;table-layout:fixed;word-break:break-all" cellpadding="6" cellspacing="0" border="0">\n'
-            '<thead><tr style="background:#34495e;color:#fff">'
-            '<th style="text-align:left;padding:8px">代码</th>'
-            '<th style="text-align:left;padding:8px">名称</th>'
-            '<th style="text-align:right;padding:8px">定增数额</th>'
-            '<th style="text-align:right;padding:8px">占总股本</th>'
-            '<th style="text-align:right;padding:8px">定增价格</th>'
-            '<th style="text-align:right;padding:8px">解禁时间</th>'
-            "</tr></thead>\n<tbody>\n"
-            f"{rows}"
-            "</tbody></table></td></tr>\n"
-        )
-
-    def _build_strategy_results_section(
-        self,
-        evaluation_reports,
-        signal_scan=None,
-    ) -> str:
-        """构建搜参策略结果段（策略指标 + 今日信号 + 季末持仓）。
-
-        唯一数据源：session.evaluation_reports（EvaluationReport dict）。
-
-        Args:
-            evaluation_reports: {group: EvaluationReport}
-            signal_scan: SignalScanner.scan() 结果 (今日触发的策略信号)
-        """
-        reports = evaluation_reports or {}
-        if not reports:
-            return ""
-
-        lines: list[str] = []
-        lines.append(
-            '<div style="margin-top:30px;border-top:2px solid #2c3e50;padding-top:16px">'
-        )
-
-        # 策略引擎名 + 评估日期
-        first_r = next(iter(reports.values()), None)
-        engine_name = getattr(first_r, "engine_name", "?") if first_r else "?"
-        engine_label = getattr(first_r, "strategy_label", "?") if first_r else "?"
-        ts = (
-            (getattr(first_r, "timestamp", "") or "")[:16].replace("T", " ")
-            if first_r
-            else ""
-        )
-
-        header = f"搜参策略结果 — {engine_label} ({engine_name})"
-        if ts:
-            header += f"  {ts}"
-        lines.append(f'<h3 style="color:#2c3e50">{header}</h3>')
-
-        # 今日信号
-        alerts = getattr(signal_scan, "alerts", None) or [] if signal_scan else []
-        if alerts:
-            lines.append(
-                '<div style="margin:10px 0;padding:10px;'
-                'border:1px solid #d4e6f1;border-radius:5px;background:#ebf5fb">'
-            )
-            signal_codes = set()
-            for a in alerts:
-                code = getattr(a, "stock_code", None) or (
-                    a.get("stock_code", "?") if isinstance(a, dict) else "?"
-                )
-                signal_codes.add(code)
-            lines.append(
-                f'<p style="margin:0 0 6px;font-weight:600;color:#1a5276">'
-                f"今日信号 ({len(alerts)} 条 / {len(signal_codes)} 只标的)</p>"
-            )
-            lines.append(
-                '<table style="font-size:12px;border-collapse:collapse;'
-                'width:100%;table-layout:fixed;word-break:break-all">'
-                '<tr style="background:#2c3e50;color:#fff">'
-                '<th style="width:22%">标的</th><th style="width:33%">规则</th>'
-                '<th style="width:45%">当前值</th></tr>'
-            )
-            map_a = _build_signal_label_map("a_share")
-            map_hk = _build_signal_label_map("hk") or _build_signal_label_map(
-                "non_a_share"
-            )
-            map_us = _build_signal_label_map("us") or _build_signal_label_map(
-                "non_a_share"
-            )
-            for a in alerts[:30]:
-                code = getattr(a, "stock_code", None) or (
-                    a.get("stock_code", "?") if isinstance(a, dict) else "?"
-                )
-                raw = getattr(a, "rule_label", None) or (
-                    a.get("rule_label", "?") if isinstance(a, dict) else "?"
-                )
-                readable = _readable_signal(code, raw, map_a, map_hk, map_us)
-                cv = getattr(a, "current_value", None) or (
-                    a.get("current_value", "-") if isinstance(a, dict) else "-"
-                )
-                lines.append(
-                    f"<tr><td>{code}</td><td>{readable}</td><td>{cv}</td></tr>"
-                )
-            lines.append("</table></div>")
-        else:
-            lines.append('<p style="color:#888;margin:8px 0">今日信号: 无触发</p>')
-
-        # 各组结果
-        group_labels = {
-            "a_share": "A股组合",
-            "hk": "港股组合",
-            "us": "美股组合",
-        }
-        for group_key, group_label in group_labels.items():
-            r = reports.get(group_key)
-            if r is None:
-                continue
-            lines.append(
-                f'<h4 style="color:#333;border-left:4px solid #2196f3;'
-                f'padding-left:10px;margin:16px 0 8px">{group_label}</h4>'
-            )
-
-            qh = r.quarterly_holdings or []
-            cash_pcts = [(100 - q.get("pos_pct", 0)) for q in qh if q.get("nav", 0) > 0]
-            avg_cash = sum(cash_pcts) / len(cash_pcts) if cash_pcts else None
-
-            benchmark_parts, win_rate_parts = _format_benchmark_comparison(r)
-
-            trc = "#27ae60" if r.total_return >= 0 else "#c0392b"
-            rc = "#27ae60" if r.excess_return >= 0 else "#c0392b"
-            ts = (r.timestamp or "")[:16].replace("T", " ")
-            comp = r.composition or []
-
-            summary = (
-                '<div style="border:1px solid #ddd;padding:10px;'
-                'margin:6px 0;border-radius:5px;background:#f0f7ff">'
-                f"<b>评估期收益 "
-                f'<span style="color:{trc}">{r.total_return:+.1f}%</span>'
-                f' (超额<span style="color:{rc}">{r.excess_return:+.1f}%</span>)</b> &nbsp; '
-                f"最大回撤 {r.max_drawdown:.1f}% &nbsp; "
-                f"夏普 {r.sharpe_ratio:.2f} &nbsp; "
-                f"交易 {int(r.trade_count)}笔 &nbsp; "
-            )
-            if avg_cash is not None:
-                summary += f"平均现金仓位 {avg_cash:.0f}% &nbsp; "
-            if benchmark_parts:
-                summary += "<br><b>三基线收益 / 策略超额</b>: " + " | ".join(
-                    benchmark_parts
-                )
-            if win_rate_parts:
-                summary += (
-                    "<br><b>验证期胜率</b>(任意日买入持有到期跑赢): "
-                    + " | ".join(win_rate_parts)
-                )
-            selection = getattr(r, "selection_diagnostics", None) or {}
-            ranking = selection.get("ranking_diagnostics", {})
-            sensitivity = selection.get("sensitivity", {})
-            if ranking:
-                summary += (
-                    "<br><b>排名筛选（Ranking 窗口）</b>: "
-                    f"加权绝对收益 {float(ranking.get('weighted_strategy_return', 0.0)):+.2f}% | "
-                    f"正收益窗口 {int(ranking.get('positive_return_windows', 0))}/"
-                    f"{int(ranking.get('ranking_window_count', 0))} | "
-                    f"基础 WF {float(selection.get('wf_score') or 0.0):+.3f}"
-                )
-            if sensitivity:
-                final_score = selection.get("selection_score")
-                if final_score is None:
-                    final_score = sensitivity.get("selection_score")
-                summary += (
-                    "<br><b>稳健性</b>: "
-                    f"最差分 {float(sensitivity.get('worst_score', 0.0)):+.3f} | "
-                    f"降幅 {float(sensitivity.get('drop', 0.0)):+.3f} | "
-                    f"最终选择分 {float(final_score or 0.0):+.3f}"
-                )
-            summary += (
-                '<br><span style="color:#888;font-size:11px">'
-                f"评估时间 {ts} · 成分: "
-                f"{', '.join(comp) if comp else '—'}</span></div>"
-            )
-            warming = getattr(r, "warming_codes", None) or []
-            if warming:
-                summary += (
-                    '<div style="font-size:11px;color:#888;margin:4px 0">'
-                    f"预热中（暂不交易）: {', '.join(warming)}</div>"
-                )
-            lines.append(summary)
-
-            final_holdings = getattr(r, "final_holdings", None) or []
-            ledger = render_in_kind_ledger(
-                getattr(r, "in_kind_positions", []) or [],
-                getattr(r, "in_kind_cashflows", []) or [],
-            )
-            if ledger:
-                lines.append(ledger)
-            lines.append(
-                '<p style="font-size:11px;margin:8px 0 4px">'
-                f"<b>期末资产</b> {float(getattr(r, 'final_asset', 0)):,.2f} &nbsp; "
-                f"<b>现金</b> {float(getattr(r, 'final_cash', 0)):,.2f} &nbsp; "
-                f"<b>持仓市值</b> {float(getattr(r, 'final_holdings_value', 0)):,.2f} &nbsp; "
-                f"<b>仓位</b> {float(getattr(r, 'final_position_pct', 0)):.1f}%</p>"
-            )
-            lines.append(
-                '<p style="font-size:11px;margin:8px 0 4px"><b>期末持仓</b></p>'
-            )
-            if final_holdings:
-                lines.append(
-                    '<table style="font-size:11px;border-collapse:collapse;'
-                    'width:100%;table-layout:fixed;word-break:break-all">'
-                    '<tr style="background:#2c3e50;color:#fff">'
-                    "<th>代码</th><th>股数</th><th>成本</th><th>期末价</th>"
-                    "<th>市值</th><th>权重</th><th>盈亏</th><th>盈亏%</th></tr>"
-                )
-                for position in final_holdings:
-                    pnl = float(position.get("pnl", 0))
-                    color = "#27ae60" if pnl >= 0 else "#c0392b"
-                    lines.append(
-                        f"<tr><td>{position.get('code', '?')}</td>"
-                        f"<td>{float(position.get('shares', 0)):.0f}</td>"
-                        f"<td>{float(position.get('cost', 0)):.2f}</td>"
-                        f"<td>{float(position.get('price', 0)):.2f}</td>"
-                        f"<td>{float(position.get('value', 0)):.2f}</td>"
-                        f"<td>{float(position.get('weight', 0)):.1f}%</td>"
-                        f'<td style="color:{color}">{pnl:+.2f}</td>'
-                        f'<td style="color:{color}">'
-                        f"{float(position.get('pnl_pct', 0)):+.1f}%</td></tr>"
-                    )
-                lines.append("</table>")
-            else:
-                lines.append('<p style="font-size:11px;color:#888">空仓</p>')
-
-            weekly = getattr(r, "weekly_nav_ohlc", None) or {}
-            weekly_labels = weekly.get("labels", [])
-            weekly_open = weekly.get("open", [])
-            weekly_high = weekly.get("high", [])
-            weekly_low = weekly.get("low", [])
-            weekly_close = weekly.get("close", [])
-            weekly_count = min(
-                len(weekly_labels),
-                len(weekly_open),
-                len(weekly_high),
-                len(weekly_low),
-                len(weekly_close),
-            )
-            if weekly_count:
-                weekly_chart = None
-                try:
-                    from .chart_generator import generate_candlestick_chart
-
-                    weekly_chart = generate_candlestick_chart(
-                        {
-                            "labels": weekly_labels[:weekly_count],
-                            "open": weekly_open[:weekly_count],
-                            "high": weekly_high[:weekly_count],
-                            "low": weekly_low[:weekly_count],
-                            "close": weekly_close[:weekly_count],
-                        }
-                    )
-                except Exception as e:  # noqa: BLE001 -- contain optional report/OS/archive failures
-                    logger.warning("周 NAV K线图生成失败: %s", e)
-                if weekly_chart:
-                    data_uri, _ = weekly_chart
-                    lines.append(
-                        '<p style="font-size:11px;margin:10px 0 4px">'
-                        "<b>周 NAV K线</b></p>"
-                        '<div style="text-align:center;margin:6px 0 12px">'
-                        f'<img src="{data_uri}" alt="周 NAV K线" '
-                        'style="max-width:100%;height:auto;border:1px solid #ddd;'
-                        'border-radius:4px" /></div>'
-                    )
-                else:
-                    lines.append(
-                        '<p style="font-size:11px;color:#888">'
-                        "周 NAV K线：有效自然周不足，暂不绘图</p>"
-                    )
-
-            # 季末持仓明细
-            if qh:
-                lines.append(
-                    '<p style="font-size:11px;margin:10px 0 4px">'
-                    "<b>季末持仓（自然季度最后有效交易日）</b></p>"
-                )
-                lines.append(
-                    '<table style="font-size:11px;border-collapse:collapse;'
-                    'width:100%;margin-top:6px;table-layout:fixed;word-break:break-all">'
-                    '<tr style="background:#34495e;color:#fff">'
-                    "<th>季度</th><th>日期</th><th>代码</th><th>持股</th>"
-                    "<th>成本</th><th>现价</th><th>市值</th>"
-                    "<th>盈亏</th><th>盈亏%</th></tr>"
-                )
-                for q in qh:
-                    qn = q["quarter"]
-                    qdate = q.get("date", "-")
-                    qcs = q["cash"]
-                    qp = q["pos_pct"]
-                    qnv = q["nav"]
-                    qpos = q.get("positions", [])
-                    if not qpos:
-                        lines.append(
-                            f"<tr><td>{qn}</td><td>{qdate}</td>"
-                            f"<td colspan=7>空仓 (nav={qnv:.0f})</td></tr>"
-                        )
-                    for pos in qpos:
-                        code = pos["code"]
-                        sh = pos["shares"]
-                        cb = pos["cost"]
-                        px = pos["price"]
-                        vl = pos["value"]
-                        pn = pos["pnl"]
-                        pp = pos["pnl_pct"]
-                        color = "#27ae60" if pn >= 0 else "#c0392b"
-                        lines.append(
-                            f"<tr><td>{qn}</td><td>{qdate}</td><td>{code}</td>"
-                            f"<td>{sh:.0f}股</td>"
-                            f"<td>{cb:.2f}</td><td>{px:.2f}</td>"
-                            f"<td>{vl:.0f}</td>"
-                            f'<td style="color:{color}">{pn:+.0f}</td>'
-                            f'<td style="color:{color}">{pp:+.1f}%</td></tr>'
-                        )
-                    if qpos:
-                        lines.append(
-                            f"<tr><td>{qn}</td><td>{qdate}</td>"
-                            f"<td colspan=4>现金: {qcs:.0f}</td>"
-                            f"<td colspan=3>仓位: {qp:.0f}%</td></tr>"
-                        )
-                lines.append("</table>")
-
-        lines.append("</div>")
-        return "<br>".join(lines)
 
     @staticmethod
     def _daily_get(item, key, default=None):
@@ -937,43 +348,6 @@ class EmailNotifier(BaseNotifier):
                 rows[str(code)] = row
         return rows
 
-    def _daily_alert_codes(self, alert_stocks, signal_scan=None) -> set[str]:
-        codes = set()
-        for alert in alert_stocks or []:
-            code = _alert_value(alert, "stock_code", "")
-            if code:
-                codes.add(str(code))
-        for alert in (
-            (getattr(signal_scan, "alerts", None) or []) if signal_scan else []
-        ):
-            code = _alert_value(alert, "stock_code", "")
-            if code:
-                codes.add(str(code))
-        return codes
-
-    def _daily_anchor(self, row):
-        close = row.get("close")
-        anchors = {}
-        for key in ("ma60", "wma20", "wma30", "wma50"):
-            value = row.get(key)
-            try:
-                if value is not None and not pd.isna(value) and float(value) > 0:
-                    anchors[key] = float(value)
-            except (TypeError, ValueError):
-                continue
-        if not anchors or close is None:
-            return "—", None, None
-        try:
-            best = self._pick_best_anchor(float(close), anchors)
-            if best:
-                return best
-            ma60 = anchors.get("ma60")
-            if ma60:
-                return "ma60", ma60, (float(close) - ma60) / ma60 * 100
-        except (TypeError, ValueError):
-            pass
-        return "—", None, None
-
     @staticmethod
     def _daily_number(value):
         """Return a finite float for report rendering, otherwise ``None``."""
@@ -984,13 +358,6 @@ class EmailNotifier(BaseNotifier):
         except (TypeError, ValueError):
             return None
         return number if np.isfinite(number) else None
-
-    def _daily_implied_ke(self, pe_ratio):
-        """Return implied Ke in percentage points from TTM EPS yield and g=2%."""
-        pe = self._daily_number(pe_ratio)
-        if pe is None or pe <= 0:
-            return None
-        return 100.0 * (0.02 + 1.0 / pe)
 
     def _daily_alert_code_sets(self, alert_stocks, signal_scan=None):
         alert_codes = set()
@@ -1172,9 +539,11 @@ class EmailNotifier(BaseNotifier):
             grouped.setdefault(row["group"], []).append(row)
 
         sections = [
-            ('<section class="daily-section watchlist-section">'
-            '<div class="section-heading">完整行情矩阵'
-            f'<span class="section-count">{len(watchlist_rows)}只</span></div>')
+            (
+                '<section class="daily-section watchlist-section">'
+                '<div class="section-heading">完整行情矩阵'
+                f'<span class="section-count">{len(watchlist_rows)}只</span></div>'
+            )
         ]
         for group in ("a_share", "hk", "us"):
             rows = grouped.get(group, [])
@@ -1187,7 +556,7 @@ class EmailNotifier(BaseNotifier):
                 '<th>PE</th><th class="mobile-hide">PB</th><th>隐含 Ke</th>'
                 '<th class="mobile-hide">ROE%</th></tr></thead><tbody>'
             )
-            for row in rows:
+            for index, row in enumerate(rows):
                 entry = row["entry"]
                 if entry is None:
                     open_text = prev_close_text = close_text = pe_text = pb_text = (
@@ -1202,20 +571,27 @@ class EmailNotifier(BaseNotifier):
                     pe_text = self._daily_metric(row.get("pe_ratio"), "", 1)
                     pb_text = self._daily_metric(row.get("pb_ratio"), "", 2)
                     implied_ke_text = self._daily_metric(
-                        self._daily_implied_ke(row.get("pe_ratio")), "%", 1
+                        implied_ke(row.get("pe_ratio")), "%", 1
                     )
                     # Signals and price alerts stay prioritised in the action
                     # list and sort order, but do not repeat as badges beside
                     # every name in the full market matrix.
                     row_class = ""
                     status = ""
+                direction, change = price_movement(
+                    entry.get("close") if entry else None,
+                    entry.get("prev_close") if entry else None,
+                )
+                color = PRICE_COLORS[direction]
+                background = "#f5f8fc" if index % 2 else "#ffffff"
                 sections.append(
-                    f'<tr class="{row_class.strip()}"><td class="watch-instrument">'
+                    f'<tr class="{row_class.strip()}" style="background:{background}"><td class="watch-instrument">'
                     f"<strong>{_html_escape(row['code'])}</strong><span>"
                     f"{_html_escape(row['name'])}</span>{status}</td>"
                     f"<td>{_html_escape(open_text)}</td>"
                     f"<td>{_html_escape(prev_close_text)}</td>"
-                    f"<td>{_html_escape(close_text)}</td>"
+                    f'<td class="current-quote" style="color:{color}"><strong style="color:{color}">{_html_escape(close_text)}</strong>'
+                    f'<span class="price-change" style="color:{color}">{_html_escape(change)}</span></td>'
                     f"<td>{_html_escape(pe_text)}</td>"
                     f'<td class="mobile-hide">{_html_escape(pb_text)}</td>'
                     f"<td>{_html_escape(implied_ke_text)}</td>"
@@ -1270,95 +646,6 @@ class EmailNotifier(BaseNotifier):
         ):
             return None
         return {"summary": summary, "windows": windows}
-
-    def _build_daily_announcements_section(self, announcements):
-        if not announcements:
-            return '<section class="daily-section"><div class="section-heading">近期公告</div><div class="empty-card">暂无近期公告。</div></section>'
-        cards = []
-        for code, items in announcements.items():
-            if not items:
-                continue
-            lines = [
-                ('<div class="announcement-card">'
-                f'<div class="card-title">{_html_escape(code)}</div>')
-            ]
-            for index, item in enumerate(items[:10], 1):
-                if isinstance(item, dict):
-                    title = item.get("title", "未命名公告")
-                    date = item.get("date", "—")
-                    exchange = str(item.get("exchange", "")).upper()
-                    url = _safe_html_url(item.get("url"))
-                    summary = item.get("summary", "")
-                    dividend_details = item.get("dividend_details") or []
-                    llm_dividend = item.get("llm_extracted_dividend") or {}
-                else:
-                    title, date, exchange, url, summary = str(item), "—", "", "", ""
-                    dividend_details, llm_dividend = [], {}
-                title_html = (
-                    f'<a href="{url}" target="_blank" rel="noopener">{_html_escape(title)}</a>'
-                    if url
-                    else _html_escape(title)
-                )
-                lines.append(
-                    '<div class="announcement-line">'
-                    f"<strong>{index}. [{_html_escape(exchange)}] {_html_escape(date)}</strong><br/>{title_html}"
-                    f"{f'<br/>{_html_escape(summary)}' if summary else ''}"
-                    "</div>"
-                )
-                detail_lines = []
-                for detail in dividend_details:
-                    detail_lines.append(
-                        f"{self._daily_get(detail, 'announcement_date', '—')}: "
-                        f"分红 {_html_escape(self._daily_metric(self._daily_get(detail, 'cash_dividend', self._daily_get(detail, 'dividend_per_share')), '元/股', 3))}"
-                    )
-                if llm_dividend.get("success"):
-                    detail_lines.append(
-                        f"LLM分红 {_html_escape(self._daily_metric(llm_dividend.get('cash_dividend_per_share'), '元/股', 3))} · "
-                        f"置信度 {_html_escape(self._daily_metric(llm_dividend.get('confidence'), '', 2))}"
-                    )
-                if detail_lines:
-                    detail_html = "".join(
-                        f'<div class="detail-line">{_html_escape(line)}</div>'
-                        for line in detail_lines
-                    )
-                    lines.append(f'<div class="muted-note">{detail_html}</div>')
-            lines.append("</div>")
-            cards.append("".join(lines))
-        if not cards:
-            return '<section class="daily-section"><div class="section-heading">近期公告</div><div class="empty-card">暂无近期公告。</div></section>'
-        return (
-            '<section class="daily-section"><div class="section-heading">近期公告</div>'
-            + "".join(cards)
-            + "</section>"
-        )
-
-    def _build_daily_placement_section(self, placements, stock_data):
-        if not placements:
-            return '<section class="daily-section"><div class="section-heading">未解禁定增</div><div class="empty-card">暂无未解禁定增。</div></section>'
-        rows = self._daily_row_map(stock_data)
-        cards = []
-        for code, item in sorted(placements.items()):
-            name = (
-                rows.get(str(code), {}).get("stock_name", "")
-                if str(code) in rows
-                else ""
-            )
-            issue_num = self._daily_get(item, "issue_num")
-            issue_num_text = (
-                self._daily_metric(issue_num / 1e8, "亿股", 2) if issue_num else "—"
-            )
-            cards.append(
-                '<div class="placement-card">'
-                f'<div class="card-title">{_html_escape(code)} · {_html_escape(name)}</div>'
-                f'<div class="stock-line">定增数量：{_html_escape(issue_num_text)} · 占总股本：{_html_escape(self._daily_metric(self._daily_get(item, "pct_of_total"), "%", 2))}</div>'
-                f'<div class="stock-line">定增价格：{_html_escape(self._daily_metric(self._daily_get(item, "issue_price"), "元", 2))} · 解禁时间：{_html_escape(self._daily_get(item, "unlock_date", "—"))}</div>'
-                "</div>"
-            )
-        return (
-            '<section class="daily-section"><div class="section-heading">未解禁定增</div>'
-            + "".join(cards)
-            + "</section>"
-        )
 
     def _build_daily_signal_section(self, signal_scan, stock_data) -> str:
         if returns_only(self.config) or not technical_signals_enabled(self.config):
@@ -1554,45 +841,82 @@ class EmailNotifier(BaseNotifier):
         return "".join(parts)
 
     def _build_daily_events_section(
-        self, announcements, placements, stock_data, dividend_events=None
+        self,
+        announcements,
+        placements,
+        stock_data,
+        dividend_events=None,
+        *,
+        report_as_of=None,
     ) -> str:
-        """Keep the email event feed short; detailed content remains in the PDF."""
+        """Render the shared category/market/instrument feed, preserving all source links."""
         events = build_daily_event_rows(
-            announcements, placements, stock_data, dividend_events
+            announcements,
+            placements,
+            stock_data,
+            dividend_events,
+            as_of=report_as_of,
+            config=self.config,
         )
         if not events:
             return ""
-        # Preserve the decision-first ordering, but keep every collected row.
-        # The daily report is the complete event record for the configured
-        # universe, so no pending dividend, locked placement, or announcement
-        # may be silently dropped here.
-        selected = events
+        count = sum(len(item.get("members") or [item]) for item in events)
+        months = (
+            (self.config.get("report") or {})
+            .get("events", {})
+            .get("announcement_lookback_months", 2)
+        )
         lines = [
-            ('<section class="daily-section events-section">'
-            '<div class="section-heading">事件速览'
-            f'<span class="section-count">{len(selected)}/{len(events)}</span></div>')
-        ]
-        for item in selected:
-            title = _html_escape(item["title"])
-            if item["url"]:
-                title = (
-                    f'<a href="{_safe_html_url(item["url"])}" target="_blank" rel="noopener">'
-                    f"{title}</a>"
-                )
-            lines.append(
-                '<div class="event-row"><span class="event-date">'
-                f'{_html_escape(item["date"] or "—")}</span><span class="event-kind">'
-                f"{_html_escape(item['kind'])}</span><strong>{_html_escape(item['code'])}</strong> "
-                f"{title}</div>"
+            (
+                '<section class="daily-section events-section">'
+                '<div class="section-heading">事件速览'
+                f'<span class="section-count">{count}份事项</span></div>'
             )
+        ]
+        category = market = None
+        for group in group_daily_event_rows(events):
+            if group["category"] != category:
+                category, market = group["category"], None
+                lines.append(
+                    f'<div class="event-category">{_html_escape(category)}</div>'
+                )
+            if group["market"] != market:
+                market = group["market"]
+                lines.append(f'<div class="event-market">{_html_escape(market)}</div>')
+            lines.append(
+                f'<div class="event-instrument">{_html_escape(group["code"])} '
+                f"{_html_escape(group['name'])}</div>"
+            )
+            for item in group["rows"]:
+                members = item.get("members") or [item]
+                if len(members) > 1:
+                    links = []
+                    for member in members:
+                        date = _html_escape(member["date"] or "日期待确认")
+                        links.append(
+                            f'<a href="{_safe_html_url(member["url"])}" title="{_html_escape(member["title"])}">{date}</a>'
+                            if member["url"]
+                            else date
+                        )
+                    lines.append(
+                        f'<div class="event-row event-routine"><strong>{_html_escape(item["kind"])} · {len(members)}份</strong>'
+                        f'<div class="event-dates">{" / ".join(links)}</div></div>'
+                    )
+                    continue
+                title = _html_escape(item["title"])
+                if item["url"]:
+                    title = f'<a href="{_safe_html_url(item["url"])}">{title}</a>'
+                lines.append(
+                    f'<div class="event-row"><span class="event-date">{_html_escape(item["date"] or "日期待确认")}</span>{title}</div>'
+                )
         lines.append(
-            '<div class="muted-note">分红仅展示除权与派息日期均明确的待处理事项；完整公告、定增、技术面和持仓明细请查看 PDF 附件及完整报告。</div>'
+            f'<div class="muted-note">公告展示近{months}个自然月已采集内容；日期待确认项单独标记。待派息分红、未解禁事项继续保留。例行披露合并展示，每个日期均可查看原文。</div>'
             "</section>"
         )
         return "".join(lines)
 
     @staticmethod
-    def _daily_chart_section(chart_png_bytes, portfolio_chart_dict):
+    def _daily_chart_section(chart_png_bytes):
         if not chart_png_bytes:
             return ""
         return (
@@ -1609,8 +933,8 @@ class EmailNotifier(BaseNotifier):
             )
             return (
                 '<section class="daily-section portfolio-overview-section">'
-                '<div class="section-heading">策略收益展示</div><div class="chart-card">'
-                + return_curves_html(strategy_return_curves, source)
+                '<div class="section-heading">Ke策略收益曲线</div><div class="chart-card">'
+                + return_curves_html(strategy_return_curves, source, compact=True)
                 + "</div></section>"
             )
         if not isinstance(portfolio_chart_dict, dict) or not portfolio_chart_dict.get(
@@ -1624,38 +948,7 @@ class EmailNotifier(BaseNotifier):
             'style="display:block;width:100%;max-width:100%;height:auto;"></div></section>'
         )
 
-    def _build_daily_ref_portfolio_html(self, session):
-        statuses = getattr(session, "ref_portfolio_status", None) or {}
-        if not isinstance(statuses, dict) or not statuses:
-            return '<section class="daily-section"><div class="section-heading">参考持仓</div><div class="empty-card">暂无参考持仓数据。</div></section>'
-        labels = {"a_share": "A股", "hk": "港股", "us": "美股"}
-        sections = []
-        for group in ("a_share", "hk", "us"):
-            status = statuses.get(group)
-            if not isinstance(status, dict):
-                continue
-            lines = [
-                ('<div class="portfolio-card">'
-                f'<div class="card-title">{_html_escape(status.get("_label", labels.get(group, group)))}</div>'
-                f'<div class="stock-line">期初 {_html_escape(status.get("inception_date", "—"))} · '
-                f"净值 {_html_escape(self._daily_metric(status.get('nav'), '', 0))} · "
-                f"回报 {_html_escape(self._daily_metric(status.get('nav_return_pct'), '%', 2))} · "
-                f"交易日 {_html_escape(status.get('trading_days', '—'))}</div>")
-            ]
-            lines.append(self._build_ref_portfolio_status_note(status))
-            lines.append(
-                f'<div class="stock-line">现金：{_html_escape(self._daily_metric(status.get("cash"), "", 2))}</div></div>'
-            )
-            sections.append("".join(lines))
-        if not sections:
-            return '<section class="daily-section"><div class="section-heading">示例账户</div><div class="empty-card">暂无示例账户数据。</div></section>'
-        return (
-            '<section class="daily-section"><div class="section-heading">参考持仓 · 示例账户</div>'
-            + "".join(sections)
-            + "</section>"
-        )
-
-    def _build_mobile_daily_email_body(
+    def _build_email_body(
         self,
         alert_stocks,
         stock_data,
@@ -1667,9 +960,8 @@ class EmailNotifier(BaseNotifier):
         evaluation_reports=None,
         placements=None,
         dividend_events=None,
-        instrument_audit=None,
-        ref_portfolio_html="",
         strategy_return_curves=None,
+        report_as_of=None,
     ):
         template_dir = Path(__file__).parent.parent / "templates"
         template = (template_dir / "daily_email_mobile.html").read_text(
@@ -1679,7 +971,7 @@ class EmailNotifier(BaseNotifier):
         deployment_status = (
             '<div class="deployment-strip"><strong>版本 '
             f"{_html_escape(server_info.get('release_label', '未登记发布'))}</strong><br>"
-            '<strong>部署状态</strong> · 节点 '
+            "<strong>部署状态</strong> · 节点 "
             f"{_html_escape(server_info.get('hostname'))} · IP "
             f"{_html_escape(server_info.get('ip_address'))}"
             f"<span> · {_html_escape(server_info.get('system'))} "
@@ -1690,11 +982,17 @@ class EmailNotifier(BaseNotifier):
         watchlist_rows = self._daily_watchlist_rows(
             stock_data, alert_stocks, signal_scan
         )
+        report_time = pd.Timestamp(report_as_of or datetime.now().astimezone())
+        report_time = (
+            report_time.tz_localize("Asia/Shanghai")
+            if report_time.tzinfo is None
+            else report_time.tz_convert("Asia/Shanghai")
+        )
         alert_codes, signal_codes = self._daily_alert_code_sets(
             alert_stocks, signal_scan
         )
         return template.format(
-            current_time=datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
+            current_time=report_time.strftime("%Y-%m-%d %H:%M:%S"),
             deployment_status=deployment_status,
             summary_section=self._build_daily_summary_section(
                 watchlist_rows, alert_stocks, signal_scan
@@ -1708,824 +1006,14 @@ class EmailNotifier(BaseNotifier):
                 signal_codes=signal_codes,
             ),
             watchlist_section=self._build_daily_watchlist_section(watchlist_rows),
-            chart_section=self._daily_chart_section(
-                chart_png_bytes, portfolio_chart_dict
-            ),
+            chart_section=self._daily_chart_section(chart_png_bytes),
             portfolio_chart_section=self._daily_portfolio_chart_section(
                 portfolio_chart_dict, strategy_return_curves
             ),
             events_section=self._build_daily_events_section(
-                announcements, placements, stock_data, dividend_events
+                announcements, placements, stock_data, dividend_events, report_as_of=report_as_of
             ),
         )
-
-    def _build_email_body(
-        self,
-        alert_stocks,
-        stock_data,
-        announcements=None,
-        historical_data=None,
-        chart_png_bytes=None,
-        portfolio_chart_dict=None,
-        signal_scan=None,
-        backtest=None,
-        evaluation_reports=None,
-        daily_mode=False,
-        placements=None,
-        dividend_events=None,
-        instrument_audit=None,
-        ref_portfolio_html="",
-        strategy_return_curves=None,
-    ):
-        """
-        构建邮件正文（完整版：表格 + 公告 + 图表）
-
-        Args:
-            alert_stocks: 满足条件的股票列表
-            stock_data: 完整的股票数据DataFrame
-            announcements: 公告数据字典（可选）
-            historical_data: 完整历史DataFrame字典 stock_code → DataFrame（可选，供图表使用）
-            chart_png_bytes: 图表 PNG 原始字节（可选），有值时用 cid:chart001 嵌入
-
-        Returns:
-            str: 邮件正文（HTML格式）
-        """
-        if daily_mode:
-            return self._build_mobile_daily_email_body(
-                alert_stocks,
-                stock_data,
-                announcements=announcements,
-                chart_png_bytes=chart_png_bytes,
-                portfolio_chart_dict=portfolio_chart_dict,
-                signal_scan=signal_scan,
-                backtest=backtest,
-                evaluation_reports=evaluation_reports,
-                placements=placements,
-                dividend_events=dividend_events,
-                instrument_audit=instrument_audit,
-                ref_portfolio_html=ref_portfolio_html,
-                strategy_return_curves=strategy_return_curves,
-            )
-        from datetime import datetime
-        from pathlib import Path
-
-        # 1. 加载模板
-        template_dir = Path(__file__).parent.parent / "templates"
-        email_template = (template_dir / "email_template.html").read_text(
-            encoding="utf-8"
-        )
-        alert_section_template = (template_dir / "alert_section.html").read_text(
-            encoding="utf-8"
-        )
-
-        # 2. 构建满足条件的股票行（拆分为技术指标和基本面指标）
-        alert_rows_technical = ""
-        alert_rows_fundamental = ""
-        seen_fundamental = set()  # 基本面去重：每个股票只加一次
-        for alert in alert_stocks:
-            if alert.get("type") == "strategy":
-                continue  # 策略告警在独立 section 渲染
-            if self._is_multi_alert_format(alert):
-                # 多层级警报格式
-                technical_row, fundamental_row = self._build_alert_rows_multi(
-                    alert, stock_data
-                )
-                alert_rows_technical += technical_row
-                # 基本面去重：同一股票只加一次
-                multi_code = alert.get("stock_code", "")
-                if multi_code and multi_code not in seen_fundamental:
-                    alert_rows_fundamental += fundamental_row
-                    seen_fundamental.add(multi_code)
-            else:
-                # 单锚点警报格式（向后兼容）
-                stock_code = alert.get("stock_code", "")
-                low_price = alert.get("low_price")
-                ma60 = alert.get("ma60")
-                low_ma60_diff = alert.get("price_difference", 0)  # 最低价与MA60差值
-                low_ma60_pct = alert.get(
-                    "percentage_difference", 0
-                )  # 最低价与MA60百分比差值
-
-                # 从stock_data中查找股票名称、收盘价和其他数据
-                stock_row = stock_data[stock_data["stock_code"] == stock_code]
-                stock_name = stock_code
-                close_price = 0
-                if not stock_row.empty:
-                    stock_name = stock_row.iloc[0].get("stock_name", stock_code)
-                    close_price = stock_row.iloc[0].get("close", 0)
-
-                # 计算收盘价与MA60差值（安全处理None值）
-                close_ma60_diff = None
-                close_ma60_pct = None
-                if (
-                    close_price is not None
-                    and ma60 is not None
-                    and not pd.isna(close_price)
-                    and not pd.isna(ma60)
-                ):
-                    close_ma60_diff = close_price - ma60
-                    close_ma60_pct = (close_ma60_diff / ma60 * 100) if ma60 != 0 else 0
-
-                # 获取基本面数据
-                dividend_per_share = None
-                dividend_yield = None
-                pe_ratio = None
-                pb_ratio = None
-                roe = None
-
-                if not stock_row.empty:
-                    dividend_per_share = stock_row.iloc[0].get("dividend_per_share")
-                    dividend_yield = stock_row.iloc[0].get("dividend_yield")
-                    pe_ratio = stock_row.iloc[0].get("pe_ratio")
-                    pb_ratio = stock_row.iloc[0].get("pb_ratio")
-                    roe = stock_row.iloc[0].get("roe")
-
-                # 格式化基本面数据
-                dividend_per_share_str = (
-                    f"{dividend_per_share:.3f}"
-                    if dividend_per_share is not None
-                    and not pd.isna(dividend_per_share)
-                    else "—"
-                )
-                dividend_yield_str = (
-                    f"{dividend_yield:.2f}%"
-                    if dividend_yield is not None and not pd.isna(dividend_yield)
-                    else "—"
-                )
-                pe_ratio_str = (
-                    f"{pe_ratio:.2f}"
-                    if pe_ratio is not None and not pd.isna(pe_ratio)
-                    else "—"
-                )
-                pb_ratio_str = (
-                    f"{pb_ratio:.2f}"
-                    if pb_ratio is not None and not pd.isna(pb_ratio)
-                    else "—"
-                )
-                roe_str = f"{roe:.2f}%" if roe is not None and not pd.isna(roe) else "—"
-
-                # 确定颜色样式（inline for email clients）
-                pos_color = "color:#27ae60"
-                neg_color = "color:#c0392b"
-                close_diff_style = (
-                    pos_color
-                    if close_ma60_diff is not None and close_ma60_diff >= 0
-                    else neg_color
-                    if close_ma60_diff is not None
-                    else ""
-                )
-                close_pct_style = (
-                    pos_color
-                    if close_ma60_pct is not None and close_ma60_pct >= 0
-                    else neg_color
-                    if close_ma60_pct is not None
-                    else ""
-                )
-                low_price_str = (
-                    f"{low_price:.2f}"
-                    if low_price is not None and not pd.isna(low_price)
-                    else "—"
-                )
-                ma60_str = (
-                    f"{ma60:.2f}" if ma60 is not None and not pd.isna(ma60) else "—"
-                )
-                close_price_str = (
-                    f"{close_price:.2f}"
-                    if close_price is not None and not pd.isna(close_price)
-                    else "—"
-                )
-                close_ma60_diff_str = (
-                    f"{close_ma60_diff:+.2f}" if close_ma60_diff is not None else "—"
-                )
-                close_ma60_pct_str = (
-                    f"{close_ma60_pct:+.2f}%" if close_ma60_pct is not None else "—"
-                )
-                low_ma60_diff_str = (
-                    f"{low_ma60_diff:.2f}" if low_ma60_diff is not None else "—"
-                )
-                low_ma60_pct_str = (
-                    f"{low_ma60_pct:.2f}%" if low_ma60_pct is not None else "—"
-                )
-
-                # 技术指标行
-                alert_rows_technical += f"""
-                    <tr style="background:#fef9e7">
-                        <td>{stock_code}</td>
-                        <td>{stock_name}</td>
-                        <td>{low_price_str}</td>
-                        <td>{ma60_str}</td>
-                        <td>{close_price_str}</td>
-                        <td style="{close_diff_style}">{close_ma60_diff_str}</td>
-                        <td style="{close_pct_style}">{close_ma60_pct_str}</td>
-                        <td style="{neg_color}">{low_ma60_diff_str}</td>
-                        <td style="{neg_color}">{low_ma60_pct_str}</td>
-                        <td>[MA60] 最低价 &lt; MA60</td>
-                    </tr>
-                """
-
-                # 基本面指标行（去重：同一股票只加一次）
-                if stock_code and stock_code not in seen_fundamental:
-                    alert_rows_fundamental += f"""
-                    <tr style="background:#fef9e7">>
-                        <td>{stock_code}</td>
-                        <td>{stock_name}</td>
-                        <td>{dividend_per_share_str}</td>
-                        <td>{dividend_yield_str}</td>
-                        <td>{pe_ratio_str}</td>
-                        <td>{pb_ratio_str}</td>
-                        <td>{roe_str}</td>
-                    </tr>
-                """
-                    seen_fundamental.add(stock_code)
-
-        # 3. 构建所有监控股票行。日报与提醒共用完整字段，避免日报
-        #    "精简" 时把锚点和技术面这两类决策数据一起删掉。
-        all_rows_price = ""
-        all_rows_fundamental = ""
-        all_rows_technical = ""
-
-        price_table_header = (
-            '<th style="text-align:left;padding:8px">代码</th>\n'
-            '        <th style="text-align:left;padding:8px">名称</th>\n'
-            '        <th style="text-align:right;padding:8px">开盘</th>\n'
-            '        <th style="text-align:right;padding:8px">收盘</th>\n'
-            '        <th style="text-align:right;padding:8px">最高</th>\n'
-            '        <th style="text-align:right;padding:8px">最低</th>\n'
-            '        <th style="text-align:left;padding:8px">锚点</th>\n'
-            '        <th style="text-align:right;padding:8px">锚值</th>\n'
-            '        <th style="text-align:right;padding:8px">偏离%</th>\n'
-            '        <th style="text-align:left;padding:8px">状态</th>'
-        )
-        for _, row in stock_data.iterrows():
-            stock_code = row.get("stock_code", "")
-            stock_name = row.get("stock_name", stock_code)
-            open_price = row.get("open", 0)
-            close_price = row.get("close", 0)
-            high_price = row.get("high")
-            low_price = row.get("low")
-            ma60 = row.get("ma60")
-
-            anchors = {}
-            for anchor_key in ("ma60", "wma20", "wma30", "wma50"):
-                anchor_value = row.get(anchor_key)
-                if anchor_value is not None and not pd.isna(anchor_value):
-                    anchors[anchor_key] = float(anchor_value)
-            best_anchor = (
-                self._pick_best_anchor(float(close_price), anchors)
-                if close_price is not None and not pd.isna(close_price) and anchors
-                else None
-            )
-            if best_anchor:
-                anchor_name, anchor_value, anchor_deviation_pct = best_anchor
-            else:
-                anchor_name, anchor_value, anchor_deviation_pct = "—", None, None
-
-            # 计算收盘价与MA60差值（仅在数据有效时计算）
-            if (
-                close_price is not None
-                and ma60 is not None
-                and not pd.isna(close_price)
-                and not pd.isna(ma60)
-            ):
-                close_ma60_diff = close_price - ma60
-                close_ma60_pct = (close_ma60_diff / ma60 * 100) if ma60 != 0 else 0
-            else:
-                close_ma60_diff = None
-                close_ma60_pct = None
-
-            # 获取基本面数据
-            dividend_per_share = row.get("dividend_per_share")
-            dividend_yield = row.get("dividend_yield")
-            pe_ratio = row.get("pe_ratio")
-            pb_ratio = row.get("pb_ratio")
-            roe = row.get("roe")
-
-            # 格式化基本面数据
-            dividend_per_share_str = (
-                f"{dividend_per_share:.3f}"
-                if dividend_per_share is not None and not pd.isna(dividend_per_share)
-                else "—"
-            )
-            dividend_yield_str = (
-                f"{dividend_yield:.2f}%"
-                if dividend_yield is not None and not pd.isna(dividend_yield)
-                else "—"
-            )
-            pe_ratio_str = (
-                f"{pe_ratio:.2f}"
-                if pe_ratio is not None and not pd.isna(pe_ratio)
-                else "—"
-            )
-            pb_ratio_str = (
-                f"{pb_ratio:.2f}"
-                if pb_ratio is not None and not pd.isna(pb_ratio)
-                else "—"
-            )
-            roe_str = f"{roe:.2f}%" if roe is not None and not pd.isna(roe) else "—"
-            rsi = row.get("rsi")
-            macd_hist = row.get("macd_hist")
-            vol_ratio = row.get("vol_ratio")
-            adx = row.get("adx")
-            boll_pct_b = row.get("boll_pct_b")
-            rsi_str = f"{rsi:.1f}" if rsi is not None and not pd.isna(rsi) else "—"
-            macd_hist_str = (
-                f"{macd_hist:.3f}"
-                if macd_hist is not None and not pd.isna(macd_hist)
-                else "—"
-            )
-            vol_ratio_str = (
-                f"{vol_ratio:.2f}"
-                if vol_ratio is not None and not pd.isna(vol_ratio)
-                else "—"
-            )
-            adx_str = f"{adx:.1f}" if adx is not None and not pd.isna(adx) else "—"
-            boll_pct_b_str = (
-                f"{boll_pct_b:.2f}"
-                if boll_pct_b is not None and not pd.isna(boll_pct_b)
-                else "—"
-            )
-
-            # 检查是否满足条件（最低价 < MA60）- 安全处理None值
-            status = "正常"
-            if (
-                low_price is not None
-                and ma60 is not None
-                and not pd.isna(low_price)
-                and not pd.isna(ma60)
-                and low_price < ma60
-            ):
-                status = "<span style='color: #f44336;'>提醒</span>"
-
-            # 格式化价格数据（安全处理None值）
-            open_price_str = (
-                f"{open_price:.2f}"
-                if open_price is not None and not pd.isna(open_price)
-                else "—"
-            )
-            close_price_str = (
-                f"{close_price:.2f}"
-                if close_price is not None and not pd.isna(close_price)
-                else "—"
-            )
-            high_price_str = (
-                f"{high_price:.2f}"
-                if high_price is not None and not pd.isna(high_price)
-                else "—"
-            )
-            low_price_str = (
-                f"{low_price:.2f}"
-                if low_price is not None and not pd.isna(low_price)
-                else "—"
-            )
-            ma60_str = f"{ma60:.2f}" if ma60 is not None and not pd.isna(ma60) else "—"
-            close_ma60_diff_str = (
-                f"{close_ma60_diff:+.2f}" if close_ma60_diff is not None else "—"
-            )
-            close_ma60_pct_str = (
-                f"{close_ma60_pct:+.2f}%" if close_ma60_pct is not None else "—"
-            )
-            anchor_value_str = (
-                f"{anchor_value:.2f}" if anchor_value is not None else "—"
-            )
-            anchor_deviation_pct_str = (
-                f"{anchor_deviation_pct:+.2f}%"
-                if anchor_deviation_pct is not None
-                else "—"
-            )
-
-            # 价格技术指标行 (inline styles for email clients)
-            pos = "color:#27ae60;text-align:right"
-            neg = "color:#c0392b;text-align:right"
-            neut = "text-align:right"
-            anchor_style = (
-                pos
-                if anchor_deviation_pct is not None and anchor_deviation_pct >= 0
-                else neg
-                if anchor_deviation_pct is not None
-                else neut
-            )
-            all_rows_price += (
-                f"<tr>"
-                f"<td>{stock_code}</td>"
-                f"<td>{stock_name}</td>"
-                f'<td style="{neut}">{open_price_str}</td>'
-                f'<td style="{neut}">{close_price_str}</td>'
-                f'<td style="{neut}">{high_price_str}</td>'
-                f'<td style="{neut}">{low_price_str}</td>'
-                f"<td>{anchor_name}</td>"
-                f'<td style="{neut}">{anchor_value_str}</td>'
-                f'<td style="{anchor_style}">{anchor_deviation_pct_str}</td>'
-                f"<td>{status}</td>"
-                f"</tr>"
-            )
-
-            # 基本面指标行
-            all_rows_fundamental += (
-                f"<tr>"
-                f"<td>{stock_code}</td>"
-                f'<td style="{neut}">{dividend_per_share_str}</td>'
-                f'<td style="{neut}">{dividend_yield_str}</td>'
-                f'<td style="{neut}">{pe_ratio_str}</td>'
-                f'<td style="{neut}">{pb_ratio_str}</td>'
-                f'<td style="{neut}">{roe_str}</td>'
-                f"</tr>"
-            )
-            all_rows_technical += (
-                f"<tr>"
-                f"<td>{stock_code}</td>"
-                f'<td style="{neut}">{rsi_str}</td>'
-                f'<td style="{neut}">{macd_hist_str}</td>'
-                f'<td style="{neut}">{vol_ratio_str}</td>'
-                f'<td style="{neut}">{adx_str}</td>'
-                f'<td style="{neut}">{boll_pct_b_str}</td>'
-                f"</tr>"
-            )
-
-        # 4. 构建公告部分
-        announcements_section = ""
-        if announcements and len(announcements) > 0:
-            announcements_section = """
-            <h3>近期重要公告</h3>
-            <p>以下为监控股票近期发布的重要公告：</p>
-            """
-            for stock_code, announcement_list in announcements.items():
-                if not announcement_list:
-                    continue
-                announcements_section += f"""
-                <div style="border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 5px;">
-                    <h4>股票 {stock_code}</h4>
-                """
-                for i, announcement in enumerate(announcement_list[:5]):
-                    title = announcement.get("title", "")
-                    date = announcement.get("date", "")
-                    url = announcement.get("url", "")
-                    exchange = announcement.get("exchange", "").upper()
-                    link = (
-                        f'<a href="{url}" target="_blank">{title}</a>' if url else title
-                    )
-                    announcements_section += f"""
-                    <div style="margin-bottom: 8px;">
-                        <strong>{i + 1}. [{exchange}] {date}</strong><br/>
-                        {link}
-                    """
-
-                    # 检查是否有官方分红记录
-                    dividend_details = announcement.get("dividend_details")
-                    if dividend_details and len(dividend_details) > 0:
-                        official_info = []
-                        for detail in dividend_details:
-                            announcement_date = detail.get("announcement_date", "未知")
-                            cash_dividend = detail.get("cash_dividend")
-                            dividend_per_share = detail.get("dividend_per_share")
-                            # 格式化分红值，处理None情况
-                            if cash_dividend is not None and not pd.isna(cash_dividend):
-                                info = (
-                                    f"{announcement_date}: 分红{cash_dividend:.2f}元/股"
-                                )
-                                official_info.append(info)
-                            elif dividend_per_share is not None and not pd.isna(
-                                dividend_per_share
-                            ):
-                                info = f"{announcement_date}: 分红{dividend_per_share:.2f}元/股"
-                                official_info.append(info)
-                        if official_info:
-                            announcements_section += f"""
-                            <div style="margin-left: 20px; margin-top: 5px; padding: 5px; background-color: #e8f4fd; border-left: 3px solid #2196f3; font-size: 0.9em;">
-                                <strong>官方分红记录:</strong><br/>
-                                {", ".join(official_info)}
-                            </div>
-                            """
-
-                    # 检查是否有LLM提取的分红详情
-                    llm_dividend = announcement.get("llm_extracted_dividend")
-                    if llm_dividend and llm_dividend.get("success", False):
-                        dividend_info = []
-                        cash_dividend = llm_dividend.get("cash_dividend_per_share")
-                        if cash_dividend is not None and not pd.isna(cash_dividend):
-                            dividend_info.append(f"现金分红: {cash_dividend:.3f}元/股")
-                        dividend_per_share = llm_dividend.get("dividend_per_share")
-                        if dividend_per_share is not None and not pd.isna(
-                            dividend_per_share
-                        ):
-                            dividend_info.append(
-                                f"总分红: {dividend_per_share:.3f}元/股"
-                            )
-                        dividend_date = llm_dividend.get("dividend_date")
-                        if dividend_date:
-                            dividend_info.append(f"分红日期: {dividend_date}")
-                        confidence = llm_dividend.get("confidence")
-                        confidence_pct = (
-                            f"{confidence * 100:.0f}%"
-                            if confidence is not None and not pd.isna(confidence)
-                            else "N/A"
-                        )
-
-                        if dividend_info:
-                            announcements_section += f"""
-                            <div style="margin-left: 20px; margin-top: 5px; padding: 5px; background-color: #f8f9fa; border-left: 3px solid #4caf50; font-size: 0.9em;">
-                                <strong>LLM提取分红详情（置信度: {confidence_pct}）:</strong><br/>
-                                {", ".join(dividend_info)}
-                            </div>
-                            """
-                    announcements_section += """
-                    </div>
-                    """
-                announcements_section += """
-                </div>
-                """
-            announcements_section += """
-             <p><em>注：公告信息仅供参考，请以交易所官方公告为准。</em></p>
-            """
-
-        # 6b. 构建搜参策略结果段
-        strategy_results_section = ""
-        if evaluation_reports:
-            strategy_results_section = self._build_strategy_results_section(
-                evaluation_reports,
-                signal_scan=signal_scan,
-            )
-
-        # 6c. 投资组合策略分析（旧版，日报模式跳过）
-        portfolio_section = ""
-
-        # 7. 走势图表（由调用方生成，通过 chart_png_bytes 传入，使用 CID 内嵌）
-        chart_section = ""
-        if chart_png_bytes:
-            chart_section = """
-            <h3>价格走势图</h3>
-            <p>近2个月收盘价走势：</p>
-            <div style="text-align: center; margin: 20px 0;">
-                <img src="cid:chart001"
-                     alt="价格走势图"
-                     style="max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 4px;" />
-            </div>
-            """
-
-        # 7b. 投资组合走势图（chart002=A股, chart003=港股, chart004=美股, chart005=非A兼容）
-        portfolio_chart_section = ""
-        if portfolio_chart_dict:
-            cid_map = {
-                "a_share": "chart002",
-                "hk": "chart003",
-                "us": "chart004",
-                "non_a_share": "chart005",
-            }
-            group_titles = {
-                "a_share": "A股投资组合净值走势",
-                "hk": "港股投资组合净值走势",
-                "us": "美股投资组合净值走势",
-                "non_a_share": "非A股投资组合净值走势",
-            }
-            for group_key in ("a_share", "hk", "us", "non_a_share"):
-                if group_key in portfolio_chart_dict:
-                    cid = cid_map[group_key]
-                    title = group_titles.get(group_key, group_key)
-                    portfolio_chart_section += f"""
-            <h3>{title}</h3>
-            <div style="text-align: center; margin: 10px 0 20px 0;">
-                <img src="cid:{cid}"
-                     alt="{title}"
-                     style="max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 4px;" />
-            </div>
-            """
-
-        # 7b. 策略信号报警 — 日报模式已合并到搜参策略结果段，不单独渲染
-        strategy_alert_section = ""
-        if signal_scan and not daily_mode:
-            strategy_alert_section = self._build_strategy_alert_section(
-                signal_scan, alert_stocks, stock_data
-            )
-
-        # 7c. 回测分析 — 日报模式跳过
-        backtest_section = ""
-        if not daily_mode and backtest:
-            backtest_section = self._build_backtest_section(backtest)
-
-        # 8. 获取服务器信息
-        server_info = self._get_server_info()
-
-        # 7. 构建报警股票部分 — 日报模式跳过
-        alert_section = ""
-        is_multi_format = False  # 保存格式标志供后续使用
-        if alert_stocks and not daily_mode:
-            # 确定警报格式（检查第一个警报）
-            if alert_stocks and len(alert_stocks) > 0:
-                is_multi_format = self._is_multi_alert_format(alert_stocks[0])
-
-            if is_multi_format:
-                # 多层级警报格式
-                alert_section = f"""
-                <h3>满足条件的股票 ({len(alert_stocks)} 只)</h3>
-
-                <h4>多层级警报技术指标</h4>
-                <table>
-                    <tr>
-                        <th>股票代码</th>
-                        <th>股票名称</th>
-                        <th>价格</th>
-                        <th>锚点值</th>
-                        <th>价格差值</th>
-                        <th>百分比(%)</th>
-                        <th>锚点名称</th>
-                        <th>区间标签</th>
-                        <th>连续天数</th>
-                        <th>条件</th>
-                    </tr>
-                    {alert_rows_technical}
-                </table>
-
-                <h4>基本面指标</h4>
-                <table>
-                    <tr>
-                        <th>股票代码</th>
-                        <th>股票名称</th>
-                        <th>每股分红(元)</th>
-                        <th>股息率(%)</th>
-                        <th>PE</th>
-                        <th>PB</th>
-                        <th>ROE(%)</th>
-                        <th>负债率(%)</th>
-                    </tr>
-                    {alert_rows_fundamental}
-                </table>
-                """
-            else:
-                # 单锚点警报格式（使用模板）
-                alert_section = alert_section_template.format(
-                    alert_count=len(alert_stocks),
-                    alert_rows_technical=alert_rows_technical,
-                    alert_rows_fundamental=alert_rows_fundamental,
-                )
-
-        # 8. 根据警报格式更新模板标题
-        if is_multi_format:
-            # 替换为多层级警报标题
-            email_template = email_template.replace(
-                "系统检测到以下股票满足条件：<strong>当天最低价 &lt; MA60（前复权）</strong>",
-                "系统检测到以下股票满足多层级警报条件：<strong>多锚点阈值区间突破</strong>",
-            )
-        else:
-            # 确保是单锚点标题（默认）
-            email_template = email_template.replace(
-                "系统检测到以下股票满足条件：<strong>多锚点阈值区间突破</strong>",
-                "系统检测到以下股票满足条件：<strong>当天最低价 &lt; MA60（前复权）</strong>",
-            )
-
-        # 9. 替换主模板变量
-        placement_section = self._build_placement_section(placements, stock_data)
-        try:
-            from ..instruments.audit import render_profile_section
-        except ImportError:
-            # Some legacy entry points expose ``src`` directly on sys.path and
-            # import this module as ``notification.email_notifier``.
-            from instruments.audit import render_profile_section
-
-        instrument_profile_section = render_profile_section(instrument_audit)
-        html_content = email_template.format(
-            current_time=datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),
-            alert_section=alert_section,
-            all_rows_price=all_rows_price,
-            all_rows_fundamental=all_rows_fundamental,
-            instrument_profile_section=instrument_profile_section,
-            all_rows_technical=all_rows_technical,
-            price_table_header=price_table_header,
-            announcements_section=announcements_section,
-            placement_section=placement_section,
-            chart_section=chart_section,
-            portfolio_chart_section=portfolio_chart_section,
-            strategy_alert_section=strategy_alert_section,
-            backtest_section=backtest_section,
-            portfolio_section=portfolio_section,
-            strategy_results_section=strategy_results_section,
-            release_label=_html_escape(server_info.get("release_label", "未登记发布")),
-            server_hostname=server_info["hostname"],
-            server_ip=server_info["ip_address"],
-        )
-
-        return html_content
-
-    def _is_multi_alert_format(self, alert):
-        """
-        判断警报是否为多层级格式
-
-        Args:
-            alert: 警报字典
-
-        Returns:
-            bool: 如果是多层级格式返回True，否则返回False
-        """
-        # 多层级警报包含anchor_name字段，单锚点警报包含ma60字段
-        return "anchor_name" in alert and "interval_label" in alert
-
-    def _build_alert_rows_multi(self, alert, stock_data):
-        """
-        构建多层级警报的行HTML
-
-        Args:
-            alert: 多层级警报字典
-            stock_data: 股票数据DataFrame
-
-        Returns:
-            tuple: (technical_row, fundamental_row) HTML字符串
-        """
-        stock_code = alert.get("stock_code", "")
-        # 从stock_data管道获取股票名称
-        stock_name = stock_code
-        stock_row_lookup = stock_data[stock_data["stock_code"] == stock_code]
-        if not stock_row_lookup.empty:
-            stock_name = stock_row_lookup.iloc[0].get("stock_name", stock_code)
-        anchor_name = alert.get("anchor_name", "")
-        anchor_value = alert.get("anchor_value")
-        interval_label = alert.get("interval_label", "")
-        percentage = alert.get("percentage")
-        consecutive_days = alert.get("consecutive_days", 1)
-        price = alert.get("low_price")
-        price_difference = alert.get("price_difference")
-
-        # 从stock_data中查找基本面数据
-        stock_row = stock_data[stock_data["stock_code"] == stock_code]
-
-        # 获取基本面数据
-        dividend_per_share = None
-        dividend_yield = None
-        pe_ratio = None
-        pb_ratio = None
-        roe = None
-
-        if not stock_row.empty:
-            dividend_per_share = stock_row.iloc[0].get("dividend_per_share")
-            dividend_yield = stock_row.iloc[0].get("dividend_yield")
-            pe_ratio = stock_row.iloc[0].get("pe_ratio")
-            pb_ratio = stock_row.iloc[0].get("pb_ratio")
-            roe = stock_row.iloc[0].get("roe")
-
-        # 格式化基本面数据
-        dividend_per_share_str = (
-            f"{dividend_per_share:.3f}"
-            if dividend_per_share is not None and not pd.isna(dividend_per_share)
-            else "—"
-        )
-        dividend_yield_str = (
-            f"{dividend_yield:.2f}%"
-            if dividend_yield is not None and not pd.isna(dividend_yield)
-            else "—"
-        )
-        pe_ratio_str = (
-            f"{pe_ratio:.2f}" if pe_ratio is not None and not pd.isna(pe_ratio) else "—"
-        )
-        pb_ratio_str = (
-            f"{pb_ratio:.2f}" if pb_ratio is not None and not pd.isna(pb_ratio) else "—"
-        )
-        roe_str = f"{roe:.2f}%" if roe is not None and not pd.isna(roe) else "—"
-
-        # 构建技术指标行
-        condition = f"{anchor_name} 区间 {interval_label} (连续{consecutive_days}天)"
-        price_str = f"{price:.2f}" if price is not None and not pd.isna(price) else "—"
-        anchor_value_str = (
-            f"{anchor_value:.2f}"
-            if anchor_value is not None and not pd.isna(anchor_value)
-            else "—"
-        )
-        price_diff_str = (
-            f"{price_difference:+.2f}"
-            if price_difference is not None and not pd.isna(price_difference)
-            else "—"
-        )
-        pct_str = (
-            f"{percentage:+.2f}%"
-            if percentage is not None and not pd.isna(percentage)
-            else "—"
-        )
-
-        technical_row = f"""
-            <tr style="background:#fef9e7">
-                <td>{stock_code}</td>
-                <td>{stock_name}</td>
-                <td>{price_str}</td>
-                <td>{anchor_value_str}</td>
-                <td>{price_diff_str}</td>
-                <td>{pct_str}</td>
-                <td>{anchor_name}</td>
-                <td>{interval_label}</td>
-                <td>{consecutive_days}天</td>
-                <td>{condition}</td>
-            </tr>
-        """
-
-        # 构建基本面指标行
-        fundamental_row = f"""
-            <tr style="background:#fef9e7">
-                <td>{stock_code}</td>
-                <td>{stock_name}</td>
-                <td>{dividend_per_share_str}</td>
-                <td>{dividend_yield_str}</td>
-                <td>{pe_ratio_str}</td>
-                <td>{pb_ratio_str}</td>
-                <td>{roe_str}</td>
-            </tr>
-        """
-
-        return technical_row, fundamental_row
 
     def _get_server_info(self):
         """
@@ -3254,7 +1742,7 @@ class EmailNotifier(BaseNotifier):
             filename = f"{date_str}_{time_str}_{clean_subject}.html"
             filepath = self.email_archive_dir / filename
 
-            # 直接保存正文（已经是完整 HTML 文档，由 email_template.html 渲染）
+            # 直接保存正文（已经是完整 HTML 文档，由统一日报或简报模板渲染）
             # 仅插入元数据注释，不嵌套 <html>
             meta_comment = (
                 f"<!-- 主题: {subject} | "
