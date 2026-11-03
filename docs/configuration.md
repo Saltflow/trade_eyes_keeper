@@ -33,6 +33,7 @@ alerts:
 
 | 配置段 | 有效配置与作用 |
 | --- | --- |
+| `report` | 报告展示模式、Ke 曲线读取与公告展示期限；见下节 |
 | `announcements` | `enable`、`days`、`dividend_days`、正文/PDF提取、LLM 调用额度；详见模板 |
 | `financial_reports` | `max_llm_calls_per_run` 仍供 LLM 额度使用；旧财报开关和股票数量限制已删除 |
 | `sina_options` | `enabled`、`timeout_seconds`、`quote_batch_size`，供新浪期权数据源使用 |
@@ -43,14 +44,35 @@ alerts:
 | `storage` | 数据目录、缓存目录与保存设置；服务状态写入 `data_dir/runtime/` |
 | `logging` | `level`、`file`、`format`；原 `LOG_LEVEL` 环境模板项已删除 |
 
+### 报告展示
+
+```yaml
+report:
+  technical_signals:
+    enabled: false
+  strategy_display: returns_only
+  return_curve_artifact: data/strategy_returns/ke_24m.json
+  return_curve_max_age_days: 7
+  events:
+    announcement_lookback_months: 2
+```
+
+`returns_only` 使用现有行情、基本面、事件和已完成的 Ke 历史模拟曲线；不回退旧技术扫描结果。日报与简报保留今开、昨收、现价、PE、PB、隐含 Ke 和 ROE，不展示股息率。ROE 优先使用已有财务值；缺失时仅在渲染层按有效 PB/PE×100 粗估并标记 `(估)`，无效输入显示 `—`，不写回财务数据。
+
+`announcement_lookback_months` 接受整数 **1–24**，默认 **2**；布尔值、字符串和小数不接受。以报告的上海日历日期减去指定自然月数，包含截止日，按实际发布日期筛选；日期不明保留并标注“日期待确认”。待派息分红、未解禁事项独立保留。该设置只过滤报表展示，不删除原始记录，不改变 `announcements.days/dividend_days` 的采集窗口；实际可展示历史取决于已采集数据。
+
+机器人可查询该字段，或提出“把日报公告展示期限改成3个自然月”，查看预览后发送 `确认 <编号>` 保存。沿用现有配置流程，下次报告读取生效，已开始的任务仍使用原快照。
+
 ### 统一调度
 
 `python main.py` 与 `python main.py --service` 使用同一 `ScheduleManager`；任务调用现有 CLI 子进程。时间创建和在线修改都使用 `scheduler.timezone`。
 
+2026-11-03 生产核验使用触发器发起报告，固定日报、启动日报和固定简报均关闭。以下示例保留兼容时间字段；关闭的任务不会注册：
+
 ```yaml
 scheduler:
   timezone: Asia/Shanghai
-  daily_enabled: true
+  daily_enabled: false
   run_time: '19:00'
   run_on_startup: false
   optimize_enabled: false
@@ -64,17 +86,23 @@ scheduler:
   brief_reports:
     - id: morning_snapshot
       run_time: '09:50'
-      enabled: true
+      enabled: false
       skip_weekends: true
       label: 早盘简报
     - id: afternoon_snapshot
       run_time: '14:30'
-      enabled: true
+      enabled: false
       skip_weekends: true
       label: 午后简报
 ```
 
-`daily_enabled` 控制日报任务是否注册；`daily_report_frequency` 控制普通日报的发送频次，告警和手动 `/daily` 的语义保持独立。定时优化缺省关闭，手动 `--optimize` 不受该开关影响。已有服务器的旧优化 cron 会在部署时迁移，见[部署指南](deployment.md)。
+`daily_enabled` 控制固定日报任务是否注册，`brief_reports[].enabled` 控制各固定简报；`daily_report_frequency: off` 不能代替关闭任务注册。显式开启后仍支持上述固定时间，不能把示例时间当作生产正在执行的计划。`daily_report_frequency` 控制普通日报的发送频次，告警和手动 `/daily` 的语义保持独立。定时优化缺省关闭，手动 `--optimize` 不受该开关影响。已有服务器的旧优化 cron 会在部署时迁移，见[部署指南](deployment.md)。
+
+### 受管触发器
+
+触发器判断何时运行报告，复用既有 `reports.daily` / `reports.brief` 任务及正文构建链路，仍按报告配置处理完整标的池。动作类型只有 `daily`、`brief` 和预留的 `optimize`；前两种可执行，`optimize` 当前拒绝执行，没有 `reminder` 报告类型。个人持仓提醒是独立业务。
+
+触发后的报告按授权路由、渠道开关和报告参数投递，邮件与 Bot 分别记录结果；条件命中不等于各渠道已发送成功。实现见[触发动作合同](../src/triggers/models.py)和[报告任务入口](../src/core/report_execution.py)。
 
 ### 通知与管理 Bot
 
