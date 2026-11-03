@@ -21,11 +21,6 @@ from ..core.report_execution import (
     runtime_path,
 )
 from . import TriggerEvaluator, TriggerStore, collect_dependencies
-from .collection_schedule import (
-    collection_schedule,
-    due_collection_slot,
-    next_collection_slot,
-)
 from .evaluator import event_occurrences
 from .facts import FactSnapshot, load_trigger_facts, monitored_symbols
 from .schedule import due_times
@@ -170,11 +165,14 @@ class TriggerRuntime:
             dependencies = set().union(
                 *(collect_dependencies(item["spec"]) for item in active)
             )
-            config = self.config_provider()
-            if collection_schedule(config) is not None:
-                self.config = copy.deepcopy(config)
-                self._scheduled_collection(dependencies, now)
-                return
+            scheduled = (self.config_provider().get("scheduler") or {}).get(
+                "data_collection_mode"
+            ) == "three_daily"
+            slot = None
+            if scheduled:
+                from ..personal_monitor.tasks import market_deadlines
+
+                slot, _ = market_deadlines(self.config_provider(), now)
             interval = (
                 self.POLL_SECONDS
                 if any(path.startswith("quotes.") for path in dependencies)
@@ -185,6 +183,9 @@ class TriggerRuntime:
                 or self._last_data_poll is None
                 or (now - self._last_data_poll).total_seconds() >= interval
             )
+            collect = slot is not None and slot != self._last_data_poll
+            if scheduled:
+                work = bool(dependencies) and (collect or self._dirty)
             # Do not create durable execution rows for empty/future-only polls.
             if work:
                 with self._lock:
@@ -194,92 +195,29 @@ class TriggerRuntime:
                         else None
                     )
                     if old is None or old["status"] in TERMINAL:
+                        payload = {}
+                        request_id = "poll:" + uuid4().hex
+                        if scheduled:
+                            payload = {"cached_only": True}
+                            if collect:
+                                payload = {"collection_slot": slot.isoformat()}
+                                request_id = "collection:" + slot.isoformat()
                         self._pending_run = self.execution.submit(
                             "triggers.evaluate",
-                            {},
-                            request_id="poll:" + uuid4().hex,
-                            source="trigger_timer",
+                            payload,
+                            request_id=request_id,
+                            source="scheduled_data_collection"
+                            if collect
+                            else "trigger_timer",
                         )
-                        self._last_data_poll, self._dirty = now, False
+                        if collect or not scheduled:
+                            self._last_data_poll = slot if scheduled else now
+                        self._dirty = False
         except Exception as exc:  # noqa: BLE001 - one provider cannot kill the host
             self.last_error = type(exc).__name__
             logger.warning("Trigger timer unavailable: %s", self.last_error)
         finally:
             self._arm()
-
-    def _scheduled_collection(self, dependencies, now):
-        """Only slot jobs read sources; CRUD/refresh hints evaluate cached facts."""
-        if not dependencies:
-            self._dirty = False
-            return
-        with self._lock:
-            old = (
-                self.execution.store.get(self._pending_run)
-                if self._pending_run
-                else None
-            )
-            if old is not None and old["status"] not in TERMINAL:
-                return
-            slot = due_collection_slot(self.config, now)
-            request_id = "collection:" + slot.isoformat() if slot else None
-            with self.execution.store.connection() as db:
-                recorded = (
-                    request_id
-                    and db.execute(
-                        "SELECT id FROM execution_runs WHERE job_id=? AND request_id=?",
-                        ("triggers.evaluate", request_id),
-                    ).fetchone()
-                )
-            if request_id and not recorded:
-                payload = {"collection_slot": slot.isoformat()}
-                source = "scheduled_data_collection"
-                self._last_data_poll = now
-            elif self._dirty:
-                payload = {"cached_only": True}
-                request_id = "cached:" + uuid4().hex
-                source = "trigger_cached_evaluation"
-            else:
-                return
-            self._pending_run = self.execution.submit(
-                "triggers.evaluate", payload, request_id=request_id, source=source
-            )
-            self._dirty = False
-
-    def _cached_facts(self, config, dependencies):
-        """Preserve source clocks; reevaluation never turns into acquisition."""
-        from .snapshots import load_report_snapshot
-
-        now = self.clock()
-        slow = {path for path in dependencies if not path.startswith("quotes.")}
-        key = self._facts_key(slow, config, load_report_snapshot(config))
-        with self._lock:
-            snapshot = (
-                copy.deepcopy(self._snapshot)
-                if self._snapshot is not None
-                else FactSnapshot(as_of=now, observed_at=now)
-            )
-            snapshot.facts = {
-                path: fact
-                for path, fact in snapshot.facts.items()
-                if path.startswith("quotes.")
-            }
-            snapshot.events = []
-            slow_snapshot = (
-                self._slow_snapshot if self._slow_loaded_key == key else None
-            )
-            if slow_snapshot is not None:
-                snapshot.facts = {
-                    **slow_snapshot.facts,
-                    **{
-                        path: fact
-                        for path, fact in snapshot.facts.items()
-                        if path.startswith("quotes.")
-                    },
-                }
-                snapshot.events = copy.deepcopy(slow_snapshot.events)
-        snapshot.as_of = now
-        snapshot.wildcard_symbols = tuple(monitored_symbols(config))
-        return snapshot
 
     def _has_pending(self):
         with self.store._connection() as db:
@@ -316,7 +254,7 @@ class TriggerRuntime:
                         return True
         return False
 
-    def _load_facts(self, config, dependencies, *, cancelled=None):
+    def _load_facts(self, config, dependencies, *, cancelled=None, refresh=True):
         from .snapshots import load_report_snapshot
 
         now = self.clock()
@@ -324,7 +262,7 @@ class TriggerRuntime:
         fast = {path for path in dependencies if path.startswith("quotes.")}
         slow = dependencies - fast
         key = self._facts_key(slow, config, session)
-        if slow:
+        if slow and refresh:
             with self._lock:
                 current = (
                     self.execution.store.get(self._refresh_pending)
@@ -353,9 +291,16 @@ class TriggerRuntime:
                 budget_seconds=30,
                 cancelled=cancelled,
             )
-            if fast
+            if fast and refresh
+            else copy.deepcopy(self._snapshot)
+            if not refresh and self._snapshot is not None
             else FactSnapshot(as_of=self.clock(), observed_at=self.clock())
         )
+        if not refresh:
+            snapshot.facts = {
+                k: v for k, v in snapshot.facts.items() if k.startswith("quotes.")
+            }
+            snapshot.events = []
         with self._lock:
             slow_snapshot = (
                 self._slow_snapshot if self._slow_loaded_key == key else None
@@ -479,14 +424,12 @@ class TriggerRuntime:
                 *(collect_dependencies(item["spec"]) for item in self.store.active())
             )
             if dependencies:
-                if collection_schedule(config) is not None and not payload.get(
-                    "collection_slot"
-                ):
-                    snapshot = self._cached_facts(config, dependencies)
-                else:
-                    snapshot = self._load_facts(
-                        config, dependencies, cancelled=ctx.cancel_event.is_set
-                    )
+                snapshot = self._load_facts(
+                    config,
+                    dependencies,
+                    cancelled=ctx.cancel_event.is_set,
+                    refresh=not payload.get("cached_only", False),
+                )
                 if ctx.cancel_event.is_set():
                     return RunResult("skipped", "trigger_evaluation_cancelled")
                 self.evaluator.evaluate(snapshot, now=self.clock())
@@ -654,14 +597,17 @@ class TriggerRuntime:
             "last_evaluated_at": self.last_evaluated_at,
             "error": self.last_error or None,
         }
-        schedule = collection_schedule(self.config)
-        if schedule is not None:
+        if (self.config.get("scheduler") or {}).get(
+            "data_collection_mode"
+        ) == "three_daily":
+            from ..personal_monitor.tasks import market_deadlines, market_schedule
+
+            zone, slots = market_schedule(self.config)
+            _, next_slot = market_deadlines(self.config, self.clock())
             result.update(
-                collection_mode="scheduled",
-                collection_times=[slot.strftime("%H:%M") for slot in schedule[0]],
-                collection_timezone=str(schedule[1]),
-                next_collection_at=next_collection_slot(
-                    self.config, self.clock()
-                ).isoformat(),
+                collection_mode="three_daily",
+                collection_times=sorted(t.strftime("%H:%M") for t, _, _ in slots),
+                collection_timezone=str(zone),
+                next_collection_at=next_slot.isoformat(),
             )
         return result
