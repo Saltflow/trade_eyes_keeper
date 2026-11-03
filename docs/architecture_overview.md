@@ -1,8 +1,10 @@
 # 全项目架构总览
 
-核对日期：2026-11-03。v1.23.0 / `ae48293` 的公共代码已同步到远端和生产，逐文件核验 870 项公共文件，并确认运行进程版本、心跳和 Bot 连接。生产凭据、私有配置、触发历史、固定调度开关与策略状态保持原值；发布回执位于生产 `data/deployments/full_code_sync_v1_23_0_20261103_ae48293/`。本次未新增付费研究或研究业务质量验收。历史环境及本机配置快照保留在文末，与当次生产状态分开。
+核对日期：2026-11-03。v1.23.1 / `7e552d1` 的 Pi 会话删减已推送并部署，隔离验收通过后更新 19 个公共文件，逐文件核验 870 项公共文件，并确认运行进程版本、心跳和 Bot 连接。生产凭据、私有配置、触发历史、固定调度开关与策略状态保持原值；发布回执位于生产 `data/deployments/pi_conversations_v1_23_1_20261103_7e552d1/`。未发送真实业务消息或创建线上规则，也未新增付费研究。历史环境及本机配置快照保留在文末，与当前状态分开。
 
 系统目前是**模块化单体，使用多个工作进程与 SQLite 持久化**。服务宿主负责在线任务，搜参使用独立优化进程，财报研究使用冻结版本的 host/worker。五个可复用包已经存在于源码中；共享实现不等于共享全部队列、业务库或配置。
+
+下方对话图描述已发布的 Pi 会话删减。文末带日期的环境表保留当时快照，不能当作当前运行配置。
 
 - [全项目总图](#全项目总图)
 - [公共运行层放大图](#公共运行层放大图)
@@ -123,18 +125,19 @@ flowchart TB
     ENABLE -->|开启| POLICY["权限、会话持久化、业务前置路由"]
     POLICY --> PERSONAL["个人持仓确定性查询 / 候选确认"]
     POLICY --> HARNESS["Feishu harness 适配器<br/>agent_runtime.ConversationHarness"]
-    HARNESS --> ROUTE{"是否需要资料检索？"}
-    ROUTE -->|是| PI["强制 Pi + 证据工具<br/>桥不可用则显式失败"]
-    ROUTE -->|否| BACKEND["按 native / pi 配置运行"]
-    PI --> TOOLS["宿主校验的工具<br/>仓库、资料、行情、研究 API"]
-    BACKEND --> TOOLS
+    HARNESS --> PI["Pi Agent<br/>自然语言、工具循环、原生工具错误"]
+    PI --> TOOLS["宿主校验的工具<br/>仓库、资料、行情、触发器、研究 API"]
     TOOLS --> READ["只读状态 / 证据回答"]
-    TOOLS --> PROPOSAL["写操作 / 付费研究 / 维修候选"]
+    TOOLS --> TRIGGER["本人触发器 CRUD<br/>归属、参数、原事务幂等"]
+    TRIGGER --> EXEC["宿主执行并记录回执"]
+    TOOLS --> PROPOSAL["配置修改 / 付费研究 / 维修候选"]
     PROPOSAL --> CONFIRM["适用的确认与版本校验"]
-    CONFIRM --> EXEC["宿主执行并记录回执"]
+    CONFIRM --> EXEC
 ```
 
-Python 通用循环位于 `src/agent_runtime/harness.py`；飞书适配器注入 `tools/feishu-pi/bridge.mjs`、检索工具集合和策略。JavaScript 桥是 Pi 的接入部分，不代表全部公共 Agent 实现。工具权限与写入授权由宿主控制；财报维修另走候选、宿主实际测试、确认和新冻结版本的流程。
+`src/agent_runtime/harness.py` 是 Pi 的有界模型/工具 RPC 适配，不再保留 Python native 会话循环；飞书适配器注入现有 bridge 与业务工具。删除触发器文本快路及正向授权词白名单，保留认证身份、归属、参数来源与版本校验。工具异常经原有 error 回包成为 Pi 工具错误，失败文案不覆盖最终回答；成功事实仍以真实回执为准。研究检索要求读取原有成功回执，触发器保存后不再因“跌破”等路由提示追加资料检索。财报调查复用维修已采用的宿主 Pi 桥入口，原模型预算和业务冻结合同不变；共享文字消息上限采用既有研究请求的 48 MiB，工具批量不再额外限为 8 项，实际执行仍受宿主预算约束。
+
+只沿用既有文字历史，不新增 Pi 会话存储或恢复协议；上次完整执行现场丢失时明确要求重发完整条件。会话错误仅走现有助手回复，逐轮 Health 卡片取消，执行失败记录及服务级告警保留。
 
 ## 告警链路放大图
 
@@ -281,7 +284,7 @@ flowchart TB
 | 公共执行器 | [task_runtime](../src/task_runtime/execution.py)、[request_policy](../src/task_runtime/request_policy.py) | 队列、容量、恢复及源站限制 |
 | 资料底座 | [data_hub](../src/data_hub) | 原件、解析、索引、行情原始值 |
 | 模型底座 | [model_gateway](../src/model_gateway) | 请求、响应、尝试与用量账本 |
-| Agent 底座 | [agent_runtime](../src/agent_runtime/harness.py)、[飞书适配器](../src/interactive/assistant/harness.py) | 可注入的循环、桥与宿主策略 |
+| Agent 底座 | [agent_runtime](../src/agent_runtime/harness.py)、[飞书适配器](../src/interactive/assistant/harness.py) | Pi RPC 桥、预算边界与宿主业务校验 |
 | 在线宿主与报告 | [RuntimeService](../src/core/runtime_service.py)、[report_execution](../src/core/report_execution.py)、[main.py](../main.py) | 生命周期、调度、报表 worker 与业务组合 |
 | 受管触发器 | [triggers](../src/triggers) | 条件、时间、快照、动作、投递回执 |
 | 个人监控 | [personal_monitor](../src/personal_monitor) | 持仓、提醒、版本、历史、业务 outbox |
