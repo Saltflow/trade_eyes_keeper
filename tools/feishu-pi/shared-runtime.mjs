@@ -19,7 +19,8 @@ if (process.argv.includes("--check")) {
   process.exit(0);
 }
 
-const MAX_LINE_BYTES = 2 * 1024 * 1024;
+// Keep the existing research request byte ceiling on the shared text transport.
+const MAX_LINE_BYTES = research ? 2 * 1024 * 1024 : 48 * 1024 * 1024;
 const model = {
   id: "python-deepseek",
   name: "Python-owned DeepSeek transport",
@@ -100,7 +101,7 @@ function assistant(message) {
     throw new Error("Invalid model assistant response");
   }
   const calls = message.tool_calls ?? [];
-  if (!Array.isArray(calls) || calls.length > (research ? 256 : 8)) throw new Error("Invalid tool call list");
+  if (!Array.isArray(calls) || calls.length > 256) throw new Error("Invalid tool call list");
   const ids = new Set();
   const content = message.content ? [{ type: "text", text: message.content }] : [];
   for (const call of calls) {

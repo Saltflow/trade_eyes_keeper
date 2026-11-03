@@ -71,7 +71,8 @@ def test_empty_exception_message_still_records_failed_turn(service):
     service.handle("chat", "owner", "question")
     turn = service.store.recent_turns("chat", "owner")[0]
     assert turn["status"] == "failed"
-    assert any(event["kind"] == "error" for event in turn["events"])
+    assert "RuntimeError" in turn["error"]
+    assert any(event["kind"] == "model_error" for event in turn["events"])
 
 
 def test_failed_delivery_is_not_reintroduced_as_successful_in_memory_context(service):

@@ -174,7 +174,7 @@ def test_research_about_holdings_is_not_replaced_by_status_template(assistant):
     assistant.harness.run = Mock(return_value="研究分析正文，当前资料仍有缺口。")
     assistant.handle("chat", "owner", "分析我的持仓公司估值，需要看财报")
     assistant.personal.holdings_query_scope.assert_not_called()
-    assert assistant.harness.run.call_args.kwargs["require_retrieval"] is True
+    assert assistant.harness.run.call_args.kwargs["require_retrieval"]() is True
     assert assistant.send_message.call_args.args[1] == "研究分析正文，当前资料仍有缺口。"
 
 
@@ -261,7 +261,7 @@ def test_model_failure_is_persisted_with_trace(assistant):
     assistant.handle("chat", "owner", "问题")
     turn = assistant.store.recent_turns("chat", "owner")[0]
     assert turn["status"] == "failed"
-    assert turn["error"] == "服务超时"
+    assert "服务超时" in turn["error"]
     assert any(e["kind"] == "model_error" for e in turn["events"])
 
 

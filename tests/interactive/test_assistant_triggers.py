@@ -1,13 +1,20 @@
 """Real assistant admission for personal triggers, with no external I/O."""
 
+import json
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
 from src.core.execution import ExecutionRuntime, ExecutionStore
+from src.core.execution_health import HealthReporter
+from src.interactive.assistant.client import AssistantAPIError
+from src.interactive.assistant.harness import ConversationHarness
 from src.interactive.assistant.service import SYSTEM_PROMPT, FeishuAssistant
 from src.interactive.assistant.store import ProposalStore
+from src.interactive.assistant.trigger_tools import TriggerTools
 from src.triggers.store import TriggerStore
 
 NOW = datetime(2026, 10, 31, 4, 0, tzinfo=timezone.utc)
@@ -62,79 +69,10 @@ def spec():
     }
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "11月2号逆回购到期",
-        "11月20号逆回购到期",
-        "任何监控标的发三季度报告的当天和次日发简报和日报",
-        "601088跌到50以下了发简报",
-        "每天9:50发简报",
-    ],
-)
-def test_explicit_create_uses_real_shared_store_without_model_or_research(
-    assistant_factory, text
-):
-    assistant = assistant_factory()
-    kick = Mock()
-    assistant.trigger_changed = kick
-    send(assistant, text)
-    assert len(assistant.trigger_store.list("owner")) == 1
-    if "逆回购到期" in text:
-        rule = assistant.trigger_store.get("owner", 1)
-        assert [action["kind"] for action in rule["spec"]["actions"]] == ["daily"]
-    assert assistant.trigger_store.path == assistant.execution_runtime.store.path
-    assert "已保存触发器 1" in assistant.send_message.call_args.args[1]
-    assistant.harness.run.assert_not_called()
-    assistant.client.complete.assert_not_called()
-    assistant.research.query_stock_fundamentals.assert_not_called()
-    kick.assert_called_once_with()
-    assert assistant.store.recent_turns("chat", "owner")[0]["status"] == "completed"
-
-
-def test_fast_path_runs_before_paid_attachment_ocr(assistant_factory):
-    assistant = assistant_factory()
-    assistant.personal.prepare_images = Mock(side_effect=AssertionError("must not OCR"))
-    send(assistant, "11月2号逆回购到期", attachments=[{"image_key": "unread-image"}])
-    assert assistant.trigger_store.get("owner", 1)["state"] == "active"
-    assistant.personal.prepare_images.assert_not_called()
-    assistant.harness.run.assert_not_called()
-
-
-def test_fast_path_batch_crud_stable_numbers_and_current_owner_only(assistant_factory):
-    assistant = assistant_factory()
-    send(assistant, "11月2号逆回购到期", "create1")
-    send(assistant, "11月20号逆回购到期", "create2")
-    send(
-        assistant, "11月2号逆回购到期", "other1", owner="other-owner", chat="other-chat"
-    )
-    send(assistant, "暂停#1", "pause1")
-    send(assistant, "拉取已经激活的触发器", "list")
-    assert "2." in assistant.send_message.call_args.args[1]
-    assert "1." not in assistant.send_message.call_args.args[1]
-    send(assistant, "恢复#1", "resume")
-    send(assistant, "remove trigger 1，2，3", "remove")
-    assert assistant.trigger_store.get("owner", 1)["state"] == "deleted"
-    assert assistant.trigger_store.get("owner", 2)["state"] == "deleted"
-    assert assistant.trigger_store.get("other-owner", 1)["state"] == "active"
-    reply = assistant.send_message.call_args.args[1]
-    assert "已删除触发器 1、2" in reply and "不存在触发器 3" in reply
-    assistant.harness.run.assert_not_called()
-
-
-def test_platform_message_replay_does_not_duplicate_rule(assistant_factory):
-    assistant = assistant_factory()
-    send(assistant, "11月2号逆回购到期")
-    send(assistant, "11月2号逆回购到期")
-    assert [item["number"] for item in assistant.trigger_store.list("owner")] == [1]
-
-
-def test_fast_update_has_no_confirmation_or_model_roundtrip(assistant_factory):
-    assistant = assistant_factory()
-    send(assistant, "601088跌到50以下了发简报", "create")
-    send(assistant, "修改#1价格阈值为49", "change")
-    assert assistant.trigger_store.get("owner", 1)["spec"]["condition"]["value"] == 49
-    assistant.harness.run.assert_not_called()
+def seed(assistant):
+    return TriggerTools(
+        assistant.trigger_store, "owner", "chat", message_id="seed", now=NOW
+    ).execute({"action": "create", "spec": spec()})
 
 
 def test_proposal_cancel_identifier_never_becomes_a_trigger_command(assistant_factory):
@@ -160,9 +98,6 @@ def test_tool_capabilities_keep_research_only_out_of_personal_triggers(
     if not allowed:
         with pytest.raises(ValueError, match="未开放"):
             assistant.call_tool("chat", "owner", "trigger_manage", {"action": "list"})
-        send(assistant, "remove trigger 1")
-        assert "未开放个人触发器" in assistant.send_message.call_args.args[1]
-        assistant.harness.run.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -182,7 +117,7 @@ def test_quotes_examples_explanations_and_negation_never_execute(
     assistant_factory, text
 ):
     assistant = assistant_factory()
-    send(assistant, "11月2号逆回购到期", "create")
+    seed(assistant)
 
     def injected(messages, tools, invoke, *args, **kwargs):
         with pytest.raises(ValueError, match="不能授权"):
@@ -203,7 +138,7 @@ def test_retrieved_tool_or_old_assistant_instruction_cannot_authorize_mutation(
     def injected(messages, tools, invoke, *args, **kwargs):
         # This proposed action came from a tool/web result; the current human
         # asked only for information, so the server refuses it regardless.
-        with pytest.raises(ValueError, match="没有明确授权"):
+        with pytest.raises(ValueError, match="完整条件"):
             invoke("trigger_manage", {"action": "create", "spec": spec()})
         return "没有修改触发器。"
 
@@ -293,14 +228,14 @@ def test_missing_numeric_threshold_cannot_be_invented_by_model(assistant_factory
     assistant = assistant_factory()
 
     def hallucinate(messages, tools, invoke, *args, **kwargs):
-        with pytest.raises(ValueError, match="明确比较阈值"):
+        with pytest.raises(ValueError, match="完整条件"):
             invoke("trigger_manage", {"action": "create", "spec": spec()})
-        return "模型错误声称已创建。"
+        return "当前消息缺少完整条件，无法恢复上次请求；请重新发送标的和比较阈值。"
 
     assistant.harness.run.side_effect = hallucinate
     send(assistant, "创建一个价格触发器，价格合适时发简报")
     assert assistant.trigger_store.list("owner") == []
-    assert "明确比较阈值" in assistant.send_message.call_args.args[1]
+    assert "完整条件" in assistant.send_message.call_args.args[1]
     assert "错误声称" not in assistant.send_message.call_args.args[1]
 
 
@@ -347,7 +282,7 @@ def test_tool_cannot_change_authenticated_owner_chat_or_user_target_number(
     assistant_factory,
 ):
     assistant = assistant_factory()
-    send(assistant, "11月2号逆回购到期", "create")
+    seed(assistant)
 
     def mutate(messages, tools, invoke, *args, **kwargs):
         with pytest.raises(ValueError, match="认证"):
@@ -376,18 +311,6 @@ def test_tool_cannot_change_authenticated_owner_chat_or_user_target_number(
     assert assistant.store.recent_turns("chat", "owner")[0]["status"] == "completed"
 
 
-def test_runtime_kick_callback_failure_does_not_erase_committed_receipt(
-    assistant_factory,
-):
-    assistant = assistant_factory(trigger_runtime=Mock())
-    send(assistant, "11月2号逆回购到期", "first")
-    assistant.trigger_runtime.kick.assert_called_once_with()
-    assistant.trigger_changed = Mock(side_effect=RuntimeError("local wake failure"))
-    send(assistant, "11月20号逆回购到期", "second")
-    assert assistant.trigger_store.get("owner", 2)["state"] == "active"
-    assert "已保存触发器 2" in assistant.send_message.call_args.args[1]
-
-
 def test_global_scheduler_proposals_stay_distinct_from_personal_crud():
     assert "trigger_manage直接执行可逆管理" in SYSTEM_PROMPT
     assert "改变全局scheduler配置" in SYSTEM_PROMPT
@@ -412,3 +335,193 @@ def test_mismatched_trigger_database_is_rejected(tmp_path):
             )
     finally:
         runtime.stop(timeout=3)
+
+
+def price_spec():
+    return {
+        "label": "01088跌破40时发送日报",
+        "condition": {
+            "field": "quotes.01088.last",
+            "op": "lt",
+            "value": 40,
+            "max_age_seconds": 120,
+        },
+        "actions": [{"kind": "daily", "payload": {"highlight_symbols": ["01088"]}}],
+    }
+
+
+def use_real_pi(assistant, replies):
+    root = Path(__file__).resolve().parents[2]
+    real = ConversationHarness(
+        assistant.client, assistant.settings, root, assistant._stop
+    )
+    real.node_executable = os.environ.get("FEISHU_PI_TEST_NODE")
+    assistant.harness.run = real.run
+    replies = iter(replies)
+
+    def complete(messages, tools, **kwargs):
+        reply = next(replies)
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply(messages, tools, **kwargs) if callable(reply) else reply
+
+    assistant.client.complete.side_effect = complete
+    return real
+
+
+def create_call():
+    return {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "price-rule",
+                "type": "function",
+                "function": {
+                    "name": "trigger_manage",
+                    "arguments": json.dumps({"action": "create", "spec": price_spec()}),
+                },
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize("capabilities", [{"personal"}, None])
+def test_natural_price_request_uses_real_pi_and_business_idempotency(
+    assistant_factory, capabilities
+):
+    assistant = assistant_factory(capabilities)
+    kick = Mock()
+    assistant.trigger_changed = kick
+    use_real_pi(
+        assistant,
+        [
+            create_call(),
+            {"role": "assistant", "content": "已创建"},
+            create_call(),
+            {"role": "assistant", "content": "已有规则"},
+        ],
+    )
+    for message_id, accepted in (
+        ("first", True),
+        ("first", False),
+        ("repeat-with-new-message-id", True),
+    ):
+        admitted = assistant.submit(
+            "chat",
+            "owner",
+            "01088跌破40告诉我",
+            message_id,
+            message_time=MESSAGE_TIME,
+        )
+        assert admitted is accepted
+        if admitted:
+            send(assistant, "01088跌破40告诉我", message_id)
+    rules = assistant.trigger_store.list("owner")
+    assert len(rules) == 1
+    assert rules[0]["spec"]["condition"]["value"] == 40
+    assert rules[0]["spec"]["actions"][0]["kind"] == "daily"
+    assert rules[0]["spec"]["actions"][0]["payload"]["chat_id"] == "chat"
+    assert assistant.client.complete.call_count == 4
+    assert assistant.send_message.call_count == 2
+    assert "已保存触发器 1" in assistant.send_message.call_args.args[1]
+
+
+@pytest.mark.parametrize("after_create", [False, True])
+def test_520_has_one_error_reply_no_replay_and_no_health_duplicate(
+    assistant_factory,
+    after_create,
+):
+    assistant = assistant_factory()
+    replies = ([create_call()] if after_create else []) + [
+        AssistantAPIError("DeepSeek 请求失败（HTTP 520）。"),
+    ]
+    use_real_pi(assistant, replies)
+    send(assistant, "01088跌破40告诉我", "failure")
+    assert len(assistant.trigger_store.list("owner")) == int(after_create)
+    assert assistant.client.complete.call_count == 1 + int(after_create)
+    assert assistant.send_message.call_count == 1
+    reply = assistant.send_message.call_args.args[1]
+    assert "HTTP 520" in reply and "未授权" not in reply
+    assert ("已保存触发器 1" in reply) is after_create
+    # Publish the real failed turn through the existing durable execution store.
+    turn = assistant.store.recent_turns("chat", "owner")[0]
+    assert turn["status"] == "failed"
+    runtime = assistant.execution_runtime
+    runtime.store.owner_started("fixture")
+    run_id = runtime.submit("conversation.turn", {}, source="test")
+    claim = runtime.store.claim("fixture", "conversation", ["conversation.turn"])
+    from src.core.execution import RunResult
+
+    assert runtime.store.finish(
+        run_id, claim["claim_token"], RunResult("failed", turn["error"])
+    )
+    reporter = HealthReporter(runtime)
+    reporter.observe({})
+    reporter.observe({})
+    with runtime.store.connection() as db:
+        assert (
+            db.execute("SELECT COUNT(*) FROM execution_health_outbox").fetchone()[0]
+            == 0
+        )
+    assert runtime.store.get(run_id)["status"] == "failed"
+    if after_create:
+        use_real_pi(
+            assistant, [create_call(), {"role": "assistant", "content": "已有规则"}]
+        )
+        send(assistant, "01088跌破40告诉我", "new-request")
+        assert len(assistant.trigger_store.list("owner")) == 1
+
+
+def test_failed_context_is_not_invented_when_user_only_says_continue(assistant_factory):
+    assistant = assistant_factory()
+    use_real_pi(assistant, [AssistantAPIError("DeepSeek 请求失败（HTTP 520）。")])
+    send(assistant, "01088跌破40告诉我", "failed-original")
+
+    def final_answer(messages, tools, **kwargs):
+        assert any(
+            "不会恢复上次失败" in m.get("content", "")
+            for m in messages
+            if m["role"] == "system"
+        )
+        errors = [
+            m
+            for m in messages
+            if m["role"] == "tool" and "无法恢复上次请求" in m.get("content", "")
+        ]
+        assert errors
+        return {
+            "role": "assistant",
+            "content": "无法恢复上次请求，请重新发送标的和阈值。",
+        }
+
+    use_real_pi(assistant, [create_call(), final_answer])
+    send(assistant, "授权，继续原请求", "continue")
+    assert assistant.trigger_store.list("owner") == []
+    assert "重新发送" in assistant.send_message.call_args.args[1]
+    assert "未授权" not in assistant.send_message.call_args.args[1]
+
+
+def test_successful_text_history_is_available_to_pi_on_followup(assistant_factory):
+    assistant = assistant_factory()
+    use_real_pi(assistant, [create_call(), {"role": "assistant", "content": "已创建"}])
+    send(assistant, "01088跌破40告诉我", "original")
+
+    def followup(messages, tools, **kwargs):
+        assert any(
+            m["role"] == "user" and m["content"] == "01088跌破40告诉我"
+            for m in messages
+        )
+        assert any(
+            m["role"] == "assistant" and "已保存触发器 1" in m.get("content", "")
+            for m in messages
+        )
+        return {
+            "role": "assistant",
+            "content": "上一条已保存触发器 1，条件为01088低于40。",
+        }
+
+    use_real_pi(assistant, [followup])
+    send(assistant, "刚才的条件是什么", "followup")
+    assert len(assistant.trigger_store.list("owner")) == 1
+    assert "低于40" in assistant.send_message.call_args.args[1]

@@ -1,4 +1,4 @@
-"""Portable bounded native/Pi loops; the injected host owns tools and secrets."""
+"""Bounded Pi transport; the injected host owns tools and secrets."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ FINAL_INSTRUCTION = (
     "本轮工具预算已用完。请仅根据已取得的证据回答用户，列明尚未查清的点。"
     "不要发起工具调用、虚构执行成功或再要求用户提供仓库已有的内容。"
 )
+MAX_MESSAGE_BYTES = 48 * 1024 * 1024
 
 
 def compact_messages(
@@ -63,9 +64,10 @@ class ConversationHarness:
         retrieval_tools=(),
         repeatable_tools=(),
         repeatable_prefixes=(),
-        require_pi_for_retrieval=False,
         error_type=AgentRuntimeError,
     ):
+        if getattr(settings, "harness_backend", "pi") != "pi":
+            raise error_type("会话仅支持 Pi，请将 harness_backend 配置改为 pi。")
         self.client, self.settings = client, settings
         self.root = Path(root) if root is not None else None
         self.stop_event = stop_event or threading.Event()
@@ -74,7 +76,6 @@ class ConversationHarness:
         self.retrieval_tools = frozenset(retrieval_tools)
         self.repeatable_tools = frozenset(repeatable_tools)
         self.repeatable_prefixes = tuple(repeatable_prefixes)
-        self.require_pi_for_retrieval = bool(require_pi_for_retrieval)
         self.error_type = error_type
         self._process = None
         self._lock = threading.Lock()
@@ -123,21 +124,13 @@ class ConversationHarness:
         run = _Run(self, tools, invoke, audit, format_value, check_answer)
         run.require_retrieval = require_retrieval
         run.evidence_ready = evidence_ready
-        run.backend = (
-            "pi"
-            if require_retrieval and self.require_pi_for_retrieval
-            else self.settings.harness_backend
-        )
-        audit("harness_start", {"backend": run.backend})
+        audit("harness_start", {"backend": "pi"})
         try:
-            if run.backend == "pi":
-                answer = self._pi(messages, tools, run)
-            else:
-                answer = self._native(messages, run)
+            answer = self._pi(messages, tools, run)
             audit(
                 "harness_finished",
                 {
-                    "backend": run.backend,
+                    "backend": "pi",
                     "model_rounds": run.rounds,
                     "tool_calls": run.calls,
                     "retrieval_attempts": run.retrieval_attempts,
@@ -147,32 +140,6 @@ class ConversationHarness:
             return answer
         finally:
             self.stop()
-
-    def _native(self, messages, run) -> str:
-        messages = copy.deepcopy(messages)
-        while True:
-            response = run.model(messages)
-            messages.append(response)
-            if not response.get("tool_calls"):
-                return response.get("content") or "没有生成回复，请补充需求。"
-            for call in response["tool_calls"]:
-                if not isinstance(call, dict) or not isinstance(call.get("id"), str):
-                    raise self.error_type("工具调用格式不完整。")
-                try:
-                    function = call["function"]
-                    result = run.tool(
-                        function["name"], json.loads(function["arguments"])
-                    )
-                except (ValueError, KeyError, TypeError) as exc:
-                    result = {"error": str(exc)}
-                    run.audit("tool_error", {"error": str(exc)})
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call["id"],
-                        "content": canonical_json(run.format_value(result)),
-                    }
-                )
 
     def _pi(self, messages, tools, run) -> str:
         executable = self.node_executable or shutil.which("node")
@@ -215,8 +182,8 @@ class ConversationHarness:
         def read_output():
             try:
                 while not reading_stopped.is_set():
-                    line = process.stdout.readline(2 * 1024 * 1024 + 1)
-                    if len(line) > 2 * 1024 * 1024:
+                    line = process.stdout.readline(MAX_MESSAGE_BYTES + 1)
+                    if len(line) > MAX_MESSAGE_BYTES:
                         value = {
                             "type": "error",
                             "message": "Pi protocol frame too large",
@@ -289,22 +256,36 @@ class ConversationHarness:
                     )
                 if kind != "request" or not isinstance(event.get("id"), str):
                     raise self.error_type("Pi harness 返回了无效协议消息。")
-                if event.get("kind") == "model":
-                    result = run.model(event["messages"])
-                elif event.get("kind") == "tool":
-                    result = run.format_value(
-                        run.tool(event.get("name"), event.get("arguments"))
+                if event.get("kind") not in {"model", "tool"}:
+                    raise self.error_type("Pi harness 请求了未注册能力。")
+                try:
+                    result = (
+                        run.model(event["messages"])
+                        if event["kind"] == "model"
+                        else run.format_value(
+                            run.tool(event.get("name"), event.get("arguments"))
+                        )
+                    )
+                except (ValueError, KeyError, TypeError, OSError, RuntimeError) as exc:
+                    run.guard()
+                    send(
+                        {
+                            "reply_to": event["id"],
+                            "error": run.format_value(str(exc) or type(exc).__name__),
+                        }
                     )
                 else:
-                    raise self.error_type("Pi harness 请求了未注册能力。")
-                send({"reply_to": event["id"], "result": result})
+                    send({"reply_to": event["id"], "result": result})
         finally:
             watchdog.cancel()
             reading_stopped.set()
             self._terminate(process)
             for pipe in (process.stdin, process.stdout):
                 if pipe is not None:
-                    pipe.close()
+                    try:
+                        pipe.close()
+                    except OSError:
+                        pass  # A dead child's pipe must not mask cancellation.
             reader.join(timeout=1)
             with self._lock:
                 self._process = None
@@ -320,7 +301,6 @@ class _Run:
         self.repeated = {}
         self.deadline = time.monotonic() + self.settings.conversation_timeout_seconds
         self.finalizing = False
-        self.backend = self.settings.harness_backend
         self.require_retrieval = False
         self.evidence_ready = False
         self.retrieval_attempts = 0
@@ -336,6 +316,11 @@ class _Run:
 
     def model(self, messages):
         self.guard()
+        require_retrieval = (
+            self.require_retrieval()
+            if callable(self.require_retrieval)
+            else self.require_retrieval
+        )
         if self.rounds >= self.settings.max_tool_rounds:
             raise self.harness.error_type("本轮问答已达到模型调用上限。")
         self.finalizing = (
@@ -347,11 +332,7 @@ class _Run:
             self.settings.max_context_chars,
             error_type=self.harness.error_type,
         )
-        if (
-            self.require_retrieval
-            and self.retrieval_attempts
-            and not self.evidence_ready
-        ):
+        if require_retrieval and self.retrieval_attempts and not self.evidence_ready:
             messages.append(
                 {
                     "role": "system",
@@ -367,7 +348,7 @@ class _Run:
             {
                 "round": self.rounds,
                 "model": self.settings.model,
-                "backend": self.backend,
+                "backend": "pi",
                 "input_chars": len(canonical_json(messages)),
                 "finalizing": self.finalizing,
                 "thinking": "enabled",
@@ -396,7 +377,7 @@ class _Run:
             )
         if not response.get("tool_calls"):
             if (
-                self.require_retrieval
+                require_retrieval
                 and not self.evidence_ready
                 and not self.retrieval_attempts
             ):
@@ -468,10 +449,5 @@ class _Run:
                 )
             return result
         except (ValueError, KeyError, TypeError, OSError, RuntimeError) as exc:
-            if (
-                isinstance(exc, RuntimeError)
-                and name not in self.harness.retrieval_tools
-            ):
-                raise
             self.audit("tool_error", {"name": name, "error": str(exc)})
-            return {"error": str(exc)}
+            raise

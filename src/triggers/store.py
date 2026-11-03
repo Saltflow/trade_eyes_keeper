@@ -153,6 +153,68 @@ class TriggerStore:
                         "request key already belongs to a different trigger"
                     )
                 return self.get(owner, old["number"], db=db)
+            condition = spec.get("condition", {})
+            chat = spec["actions"][0]["payload"].get("chat_id")
+            if (
+                re.fullmatch(
+                    r"quotes\.[A-Za-z0-9.^_-]{1,20}\.last", condition.get("field", "")
+                )
+                and isinstance(chat, str)
+                and chat.strip()
+                and all(
+                    action["payload"].get("chat_id") == chat
+                    for action in spec["actions"]
+                )
+            ):
+                kinds = sorted(action["kind"] for action in spec["actions"])
+                for row in db.execute(
+                    "SELECT * FROM trigger_definitions WHERE owner=? AND state='active' ORDER BY number",
+                    (owner,),
+                ):
+                    previous = json.loads(row["spec"])
+                    prior = previous.get("condition", {})
+                    if (
+                        any(
+                            prior.get(key) != condition.get(key)
+                            for key in ("field", "op", "value")
+                        )
+                        or sorted(action["kind"] for action in previous["actions"])
+                        != kinds
+                        or any(
+                            action["payload"].get("chat_id") != chat
+                            for action in previous["actions"]
+                        )
+                    ):
+                        continue
+                    comparable = []
+                    for value in (previous, spec):
+                        business = {
+                            key: item for key, item in value.items() if key != "label"
+                        }
+                        business["actions"] = sorted(
+                            (
+                                {
+                                    "kind": action["kind"],
+                                    "payload": {
+                                        key: item
+                                        for key, item in action["payload"].items()
+                                        if key != "trigger_reason"
+                                    },
+                                }
+                                for action in value["actions"]
+                            ),
+                            key=_encode,
+                        )
+                        comparable.append(business)
+                    if comparable[0] != comparable[1]:
+                        raise ValueError(
+                            f"触发器 {row['number']} 已有相同价格条件及报告类型，其他参数不同；请先get并用update修改"
+                        )
+                    db.execute(
+                        "INSERT INTO trigger_requests VALUES(?,?,?,?)",
+                        (owner, request_key, row["number"], encoded),
+                    )
+                    return self.get(owner, row["number"], db=db)
             db.execute(
                 "INSERT OR IGNORE INTO trigger_owners(owner,next_number) VALUES(?,1)",
                 (owner,),

@@ -4,6 +4,8 @@ import { once } from "node:events";
 import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import test from "node:test";
+import { Agent } from "@earendil-works/pi-agent-core";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { FrameDecoder, encodeFrames, MAX_FRAME_BYTES } from "./framing.mjs";
 
 const tool = {
@@ -32,14 +34,14 @@ test("Preflight loads the real SDK and exits without model or tool requests", ()
   assert.deepEqual(status.builtin_tools, []);
 });
 
-async function session(input, handle, closeEarly = false) {
+async function session(input, handle, closeEarly = false, timeout = 10000) {
   const child = spawn(process.execPath, [new URL("bridge.mjs", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")],
     { stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot } });
-  const timer = setTimeout(() => child.kill(), 10000);
+  const timer = setTimeout(() => child.kill(), timeout);
   const exited = once(child, "exit");
   let errors = "";
   // Oversized-input rejection may close stdin before its queued write drains.
-  child.stdin.on("error", (error) => { if (error.code !== "EPIPE") throw error; });
+  child.stdin.on("error", (error) => { if (!["EPIPE", "EOF"].includes(error.code)) throw error; });
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (data) => { errors += data; });
   const values = [];
@@ -120,6 +122,56 @@ test("Tool failure is visible to the next model round", async () => {
   assert.equal(result.at(-1).type, "done");
 });
 
+test("Native Pi marks thrown tools as errors and business error fields as data", async () => {
+  for (const throws of [true, false]) {
+    let rounds = 0;
+    let executions = 0;
+    const receipts = [];
+    const model = { id: "offline", provider: "python-bridge", api: "openai-completions",
+      name: "Offline fixture", reasoning: false, input: ["text"], contextWindow: 10000,
+      maxTokens: 1000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+    const agent = new Agent({
+      initialState: { model, messages: [{ role: "user", content: "Read source", timestamp: 0 }],
+        tools: [{ name: tool.function.name, label: "Read source", description: "Read source",
+          parameters: tool.function.parameters,
+          async execute() {
+            executions += 1;
+            if (throws) throw new Error("source unavailable");
+            return { content: [{ type: "text", text: JSON.stringify({ error: "business field", rows: [1] }) }], details: {} };
+          } }] },
+      streamFn(_model, context) {
+        rounds += 1;
+        if (rounds === 2) {
+          const receipt = context.messages.find((message) => message.role === "toolResult");
+          assert.equal(receipt.isError, throws);
+          assert.match(receipt.content[0].text, throws ? /source unavailable/ : /business field/);
+        }
+        assert.ok(rounds <= 2, "No model retry or repeated tool loop");
+        const response = { role: "assistant", api: model.api, provider: model.provider,
+          model: model.id, timestamp: 0,
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+          stopReason: rounds === 1 ? "toolUse" : "stop",
+          content: rounds === 1
+            ? [{ type: "toolCall", id: "native-error", name: tool.function.name, arguments: { query: "source" } }]
+            : [{ type: "text", text: "Result received" }] };
+        const stream = createAssistantMessageEventStream();
+        stream.push({ type: "done", reason: response.stopReason, message: response });
+        stream.end(response);
+        return stream;
+      },
+    });
+    agent.subscribe((event) => {
+      if (event.type === "message_end" && event.message.role === "toolResult") receipts.push(event.message);
+    });
+    await agent.continue();
+    assert.equal(executions, 1);
+    assert.equal(rounds, 2);
+    assert.equal(receipts.length, 1);
+    assert.equal(receipts[0].isError, throws);
+  }
+});
+
 test("Last model round has no tools and further tool calls cannot execute", async () => {
   const result = await session({ ...start, max_tool_rounds: 1 }, (request) => {
     assert.equal(request.kind, "model");
@@ -174,8 +226,8 @@ test("Parent EOF cancels outstanding model request and exits", async () => {
 
 test("Protocol byte limit rejects oversized input without model execution", async () => {
   const input = structuredClone(start);
-  input.messages[1].content = "x".repeat(2 * 1024 * 1024);
-  const result = await session(input, () => assert.fail("No requests allowed"));
+  input.messages[1].content = "x".repeat(48 * 1024 * 1024);
+  const result = await session(input, () => assert.fail("No requests allowed"), false, 60000);
   assert.equal(result.at(-1).type, "error");
   assert.match(result.at(-1).message, /too large/);
 });

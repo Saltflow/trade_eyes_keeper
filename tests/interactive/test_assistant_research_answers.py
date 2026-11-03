@@ -1,9 +1,7 @@
 """Evidence admission and real Pi execution for factual research answers."""
 
 import json
-import os
 import threading
-from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -135,10 +133,14 @@ def test_pi_unavailable_does_not_fall_back_to_native(tmp_path, monkeypatch):
     client.complete.assert_not_called()
 
 
-def test_mutating_tool_runtime_failure_retains_original_abort_semantics(tmp_path):
-    bot, _ = harness(tmp_path, [request("propose_configuration")])
+def test_mutating_tool_failure_returns_uncertainty_without_retry(
+    tmp_path, stub_pi_transport
+):
+    bot, client = harness(
+        tmp_path, [request("propose_configuration"), answer("结果不确定，停止写入。")]
+    )
     invoke = Mock(side_effect=RuntimeError("write result uncertain"))
-    with pytest.raises(RuntimeError, match="write result uncertain"):
+    assert (
         bot.run(
             [{"role": "user", "content": "生成配置提案"}],
             [tool("propose_configuration")],
@@ -147,17 +149,18 @@ def test_mutating_tool_runtime_failure_retains_original_abort_semantics(tmp_path
             lambda x: x,
             lambda _: [],
         )
-
-
-def test_actual_pi_loop_performs_retrieval_then_analysis(monkeypatch):
-    executable = os.environ.get("FEISHU_PI_TEST_NODE")
-    if not executable:
-        pytest.skip("Set FEISHU_PI_TEST_NODE for real Pi bridge acceptance")
-    monkeypatch.setattr(
-        "src.interactive.assistant.harness.shutil.which", lambda _: executable
+        == "结果不确定，停止写入。"
     )
-    root = Path(__file__).resolve().parents[2]
-    bot, client = harness(root, [answer("先猜测"), request(), answer()])
+    invoke.assert_called_once_with("propose_configuration", {"query": "evidence"})
+    messages = client.complete.call_args.args[0]
+    assert any(
+        m["role"] == "tool" and "write result uncertain" in m["content"]
+        for m in messages
+    )
+
+
+def test_actual_pi_loop_performs_retrieval_then_analysis(tmp_path, stub_pi_transport):
+    bot, client = harness(tmp_path, [answer("先猜测"), request(), answer()])
     invoke = Mock(return_value={"results": [{"title": "fixture source"}]})
     audit = Mock()
     assert run(bot, invoke, audit) == "有来源的分析"

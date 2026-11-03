@@ -766,10 +766,10 @@ def investigate(pipeline, key, base, *, revision="initial", feedback="", parent=
         settings = SimpleNamespace(
             model="deepseek-flash",
             reasoning_effort="high",
-            harness_backend="native",
+            harness_backend="pi",
             max_tool_rounds=min(16, max(1, int(cfg.get("max_model_turns", 12)))),
             max_tool_calls=min(64, max(1, int(cfg.get("max_tool_calls", 48)))),
-            # Native tool continuity includes provider context and generated code.
+            # Tool continuity includes provider context and generated code.
             # Admission still checks the full request against the research token
             # and byte limits before any paid request is sent.
             max_context_chars=min(
@@ -788,6 +788,8 @@ def investigate(pipeline, key, base, *, revision="initial", feedback="", parent=
             client,
             settings,
             stop_event=ws.cancel,
+            bridge_path=(pipeline.spec.credential_root or pipeline.spec.repo)
+            / "tools/feishu-pi/bridge.mjs",
             repeatable_tools={"find_sources", "read_source", "read_result"},
         )
         prompt = (

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, StrictBool, constr
+from pydantic import BaseModel, Field, StrictBool, constr, validator
 
 
 class AssistantSettings(BaseModel):
@@ -28,7 +28,7 @@ class AssistantSettings(BaseModel):
     max_history_messages: int = Field(20, ge=2, le=80)
     session_ttl_seconds: int = Field(1800, ge=60, le=86400)
     conversation_retention_days: int = Field(30, ge=1, le=365)
-    harness_backend: Literal["native", "pi"] = "native"
+    harness_backend: Literal["pi"] = "pi"
     max_tool_calls: int = Field(48, ge=1, le=64)
     max_context_chars: int = Field(96000, ge=16000, le=200000)
     conversation_timeout_seconds: int = Field(300, ge=30, le=600)
@@ -49,6 +49,12 @@ class AssistantSettings(BaseModel):
     class Config:
         extra = "forbid"
         validate_assignment = True
+
+    @validator("harness_backend", pre=True)
+    def require_pi(cls, value):
+        if value != "pi":
+            raise ValueError("会话仅支持 Pi，请将 harness_backend 配置改为 pi。")
+        return value
 
     @classmethod
     def from_config(cls, config: dict):

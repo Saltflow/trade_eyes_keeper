@@ -1,4 +1,9 @@
-"""Unit services mock the Node transport; dedicated Pi tests use the real bridge."""
+"""Isolated host services use the repository's real Pi subprocess bridge."""
+
+import os
+import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -12,8 +17,26 @@ def isolated_shared_authority(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def stub_pi_transport(monkeypatch):
-    def local_loop(harness, messages, tools, run):
-        return harness._native(messages, run)
+def pi_node():
+    executable = os.environ.get("FEISHU_PI_TEST_NODE") or shutil.which("node")
+    assert executable, "Pi tests require Node >=22.19; set FEISHU_PI_TEST_NODE"
+    result = subprocess.run(
+        [executable, "--version"], capture_output=True, text=True, check=True, timeout=5
+    )
+    version = tuple(int(part) for part in result.stdout.strip().lstrip("v").split("."))
+    assert version >= (22, 19), "Set FEISHU_PI_TEST_NODE to Node >=22.19"
+    return executable
 
-    monkeypatch.setattr(ConversationHarness, "_pi", local_loop)
+
+@pytest.fixture
+def stub_pi_transport(monkeypatch, pi_node):
+    """Keep temporary business roots while loading the actual installed Pi bridge."""
+    original_init = ConversationHarness.__init__
+    bridge = Path(__file__).resolve().parents[2] / "tools/feishu-pi/bridge.mjs"
+
+    def initialize(harness, *args, **kwargs):
+        original_init(harness, *args, **kwargs)
+        harness.bridge_path = bridge
+        harness.node_executable = pi_node
+
+    monkeypatch.setattr(ConversationHarness, "__init__", initialize)

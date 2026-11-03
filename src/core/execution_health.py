@@ -256,7 +256,8 @@ class HealthReporter:
                 "SELECT r.id,r.seq,r.job_id,r.module_id,r.status,r.reason,r.stage,"
                 "r.finished FROM execution_runs r LEFT JOIN execution_health_outbox o "
                 "ON o.event_key='run:'||r.id WHERE r.status IN ('failed','partial','unknown') "
-                "AND r.job_id<>? AND o.id IS NULL ORDER BY r.seq",
+                "AND r.job_id<>? AND r.job_id<>'conversation.turn' "
+                "AND o.id IS NULL ORDER BY r.seq",
                 (JOB,),
             ).fetchall()
             max_result = db.execute(

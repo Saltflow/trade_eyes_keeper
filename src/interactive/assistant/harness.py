@@ -55,6 +55,5 @@ class ConversationHarness(_PortableHarness):
             retrieval_tools=RETRIEVAL_TOOLS,
             repeatable_tools={"research_pipeline_status", "research_pipeline_logs"},
             repeatable_prefixes=("personal_monitor_",),
-            require_pi_for_retrieval=True,
             error_type=AssistantAPIError,
         )
