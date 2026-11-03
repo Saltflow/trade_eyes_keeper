@@ -855,6 +855,102 @@ def test_preflight_freezes_all_requests_without_http_or_key(
     )
 
 
+@pytest.mark.parametrize("raw", [b'{"raw_only": true}', b'{invalid JSON'])
+def test_subagent_transport_preserves_raw_without_audit_or_credentials(tmp_path, monkeypatch, raw):
+    monkeypatch.setattr(v2_transport, "dotenv_values", lambda *a: pytest.fail("credentials read"))
+    folder = tmp_path / "local"
+    request = {"model": "gpt-6-luna"}
+    dump(folder / "request.json", request)
+    dump(folder / "freeze.json", {"files": {}})
+    (folder / "subagent-content.txt").write_bytes(raw)
+    dump(folder / "subagent-result.json", {
+        "model": "gpt-6-luna", "state": "completed",
+        "request_sha256": hashlib.sha256((folder / "request.json").read_bytes()).hexdigest(),
+        "raw_sha256": hashlib.sha256(raw).hexdigest(),
+    })
+    result = v2_transport.call_subagent(ROOT, folder, request, parse, timeout=1)
+    assert result == ({"raw_only": True} if raw.startswith(b'{"') else None)
+    assert (folder / "content.txt").read_bytes() == raw
+    assert (folder / "response.body").read_bytes() == raw
+    receipt = parse((folder / "receipt.json").read_text("utf8"))
+    assert receipt["mode"] == "subagent" and receipt["usage"] is None
+    assert receipt["external_api_calls"] == 0 and "http_status" not in receipt
+
+
+def test_subagent_timeout_is_recorded_once_without_retry(tmp_path):
+    request = {"model": "gpt-6-luna"}
+    dump(tmp_path / "request.json", request)
+    dump(tmp_path / "freeze.json", {"files": {}})
+    assert v2_transport.call_subagent(ROOT, tmp_path, request, parse, timeout=0) is None
+    receipt = parse((tmp_path / "receipt.json").read_text("utf8"))
+    assert receipt["error_type"] == "TimeoutError"
+    assert receipt["automatic_retries"] == 0
+
+
+@pytest.mark.parametrize("raw", [b'{"raw_only": true}', b'{invalid JSON'])
+@pytest.mark.parametrize("effort", ["low", "medium"])
+def test_native_subagent_stdin_preserves_full_material_without_tools(tmp_path, monkeypatch, raw, effort):
+    request = {"model": "gpt-6.1-terra", "messages": [
+        {"role": "system", "content": "original contract"},
+        {"role": "user", "content": [{"type": "text", "text": "full original report marker"}]},
+    ]}
+    dump(tmp_path / "request.json", request)
+    dump(tmp_path / "freeze.json", {"files": {}})
+    monkeypatch.setattr(v2_transport.shutil, "which", lambda name: "codex-test")
+    seen = []
+
+    def execute(command, *, input, stdout, stderr, timeout, check):
+        seen.append(command)
+        assert b"full original report marker" in input and b"original contract" in input
+        assert command[command.index("--sandbox") + 1] == "read-only"
+        assert command[command.index("--model") + 1] == "gpt-6.1-terra"
+        assert f'model_reasoning_effort="{effort}"' in command
+        assert command[-2:] == ["--", "-"]
+        Path(command[command.index("-o") + 1]).write_bytes(raw)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(v2_transport.subprocess, "run", execute)
+    result = v2_transport.call_subagent(ROOT, tmp_path, request, parse, native=True, effort=effort)
+    assert result == ({"raw_only": True} if raw.startswith(b'{"') else None)
+    assert len(seen) == 1
+    assert (tmp_path / "content.txt").read_bytes() == raw
+    receipt = parse((tmp_path / "receipt.json").read_text("utf8"))
+    assert receipt["subagent_result"]["agent"] == "native_codex_exec"
+    assert receipt["subagent_result"]["reasoning_effort"] == effort
+    assert receipt["external_api_calls"] == 0 and receipt["usage"] is None
+
+
+@pytest.mark.parametrize("subagent_model", ["gpt-6-luna", "gpt-6.1-terra"])
+def test_subagent_extract_uses_original_request_assembly_and_no_business_audit(prepared_pdf, tmp_path, monkeypatch, subagent_model):
+    output = tmp_path / "subagent_run"
+    raw = json.dumps(parts()["statements"], ensure_ascii=False).encode("utf8")
+    forbid_business_audit(monkeypatch)
+    monkeypatch.setattr(v2_transport, "dotenv_values", lambda *a: pytest.fail("credentials read"))
+
+    def submit(_seconds):
+        folder = output / "blocks/statements"
+        (folder / "subagent-content.txt").write_bytes(raw)
+        dump(folder / "subagent-result.json", {
+            "model": subagent_model, "state": "completed",
+            "request_sha256": hashlib.sha256((folder / "request.json").read_bytes()).hexdigest(),
+            "raw_sha256": hashlib.sha256(raw).hexdigest(),
+        })
+
+    monkeypatch.setattr(v2_transport, "time", SimpleNamespace(
+        sleep=submit, monotonic=v2_transport.time.monotonic,
+    ))
+    assert CLI.main([
+        "extract", "--source", str(prepared_pdf), "--output", str(output),
+        "--company", "Company A", "--year", "2025", "--profile", "extractives",
+        "--block", "statements", "--subagent", "--subagent-model", subagent_model,
+    ]) == 0
+    summary = parse((output / "summary.json").read_text("utf8"))
+    assert summary["external_api_calls"] == 0 and summary["model_calls"] == 1
+    assert summary["executor"] == subagent_model
+    assert (output / "blocks/statements/content.txt").read_bytes() == raw
+    assert (output / "data.json").is_file()
+
+
 def test_extract_requires_explicit_industry_profile(prepared_pdf, tmp_path):
     with pytest.raises(SystemExit):
         CLI.main(

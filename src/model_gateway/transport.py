@@ -63,8 +63,17 @@ def verify(hashes):
 
 def estimate(request, tokenizer, config):
     total = config["message_token_reserve"]
+    if request.get("tools"):
+        total += len(
+            tokenizer.encode(json.dumps(request["tools"], ensure_ascii=False)).ids
+        )
     for message in request["messages"]:
-        content = message["content"]
+        content = message.get("content") or ""
+        for field in ("tool_calls", "reasoning_content"):
+            if message.get(field):
+                total += len(
+                    tokenizer.encode(json.dumps(message[field], ensure_ascii=False)).ids
+                )
         parts = (
             [{"type": "text", "text": content}] if isinstance(content, str) else content
         )
@@ -141,6 +150,7 @@ class Stream:
         self.pending, self.data = b"", []
         self.usage, self.finish, self.done, self.errors = None, None, False, []
         self.response_id, self.model = None, None
+        self.tool_calls = {}
 
     def event(self, **data):
         self.events.write(
@@ -157,6 +167,31 @@ class Stream:
             if choice.get("index", 0) != 0:
                 continue
             delta = choice.get("delta") or choice.get("message") or {}
+            for position, call in enumerate(delta.get("tool_calls") or []):
+                index = call.get("index", position)
+                if type(index) is not int or not 0 <= index < 64:
+                    raise ValueError("invalid_tool_call_index")
+                target = self.tool_calls.setdefault(
+                    index,
+                    {
+                        "id": "",
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    },
+                )
+                if call.get("type") not in (None, "function"):
+                    raise ValueError("invalid_tool_call_type")
+                for field in ("id",):
+                    if call.get(field) is not None:
+                        if not isinstance(call[field], str):
+                            raise ValueError("invalid_tool_call_id")
+                        target[field] += call[field]
+                for field in ("name", "arguments"):
+                    fragment = (call.get("function") or {}).get(field)
+                    if fragment is not None:
+                        if not isinstance(fragment, str):
+                            raise ValueError("invalid_tool_call_fragment")
+                        target["function"][field] += fragment
             for key, target in (
                 ("content", self.content),
                 ("reasoning_content", self.reasoning),
@@ -315,10 +350,33 @@ def perform(folder, job, request, plan, key, post=None, *, lease=None, clock=dat
             response_id=stream.response_id,
             model=stream.model,
         )
-        if content.tell():
+        calls = [stream.tool_calls[index] for index in sorted(stream.tool_calls)]
+        if calls and (
+            not request.get("tools")
+            or len({call["id"] for call in calls}) != len(calls)
+            or any(not call["id"] or not call["function"]["name"] for call in calls)
+        ):
+            stream.errors.append("invalid_or_unrequested_tool_calls")
+        message = {
+            "role": "assistant",
+            "content": (root / "content.md").read_text("utf-8"),
+        }
+        if calls:
+            message["tool_calls"] = calls
+        if request.get("tools"):
+            reasoning.flush()
+            message["reasoning_content"] = (root / "reasoning.txt").read_text("utf-8")
+        save(root / "assistant_message.json", message)
+        receipt["assistant_message_sha256"] = sha(root / "assistant_message.json")
+        if content.tell() or calls:
             receipt["status"] = (
                 "complete"
-                if stream.finish == "stop"
+                if (
+                    stream.finish == "stop"
+                    and not calls
+                    or stream.finish == "tool_calls"
+                    and calls
+                )
                 and not receipt.get("error_type")
                 and not stream.errors
                 else "partial"

@@ -36,7 +36,7 @@ def test_default_config_entire_prompt_closure_is_case_independent():
     for name in paths:
         text = (inputs.REPO / name).read_text(encoding="utf8")
         assert not any(rule in text for rule in HISTORICAL_CASE_RULES), name
-    assert config["version"] == "research-report-v6-input-driven-scope"
+    assert config["version"] == "research-report-v7-agent-investigation"
     assert "docs/design/research_report_example_v6.md" in config["prompts"]
     assert [s["id"] for s in config["rounds"]] == ["draft", "review", "write"]
 

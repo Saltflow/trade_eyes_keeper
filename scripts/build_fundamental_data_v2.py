@@ -18,6 +18,7 @@ from src.fundamental_data.v2_schema import (
 )
 from src.fundamental_data.v2_transport import (
     call,
+    call_subagent,
     event,
     implementation_files,
     payload,
@@ -96,8 +97,12 @@ def freeze_run(repo, output, sources, jobs, names, report_id, max_calls=None):
         save(output / "frozen_code" / path.relative_to(repo), path.read_bytes())
 
 
-def receive(repo, folder, name, request, config, replay_source=None):
-    data = call(repo, folder, request, parse, replay_source=replay_source)
+def receive(repo, folder, name, request, config, replay_source=None, subagent_timeout=None, subagent_native=False, subagent_effort="low"):
+    if subagent_timeout is not None:
+        data = call_subagent(repo, folder, request, parse, timeout=subagent_timeout,
+                             native=subagent_native, effort=subagent_effort)
+    else:
+        data = call(repo, folder, request, parse, replay_source=replay_source)
     return data, []
 
 
@@ -200,6 +205,8 @@ def extract(repo, args, config, sources, summary):
             request, info = prepare_replay(repo, folder, sources[0] / "blocks" / name)
         else:
             request = payload(config, name, content)
+            if args.subagent:
+                request["model"] = args.subagent_model
             info = prepare_request(repo, folder, request, sources)
         jobs.append((name, folder, request))
         summary["blocks"][name] = {
@@ -211,6 +218,11 @@ def extract(repo, args, config, sources, summary):
     if not replay:
         summary["budget"] = budget(config, summary["blocks"])
         summary["budget"]["planning_limit_usd"] = args.budget_limit_usd
+        if args.subagent:
+            summary["budget"] = {"mode": "subagent", "provider_billing": None}
+            summary["executor"] = args.subagent_model
+            summary["reasoning_effort"] = args.subagent_effort
+            summary["external_api_calls"] = 0
         save(args.output / "call_plan.json", summary)
     freeze_run(
         repo,
@@ -223,11 +235,12 @@ def extract(repo, args, config, sources, summary):
     )
     if (
         not replay
+        and not args.subagent
         and args.budget_limit_usd is not None
         and (summary["budget"]["peak_uncached_cost_estimate"] > args.budget_limit_usd)
     ):
         raise ValueError("frozen_plan_exceeds_budget_limit")
-    if not args.paid and not replay:
+    if not args.paid and not replay and not args.subagent:
         return None
     parts, incomplete = {}, {}
     totals = {"prompt_tokens": 0, "completion_tokens": 0, "calls_missing_usage": 0}
@@ -237,6 +250,9 @@ def extract(repo, args, config, sources, summary):
             summary["replayed_responses"] += 1
         else:
             summary["model_calls"] += 1
+        options = {"subagent_timeout": args.subagent_timeout,
+                   "subagent_native": args.subagent_native,
+                   "subagent_effort": args.subagent_effort} if args.subagent else {}
         data, errors = receive(
             repo,
             folder,
@@ -244,6 +260,7 @@ def extract(repo, args, config, sources, summary):
             request,
             config,
             replay_source=sources[0] / "blocks" / name if replay else None,
+            **options,
         )
         receipt = parse((folder / "receipt.json").read_text("utf8"))
         usage = receipt.get("usage") or {}
@@ -314,7 +331,18 @@ def main(argv=None):
     parser.add_argument("--parse-cache-root", type=Path)
     parser.add_argument("--budget-limit-usd", type=float)
     parser.add_argument("--paid", action="store_true")
+    parser.add_argument("--subagent", action="store_true")
+    parser.add_argument("--subagent-model", default="gpt-6-luna")
+    parser.add_argument("--subagent-native", action="store_true")
+    parser.add_argument("--subagent-effort", choices=["low", "medium", "high", "xhigh", "max", "ultra"], default="low")
+    parser.add_argument("--subagent-timeout", type=float, default=1800)
     args = parser.parse_args(argv)
+    if args.subagent and (args.stage != "extract" or args.paid):
+        parser.error("--subagent requires extract without --paid")
+    if args.subagent_native and not args.subagent:
+        parser.error("--subagent-native requires --subagent")
+    if not 0 < args.subagent_timeout < float("inf"):
+        parser.error("--subagent-timeout must be finite and positive")
     repo = Path(__file__).resolve().parents[1]
     config = parse((repo / "config/fundamental_data_v2.json").read_text("utf8"))
     if args.stage == "extract" and (len(args.source) != 1 or not args.profile):

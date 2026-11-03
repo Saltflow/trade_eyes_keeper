@@ -31,39 +31,6 @@ PRICING_FEATURE_NAMES = (
 )
 
 
-EXPERT_FEATURES = {
-    "value": (
-        "earnings_yield",
-        "book_yield",
-        "fcf_yield",
-        "dividend_yield",
-    ),
-    "cash_return": (
-        "fcf_yield",
-        "dividend_yield",
-        "fcf_margin",
-        "cash_conversion",
-        "capex_intensity",
-    ),
-    "quality": (
-        "roe_ttm",
-        "net_margin",
-        "adjusted_margin",
-        "fcf_margin",
-        "revenue_growth_stability",
-        "income_growth_stability",
-    ),
-    "growth": (
-        "revenue_yoy",
-        "revenue_qoq",
-        "net_income_yoy",
-        "net_income_qoq",
-        "revenue_cagr_3y",
-        "net_income_cagr_3y",
-    ),
-}
-
-
 @dataclass(frozen=True)
 class FundamentalPricingDataset:
     """Flattened company-quarter observations with causal forward labels."""

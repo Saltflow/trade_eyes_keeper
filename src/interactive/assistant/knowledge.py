@@ -22,7 +22,6 @@ DOC_PATHS = (
     "docs/llm/point_in_time_data.md",
     "docs/llm/reference_universe_backfill.md",
     "docs/llm/relative_strategy_promotion.md",
-    "docs/llm/intrinsic_value_strategy.md",
     "docs/llm/capm_dcf_entry_calibration.md",
     "docs/llm/fundamental_panel_contract.md",
     "docs/development/failed_quant_experiments_retirement_20261030.md",

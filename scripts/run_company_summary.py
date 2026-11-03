@@ -366,7 +366,7 @@ def report(folder, plan):
     lines += [
         "",
         f"已发{len(sent)}/{len(plan['jobs'])}次，自动重试0；已知usage计价US${known}，未知usage仍保留US${unknown}，授权上限US${plan['authorized_usd']}。",
-        "价格依据：https://api-docs.deepseek.com/quick_start/pricing/；按冻结的周末公开单价计价，completion已含reasoning，不重复加计。服务商账户实际扣费未查询。",
+        "价格依据：https://api-docs.deepseek.com/quick_start/pricing/；按本次冻结的费率估算，completion已含reasoning，不重复加计。服务商账户实际扣费未查询。",
         "",
         "缺口补齐与未解决项：完整恢复附录逐块保存模型自己的采用/未定位/限制说明，完整摘要还保留其最终采用判断；这些是模型声明，不是人工核验正确性的证明。原始失败状态和旧数据不变。",
         "",

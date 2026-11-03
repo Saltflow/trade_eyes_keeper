@@ -7,7 +7,6 @@ from src.fundamental_embedding.api import FundamentalPricingDataset
 from src.fundamental_embedding.industry_evaluation import (
     IndustryRidgeConfig,
     build_industry_relative_dataset,
-    evaluate_industry_relative_increment,
 )
 from src.fundamental_embedding.industry_history import (
     INDUSTRY_CLASSIFICATION_HISTORY_CONTRACT,
@@ -68,8 +67,6 @@ def _config() -> IndustryRidgeConfig:
         maximum_label_age_days=366,
         minimum_industry_peers=2,
         minimum_date_coverage=0.5,
-        minimum_train_dates=2,
-        minimum_train_rows=4,
     )
 
 
@@ -83,16 +80,3 @@ def test_augmentation_uses_announced_history_not_future_taxonomy(tmp_path):
     assert later["published_label_count"] == 4
     assert later["peer_context_count"] == 4
     assert result.dataset.metadata["current_taxonomy_not_used"] is True
-
-
-def test_evaluation_trains_only_on_realized_labels(tmp_path):
-    relative = build_industry_relative_dataset(
-        _dataset(), _history(tmp_path), _config()
-    )
-    report = evaluate_industry_relative_increment(relative, _config())
-
-    assert report["acceptance"]["training_labels_end_before_test_date"] is True
-    assert report["quarterly_results"]
-    for row in report["quarterly_results"]:
-        assert row["train_date_count"] >= 2
-        assert row["train_row_count"] >= 4

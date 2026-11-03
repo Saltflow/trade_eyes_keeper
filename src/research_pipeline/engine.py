@@ -302,6 +302,7 @@ def _freeze_runtime(repo: Path, output: Path) -> Path:
         for name in (
             "tests/__init__.py",
             "tests/conftest.py",
+            "tests/research_investigation_support.py",
             "pytest.ini",
             "pyproject.toml",
             "requirements.txt",
@@ -473,6 +474,9 @@ def plan_research(spec: ResearchSpec) -> dict:
         "id": run["id"],
         "mode": "offline_plan",
         "companies": list(spec.companies),
+        "reinvestigate": spec.reinvestigate,
+        "investigation_default": True,
+        "writing_rounds": 3,
         "discovery_pending": True,
         "quote_refresh_pending": not bool(spec.market_snapshot),
         "known_documents": [d.to_dict() for d in documents],
@@ -896,7 +900,7 @@ class Pipeline:
                 assumptions = load(path)
             except ValueError:
                 assumptions = path.read_text("utf-8")
-        return artifact_key(
+        base_key = artifact_key(
             "research",
             sorted(self.subjects),
             {
@@ -908,6 +912,12 @@ class Pipeline:
                 "focus": self.spec.focus.strip(),
                 "assumptions": assumptions,
             },
+        )
+        # An explicit new study is a new authorization, not a replay of old POSTs.
+        return (
+            fingerprint({"research": base_key, "reinvestigation": self.run_id})
+            if self.spec.reinvestigate
+            else base_key
         )
 
     def evidence(self):
@@ -1440,13 +1450,21 @@ class Pipeline:
         )
 
     def research(self, peer, key):
+        from .investigation import (
+            investigate,
+            model_charts,
+            review_requests_rework,
+            verify_bundle,
+        )
+
         versions = {
             issuer: subject["versions"] for issuer, subject in self.subjects.items()
         }
         for reference in self.store.list_artifacts("legacy_reference"):
             metadata = reference.get("metadata", {})
             if (
-                metadata.get("scope_unresolved")
+                not self.spec.reinvestigate
+                and metadata.get("scope_unresolved")
                 and metadata.get("versions") == versions
                 and usable_artifact(self.store, reference["key"])
             ):
@@ -1488,11 +1506,28 @@ class Pipeline:
             base,
             exclusive=not (self.spec.output / "research_inputs.md").exists(),
         )
+        investigation = investigate(self, key, base)
+        self.final_artifacts.append(investigation)
+        manifest = verify_bundle(Path(investigation["metadata"]["bundle"]))
+        if not manifest.get("selected_model"):
+            self.gap(
+                "investigation_model_unavailable_no_writing",
+                model_status=manifest.get("model_status"),
+                error=manifest.get("error", ""),
+            )
+            self.phase("investigation_partial")
+            return None
+        investigation_versions = [investigation]
+        investigation_base = base
+        base += "\n\n" + Path(investigation["path"]).read_text("utf-8")
         previous, pictures, statuses, final = "", {}, [], None
+        rework_issue = None
         for index, phase in enumerate(("draft", "review", "write")):
             if self.stopped():
                 break
             self.store.update_run(self.run_id, phase="research_" + phase)
+            for version in investigation_versions:
+                verify_bundle(Path(version["metadata"]["bundle"]))
             request = self.adapters.research_request(index, base, previous, pictures)
             task = fingerprint({"research": key, "round": phase})
             receipt = self.adapters.call(
@@ -1506,15 +1541,46 @@ class Pipeline:
             if not text:
                 break
             previous = text
-            if index < 2:
-                rendered = self.adapters.render_charts(
-                    text, self.spec.output / "research/views" / phase, status
-                )
-                # A review may approve existing figures without repeating chart
-                # blocks. Keep their phase-qualified provenance and actual PNGs;
-                # append revisions instead of silently deleting prior evidence.
-                pictures = {**pictures, **rendered}
             final = (text, phase)
+            if index == 0:
+                pictures = self.adapters.render_charts(
+                    model_charts(investigation_versions[-1]),
+                    self.spec.output / "research/views" / phase,
+                    status,
+                )
+                # The same frozen computation needs one set of figures. Only a
+                # model rework below replaces it with newly calculated data.
+            if phase == "review":
+                rework = review_requests_rework(text)
+                if rework and rework.get("error"):
+                    rework_issue = rework["error"]
+                    base += "\n审阅返工标记无效，不能声称模型问题已解决：" + rework_issue
+                elif rework and rework.get("required") and not self.stopped():
+                    revision = investigate(
+                        self,
+                        key,
+                        investigation_base,
+                        revision="review_rework",
+                        feedback="\n".join(rework["issues"]),
+                        parent=investigation["metadata"]["bundle"],
+                    )
+                    investigation_versions.append(revision)
+                    self.final_artifacts.append(revision)
+                    revised = verify_bundle(Path(revision["metadata"]["bundle"]))
+                    if not revised.get("selected_model"):
+                        rework_issue = "rework_model_unavailable_no_final_write"
+                        self.gap(rework_issue, error=revised.get("error", ""))
+                        break
+                    base = investigation_base + "\n\n" + Path(
+                        revision["path"]
+                    ).read_text("utf-8")
+                    base += "\n本轮为审阅后重算。旧稿与旧图片只说明前一模型；定稿必须以本次计算结果为准，不声称第二轮已审阅本次结果。"
+                    # Rebuild model-authored chart data, not a fourth writing call.
+                    pictures = self.adapters.render_charts(
+                        model_charts(revision),
+                        self.spec.output / "research/views/rework",
+                        revision["status"],
+                    )
         if final is None:
             return None
         status = (
@@ -1523,6 +1589,8 @@ class Pipeline:
             and all(s == "complete" for s in statuses)
             and not self.gaps
             and peer["status"] == "complete"
+            and investigation_versions[-1]["status"] == "complete"
+            and not rework_issue
             else "partial"
         )
         artifact = self.adapters.save_text_artifact(
@@ -1537,6 +1605,9 @@ class Pipeline:
                 "market_fingerprint": market_fingerprint(self.quotes),
                 "peer": peer["path"],
                 "source_gaps": self.gaps,
+                "investigation_versions": investigation_versions,
+                "reinvestigate": self.spec.reinvestigate,
+                "rework_issue": rework_issue,
             },
         )
         self.adapters.finalize_images(final[0], pictures, Path(artifact["path"]).parent)
@@ -1596,6 +1667,26 @@ class Pipeline:
                     "metadata": item.get("metadata", {}),
                 }
             )
+            if item.get("stage", item.get("kind")) == "investigation":
+                from .investigation import reproducibility_files, verify_bundle
+
+                manifest_path = Path(item["metadata"]["bundle"])
+                if file_sha(manifest_path) != item["metadata"]["bundle_sha256"]:
+                    raise ValueError("investigation_bundle_integrity_changed")
+                bundle = verify_bundle(manifest_path)
+                bundle_dir = delivery / "investigation" / item["key"]
+                for name, digest in bundle["files"].items():
+                    dest = bundle_dir / name
+                    if not dest.exists():
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(manifest_path.parent / name, dest)
+                    if file_sha(dest) != digest:
+                        raise ValueError("investigation_delivery_integrity_changed")
+                atomic_write(bundle_dir / "bundle.json", manifest_path.read_bytes())
+                links[-1]["bundle_path"] = str(bundle_dir / "bundle.json")
+                _, public_manifest = reproducibility_files(bundle_dir / "bundle.json")
+                atomic_write(bundle_dir / "reproducibility.json", public_manifest)
+                links[-1]["reproducibility_path"] = str(bundle_dir / "reproducibility.json")
             page = Path(
                 item.get("metadata", {}).get("reading_html")
                 or source.with_suffix(".html")
@@ -1634,6 +1725,8 @@ class Pipeline:
             row = f"- [{item.get('company') or ''} {item['kind']} · {item['status']}](files/{Path(item['path']).name})"
             if item.get("html_path"):
                 row += f" · [阅读页](files/{Path(item['html_path']).name})"
+            if item.get("bundle_path"):
+                row += f" · [可复算模型与来源清单](investigation/{item['key']}/reproducibility.json)"
             lines.append(row)
         lines += [
             "\n## 费用与未完成原因",
@@ -1691,6 +1784,9 @@ class Pipeline:
             if artifact and not self.resuming:
                 self.reused += 1
                 self.event("research_cache_reused", artifact_key=key)
+                self.final_artifacts.extend(
+                    artifact.get("metadata", {}).get("investigation_versions", [])
+                )
                 # Include existing upstream artifacts without invoking model/tokenizer.
                 for issuer, subject in self.subjects.items():
                     self.company_artifacts[issuer] = {

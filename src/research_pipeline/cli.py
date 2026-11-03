@@ -65,6 +65,11 @@ def main(argv=None):
     run.add_argument("--start-year", type=int)
     run.add_argument("--end-year", type=int)
     run.add_argument("--focus", default="")
+    run.add_argument(
+        "--reinvestigate",
+        action="store_true",
+        help="明确新建研究版本，复用原件与底稿，保留旧报告",
+    )
     run.add_argument("--assumptions", type=Path)
     run.add_argument("--market-snapshot", type=Path)
     run.add_argument("--source-manifest", type=Path)
@@ -115,6 +120,7 @@ def main(argv=None):
                 start_year=args.start_year,
                 end_year=args.end_year,
                 focus=args.focus,
+                reinvestigate=args.reinvestigate,
                 assumptions=args.assumptions,
                 market_snapshot=args.market_snapshot,
                 source_manifest=args.source_manifest,

@@ -78,7 +78,10 @@ def materials(tmp_path):
     return source, context, summaries
 
 
-def test_extract_delegates_parameters_without_calling_model(tmp_path, monkeypatch):
+@pytest.mark.parametrize("subagent", [False, True])
+@pytest.mark.parametrize("subagent_model", ["gpt-6-luna", "gpt-6.1-terra"])
+@pytest.mark.parametrize("native", [False, True])
+def test_extract_delegates_parameters_without_calling_model(tmp_path, monkeypatch, subagent, subagent_model, native):
     calls = []
     monkeypatch.setattr(
         cli.subprocess,
@@ -99,12 +102,19 @@ def test_extract_delegates_parameters_without_calling_model(tmp_path, monkeypatc
                 "2025",
                 "--profile",
                 "construction",
+                *(["--subagent", "--subagent-model", subagent_model] if subagent else []),
+                *(["--subagent-native", "--subagent-effort", "medium"] if subagent and native else []),
             ]
         )
         == 2
     )
     args = calls[0][0]
     assert "--paid" not in args
+    assert ("--subagent" in args) is subagent
+    if subagent:
+        assert args[args.index("--subagent-model") + 1] == subagent_model
+        assert ("--subagent-native" in args) is native
+        assert args[args.index("--subagent-effort") + 1] == ("medium" if native else "low")
     assert args[args.index("--year") + 1] == "2025"
     assert args[args.index("--profile") + 1] == "construction"
     assert args[4].endswith("build_fundamental_data_v2.py")
@@ -346,3 +356,20 @@ def test_summary_run_reports_transport_result_without_content_gate(
         ),
     )
     assert cli.main(["summary-run", "--source", str(tmp_path), "--paid"]) == expected
+
+
+def test_summary_pricing_override_preserves_contract(materials, tmp_path):
+    source, context, _ = materials
+    override = tmp_path / "pricing.json"
+    save(override, {"price_checked_date": "2026-11-03", "execution_rates": {"input": 0.3, "output": 1.2, "cached_input": 0.006}, "input_waterline": 800000})
+    out = tmp_path / "priced"
+    cli.prepare_summary(context, out, source, cli.REPO, Decimal(2), pricing_config=override)
+    plan = load(out / "plan.json")
+    assert plan["pricing_utc_dates"] == ["2026-11-03"]
+    assert plan["input_waterline"] == 800000
+    assert plan["config"]["model"] == "deepseek-flash"
+    assert str(override.resolve()) in load(out / "freeze.json")["files"]
+    bad = tmp_path / "bad.json"
+    save(bad, {"model": "other-model"})
+    with pytest.raises(ValueError, match="invalid_summary_pricing_override"):
+        cli.prepare_summary(context, tmp_path / "bad-plan", source, cli.REPO, Decimal(2), pricing_config=bad)

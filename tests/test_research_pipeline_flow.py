@@ -28,6 +28,10 @@ def no_network(monkeypatch):
     monkeypatch.setattr(
         socket.socket, "connect", lambda *args: pytest.fail("unexpected real network")
     )
+    from src.research_pipeline.model_sandbox import ModelSandbox
+    from tests.research_investigation_support import sandbox_result
+
+    monkeypatch.setattr(ModelSandbox, "run", sandbox_result)
 
 
 def pdf(path, text):
@@ -104,10 +108,16 @@ class Response:
         pass
 
     def iter_content(self, chunk_size=8192):
+        native = isinstance(self.content, dict)
         value = {
             "id": "offline_" + str(id(self)),
             "model": "deepseek-flash",
-            "choices": [{"delta": {"content": self.content}, "finish_reason": None}],
+            "choices": [
+                {
+                    "delta": self.content if native else {"content": self.content},
+                    "finish_reason": None,
+                }
+            ],
         }
         yield ("data: " + json.dumps(value, ensure_ascii=False) + "\n\n").encode()
         if self.partial:
@@ -115,7 +125,14 @@ class Response:
 
             raise requests.exceptions.ChunkedEncodingError("fixture stream interrupted")
         value = {
-            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "choices": [
+                {
+                    "delta": {},
+                    "finish_reason": "tool_calls"
+                    if native and self.content.get("tool_calls")
+                    else "stop",
+                }
+            ],
             "usage": {
                 "prompt_tokens": 100,
                 "completion_tokens": 30,
@@ -141,6 +158,11 @@ class Model:
     def __call__(self, url, **kwargs):
         request = json.loads(kwargs["data"])
         self.calls.append(request)
+        from tests.research_investigation_support import agent_response
+
+        investigation = agent_response(request)
+        if investigation is not None:
+            return Response(investigation)
         body = json.dumps(request, ensure_ascii=False)
         match = re.search(r"\[block:([a-z0-9_]+)\]", body)
         if match:
@@ -151,8 +173,14 @@ class Model:
                 else json.dumps(self.examples[name], ensure_ascii=False)
             )
         draft = "# 第一轮：" in body
+        review = "# 第二轮：" in request["messages"][0]["content"]
         return Response(
-            "# 离线边界响应\n\n本正文用于执行链测试，不能作为真实财务研究。\n\n## Q1\n资料保留。\n",
+            "# 离线边界响应\n\n本正文用于执行链测试，不能作为真实财务研究。\n\n## Q1\n资料保留。\n"
+            + (
+                '\n```research-rework\n{"required":false,"issues":[]}\n```'
+                if review
+                else ""
+            ),
             partial=draft and self.partial_draft,
         )
 
@@ -246,8 +274,8 @@ def test_real_flow_cache_hit_and_quote_only_invalidates_research(tmp_path, monke
     docs, model = documents(tmp_path), Model()
     first = run_research(fixture_spec(tmp_path), source=Source(docs), post=model)
     assert first["state"] == "complete", first
-    # 8 common +1 extractives, 1 summary, single-company handoff free, 3 research.
-    assert len(model.calls) == 13
+    # 8 common +1 extractives, 1 summary, 5 agent turns, 3 writing rounds.
+    assert len(model.calls) == 18
     assert len([a for a in first["artifacts"] if a["kind"] == "research"]) == 1
     store = Store(tmp_path / "shared")
     count = len(model.calls)
@@ -262,7 +290,7 @@ def test_real_flow_cache_hit_and_quote_only_invalidates_research(tmp_path, monke
     third = run_research(
         fixture_spec(tmp_path, name="new_price"), source=changed, post=model
     )
-    assert len(model.calls) == count + 3
+    assert len(model.calls) == count + 8
     assert third["budget"]["known_usage_usd"] != "0"
     assert len(list((store.root / "parsed").rglob("result.json"))) <= 1
 
@@ -326,7 +354,7 @@ def test_partial_draft_preserved_and_next_planned_round_runs_no_retry(tmp_path):
     docs, model = documents(tmp_path), Model(partial_draft=True)
     result = run_research(fixture_spec(tmp_path), source=Source(docs), post=model)
     assert result["state"] == "partial"
-    assert len(model.calls) == 13
+    assert len(model.calls) == 18
     research = next(a for a in result["artifacts"] if a["kind"] == "research")
     assert research["metadata"]["round_statuses"] == ["partial", "complete", "complete"]
     assert Decimal(result["budget"]["unknown_liability_reserved_usd_not_spend"]) > 0
@@ -356,20 +384,24 @@ def test_review_without_new_charts_keeps_prior_png_in_write_request(
     result = run_research(
         fixture_spec(tmp_path), source=Source(documents(tmp_path)), post=model
     )
-    assert views == ["draft", "review"]
+    assert views == ["draft"]
     parts = model.calls[-1]["messages"][1]["content"]
     assert len([part for part in parts if part["type"] == "image_url"]) == 1
     assert "assets/draft_chart_1.png" in json.dumps(parts, ensure_ascii=False)
     assert result["state"] == "complete"
-    assert len(model.calls) == 13
+    assert len(model.calls) == 18
 
 
-def test_offline_plan_never_contacts_sources_or_reads_model_key(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reinvestigate", [False, True])
+def test_offline_plan_never_contacts_sources_or_reads_model_key(
+    tmp_path, monkeypatch, reinvestigate
+):
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    spec = fixture_spec(tmp_path)
+    spec = fixture_spec(tmp_path, reinvestigate=reinvestigate)
     spec.paid = False
     result = plan_research(spec)
     assert result["paid_requests_sent"] == 0 and result["discovery_pending"]
+    assert result["reinvestigate"] is reinvestigate
 
 
 def test_quote_observation_clock_and_order_are_not_semantic_cache_changes():
@@ -419,7 +451,7 @@ def test_resume_only_never_sent_extraction_and_preserves_sent_summary(
     model, docs = Model(), documents(tmp_path)
     spec = fixture_spec(tmp_path)
     result = run_research(spec, source=Source(docs), post=model)
-    assert len(model.calls) == 12 and omitted
+    assert len(model.calls) == 17 and omitted
     store = Store(spec.store_root)
     before = {a["path"]: file_sha(Path(a["path"])) for a in store.list_artifacts()}
     resumed = resume_research(
@@ -429,7 +461,7 @@ def test_resume_only_never_sent_extraction_and_preserves_sent_summary(
         source=Source(docs),
         post=model,
     )
-    assert len(model.calls) == 13
+    assert len(model.calls) == 18
     assert all(file_sha(Path(path)) == sha for path, sha in before.items())
     assert any(
         g["kind"] == "summary_retains_prior_partial_input"

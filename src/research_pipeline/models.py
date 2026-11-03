@@ -95,8 +95,11 @@ class ResearchSpec:
     credential_root: Path | None = None
     authority_root: Path | None = None
     authority_isolated: bool = False
+    reinvestigate: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.reinvestigate) is not bool:
+            raise ValueError("reinvestigate_requires_boolean")
         self.repo = Path(self.repo).resolve()
         self.credential_root = Path(self.credential_root or self.repo).resolve()
         self.output = Path(self.output).resolve()

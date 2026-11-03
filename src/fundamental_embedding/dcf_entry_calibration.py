@@ -1,9 +1,6 @@
 """No-lookahead calibration for a CAPM equity-cash-flow DCF entry price.
 
-This module is deliberately separate from :mod:`intrinsic_value`.  The older
-engine keeps its explicit investor hurdle and multi-expert interval report so
-that historic reports remain reproducible.  Here the discount rate is only
-the CAPM cost of equity::
+The discount rate is the CAPM cost of equity::
 
     r_e = r_f + beta * ERP
 

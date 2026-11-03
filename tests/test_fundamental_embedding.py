@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -13,6 +14,12 @@ from src.instruments.models import (
     FinancialStatementSnapshot,
     MetricStatus,
 )
+
+
+def test_discontinued_pricing_models_are_physically_removed():
+    package = Path(__file__).resolve().parents[1] / "src/fundamental_embedding"
+    for name in ("intrinsic_value.py", "exposure.py", "split_api.py"):
+        assert not (package / name).exists(), name
 
 
 def _synthetic_dataset() -> FundamentalPricingDataset:

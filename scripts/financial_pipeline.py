@@ -80,15 +80,33 @@ def prepare_summary(
     maximum: Decimal,
     companies=(),
     appendices=(),
+    pricing_config: Path | None = None,
 ) -> dict:
     """Prepare exactly one best-effort request per company; never add recovery."""
     from tokenizers import Tokenizer
 
     from scripts import run_company_summary as runner
 
-    separate(output, [source, metadata, *appendices])
+    separate(output, [source, metadata, *appendices, *([pricing_config] if pricing_config else [])])
     config_path = repo / "config/company_summary_contract.json"
     config = load(config_path)
+    if pricing_config:
+        override = load(pricing_config)
+        permitted = {"price_checked_date", "price_source", "usd_per_million_cache_miss", "execution_rates", "input_waterline"}
+        if not isinstance(override, dict) or set(override) - permitted:
+            raise ValueError("invalid_summary_pricing_override")
+        config.update(override)
+        try:
+            peak = config["usd_per_million_cache_miss"]["peak"]
+            rates = config["execution_rates"]
+            if any(Decimal(str(peak[key])) <= 0 or Decimal(str(rates[key])) < Decimal(str(peak[key])) for key in ("input", "output")):
+                raise ValueError("summary_pricing_not_conservative")
+            if Decimal(str(rates["cached_input"])) < 0:
+                raise ValueError("summary_pricing_not_conservative")
+            if not 0 < int(config["input_waterline"]) <= 1000000 - int(config["summary_max_tokens"]):
+                raise ValueError("summary_input_waterline_out_of_range")
+        except (KeyError, ArithmeticError, TypeError) as error:
+            raise ValueError("invalid_summary_pricing_override") from error
     metadata_config = repo / "config/fundamental_data_v2.json"
     records, protected = metadata_records(metadata, load(metadata_config), companies)
     codes = (
@@ -187,6 +205,7 @@ def prepare_summary(
         repo / "src/fundamental_data/handoff.py",
         repo / "scripts/run_company_summary.py",
         *appendices,
+        *([pricing_config] if pricing_config else []),
     ]
     hashes = {str(p.resolve()): sha(p) for p in protected}
     save(output / "元数据.json", records)
@@ -242,6 +261,8 @@ def main(argv=None) -> int:
         if name in {"summary-prepare", "stage3-input"}:
             command.add_argument("--metadata", type=Path, required=True)
             command.add_argument("--company", action="append", default=[])
+        if name == "summary-prepare":
+            command.add_argument("--pricing-config", type=Path)
         if name in {"extract", "summary-prepare"}:
             command.add_argument(
                 "--budget-limit-usd", type=positive, required=name == "summary-prepare"
@@ -251,6 +272,11 @@ def main(argv=None) -> int:
             command.add_argument("--year", type=int, required=True)
             command.add_argument("--profile", action="append", required=True)
             command.add_argument("--paid", action="store_true")
+            command.add_argument("--subagent", action="store_true")
+            command.add_argument("--subagent-model", default="gpt-6-luna")
+            command.add_argument("--subagent-native", action="store_true")
+            command.add_argument("--subagent-effort", choices=["low", "medium", "high", "xhigh", "max", "ultra"], default="low")
+            command.add_argument("--subagent-timeout", type=positive, default=1800)
             command.add_argument("--block")
         if name == "context":
             command.add_argument("--baseline", type=Path)
@@ -266,6 +292,10 @@ def main(argv=None) -> int:
     source = sources[0] if sources else args.source.resolve()
     if args.stage in {"extract", "context"}:
         if args.stage == "extract":
+            if args.subagent and args.paid:
+                parser.error("--subagent cannot be combined with --paid")
+            if args.subagent_native and not args.subagent:
+                parser.error("--subagent-native requires --subagent")
             if args.paid and args.budget_limit_usd is None:
                 parser.error("--paid requires --budget-limit-usd")
             output = args.output.resolve()
@@ -295,6 +325,12 @@ def main(argv=None) -> int:
                 forwarded += ["--budget-limit-usd", str(args.budget_limit_usd)]
             if args.paid:
                 forwarded.append("--paid")
+            if args.subagent:
+                forwarded += ["--subagent", "--subagent-model", args.subagent_model,
+                              "--subagent-effort", args.subagent_effort,
+                              "--subagent-timeout", str(args.subagent_timeout)]
+                if args.subagent_native:
+                    forwarded.append("--subagent-native")
             if args.block:
                 forwarded += ["--block", args.block]
             script = "build_fundamental_data_v2.py"
@@ -334,6 +370,7 @@ def main(argv=None) -> int:
             args.budget_limit_usd,
             args.company,
             args.appendix,
+            args.pricing_config.resolve() if args.pricing_config else None,
         )
     elif args.stage == "summary-run":
         from scripts import run_company_summary as runner

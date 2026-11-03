@@ -119,6 +119,10 @@ class DirectoryHTTP:
 def test_cached_real_history_excerpt_keeps_partial_provenance_and_reuses_all(
     tmp_path, monkeypatch
 ):
+    from src.research_pipeline.model_sandbox import ModelSandbox
+    from tests.research_investigation_support import sandbox_result
+
+    monkeypatch.setattr(ModelSandbox, "run", sandbox_result)
     manifest = load(FIXTURES / "manifest.json")
     source = manifest["source"]
     body = FIXTURES / manifest["fixture"]["path"]
@@ -177,8 +181,8 @@ def test_cached_real_history_excerpt_keeps_partial_provenance_and_reuses_all(
     http = DirectoryHTTP(source)
     service = SourceService(first_spec, store, http=http, minimum_interval=0)
     first = run_research(first_spec, source=service, post=model)
-    assert len(model.calls) == 4, (
-        "Only one summary and three research rounds are permitted"
+    assert len(model.calls) == 9, (
+        "Only one summary, five investigation turns and three writing rounds are permitted"
     )
     assert all("[block:" not in json.dumps(request) for request in model.calls)
     assert first["state"] == "partial"
@@ -210,7 +214,7 @@ def test_cached_real_history_excerpt_keeps_partial_provenance_and_reuses_all(
         source=SourceService(second_spec, store, http=http, minimum_interval=0),
         post=model,
     )
-    assert second["state"] == "partial" and len(model.calls) == 4
+    assert second["state"] == "partial" and len(model.calls) == 9
     assert any(
         gap.get("kind") == "cached_annual_partial" and gap.get("year") == 2025
         for gap in second["source_coverage"]["gaps"]

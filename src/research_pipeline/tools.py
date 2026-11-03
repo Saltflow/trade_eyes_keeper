@@ -49,6 +49,10 @@ def research_tool_schema() -> list[dict]:
                 "start_year": {"type": "integer"},
                 "end_year": {"type": "integer"},
                 "focus": {"type": "string", "maxLength": 8000},
+                "reinvestigate": {
+                    "type": "boolean",
+                    "description": "明确重新研究，创建新的付费研究版本，保留旧报告",
+                },
             },
             ["companies", "budget_limit_usd"],
         ),
@@ -146,6 +150,7 @@ class ResearchTools:
             "start_year",
             "end_year",
             "focus",
+            "reinvestigate",
         }
         if set(arguments) - allowed or not {"companies", "budget_limit_usd"} <= set(
             arguments
@@ -165,6 +170,7 @@ class ResearchTools:
             start_year=arguments.get("start_year"),
             end_year=arguments.get("end_year"),
             focus=arguments.get("focus", ""),
+            reinvestigate=arguments.get("reinvestigate", False),
             repo=self.repo,
             origin={"channel": "feishu", "chat": chat, "sender": sender},
         )
@@ -178,6 +184,7 @@ class ResearchTools:
             "spec": spec.to_dict(),
             "preview": {
                 "companies": list(spec.companies),
+                "reinvestigate": spec.reinvestigate,
                 "budget_limit_usd": str(spec.budget_limit_usd),
                 "repair_budget_inside_total": str(
                     spec.budget_limit_usd * spec.repair_fraction

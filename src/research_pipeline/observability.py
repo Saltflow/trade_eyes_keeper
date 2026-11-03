@@ -787,9 +787,42 @@ class FeishuOriginSender:
             "source_coverage.json",
         }
         public = [output / name for name in public_json if (output / name).is_file()]
+        model_files, model_manifests = set(), {}
+        delivery_manifest = output / "delivery/manifest.json"
+        if delivery_manifest.is_file():
+            from .common import file_sha
+            from .investigation import reproducibility_files
+
+            delivery = json.loads(delivery_manifest.read_text("utf-8"))
+            for item in delivery.get("artifacts", []):
+                if item.get("kind") != "investigation" or not item.get("bundle_path"):
+                    continue
+                manifest = Path(item["bundle_path"])
+                if (
+                    manifest.is_symlink()
+                    or not manifest.resolve().is_relative_to(
+                        output / "delivery/investigation"
+                    )
+                    or file_sha(manifest)
+                    != item.get("metadata", {}).get("bundle_sha256")
+                ):
+                    raise ValueError("investigation_delivery_manifest_changed")
+                paths, public_manifest = reproducibility_files(manifest)
+                model_files.update(paths)
+                public.extend(p for p in paths if p not in public)
+                model_manifests[
+                    (manifest.parent / "reproducibility.json")
+                    .relative_to(output)
+                    .as_posix()
+                ] = public_manifest
         for folder in ("delivery", "research", "peer", "summaries", "contexts"):
             for path in (output / folder).rglob("*"):
                 relative = path.relative_to(output)
+                if (
+                    relative.parts[:2] == ("delivery", "investigation")
+                    and path not in model_files
+                ):
+                    continue
                 if (
                     not path.is_file()
                     or path.is_symlink()
@@ -813,12 +846,16 @@ class FeishuOriginSender:
                 with zipfile.ZipFile(
                     bundle, "x", compression=zipfile.ZIP_DEFLATED
                 ) as archive:
+                    for name, value in model_manifests.items():
+                        archive.writestr(
+                            name, json.dumps(value, ensure_ascii=False, indent=2)
+                        )
                     for path in public:
                         if path.is_symlink() or not path.resolve().is_relative_to(
                             output
                         ):
                             continue
-                        if path.suffix.lower() == ".json":
+                        if path.suffix.lower() == ".json" and path not in model_files:
                             archive.writestr(
                                 path.relative_to(output).as_posix(),
                                 json.dumps(

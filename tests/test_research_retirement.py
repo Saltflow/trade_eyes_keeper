@@ -1,4 +1,4 @@
-"""Supported archive roots stay read-only; disputed legacy sources stay isolated."""
+"""Retired research code stays deleted; historical archive reads remain usable."""
 
 import ast
 import json
@@ -39,6 +39,7 @@ OLD_SCRIPTS = (
     "run_fundamental_quant_worker",
     "run_pi_research_campaign",
     "run_price_research_benchmark",
+    "run_longitudinal_research",
 )
 
 
@@ -56,9 +57,14 @@ def test_old_executable_script_is_physically_removed(name):
     assert not (ROOT / "scripts" / (name + ".py")).exists()
 
 
-def test_supported_archive_closure_cannot_execute_preserved_legacy_research():
+def test_archive_package_contains_only_the_four_readonly_modules():
     folder = ROOT / "src/fundamental_quant"
-    # These are the current CLI/Bot roots, not every preserved historical file.
+    assert {path.name for path in folder.glob("*.py")} == {
+        "__init__.py",
+        "archive.py",
+        "service.py",
+        "reporting.py",
+    }
     files = [
         folder / (name + ".py")
         for name in ("__init__", "archive", "service", "reporting")
@@ -86,6 +92,31 @@ def test_supported_archive_closure_cannot_execute_preserved_legacy_research():
     assert not (
         ROOT / "skills/fundamental-research/scripts/build_offline_reports.py"
     ).exists()
+
+
+def test_runtime_imports_do_not_depend_on_deleted_research_implementations():
+    allowed = {
+        "fundamental_quant",
+        "fundamental_quant.archive",
+        "fundamental_quant.service",
+        "fundamental_quant.reporting",
+    }
+    paths = [ROOT / "main.py"]
+    for name in ("src", "scripts"):
+        paths.extend((ROOT / name).rglob("*.py"))
+    for path in paths:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+            if isinstance(node, ast.Import):
+                names = [item.name for item in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            else:
+                continue
+            for name in names:
+                if "fundamental_quant" in name.split("."):
+                    normalized = name.removeprefix("src.")
+                    assert normalized in allowed, (path, node.lineno, name)
+                assert name != "scripts.run_longitudinal_research", path
 
 
 @pytest.mark.parametrize(

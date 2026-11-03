@@ -565,6 +565,8 @@ def test_pi_audit_model_round_cannot_collide_with_repair_round_or_owner(setup):
 
 
 def test_feishu_sender_checks_allowlist_and_delivers_actual_files(setup):
+    from src.research_pipeline.common import atomic_write, file_sha
+
     repo, output, _, store = setup
     (output / "research/assets").mkdir(parents=True)
     (output / "research/最终报告.md").write_text("# 完整报告", encoding="utf-8")
@@ -575,6 +577,41 @@ def test_feishu_sender_checks_allowlist_and_delivers_actual_files(setup):
     (output / "source_coverage.json").write_text('{"available":44}', encoding="utf-8")
     (output / "delivery/private.json").write_text(
         '{"api_key":"secret"}', encoding="utf-8"
+    )
+    model_id = "f" * 64
+    folder = output / "delivery/investigation/study"
+    # Explicit synthetic business data: token counts must not be redacted or
+    # reformatted because this would break input hashes and reproducibility.
+    input_name = f"models/{model_id}/input/inputs.json"
+    code_name = f"models/{model_id}/input/model.py"
+    atomic_write(folder / input_name, {"token": 123, "fixture": True})
+    atomic_write(folder / code_name, "# Synthetic model fixture\n")
+    atomic_write(folder / "execution/request.json", {"private_diagnostic": True})
+    atomic_write(folder / "execution/content.md", "private diagnostic fixture")
+    atomic_write(
+        folder / "bundle.json",
+        {
+            "files": {
+                name: file_sha(folder / name)
+                for name in (input_name, code_name, "execution/request.json")
+            },
+            "selected_model": model_id,
+            "model_status": "passed",
+            "error": "",
+            "financial_validation": "not_independently_verified",
+        },
+    )
+    atomic_write(
+        output / "delivery/manifest.json",
+        {
+            "artifacts": [
+                {
+                    "kind": "investigation",
+                    "bundle_path": str(folder / "bundle.json"),
+                    "metadata": {"bundle_sha256": file_sha(folder / "bundle.json")},
+                }
+            ]
+        },
     )
     messages, files = [], []
     app = SimpleNamespace(
@@ -597,6 +634,13 @@ def test_feishu_sender_checks_allowlist_and_delivers_actual_files(setup):
         assert "delivery/accounting.json" in bundle.namelist()
         assert "source_coverage.json" in bundle.namelist()
         assert "delivery/private.json" not in bundle.namelist()
+        prefix = "delivery/investigation/study/"
+        assert prefix + code_name in bundle.namelist()
+        assert bundle.read(prefix + input_name) == (folder / input_name).read_bytes()
+        public_model = json.loads(bundle.read(prefix + "reproducibility.json"))
+        assert public_model["files"][input_name] == file_sha(folder / input_name)
+        assert prefix + "execution/request.json" not in bundle.namelist()
+        assert prefix + "execution/content.md" not in bundle.namelist()
     sender(origin, {"run_id": "run", "event": "run_finished", "status": "partial"})
     assert len(files) == len(set(files))
     assert (
