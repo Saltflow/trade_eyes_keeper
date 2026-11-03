@@ -1,19 +1,23 @@
 # 项目架构与模块职责
 
-核对日期：2026-10-29。架构图集中保存在[架构图独立页](architecture_overview.md)，本页说明执行机制、业务合同、模块职责与依赖债务。其他文档见[文档索引](README.md)。
+源码与部署边界核对日期：2026-11-03（v1.23.0 / ae48293）。架构图集中保存在[架构图独立页](architecture_overview.md)，本页说明执行机制、业务合同、模块职责与依赖债务。其他文档见[文档索引](README.md)。
 
-## 当前发布与运行边界
+## 历史发布证据与当前源码边界
+
+2026-11-03 已将 v1.23.0 / `ae48293` 的公共代码同步到远端和生产，逐文件核验 870 项公共文件，并确认运行进程版本、心跳和 Bot 连接。生产凭据、私有配置、触发历史、固定调度开关与策略状态保持原值；发布回执位于生产 `data/deployments/full_code_sync_v1_23_0_20261103_ae48293/`。此核验不代表完成新的付费研究或研究业务质量验收。
+
+以下旧部署记录保留为历史证据。五个可复用包、统一研究、触发器及报告开关见[总图与状态归属](architecture_overview.md)。
 
 公共运行层已于 2026-10-28 按独立提交 `c7d7656` 部署，实际采用 38 个明确文件的哈希覆盖，并保留线上业务补丁。本机其他研究、采集和优化实验没有随之发布。发布事实见[迁移验收记录](development/shared_runtime_migration.md#2026-10-28-已授权发布与生产切换)。10 月 29 日 09:03 另只读核对了线上飞书配置、关键源码与既有审计，范围见[本机/线上对照](architecture_overview.md#本机与线上环境对照)，不代表全量源码一致或新消息验收。
 
-本机 `TradeEyesPersonalMonitorTest` 已于 10 月 29 日按用户授权注销；旧独立对话/消费循环、专用 watchdog、安装脚本及专属测试已退役。测试入口仅保留公共宿主适配与只读发现功能，三份历史数据库、源码及任务 XML 均保留。线上 v1.18.0（6a55894，构建 b7e30404）只读核实无旧业务进程和调度；本次没有重启生产。部分真实对话补验仍单列，不据此补写通过。见[退役记录](development/shared_runtime_retirement_20261029.md)。
+本机 `TradeEyesPersonalMonitorTest` 已于 10 月 29 日按用户授权注销；旧独立对话/消费循环、专用 watchdog、安装脚本及专属测试已退役。测试入口仅保留公共宿主适配与只读发现功能，三份历史数据库、源码及任务 XML 均保留。线上 v1.18.0（6a55894，构建 b7e30404）只读核实无旧业务进程和调度；该次退役核对没有重启生产。部分真实对话补验仍单列，不据此补写通过。见[退役记录](development/shared_runtime_retirement_20261029.md)。
 
 ## 公共运行层
 
-飞书普通助手先受 `interactive.feishu.assistant.enabled` 控制。本轮研究问答修复候选强制资料问题走 Pi，并移除股票/估值模板短路；其他问答仍由 `harness_backend: native|pi` 选择循环，两种后端均支持工具。候选尚未部署。当前本机主配置默认关闭助手，线上配置启用 Pi，不能把本机未启用说成通用 Pi 已退役。具体开关、模板提前返回和模型工具循环见[飞书路由图](architecture_overview.md#飞书开关与对话路由)。
+飞书普通助手先受 `interactive.feishu.assistant.enabled` 控制。当前实现强制资料问题走 Pi，并移除股票/估值模板短路；其他问答仍由 `harness_backend: native|pi` 选择循环，两种后端均支持工具。2026-11-03 生产核验助手启用且使用 Pi / deepseek-flash；本机配置与生产分别管理，不能把本机关闭助手的值外推到线上。具体开关、模板提前返回和模型工具循环见[飞书路由图](architecture_overview.md#飞书开关与对话路由)。
 
 实时对话、持仓行情/到期/投递、日报与简报接入同一个
-`src/core/execution.py`。SQLite保存入站和执行事实，内存/IPC只用于唤醒；
+`src/task_runtime/execution.py` 实现；`src/core/execution.py` 仅为兼容别名。在线实例使用 `data/runtime/feishu_assistant.sqlite3`（可由 storage.data_dir 改址），研究实例绑定 authority 下的 `execution.sqlite3`，不是同一个队列库。SQLite保存入站和执行事实，内存/IPC只用于唤醒；
 跨会话默认并发2、同会话保序，报表与到期使用独立容量。
 `execution_health.py`共用同库事件/outbox和控制lane；不新增外部队列、端口或常驻进程。
 持仓业务库、账户版本及一次性outbox仍由原store/engine维护。
@@ -30,15 +34,23 @@
 
 ## 财报与基本面研究
 
-当前文件交接路线为：原 PDF → `financial_pipeline.py extract` → `context` 离线跨年整合 → `summary-prepare` / `summary-run` → `stage3-input` → `run_peer_research.py` 横评 → `research_report.py` 固定三轮研究。每一步需要显式执行；正式研究也可接受其他明确声明的材料，不强制先横评。
+当前 `financial_pipeline.py run` 经 `research_pipeline` 公共 API 编排发现、采集、提取、跨年整合、摘要、横评、Agent 调查建模和三轮写作，使用冻结 host/worker、共享 authority 容量与模型账本；付费执行需显式授权及预算，默认只做离线计划。审阅可触发一次预算内模型返工，独立保存新计算版本。
 
-第二阶段不新增模型调用。正式研究三轮为初稿、读取实际图片的审阅、读取修订图片的定稿；图片在轮次之间本地生成。默认 v6 模板由实际输入确定公司数量、行业、角色和历史窗口。命令见[财报流程](guide/financial_pipeline.md)与[正式研究指南](guide/research_report.md)。
+仍保留的手工文件交接路线为：原 PDF → `financial_pipeline.py extract` → `context` 离线跨年整合 → `summary-prepare` / `summary-run` → `stage3-input` → `run_peer_research.py` 横评 → `research_report.py` 固定三轮研究。选择这组兼容命令时，每一步需要显式执行；正式研究也可接受其他明确声明的材料，不强制先横评。
+
+第二阶段不新增模型调用。正式研究三轮为初稿、读取实际图片的审阅、读取修订图片的定稿；图片在轮次之间本地生成。当前调查和三轮写作使用 v7 Prompt 合同，由实际输入确定公司数量、行业、角色和历史窗口。模型代码在本地预备镜像的无网络 Docker 沙箱执行；缺少沙箱或有效计算结果时保留缺口，不据此宣称数值研究完成。命令见[财报流程](guide/financial_pipeline.md)与[正式研究指南](guide/research_report.md)。
+
+手工提取可显式选择 `extract --subagent --subagent-native` 使用本地 Codex CLI；这是可选 transport，普通服务、日报与默认 API 提取不依赖 Codex。当前生产未安装或启用该后端。代码部署、程序成功与独立研究质量验收分别记录。
 
 旧 `src/fundamental_quant` 仅剩四个历史读取模块，以只读 SQLite 返回已有元数据和文件路径。旧研究执行、补修、发布、通知和调度已退役；旧执行命令返回退役错误。统一边界见[旧研究退役记录](development/research_retirement_20261024.md)。
 
 ## 三条权威业务链路
 
 ### 日报、今日扫描与参考持仓
+
+生产当前由受管触发器发起既有 `reports.daily` / `reports.brief`，固定日报、启动日报及固定简报关闭；CLI/Bot 手动入口和显式固定调度能力仍保留。触发动作只支持 daily/brief，optimize 预留不执行，不生成独立提醒报告。
+
+下列技术分支仅在 `report.technical_signals.enabled` 开启时执行。本机当前为 false，`strategy_display: returns_only` 读取已完成且通过类型/覆盖/时效检查的 Ke 曲线，不回退旧技术评估。用户触发器、公告、基础行情与已有持仓公司行动保持各自路径，详见[报告与告警分图](architecture_overview.md#告警链路放大图)。
 
 ```text
 main.py --once
@@ -53,7 +65,9 @@ main.py --once
   -> NotifierManager 渲染 HTML/PDF/Email/Feishu/Telegram
 ```
 
-简报走同一报表执行适配，但业务只生成价格与锚点快照，不执行上图的完整日报扫描/回测。
+简报走同一报表执行适配。在 `returns_only` 模式下展示适用标的的完整价格/基本面表与合格 Ke 曲线，不执行完整技术扫描/回测，也不回退旧技术建议。日报与简报均保留今开、昨收、现价、PE、PB、隐含 Ke、ROE；缺失 ROE 仅在渲染时按有效 PB/PE×100 粗估并标 `(估)`，不改写财务原值。
+
+邮件与 PDF 使用共享三市场单图曲线；Bot 用文字曲线替代。事件由同一构建入口分类、按市场/代码/日期排序并合并例行公告，默认展示最近两个自然月，`report.events.announcement_lookback_months` 可经 Bot 调整为 1–24；待派息分红与未解禁事项保留。详见[公告展示](guide/announcements.md)。
 
 今日信号是完整 `TradePlan` 最后有效交易日的事件；通知层只消费
 `EvaluationReport`，不重新计算收益、胜率或持仓。
@@ -100,10 +114,10 @@ MOE/基本面定价训练、旧估值特征/行业评分/消融、Ke 搜参与�
 | `src/fundamental_embedding` | 保留业务共用的逐时点数据、行业分类和估值合同 | MOE训练及指定评分实验已终止，不再作为扩展方向 |
 | `src/session` / `src/models` | 日报运行态与跨步骤类型模型 | 不放策略判断 |
 | `src/notification` | 同一报告对象的多渠道渲染 | 新通知适配器 |
-| `src/core/runtime_service.py` / `schedule_manager.py` | 宿主、心跳与唯一任务调度 | 报表经公共执行器；优化沿用原进程合同 |
-| `src/core/execution.py` / `execution_health.py` | 持久队列、claim、恢复和健康事件 | 可信 Python 模块注册 |
+| `src/core/runtime_service.py` / `schedule_manager.py` | 宿主、心跳与在线任务调度 | 报表经公共执行器；优化沿用原进程合同 |
+| `src/task_runtime/execution.py` / `core/execution_health.py` | 持久队列、claim、恢复和健康事件 | core/execution 仅为兼容别名；可信 Python 模块注册 |
 | `src/personal_monitor` | 个人账户、提醒、版本、行情观察与 outbox | 原业务 store/engine 与任务适配 |
-| `src/fundamental_data` / 财报研究脚本 | 提取、整合、摘要、横评与固定三轮 | 显式文件交接合同 |
+| `src/research_pipeline` / `src/fundamental_data` / 财报研究脚本 | 统一编排、提取、整合、摘要、横评、调查建模与固定三轮 | 冻结研究与一次模型返工；兼容显式文件交接 |
 | `src/interactive` | 飞书长连接和 Telegram 轮询，共享命令分发 | 调用应用用例，不复制业务算法 |
 
 新增策略只添加注册插件；新增优化算法只添加 Solver。具体步骤见
@@ -154,7 +168,8 @@ MOE/基本面定价训练、旧估值特征/行业评分/消融、Ke 搜参与�
 - `data/point_in_time/`、`data/reference_universe/`：真实逐时点研究数据。
 - `data/analysis/`、`data/instrument_audit/`：可再生研究和审计报告。
 - `data/email_archive/`、`logs/`：运行审计记录。
-- `data/runtime/`：服务锁与本地心跳，不进入 Git；目录随 `storage.data_dir` 移动。
+- `data/runtime/`：在线执行库、服务锁与本地心跳，不进入 Git；目录随 `storage.data_dir` 移动。
+- `data/shared_platform/`：项目默认 authority 下的研究执行、资料与模型账本；可由显式 authority / `storage.authority_root` 改址，不与在线执行库混为一库。
 
 Python 字节码、pytest/ruff 缓存、`test_cache/`、`.zcode/`、参考池 smoke
 输出和服务器代码中转压缩包都属于临时文件，不应提交。
