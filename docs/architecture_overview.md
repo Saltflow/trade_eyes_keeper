@@ -1,289 +1,164 @@
 # 全项目架构总览
 
-核对日期：2026-10-30。总图以当前本机源码能力为范围；本机与线上实际启用情况、开关及已核对的版本差异单独列在下文，不能将本机源码直接当成线上完整架构。文末未提交模块与09:03环境表均为历史快照；23:34最新实际文件与心跳只读核查见[在线离线差异收尾](development/source_parity_cleanup_20261030.md)，该核查未执行部署或重新发送测试消息。
+核对日期：2026-11-03。v1.23.0 / `ae48293` 的公共代码已同步到远端和生产，逐文件核验 870 项公共文件，并确认运行进程版本、心跳和 Bot 连接。生产凭据、私有配置、触发历史、固定调度开关与策略状态保持原值；发布回执位于生产 `data/deployments/full_code_sync_v1_23_0_20261103_ae48293/`。本次未新增付费研究或研究业务质量验收。历史环境及本机配置快照保留在文末，与当次生产状态分开。
 
-本文集中保存全项目总图、飞书开关与对话路由、公共运行层、告警链路、搜参子系统和财报研究六张 Mermaid 图，以及环境对照、执行边界与源码导航。三条主业务分别是日常告警、策略搜参与财报研究；它们共享部分数据和基础设施，但执行、状态与发布边界不同。更细的公共运行层说明见[项目架构说明](architecture.md)，财报命令见[财报启动指南](guide/financial_pipeline.md)。
+系统目前是**模块化单体，使用多个工作进程与 SQLite 持久化**。服务宿主负责在线任务，搜参使用独立优化进程，财报研究使用冻结版本的 host/worker。五个可复用包已经存在于源码中；共享实现不等于共享全部队列、业务库或配置。
 
 - [全项目总图](#全项目总图)
-- [飞书开关与对话路由](#飞书开关与对话路由)
-- [本机与线上环境对照](#本机与线上环境对照)
 - [公共运行层放大图](#公共运行层放大图)
+- [数据与状态归属](#数据与状态归属)
+- [飞书开关与对话路由](#飞书开关与对话路由)
 - [告警链路放大图](#告警链路放大图)
 - [搜参子系统放大图](#搜参子系统放大图)
 - [财报研究链路放大图](#财报研究链路放大图)
-- [当前未提交模块](#当前未提交模块2026-10-30快照)
-
-> 历史发布核查：2026-10-29 核验生产公共层为 v1.18.0（6a55894，构建 b7e30404）；不能将它当成当前所有环境的最新版本。当天已退役本机旧业务循环和专用 watchdog，并注销测试任务，历史数据保留；见[退役记录](development/shared_runtime_retirement_20261029.md)。本次只盘点本机未提交模块，没有重新核对或部署生产。下方 09:03 环境表同样为当时快照。
+- [当前配置与实现边界](#当前配置与实现边界)
+- [模块与源码导航](#模块与源码导航)
+- [本机与线上环境对照（历史）](#本机与线上环境对照)
 
 ## 图例
 
-2026-11-01的数据/Pi/通用执行层现状与目标对比，另见[跨项目复用边界提案](design/reusable_data_research_runtime.md)。该提案包含重复下载/解析/缓存与源站限流的收敛设计，不表示已经迁移或部署；本页原历史环境表保持原时点。
-
-- 实线：实际调用、控制或数据流；不是每个入口都会执行所有分支。
-- 虚线：可选能力、显式文件交接、配置约束或只读查询；不表示自动触发。
-- 图中一个框可能包含多个文件，不代表一个进程；独立子进程与批次已单独标注。
-- “对齐”“完成”“成功”分别受各阶段合同约束，不代表财务口径已经人工复核。
+- 实线表示调用、调度或数据流，不表示所有入口都会执行每条分支。
+- 虚线表示配置、可选消费、显式交接或依赖；不表示自动触发。
+- 框是职责边界；只有标明进程的节点才表示进程边界。数据库归属以下表为准。
+- 配置表区分本机兼容快照与已核验的生产配置；源码能力、配置开启和运行成功分别判断。
 
 ## 全项目总图
 
 ```mermaid
 flowchart TB
     subgraph ENTRY["入口"]
-        CLI["main.py<br/>服务、日报、简报、优化、审计"]
-        BOT["飞书 / Telegram<br/>认证消息与命令"]
-        SCRIPT["独立批次脚本<br/>采集、财报研究、实验"]
+        MAIN["main.py CLI / 服务"]
+        BOT["飞书 / Telegram"]
+        FINCLI["financial_pipeline.py run / Python API"]
     end
-
-    subgraph HOST["服务与公共任务执行"]
-        SERVICE["RuntimeService<br/>生命周期、心跳、Bot 接收器"]
-        SCHED["ScheduleManager<br/>定时触发"]
-        EXEC["公共 ExecutionRuntime<br/>持久队列、并发池、租约、恢复"]
-        ASSIST["飞书助手<br/>assistant.enabled 为 true 才接入<br/>资料检索问题强制Pi；其余按harness_backend"]
+    subgraph ONLINE["在线业务"]
+        HOST["RuntimeService<br/>Bot、助手、调度、受管触发器"]
+        QUEUE["在线 ExecutionRuntime<br/>持久队列、租约、恢复"]
+        REPORT["独立报表 worker / 个人监控任务<br/>日报 / 简报；个人持仓与到期任务"]
+        HOST --> QUEUE --> REPORT
     end
-
-    CLI -->|默认 / --service| SERVICE
-    SERVICE --> SCHED
-    SERVICE --> BOT
-    SERVICE --> EXEC
-    CLI -->|--once / --brief| EXEC
-    BOT -->|日报 / 简报命令| EXEC
-    BOT -->|助手启用时，飞书会话持久入队| EXEC
-    EXEC -->|conversation.turn| ASSIST
-    SCHED -->|日报 / 简报| EXEC
-
-    subgraph APP["业务模块"]
-        DAILY["日报 / 简报编排<br/>Session、报告与通知决策"]
-        ALARM["告警链路<br/>价格阈值 + 活动策略信号"]
-        PERSONAL["个人监控<br/>持仓、提醒、行情观察、投递"]
-        OPT["策略优化<br/>独立子进程"]
-        AUDIT["标的画像审计<br/>公司 / ETF / REIT 等"]
-        SANDBOX["助手研究沙箱<br/>原研究worker队列 → research.py<br/>Docker / research_worker.run_registered"]
+    subgraph QUANT["量化业务"]
+        SEARCH["独立优化进程<br/>Solver → 策略/回测 → Gate → 验证"]
+        ACTIVE["完整候选 → 同市场晋升 / 人工激活<br/>按市场活动指针"]
+        KE["显式 Ke 曲线批次<br/>时点估值 → 历史仿真产物"]
+        SEARCH --> ACTIVE
     end
-
-    EXEC -->|报表 worker| DAILY
-    DAILY -->|触发告警评估| ALARM
-    ALARM -->|alerts / signal_scan 写回 Session| DAILY
-    EXEC -->|个人监控任务| PERSONAL
-    ASSIST -->|受控工具| PERSONAL
-    ASSIST -->|确认后的提案；保留原研究worker队列| SANDBOX
-    CLI -->|--optimize| OPT
-    SCHED -->|优化任务，原进程合同| OPT
-    CLI -->|--audit-instruments| AUDIT
-
-    subgraph DATA["数据基础"]
-        SOURCE["外部数据源<br/>行情、公告、财报、公司行动"]
-        FETCH["DataSource / StockDataFetcher<br/>多源适配、缓存、日期与复权校验"]
-        PIT["时点数据与数据集<br/>行情、披露日财务、公司行动、目录"]
+    subgraph RESEARCH["财报研究"]
+        API["research_pipeline API → 冻结 host/worker<br/>任务 DAG、预算、缓存、故障隔离"]
+        STAGES["官方年报 → 提取 → 跨年整合<br/>摘要 → 横评 → 调查建模 → 三轮写作"]
+        RESULT["报告文件、原始响应、产物与回执"]
+        API --> STAGES --> RESULT
     end
+    DATA["业务数据适配<br/>行情 / PIT / 公司行动 / 业务缓存"]
+    PLATFORM["可复用底座（库，非网络服务）<br/>shared_contracts · task_runtime · data_hub<br/>model_gateway · agent_runtime<br/>由 platform_composition 注入 authority"]
+    OUT["HTML / PDF / Email / 飞书 / Telegram<br/>生成与渠道投递分别记录"]
 
-    SOURCE --> FETCH
-    SOURCE -->|回填与 Provider| PIT
-    FETCH --> DAILY
-    FETCH --> ALARM
-    FETCH --> PERSONAL
-    FETCH --> OPT
-    SOURCE --> AUDIT
-    PIT --> SANDBOX
-
-    subgraph QUANT["策略、搜索与仿真"]
-        SEARCH["搜参子系统<br/>SearchController + Solver<br/>候选生成、评价、Walk-forward"]
-        STRATEGY["策略插件<br/>技术策略 / 基本面策略"]
-        BACKTEST["统一 Backtester<br/>TradePlan → 模拟成交与评价"]
-        GATE["完整性 / 留出 / 安全门槛<br/>同市场相对晋升"]
-        ACTIVE["版本化策略产物<br/>按市场活动指针"]
-    end
-
-    OPT --> SEARCH
-    SEARCH --> STRATEGY
-    STRATEGY --> BACKTEST
-    BACKTEST -->|评价结果| SEARCH
-    SEARCH --> GATE
-    GATE -->|通过后按配置或人工激活| ACTIVE
-    ACTIVE --> DAILY
-    ACTIVE -->|活动策略及参数| ALARM
-    DAILY --> STRATEGY
-    SANDBOX -->|复用策略与回测合同| STRATEGY
-
-    subgraph OFFLINE["独立数据与研究链"]
-        COLLECT["源资料批次采集<br/>筛选、PDF、行情、免费财务"]
-        FIN["财报提取 → 跨年对齐<br/>单公司摘要 → 横评 → 正式研究"]
-        LAB["保留的逐时点数据与估值适配<br/>指定MOE/估值评分/Ke实验已终止"]
-        HISTORY["本机旧 fundamental_quant<br/>仅历史查询与文件路径"]
-        LEGACY["保留争议旧手工源码<br/>legacy_reporting / legacy_service<br/>未注册到当前宿主"]
-    end
-
-    SCRIPT --> COLLECT
-    SOURCE --> COLLECT
-    COLLECT -->|行情 / 财务 / 文档目录归档| PIT
-    COLLECT -.已有文件显式交接.-> FIN
-    SCRIPT --> FIN
-    SCRIPT --> LAB
-    PIT --> LAB
-    LAB -.保留业务的时点数据面板.-> STRATEGY
-    BOT -.历史只读命令.-> HISTORY
-    CLI -.历史只读选项.-> HISTORY
-
-    subgraph OUTPUT["输出"]
-        OPREPORT["日常与审计报告<br/>HTML / PDF / 图表 / JSON"]
-        RESEARCHFILES["研究文件<br/>正文、阅读页、图表、原始回执"]
-        NOTIFY["NotifierManager<br/>邮件 / 飞书 / Telegram"]
-    end
-
-    DAILY --> OPREPORT
-    AUDIT --> OPREPORT
-    DAILY -->|显式通知入口| NOTIFY
-    FIN --> RESEARCHFILES
-    LAB --> RESEARCHFILES
-    PERSONAL -->|个人通知适配器| BOT
-
-    subgraph BASE["横向基础设施"]
-        CONFIG["配置 / 环境变量 / Prompt / Schema"]
-        STATE["缓存与持久状态<br/>SQLite、文件快照、哈希、日志、费用账本"]
-        OPS["tests / 验收脚本 / ci_cd_deploy<br/>部署、守护与运行核验"]
-    end
-
-    CONFIG -.配置.-> SERVICE
-    CONFIG -.配置.-> OPT
-    CONFIG -.配置.-> FIN
-    EXEC --- STATE
-    PIT --- STATE
-    FIN --- STATE
-    OPS -.验证与运维.-> SERVICE
+    MAIN -->|服务模式| HOST
+    BOT --> HOST
+    MAIN -->|--once / --brief| QUEUE
+    MAIN -->|--optimize| SEARCH
+    HOST -.->|定时优化开启| SEARCH
+    HOST -.->|受控研究工具与确认| API
+    FINCLI --> API
+    ACTIVE -.->|技术信号开启时消费| REPORT
+    KE -.->|returns_only 读取合格曲线| REPORT
+    DATA --> REPORT
+    DATA --> SEARCH
+    DATA --> KE
+    QUEUE -.->|执行器实现；在线库| PLATFORM
+    HOST -.->|助手循环与模型客户端| PLATFORM
+    API -.->|研究队列、资料、模型；authority 库| PLATFORM
+    DATA -.->|已接入的原始行情能力| PLATFORM
+    REPORT --> OUT
 ```
 
-## 飞书开关与对话路由
-
-> 以下为 2026-10-29 研究问答修复候选；尚未部署。下方环境表的 09:03 线上快照保留修复前行为，不能视为候选已经上线。
-
-```mermaid
-flowchart TB
-    MSG["认证通过的飞书消息"] --> CMD{"是否斜杠命令"}
-    CMD -->|是| LEGACY["原命令分发器"]
-    LEGACY --> OUT["回复 / 业务回执"]
-    CMD -->|否| ENABLED{"assistant.enabled"}
-    ENABLED -->|false| IGNORE["忽略普通助手消息"]
-    ENABLED -->|true| ADMIT["权限与群寻址检查<br/>持久入队"]
-    ADMIT --> PERSONAL{"明确的持仓读取或操作回执"}
-    PERSONAL -->|是| RECEIPT["原业务查询 / 原子操作回执"]
-    RECEIPT --> OUT
-    PERSONAL -->|否| QUESTION{"是否需要资料研究<br/>含股票、估值、源码及连续追问"}
-    QUESTION -->|是| PI["强制 Pi Agent 多轮循环<br/>不降级为 native 直答"]
-    QUESTION -->|普通问答| BACKEND["按 harness_backend 选择 native / Pi"]
-    INPUT["本轮文档与股票数据预查<br/>仅作为模型输入"] --> PI
-    PI --> MODEL["Python 请求模型<br/>thinking enabled / 配置思考强度"]
-    BACKEND --> MODEL
-    MODEL --> DECIDE{"是否提出工具调用"}
-    DECIDE -->|是| TOOLS["Python 校验并执行工具<br/>搜索、读原文、查数据"]
-    TOOLS -->|结果 / 错误返回所选循环| MODEL
-    DECIDE -->|否| EVIDENCE{"研究问题是否有本轮资料<br/>或已实际尝试检索"}
-    EVIDENCE -->|已取得资料| OUT
-    EVIDENCE -->|检索失败| LIMITED["仅解释实际尝试与资料缺口"]
-    LIMITED --> OUT
-    EVIDENCE -->|尚未检索| REPAIR["要求补检索一次<br/>仍不检索则拦截结论"]
-    REPAIR --> MODEL
-```
-
-`assistant.enabled` 控制是否启用普通消息助手。修复后的资料研究问答强制使用 Pi；`harness_backend` 仍控制其他问答的 native/Pi 选择。研究所需 Pi 环境缺失时明确失败，不默默改成直接回答；部署需安装 Node >=22.19 及 `tools/feishu-pi` 的锁定依赖。斜杠命令、持仓查询、提醒及原子操作回执保留各自路径；持仓公司的研究分析仍进入资料研究链。
-
-单股票预查结果只送入模型，不再拼模板发出；自然语言估值问题不再被旧历史研究查询截走。模型先分析本轮已有资料，不足时继续搜索、读原文或查数据。导航目录和旧会话不算本轮已核实资料；没有资料也没实际检索时，暂扣结论，要求补检索一次，仍未执行则明确失败。真实搜索失败会交给模型选择其他来源或说明具体缺口，不用模板冒充研究结果。
-
-thinking 在实际模型请求中启用。检索和只读分析不要求确认研究提案；配置修改、脚本/回测执行和策略激活仍遵循原确认合同。工具次数不是质量分数，已有有效本轮预查数据时不强迫重复查询。证据与引用检查可以阻止无检索直答及无效源码引用，不能保证所有模型推理和投资判断都正确。
-
-Pi 的共享实现仍在 [shared-runtime.mjs](../tools/feishu-pi/shared-runtime.mjs)，飞书通过 [harness.py](../src/interactive/assistant/harness.py) 调用。`--profile research` 协议能力保留，但 `research_report.py` 独立固定三轮研究没有接入它；本轮修复的是飞书研究问答，不复活旧基本面研究执行器。
-
-发布时`bridge.mjs → shared-runtime.mjs → framing.mjs`是同一运行依赖组。专用发布辅助脚本现在要求显式提供三者并逐一绑定SHA，check/apply均拒绝部分覆盖；构建身份也纳入三者、Pi包清单、requirements及公开告警加载模块。运行配置与凭据仍不进入构建哈希。该发布校验修复当前只在本地。
-
-## 本机与线上环境对照
-
-此表为修复前环境快照，修复候选未部署。快照日期：2026-10-29。线上于 **09:03（Asia/Shanghai）** 经 SSH 只读核对配置、关键源码和既有对话审计；本机读取当前主配置及源码。下表不是全量源码同步证明，也不代表新发送了一条消息完成端到端验收。
-
-| 项目 | 当前本机主配置 / 源码 | 线上已核对配置 / 源码 |
-|---|---|---|
-| 飞书助手开关 | 未显式配置，默认 `enabled: false` | `enabled: true` |
-| 对话循环后端 | 未显式配置，默认 `native`；助手关闭时不运行 | `harness_backend: pi` |
-| 普通对话模型 | 默认 `deepseek-flash`；未因源码存在就运行 | `deepseek-flash` |
-| thinking | 模型客户端发送 `enabled`，强度默认 `high`；仅在实际模型路径生效 | 模型客户端发送 `enabled`，配置强度 `high` |
-| 最大模型调用轮数 | 默认 6 | 配置 16 |
-| 最大工具调用次数 | 默认 48 | 配置 48 |
-| 通用 Pi 桥 | 代码保留；助手启用后的研究候选强制选 Pi，当前主配置仍关闭助手 | 已选作飞书助手后端，尚未替换本轮问答修复 |
-| 关键文件版本 | 09:03时 `harness.py`、`settings.py` 与线上哈希相同；之后本轮修改了本机 harness/service，候选未部署 | 保留09:03所读版本，不能用本机候选解释现行线上行为 |
-| 本机财报研究 | 显式批次脚本，不接 Pi；旧研究专用接入已退役 | 本轮未完整核对线上财报研究模块，不能将本机退役结论外推 |
-| 本机测试任务 | `TradeEyesPersonalMonitorTest` 已主动停用 | 不代表生产助手停用；本次生产服务为 active/running |
-
-差异来源：10 月 28 日公共层发布是限定 38 文件的生产覆盖，保留线上其他业务补丁与配置；没有整体同步本机的研究/优化实验，也没有拿本机关闭的助手配置覆盖线上。因此架构需要同时记录代码能力、配置条件和环境版本，不能只画一条无条件的“飞书 → Pi → 研究”。
-
-上述配置摘录、关键源码 SHA-256 及版本差异的脱敏快照保存于 `.tmp/feishu_quality_audit_20261029/architecture_snapshot.json`。原对话证据单独保留，不复制到文档。历史审计能证明此前出现过多轮调用和直接回复两种路径；不能由某个历史结果保证当前每次回答都会检索或思考。
+研究报告没有自动接入策略晋升或真实券商下单。财报文件交付与通知发送是两个步骤。总图中的底座是库边界，未引入网络微服务或外部消息队列。
 
 ## 公共运行层放大图
 
 ```mermaid
 flowchart LR
-  Host[RuntimeService] --> Exec[core/execution.py]
-  Host --> SDK[feishu_bot.py / 官方SDK子进程]
-  SDK --> Ingress[interactive/ingress.py]
-  Group[原测试群薄入口 --host-runtime] --> Host
-  Host --> History[受限历史轮询Bot / personal_monitor_shared_test.py]
-  History --> Chat
-  Ingress --> Chat[assistant/service.py + store.py原子入队]
-  Chat --> Exec
-  Exec --> Pool[通用SQLite连接provider / 有界池]
-  Pool -.同库注入.-> Chat
-  Pool -.宿主所有权.-> Ingress
-  SDK --> ChildPool[子进程本地ExecutionStore / 只复用连接]
-  ChildPool -.本进程provider.-> Ingress
-  Schedule[ScheduleManager / CLI / Bot] --> Reports[core/report_execution.py]
-  Reports --> Exec
-  Exec --> Personal[personal_monitor/tasks.py]
-  Personal --> Store[原personal_monitor store/engine]
-  Pool -.通用provider注入.-> Store
-  Exec --> Worker[main.py --report-worker]
-  Worker --> Notify[NotifierManager实际回执]
-  Exec --> Health[core/execution_health.py]
+    HOST["RuntimeService / CLI / Bot"] --> ONLINE["在线 ExecutionRuntime<br/>报告、会话、触发器、个人任务"]
+    FIN["research_pipeline host / worker"] --> RUNTIME["研究 ExecutionRuntime<br/>绑定相同 authority 的容量"]
+    ONLINE --> ODB[("runtime/feishu_assistant.sqlite3")]
+    RUNTIME --> RDB[("authority/execution.sqlite3")]
+    IMPL["task_runtime/execution.py<br/>唯一执行器实现"] -.-> ONLINE
+    IMPL -.-> RUNTIME
+    ALIAS["core/execution.py<br/>兼容模块别名"] -.-> IMPL
+    FIN --> GW["model_gateway<br/>计费尝试与 provider 状态"]
+    CLIENT["助手模型客户端"] --> GW
+    GW --> MDB[("authority/models.sqlite3")]
+    SOURCE["data_hub / 资料与行情接入"] --> POLICY["task_runtime/request_policy.py<br/>源站限制与封禁"]
+    POLICY --> QDB[("authority/requests.sqlite3")]
+    FIN --> DOMAIN[("research.sqlite3<br/>研究状态、结果、预算投影")]
 ```
 
-SQLite 保存执行与业务事实，内存/IPC 用于唤醒；各进程拥有自己的连接。图中的测试群薄入口源码保留并接公共宿主，本机任务注册已注销，不再自动常驻。个人监控业务库与公共执行库职责保持独立，完整合同见[架构说明](architecture.md#公共运行层)。
+在线实例与研究实例使用同一套持久执行器代码，但没有合并成一个数据库。财报任务及其模型维修在同一 authority 的 `research_llm` 容量中竞争，配置上限 20 不是每批次各 20，也不是实际运行并发的观测值。搜参的 CPU 预算、进程数与批大小另由搜索资源计划管理。
+
+## 数据与状态归属
+
+| 状态 | 权威归属 | 边界 |
+|---|---|---|
+| 在线入站、会话与任务队列 | `<storage.data_dir>/runtime/feishu_assistant.sqlite3` | 默认 `data/runtime/`；profile 可隔离 |
+| 研究任务容量、claim、lease | `<authority>/execution.sqlite3` | 研究启动后绑定；同 authority 跨批共享 |
+| 源站请求限制与阻断 | `<authority>/requests.sqlite3` | 不是业务财报库 |
+| 模型请求、attempt、响应、实际用量 | `<authority>/models.sqlite3` | 费用权威账本；研究侧预算/费用记录是关联投影 |
+| 原始资料、版本、索引与解析 | `<authority>/materials/<scope_id>/` | SHA 与来源身份；全文与预览分开，scope 控制资料域 |
+| 研究业务状态及阶段结果 | 研究 store 的 `research.sqlite3` 与运行目录 | 保存合同、预算、产物、冻结代码及回执 |
+| 个人持仓、账户版本、历史与 outbox | `personal_monitor` 业务 store | 保留独立业务合同，不等同在线执行队列 |
+| 行情/PIT/公司行动与业务缓存 | `data`、`instruments` 及各适配器 | 仍有业务专用缓存，未全部迁入 data_hub |
+| 搜参候选与活动版本 | `search.artifacts` 管理的运行产物与市场指针 | 参考账户绑定既有运行与执行合同 |
+| Ke 展示输入 | `report.return_curve_artifact` | 只读取完成、类型正确、覆盖与时效合格的曲线 |
+
+`authority_for()` 的选择顺序为显式 root → `storage.authority_root` → `TRADE_EYES_AUTHORITY_ROOT` → `<project>/data/shared_platform`。相对 root 按项目目录解析；`AuthorityRef` 要求绝对路径。scope 隔离资料目录，不自动给共享任务和账本新建一套库。底座不反向导入业务组合层。
+
+## 飞书开关与对话路由
+
+```mermaid
+flowchart TB
+    IN["认证入站 / 消息准入"] --> CMD{"显式命令？"}
+    CMD -->|是| COMMAND["确定性命令处理<br/>报告 / 状态 / 管理入口"]
+    CMD -->|否| ENABLE{"assistant.enabled？"}
+    ENABLE -->|关闭| STOP["不进入普通助手"]
+    ENABLE -->|开启| POLICY["权限、会话持久化、业务前置路由"]
+    POLICY --> PERSONAL["个人持仓确定性查询 / 候选确认"]
+    POLICY --> HARNESS["Feishu harness 适配器<br/>agent_runtime.ConversationHarness"]
+    HARNESS --> ROUTE{"是否需要资料检索？"}
+    ROUTE -->|是| PI["强制 Pi + 证据工具<br/>桥不可用则显式失败"]
+    ROUTE -->|否| BACKEND["按 native / pi 配置运行"]
+    PI --> TOOLS["宿主校验的工具<br/>仓库、资料、行情、研究 API"]
+    BACKEND --> TOOLS
+    TOOLS --> READ["只读状态 / 证据回答"]
+    TOOLS --> PROPOSAL["写操作 / 付费研究 / 维修候选"]
+    PROPOSAL --> CONFIRM["适用的确认与版本校验"]
+    CONFIRM --> EXEC["宿主执行并记录回执"]
+```
+
+Python 通用循环位于 `src/agent_runtime/harness.py`；飞书适配器注入 `tools/feishu-pi/bridge.mjs`、检索工具集合和策略。JavaScript 桥是 Pi 的接入部分，不代表全部公共 Agent 实现。工具权限与写入授权由宿主控制；财报维修另走候选、宿主实际测试、确认和新冻结版本的流程。
 
 ## 告警链路放大图
 
 ```mermaid
 flowchart TB
-    TRIGGER["定时 / CLI / Bot<br/>日报任务进入公共执行器"]
-    DATA["StockDataFetcher → Session<br/>行情、历史数据、技术指标、日期"]
-    PRICE["价格条件分支<br/>ConditionChecker"]
-    RULES["alerts 配置<br/>锚点、阈值区间、边界、连续次数与重置"]
-    ENGINE["AlertProcessor → AlertEngine<br/>最低价相对锚点落入哪个区间"]
-    RULESTATE["AlertStateManager<br/>标的 × 锚点 × 区间状态"]
-    SINGLE["多层告警关闭或失败时<br/>保留 low < MA60 回退"]
-    ACTIVE["按市场活动策略产物<br/>策略身份、参数、执行合同"]
-    SIGNAL["策略信号分支<br/>_collect_signal_scan"]
-    PLAN["build_trade_plan<br/>统一策略合同生成 TradePlan"]
-    TODAY["最后有效交易日事件<br/>买入 / 卖出 / 强制退出、优先级"]
-    SESSION["同一 Session 汇总<br/>价格警报 + 策略警报 + 扫描状态"]
-    DECIDE["日报通知决策<br/>普通告警与可选日报触发条件分开"]
-    NOTIFY["NotifierManager<br/>告警报告或普通日报，多渠道发送"]
-    RECEIPT["渠道回执与报表任务结果<br/>成功 / 失败 / 部分 / 未知 / 跳过"]
-
-    TRIGGER --> DATA
-    DATA --> PRICE
-    RULES --> ENGINE
-    PRICE -->|启用多层告警| ENGINE
-    ENGINE -->|候选区间| RULESTATE
-    RULESTATE -->|允许生成的警报| SESSION
-    PRICE -->|关闭或异常回退| SINGLE
-    SINGLE --> SESSION
-    DATA --> SIGNAL
-    ACTIVE --> SIGNAL
-    SIGNAL --> PLAN --> TODAY --> SESSION
-    SESSION --> DECIDE --> NOTIFY --> RECEIPT
-    RULESTATE -.持久化.-> STATEFILE["缓存目录 / alerts_state.json"]
+    ENTRY["CLI / Bot / ScheduleManager"] --> REPORTS["report_execution<br/>持久任务 → 独立报表 worker"]
+    TRIGGER["TriggerRuntime<br/>条件 / 时间 / 快照 / 持久动作"] -->|daily / brief| REPORTS
+    REPORTS --> SESSION["Session / 行情 / 公告 / 公司行动"]
+    SESSION --> TECH{"technical_signals.enabled？"}
+    TECH -->|是| SIGNAL["条件检查 / 活动策略信号<br/>参考账户技术调仓"]
+    TECH -->|否| BASE["跳过技术信号路径<br/>保留基础数据与已有持仓公司行动"]
+    SIGNAL --> DISPLAY{"strategy_display？"}
+    BASE --> DISPLAY
+    DISPLAY -->|returns_only| KE["load_return_curves<br/>检查完成状态、类型、时效、覆盖与 NAV"]
+    FILE["显式生成的 Ke 曲线文件"] -.-> KE
+    DISPLAY -->|旧展示模式| LEGACY["技术策略评估与展示路径"]
+    KE --> RENDER["HTML / PDF / 渠道内容渲染"]
+    LEGACY --> RENDER
+    RENDER --> DELIVERY["通知发送与回执"]
 ```
 
-- **价格条件与策略事件是两个来源。** 前者按锚点/阈值配置检查，后者读取已激活策略，以统一 `TradePlan` 的最后有效日期事件生成警报。价格告警不需要先运行一次搜参；信号扫描也不会现场寻找新参数。
-- **多层规则状态有明确范围。** 连续次数阈值与区间变化重置由配置决定；`AlertStateManager` 不提供渠道送达确认，也不能概括为同日严格去重。其状态在候选警报生成时更新，未与后续发送成功做事务绑定。
-- **通知决策与规则判断分开。** `main.run_once` 将两种警报汇入 Session；即使可选日报触发条件未命中，已有普通警报仍可走 `send_from_session`。没有警报时，普通日报是否发送再受频次/手动触发等设置控制。
-- **个人提醒与运行健康告警另外维护状态。** 个人持仓/到期提醒走 `personal_monitor` 及其 outbox，执行健康事件走 `execution_health`；二者不共享 `alerts_state.json` 的价格区间规则。
+TriggerRuntime 只派发已有日报/简报任务，optimize 仅预留、不执行；当前在宿主注册报告且存在飞书 Bot 时装配。持久触发器与旧技术条件扫描是独立路径。本机与本次生产报告均使用 `technical_signals.enabled: false`、`strategy_display: returns_only`；关闭技术扫描不等于关闭用户触发器、公告或全部报告。曲线只接收 `ke_threshold_allocation` / `ke-return-curves/1` 的合格产物，缺失或无效不会回退成旧技术图表。历史仿真曲线不修改真实账户。生产固定日报、启动日报和固定简报关闭，由触发器或手动入口运行；ScheduleManager 的显式固定调度能力仍在。
 
-核对入口：[ConditionChecker](../src/core/condition_checker.py)、[AlertProcessor](../src/alerting/alert_processor.py)、[AlertEngine](../src/alerting/alert_engine.py)、[AlertStateManager](../src/alerting/alert_state_manager.py)、[通知管理器](../src/notification/manager.py)、[main.py](../main.py)。
+`returns_only` 的日报/简报沿用现有价格与基本面表、合格 Ke 曲线；缺失 ROE 仅渲染有效 PB/PE×100 并标 `(估)`。三市场曲线在邮件/PDF 合成一图，Bot 保留文字替代。事件使用同一共享构建器，类别 → 市场 → 标的 → 发布日期排序，合并例行披露并保留全部原文链接；默认展示两个自然月，Bot 可设 1–24，待派息分红与未解禁事项不受此期限裁剪。
 
 ## 搜参子系统放大图
 
@@ -306,7 +181,7 @@ flowchart TB
     AUTO["相对晋升通过且自动替换开启<br/>publish_complete_run → activate_run"]
     MANUAL["显式 --activate-run<br/>重新校验完整性与可激活条件"]
     ACTIVE["按市场活动指针<br/>其他市场保持各自绑定"]
-    CONSUMER["日报 / 今日信号扫描 / 回测消费者<br/>参考持仓仍按其绑定运行与合同读取"]
+    CONSUMER["显式回测 / 开启技术信号的报告消费者<br/>参考持仓仍按其绑定运行与合同读取"]
 
     START --> PREP
     CONFIG --> PREP
@@ -319,7 +194,7 @@ flowchart TB
     GATE --> ARCHIVE
     CTRL -->|搜索结束，保留入围候选| VALIDATE
     VALIDATE --> CANDIDATE
-    CANDIDATE --> RELATIVE -->|通过且策略允许| AUTO
+    CANDIDATE --> RELATIVE -->|通过且 auto_activate_if_better 开启| AUTO
     CANDIDATE -->|显式选择| MANUAL
     AUTO --> ACTIVE
     MANUAL --> ACTIVE
@@ -331,7 +206,7 @@ flowchart TB
 - **参数搜索、策略、评价解耦。** Solver 用 `ask/tell` 提议参数与接收评价，不直接访问留出窗口、执行成交或决定通知；统一策略和 Backtester 负责候选的交易计划及评价合同。
 - **门槛有不同层次。** 排名阶段的 `CandidateGatePipeline` 会影响可行性及分数；搜索完成后 `ValidationController` 才执行配置要求的后置稳健性和独立窗口评价，不能将这些结果反馈成 Solver 的训练窗口。
 - **候选发布与活动切换分开。** 候选文件可保留而不替换活动参数。自动切换要求同市场相对晋升通过且配置允许；人工切换也调用 `activate_run` 重新检查产物合同和资格。当前实现允许已记录的相对晋升作为激活路径，否则检查绝对留出通过条件，不能画成两条路径都必须再叠加同一绝对收益门槛。
-- **消费者只读取确定版本。** 告警信号读取活动产物；已初始化参考持仓绑定运行、参数和执行合同，不因活动指针变化悄悄换成另一套策略。股票池扰动/benchmark 的诊断任务本身不激活结果。
+- **消费者只读取确定版本。** 开启技术信号时读取活动产物；已初始化参考持仓绑定运行、参数和执行合同，不因活动指针变化悄悄换成另一套策略。股票池扰动/benchmark 的诊断任务本身不激活结果。
 
 核对入口：[run_optimizer](../src/search/workflow.py)、[SearchController](../src/search/controller.py)、[EvaluationService](../src/search/evaluator.py)、[Gate](../src/search/gates.py)、[ValidationController](../src/search/validation.py)、[相对晋升](../src/search/promotion.py)、[产物与激活](../src/search/artifacts.py)。
 
@@ -339,83 +214,112 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    RAW["原始资料<br/>PDF / 行情 / 免费接口响应"]
-    EXTRACT["第一阶段：按年度、按块提取<br/>financial_pipeline → build_fundamental_data_v2"]
-    ALIGN["第二阶段：离线整合与跨年对齐<br/>build_financial_context"]
-    CONTEXT["模型正文 + 阅读页<br/>保留来源、冲突、缺口与未定口径"]
-    SUMMARY["单公司完整摘要<br/>summary-prepare / summary-run"]
-    HANDOFF["第三阶段输入包<br/>公司摘要、元数据、来源哈希"]
-    PEER["多公司横评<br/>run_peer_research"]
-    DRAFT["正式研究 · 初稿"]
-    DRAW["本地绘图"]
-    REVIEW["正式研究 · 审阅<br/>读取实际图片"]
-    REDRAW["本地重绘"]
-    FINAL["正式研究 · 定稿<br/>读取修订图片"]
-    DELIVERY["最终正文 / 阅读页 / 图表<br/>来源、token、费用、缺口与哈希"]
-
-    RAW --> EXTRACT --> ALIGN --> CONTEXT
-    CONTEXT --> SUMMARY --> HANDOFF --> PEER
-    PEER -->|显式准备研究输入| DRAFT
-    DRAFT --> DRAW --> REVIEW --> REDRAW --> FINAL --> DELIVERY
-
-    CONTRACT["每批冻结输入、Prompt、请求与预算<br/>原始响应 / usage / 失败附件单独保留"]
-    CONTRACT -.约束.-> EXTRACT
-    CONTRACT -.约束.-> SUMMARY
-    CONTRACT -.约束.-> PEER
-    CONTRACT -.约束三轮执行.-> DRAFT
+    ENTRY["financial_pipeline.py run / Python / 受控 Bot 工具"] --> SPEC["ResearchSpec<br/>标的、财年、输入合同、预算"]
+    SPEC --> PLAN{"显式付费授权与预算？"}
+    PLAN -->|否| OFFLINE["离线计划<br/>不获取资料、解析或请求模型"]
+    PLAN -->|是| HOST["冻结 host / worker<br/>代码、输入、Prompt、tokenizer 哈希"]
+    HOST --> CACHE["跨批资料与阶段缓存检查<br/>按语义身份复用已完成产物"]
+    CACHE --> SOURCE["官方年报 / 修订发现<br/>原始价格快照"]
+    SOURCE --> HUB["data_hub 原件与中性全文解析"]
+    HUB --> EXTRACT["固定所有权合同 V2 提取"]
+    EXTRACT --> ALIGN["离线跨年整合<br/>不新增模型调用"]
+    ALIGN --> SUMMARY["单公司摘要<br/>不注入当前报价"]
+    SUMMARY --> PEER["经济分组与横评<br/>不注入当前报价"]
+    PEER --> AGENT["Agent 调查与公司专属 Python 建模<br/>本地原件 / 宿主公开取证 / 无网络容器"]
+    AGENT --> FREEZE["冻结研究成果<br/>来源、输入、代码、结果、检查、缺口"]
+    FREEZE --> DRAFT["研究初稿"]
+    DRAFT --> CHART1["按模型计算结果生成实际图片"]
+    CHART1 --> REVIEW["读取图片后审阅"]
+    REVIEW -->|无需模型修改| FINAL["读取当前冻结结果与图片后定稿"]
+    REVIEW -->|一次预算内返工| REWORK["Agent 修正 / 重算<br/>新冻结版本与新图片"]
+    REWORK --> FINAL
+    FINAL --> ARTIFACTS["报告 / 文件 / 阶段回执"]
+    HOST -.-> GATEWAY["model_gateway + research_llm<br/>共享容量、预算与实际尝试账本"]
+    HOST -.-> REPAIR["维修候选 → 宿主测试 → 确认<br/>新冻结版本，不原地改运行合同"]
 ```
 
-这条完整路径组合了多个显式命令，不是 `financial_pipeline.py` 一条命令自动执行到最终报告。正式研究入口也接受已声明的其他材料；上图表示本聊天四大行采用的交接路线，而不是所有研究都必须先横评。
+`financial_pipeline.py run` 已能通过 `research_pipeline` 编排完整流程；原 `extract/context/summary/stage3` 分阶段命令保留为显式兼容入口，不能再把它们画成唯一运行方式。未授权的离线计划不会偷偷启动付费工作。
 
-第一阶段使用提取模型；第二阶段是本地机械整合，不新增模型调用。摘要、横评和正式研究分别有自己的准备与执行边界。`research_report.py` 的固定三轮依次为初稿、审阅、定稿；图片在轮次之间本地生成，后续轮次读取实际图片。
+新研究默认先调查建模，三轮写作读取冻结成果。既有有效报告继续复用；显式重新研究建立新版本。图表来自实际计算结果，沙箱或证据不足保留 partial；本次代码已部署，但执行成功与真实研究质量验收仍分开；本次未新增付费三轮研究。实现见[调查建模](../src/research_pipeline/investigation.py)与[离线计算沙箱](../src/research_pipeline/model_sandbox.py)。
 
-## 关键边界
+`extract --subagent --subagent-native` 是可选本地 Codex transport，只有显式选择时才需要 CLI 和账号；当前生产未安装或启用。普通服务、日报及 API 财报链路不依赖 Codex。
 
-1. **公共执行器的覆盖范围。** 日报、简报、飞书会话和个人监控任务接入公共执行器。策略优化仍由原进程合同与独立子进程执行；财报研究是独立批次，不能从公共队列并发数推断研究 API 并发数。
-2. **服务宿主与传输。** `RuntimeService` 组合调度器、Bot 与执行器；飞书会话由 Python 持有凭据、模型 HTTP、工具校验和审计。Pi 是可选编排桥，不独立取得文件系统、Shell 或模型凭据。HTTP/HTTPS 管理监听入口已经退役。
-3. **个人监控与策略账户分开。** 个人持仓、提醒、版本及 outbox 由个人监控业务库维护；共享执行器及连接 provider 不等于合并业务账户。计划任务和 watchdog 属于本机运维，不能据此认定生产已部署同一候选版本。
-4. **研究与策略没有隐式接线。** 研究报告不会自动变成交易信号或活动策略。基本面特征只有经显式历史面板、时点与可用性合同接入策略；候选仍需回测、留出与晋升门槛。
-5. **成交含义。** 图中 `TradePlan`、Backtester 和参考持仓描述模拟成交、评价与账户记录，不能据此宣称已连接券商实盘下单。
-6. **源资料状态逐层区分。** 原件存在、文本可读、接口字段有值、模型提取成功、财务口径对齐和研究可用是不同状态。采集局部缺口标记为 partial，并保留实际数据；源站封禁、磁盘不足等全局问题另行处理。
-7. **费用与预留分开。** 返回 usage 的计价、账户范围的实际扣减和在途最大预留分列；缺 usage 保持未知。历史最大预留不是实际消费，模型 completion 已包含 reasoning，不重复相加。
-8. **输出与发送分开。** 生成研究 HTML、PDF 或图表不自动调用通知管理器。日常业务需要显式通知调用，个人提醒使用自己的投递适配器；发送回执区分成功、失败和未知。
-9. **受支持旧入口只读。** `src/fundamental_quant`的当前service/archive/reporting保留历史查询与已有文件指针；争议旧手工源码仍保留，其必要接口显式隔离为legacy_reporting及仅含两个纯助手的legacy_service。当前宿主没有注册旧执行、自动研究、补修或发布调度；旧worker仍指向blocked服务。`data/fundamental_quant` 下仍可保存 tokenizer、源资料及历史文件，目录名称不能用于判断旧执行引擎仍在运行。
-10. **保留能力与已终止实验分开。** `fundamental_embedding` 只保留仍被其他业务使用的数据/估值适配，`experiments` 保留既有 benchmark 等工具；指定MOE训练、旧评分/消融与Ke实验已删除，后续不再尝试，见[终止记录](development/failed_quant_experiments_retirement_20261030.md)。助手的原研究worker队列与Docker沙箱仍保留，没有迁入公共对话队列，也不等于恢复这些实验。
+材料身份、阶段语义和已有 attempt 决定缓存与恢复行为；部分完成、失败或发送结果未知不是自动补发授权。公司局部失败可形成 partial，预算、账本或完整性问题阻止新的付费派发。Pi 维修与研究任务共享容量，但维修不能自行改业务 Prompt 或提升预算。详见[研究启动指南](guide/research_pipeline.md)和[平台使用指南](guide/reusable_platform.md)。
+
+## 当前配置与实现边界
+
+| 本机兼容快照 | 2026-11-01 文件配置 / 代码行为（不代表当前生产） |
+|---|---|
+| 报告展示 | 技术信号关闭；`returns_only`；曲线路径 `data/strategy_returns/ke_24m.json`，最大年龄 7 天 |
+| 固定调度 | 文件列有 09:50 / 14:30 简报，跳过周末；日报 19:00、Asia/Shanghai。`daily_enabled` 未显式设置，代码默认 true；`optimize_enabled` 未显式设置，默认 false |
+| 飞书 | Bot enabled；assistant 未显式启用，默认关闭；普通循环默认 native，资料检索策略仍强制 Pi |
+| A 股搜参 | technical_ensemble / local_genetic / standard / a_share_84m |
+| 港股搜参 | regime_pullback / simulated_annealing / standard / hk_84m |
+| 美股搜参 | percentile / random / exploratory / us_84m |
+| 快照边界 | 以上为旧本机 YAML / 代码快照，不能覆盖下表的生产核验 |
+
+| 生产核验项 | 2026-11-03 / v1.23.0 |
+|---|---|
+| 代码 | ae48293；870 项公共代码/运行资产逐文件匹配，进程构建已验证 |
+| 固定调度 | 注册列表为空；固定日报、启动日报和固定简报关闭，定时优化关闭 |
+| 报告 | technical_signals.enabled: false；returns_only；沿用既有日报/简报链路 |
+| 飞书助手 | enabled；Pi；deepseek-flash；服务与传输心跳就绪 |
+| 状态保护 | 私有配置、触发历史及策略状态保持原值；数据库不回卷 |
+| 研究边界 | 离线 Docker 协议已验证；未执行新的付费研究；Codex native 未安装/启用 |
+
+- **既有策略版本仍有效。** YAML 的搜索或执行参数变化，不直接使已绑定的旧策略、参数与执行合同失效；配置与冻结产物承担不同职责。
+- **执行器已统一实现，状态尚按域分开。** 不把两个 SQLite 队列画成同一个，不把研究费用投影当成第二份权威账单。
+- **旧研究退出执行链。** `fundamental_quant` 当前仅四个历史读取文件；旧运行/周报入口返回退役结果，不再调用模型。`legacy_service.py`、`legacy_reporting.py` 与旧手工研究脚本已从当前提交和生产代码中删除。
+- **保留的适配器仍有消费者。** `fundamental_embedding` 保留数据、行业及 PB/CAPM 等适配；已退役 MOE、旧评分和旧 Ke 实验不属于现行研究。助手的手工回测沙箱仍在，不能与旧 fundamental_quant 一起视为删除。
+- **仍有量化层依赖债务。** TradePlan、PortfolioTrace、EvaluationReport 位于 `strategy.api`；`backtest.api` 仍转导出，回测 engine 仍使用 `search.config`。目前 `shared_contracts` 提供 authority 合同，并未完成这些量化合同的下沉。
 
 ## 模块与源码导航
 
-| 范围 | 主要入口与实现 | 职责 |
+| 范围 | 源码入口 | 职责 |
 |---|---|---|
-| 主入口 | [main.py](../main.py) | CLI 分流、日报业务、优化、审计与活动策略消费 |
-| 服务宿主 | [runtime_service.py](../src/core/runtime_service.py)、[schedule_manager.py](../src/core/schedule_manager.py) | 生命周期、调度、接收器、心跳及计划停止 |
-| 公共执行器 | [execution.py](../src/core/execution.py)、[execution_health.py](../src/core/execution_health.py) | 持久入队、任务分道、并发池、租约、恢复与健康事件 |
-| 报表执行适配 | [report_execution.py](../src/core/report_execution.py)、[report_cli.py](../src/core/report_cli.py) | CLI / Bot / 调度共用任务入口，内部 worker 调用报表业务 |
-| 交互与助手 | [interactive](../src/interactive)、[assistant/service.py](../src/interactive/assistant/service.py)、[Pi 桥说明](../tools/feishu-pi/README.md) | 认证入站、命令、会话、受控工具、提案及编排 |
-| 个人监控 | [personal_monitor](../src/personal_monitor)、[personal_monitor_runtime.py](../src/personal_monitor_runtime.py) | 业务存储、持仓、提醒、来源行情及投递 |
-| 数据接入 | [data_source.py](../src/data/data_source.py)、[data_fetcher.py](../src/core/data_fetcher.py)、[data](../src/data) | 多源行情、缓存、技术指标、公告、公司行动与时点数据 |
-| 标的画像 | [instruments](../src/instruments) | 标的分类、财务推导、基金穿透及审计 |
-| 策略 | [strategy](../src/strategy) | 策略注册、行情与基本面面板、信号和 TradePlan 合同 |
-| 搜索与晋升 | [search](../src/search)、[promotion.py](../src/search/promotion.py) | Solver、评价、门槛、验证、版本产物及按市场相对晋升 |
-| 仿真与参考持仓 | [backtest](../src/backtest)、[ref_portfolio.py](../src/core/ref_portfolio.py) | 模拟成交、现金流、基准、评价与版本化执行合同 |
-| 告警链路 | [condition_checker.py](../src/core/condition_checker.py)、[alert_processor.py](../src/alerting/alert_processor.py)、[alert_state_manager.py](../src/alerting/alert_state_manager.py) | 价格阈值与区间状态；与活动策略信号汇入 Session 后由通知层分发 |
-| 报告与通知 | [notification](../src/notification)、[alerting](../src/alerting)、[templates](../src/templates) | 报告渲染、条件报警、渠道投递及回执 |
-| 源资料批次 | [backfill_ashare_sources.py](../scripts/backfill_ashare_sources.py)、[采集指南](guide/ashare_source_backfill.md) | 筛选、原件/行情/免费财务归档、限速、断点复用与缺口 |
-| 财报统一 CLI | [financial_pipeline.py](../scripts/financial_pipeline.py)、[fundamental_data](../src/fundamental_data) | 提取、离线对齐、摘要准备/执行与第三阶段交接 |
-| 提取与对齐实现 | [build_fundamental_data_v2.py](../scripts/build_fundamental_data_v2.py)、[build_financial_context.py](../scripts/build_financial_context.py) | 年度分块提取、结构校验、跨年正文与阅读页 |
-| 摘要与横评 | [run_company_summary.py](../scripts/run_company_summary.py)、[run_peer_research.py](../scripts/run_peer_research.py)、[handoff.py](../src/fundamental_data/handoff.py) | 模型传输与回执、单公司摘要、横评及输入交接 |
-| 正式研究 | [research_report.py](../scripts/research_report.py)、[research_inputs.py](../scripts/research_inputs.py)、[research_rounds.py](../scripts/research_rounds.py)、[research_render.py](../scripts/research_render.py) | 冻结材料、三轮研究、本地绘图与最终交付；复用摘要执行器及交接依赖 |
-| 共用数据与保留诊断 | [fundamental_embedding](../src/fundamental_embedding)、[experiments](../src/experiments) | 保留业务的时点数据、估值适配与 benchmark；指定MOE/旧评分/Ke实验已终止 |
-| 旧历史接口 | [fundamental_quant](../src/fundamental_quant)、[退役说明](development/research_retirement_20261024.md) | 只读历史元数据与已有报告路径 |
-| 配置与运维 | [config_store.py](../src/core/config_store.py)、[config](../config)、[tests](../tests)、[ci_cd_deploy.py](../ci_cd_deploy.py) | 配置合同、Prompt/Schema、测试、部署与运行核验 |
+| 业务组合与身份 | [platform_composition](../src/platform_composition.py)、[shared_contracts](../src/shared_contracts/authority.py) | 项目默认值与显式 authority |
+| 公共执行器 | [task_runtime](../src/task_runtime/execution.py)、[request_policy](../src/task_runtime/request_policy.py) | 队列、容量、恢复及源站限制 |
+| 资料底座 | [data_hub](../src/data_hub) | 原件、解析、索引、行情原始值 |
+| 模型底座 | [model_gateway](../src/model_gateway) | 请求、响应、尝试与用量账本 |
+| Agent 底座 | [agent_runtime](../src/agent_runtime/harness.py)、[飞书适配器](../src/interactive/assistant/harness.py) | 可注入的循环、桥与宿主策略 |
+| 在线宿主与报告 | [RuntimeService](../src/core/runtime_service.py)、[report_execution](../src/core/report_execution.py)、[main.py](../main.py) | 生命周期、调度、报表 worker 与业务组合 |
+| 受管触发器 | [triggers](../src/triggers) | 条件、时间、快照、动作、投递回执 |
+| 个人监控 | [personal_monitor](../src/personal_monitor) | 持仓、提醒、版本、历史、业务 outbox |
+| 数据接入 | [data](../src/data)、[instruments](../src/instruments) | 行情、PIT、公司行动、财务推导与缓存 |
+| 策略与仿真 | [strategy](../src/strategy)、[backtest](../src/backtest)、[ref_portfolio](../src/core/ref_portfolio.py) | TradePlan、成交、现金流及绑定账户 |
+| 搜参 | [search](../src/search)、[promotion](../src/search/promotion.py)、[artifacts](../src/search/artifacts.py) | Solver、评价、验证、晋升与版本 |
+| Ke 展示 | [return_curves](../src/strategy/return_curves.py)、[report_policy](../src/notification/report_policy.py) | 已完成曲线验收与报告模式 |
+| 统一研究 | [research_pipeline](../src/research_pipeline)、[CLI](../scripts/financial_pipeline.py) | DAG、冻结执行、预算、缓存、修复和状态 |
+| 财报阶段合同 | [fundamental_data](../src/fundamental_data)、[财报指南](guide/financial_pipeline.md)、[正式研究](guide/research_report.md) | 提取、对齐、摘要、横评与三轮产物 |
+| 历史与保留适配 | [fundamental_quant](../src/fundamental_quant)、[fundamental_embedding](../src/fundamental_embedding) | 只读历史和仍有消费者的数据适配 |
+| 输出与运维 | [notification](../src/notification)、[ci_cd_deploy](../ci_cd_deploy.py)、[tests](../tests) | 渲染、渠道投递、发布与核验 |
 
 ## 状态和文档维护
 
-本图不固化 PID、实时进度、API 余额或运行批次费用。运行状态应读取具体批次的 launch/status、回执、冻结清单和验收报告；历史产物继续保持原样。
+本图不固化 PID、实时进度、API 余额或运行批次费用。运行事实从相应任务库、心跳、launch/status、冻结清单与回执核对。新增入口、迁移状态库、改变消费者或退役模块时，应同步修改箭头与本页归属表；设计方案不能自动视为已落地或已部署。
 
-2026-10-25 的默认正式研究配置使用输入驱动的公司与行业范围，旧工程/白酒案例模板仅作为历史版本保留，不属于默认通用研究合同。旧五脚本目标未实现，相关旧执行说明已合并至[退役记录](development/research_retirement_20261024.md)。
+以下附录仅保存原时点证据。后续 2026-10-30 23:34 文件与心跳核查见[在线离线差异收尾](development/source_parity_cleanup_20261030.md)；历史结论不得覆盖本页 2026-11-03 的源码与部署边界。
 
-修改架构时同步检查实际入口、执行机制、依赖和输出消费者，避免只更新模块名称而保留过时箭头。
+## 本机与线上环境对照
 
+此表为修复前环境快照，修复候选未部署。快照日期：2026-10-29。线上于 **09:03（Asia/Shanghai）** 经 SSH 只读核对配置、关键源码和既有对话审计；本机读取当前主配置及源码。下表不是全量源码同步证明，也不代表新发送了一条消息完成端到端验收。
+
+| 项目 | 2026-10-29 本机主配置 / 源码 | 线上已核对配置 / 源码 |
+|---|---|---|
+| 飞书助手开关 | 未显式配置，默认 `enabled: false` | `enabled: true` |
+| 对话循环后端 | 未显式配置，默认 `native`；助手关闭时不运行 | `harness_backend: pi` |
+| 普通对话模型 | 默认 `deepseek-flash`；未因源码存在就运行 | `deepseek-flash` |
+| thinking | 模型客户端发送 `enabled`，强度默认 `high`；仅在实际模型路径生效 | 模型客户端发送 `enabled`，配置强度 `high` |
+| 最大模型调用轮数 | 默认 6 | 配置 16 |
+| 最大工具调用次数 | 默认 48 | 配置 48 |
+| 通用 Pi 桥 | 代码保留；助手启用后的研究候选强制选 Pi，当前主配置仍关闭助手 | 已选作飞书助手后端，尚未替换本轮问答修复 |
+| 关键文件版本 | 09:03时 `harness.py`、`settings.py` 与线上哈希相同；之后本轮修改了本机 harness/service，候选未部署 | 保留09:03所读版本，不能用本机候选解释现行线上行为 |
+| 本机财报研究 | 显式批次脚本，不接 Pi；旧研究专用接入已退役 | 本轮未完整核对线上财报研究模块，不能将本机退役结论外推 |
+| 本机测试任务 | `TradeEyesPersonalMonitorTest` 已主动停用 | 不代表生产助手停用；本次生产服务为 active/running |
+
+差异来源：10 月 28 日公共层发布是限定 38 文件的生产覆盖，保留线上其他业务补丁与配置；没有整体同步本机的研究/优化实验，也没有拿本机关闭的助手配置覆盖线上。因此架构需要同时记录代码能力、配置条件和环境版本，不能只画一条无条件的“飞书 → Pi → 研究”。
+
+上述配置摘录、关键源码 SHA-256 及版本差异的脱敏快照保存于 `.tmp/feishu_quality_audit_20261029/architecture_snapshot.json`。原对话证据单独保留，不复制到文档。历史审计能证明此前出现过多轮调用和直接回复两种路径；不能由某个历史结果保证当前每次回答都会检索或思考。
 
 ## 清理前未提交改动与架构模块对照（历史快照）
 
@@ -478,4 +382,4 @@ flowchart TB
 
 ### 2026-10-30 本地优先源码合并
 
-所选本地业务与生产9m评价节点已按修改块合并；4个历史壳/17个基本面适配保留，争议55旧文件不删不自动注册。旧私有导入只改向显式legacy模块，未重建旧服务。详见[源码合并范围和本轮证据](development/local_preferred_merge_scope_20261030.md)。真实生产状态仍以之后部署核验为准；本次未推送或部署。
+所选本地业务与生产9m评价节点已按修改块合并，历史经过见[源码合并范围和当时证据](development/local_preferred_merge_scope_20261030.md)。11月1日已按用户要求删除旧研究实现，当前只剩4个历史只读文件，以及14个仍有调用的基本面数据/估值工具；此前“55个争议旧文件保留”的决定不再适用。真实生产状态仍以之后部署核验为准；本次源码清理未推送或部署。
