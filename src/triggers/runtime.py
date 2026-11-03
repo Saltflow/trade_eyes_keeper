@@ -21,6 +21,11 @@ from ..core.report_execution import (
     runtime_path,
 )
 from . import TriggerEvaluator, TriggerStore, collect_dependencies
+from .collection_schedule import (
+    collection_schedule,
+    due_collection_slot,
+    next_collection_slot,
+)
 from .evaluator import event_occurrences
 from .facts import FactSnapshot, load_trigger_facts, monitored_symbols
 from .schedule import due_times
@@ -165,6 +170,11 @@ class TriggerRuntime:
             dependencies = set().union(
                 *(collect_dependencies(item["spec"]) for item in active)
             )
+            config = self.config_provider()
+            if collection_schedule(config) is not None:
+                self.config = copy.deepcopy(config)
+                self._scheduled_collection(dependencies, now)
+                return
             interval = (
                 self.POLL_SECONDS
                 if any(path.startswith("quotes.") for path in dependencies)
@@ -196,6 +206,80 @@ class TriggerRuntime:
             logger.warning("Trigger timer unavailable: %s", self.last_error)
         finally:
             self._arm()
+
+    def _scheduled_collection(self, dependencies, now):
+        """Only slot jobs read sources; CRUD/refresh hints evaluate cached facts."""
+        if not dependencies:
+            self._dirty = False
+            return
+        with self._lock:
+            old = (
+                self.execution.store.get(self._pending_run)
+                if self._pending_run
+                else None
+            )
+            if old is not None and old["status"] not in TERMINAL:
+                return
+            slot = due_collection_slot(self.config, now)
+            request_id = "collection:" + slot.isoformat() if slot else None
+            with self.execution.store.connection() as db:
+                recorded = (
+                    request_id
+                    and db.execute(
+                        "SELECT id FROM execution_runs WHERE job_id=? AND request_id=?",
+                        ("triggers.evaluate", request_id),
+                    ).fetchone()
+                )
+            if request_id and not recorded:
+                payload = {"collection_slot": slot.isoformat()}
+                source = "scheduled_data_collection"
+                self._last_data_poll = now
+            elif self._dirty:
+                payload = {"cached_only": True}
+                request_id = "cached:" + uuid4().hex
+                source = "trigger_cached_evaluation"
+            else:
+                return
+            self._pending_run = self.execution.submit(
+                "triggers.evaluate", payload, request_id=request_id, source=source
+            )
+            self._dirty = False
+
+    def _cached_facts(self, config, dependencies):
+        """Preserve source clocks; reevaluation never turns into acquisition."""
+        from .snapshots import load_report_snapshot
+
+        now = self.clock()
+        slow = {path for path in dependencies if not path.startswith("quotes.")}
+        key = self._facts_key(slow, config, load_report_snapshot(config))
+        with self._lock:
+            snapshot = (
+                copy.deepcopy(self._snapshot)
+                if self._snapshot is not None
+                else FactSnapshot(as_of=now, observed_at=now)
+            )
+            snapshot.facts = {
+                path: fact
+                for path, fact in snapshot.facts.items()
+                if path.startswith("quotes.")
+            }
+            snapshot.events = []
+            slow_snapshot = (
+                self._slow_snapshot if self._slow_loaded_key == key else None
+            )
+            if slow_snapshot is not None:
+                snapshot.facts = {
+                    **slow_snapshot.facts,
+                    **{
+                        path: fact
+                        for path, fact in snapshot.facts.items()
+                        if path.startswith("quotes.")
+                    },
+                }
+                snapshot.events = copy.deepcopy(slow_snapshot.events)
+        snapshot.as_of = now
+        snapshot.wildcard_symbols = tuple(monitored_symbols(config))
+        return snapshot
 
     def _has_pending(self):
         with self.store._connection() as db:
@@ -381,7 +465,6 @@ class TriggerRuntime:
             self._arm()
 
     def _evaluate(self, payload, ctx):
-        del payload
         try:
             if ctx.cancel_event.is_set():
                 return RunResult("skipped", "trigger_evaluation_cancelled")
@@ -396,9 +479,14 @@ class TriggerRuntime:
                 *(collect_dependencies(item["spec"]) for item in self.store.active())
             )
             if dependencies:
-                snapshot = self._load_facts(
-                    config, dependencies, cancelled=ctx.cancel_event.is_set
-                )
+                if collection_schedule(config) is not None and not payload.get(
+                    "collection_slot"
+                ):
+                    snapshot = self._cached_facts(config, dependencies)
+                else:
+                    snapshot = self._load_facts(
+                        config, dependencies, cancelled=ctx.cancel_event.is_set
+                    )
                 if ctx.cancel_event.is_set():
                     return RunResult("skipped", "trigger_evaluation_cancelled")
                 self.evaluator.evaluate(snapshot, now=self.clock())
@@ -560,9 +648,20 @@ class TriggerRuntime:
         self.store.finish_exhausted(now=self.clock())
 
     def health(self):
-        return {
+        result = {
             "started": self.started,
             "active_count": len(self.store.active()),
             "last_evaluated_at": self.last_evaluated_at,
             "error": self.last_error or None,
         }
+        schedule = collection_schedule(self.config)
+        if schedule is not None:
+            result.update(
+                collection_mode="scheduled",
+                collection_times=[slot.strftime("%H:%M") for slot in schedule[0]],
+                collection_timezone=str(schedule[1]),
+                next_collection_at=next_collection_slot(
+                    self.config, self.clock()
+                ).isoformat(),
+            )
+        return result
