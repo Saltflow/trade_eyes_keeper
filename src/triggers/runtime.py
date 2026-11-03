@@ -557,6 +557,7 @@ class TriggerRuntime:
                 and run["status"] == "queued"
             ):
                 self.execution.cancel(run["id"])
+        self.store.finish_exhausted(now=self.clock())
 
     def health(self):
         return {

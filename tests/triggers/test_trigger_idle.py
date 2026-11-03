@@ -30,3 +30,25 @@ def test_today_recurring_slot_already_admitted_does_not_create_empty_runs(tmp_pa
         trigger._timer()
     with execution.store.connection() as db:
         assert db.execute("SELECT count(*) FROM execution_runs").fetchone()[0] == 0
+
+
+def test_idle_timer_retires_expired_window_without_a_report_job(tmp_path):
+    now = datetime(2026, 11, 3, 2, 0, tzinfo=timezone.utc)
+    config = {"storage": {"data_dir": str(tmp_path)}}
+    execution = ExecutionRuntime(ExecutionStore(runtime_path(config)))
+    trigger = TriggerRuntime(config, execution, clock=lambda: now)
+    trigger.store.create(
+        "alice",
+        {
+            "schedule": {"at": "2026-11-02T09:50+08:00", "window_seconds": 60},
+            "actions": [{"kind": "daily", "payload": {"chat_id": "chat"}}],
+        },
+        "missed",
+    )
+    trigger.started = True
+    trigger._timer()
+    assert trigger.store.get("alice", 1)["state"] == "done"
+    assert trigger.store.list("alice") == []
+    assert trigger.store.actions("alice") == []
+    with execution.store.connection() as db:
+        assert db.execute("SELECT count(*) FROM execution_runs").fetchone()[0] == 0

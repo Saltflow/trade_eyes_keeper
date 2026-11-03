@@ -10,7 +10,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-from .models import ACTION_KINDS, normalize_spec, now_utc
+from .models import ACTION_KINDS, normalize_spec, now_utc, timestamp
+from .schedule import due_times, next_due
 
 
 def _encode(value):
@@ -313,12 +314,12 @@ class TriggerStore:
             return False
         spec = json.loads(definition["spec"])
         state = db.execute(
-            "SELECT fired_once FROM trigger_state WHERE owner=? AND number=?",
+            "SELECT fired_once,last_evaluated_at FROM trigger_state WHERE owner=? AND number=?",
             (owner, number),
         ).fetchone()
         finished = spec["match_policy"] == "once" and bool(state[0])
         schedule = spec.get("schedule", {})
-        if schedule.get("kind") == "dates":
+        if schedule:
             seen = {
                 row[0]
                 for row in db.execute(
@@ -326,8 +327,21 @@ class TriggerStore:
                     (owner, number),
                 )
             }
-            finished = finished or all(
-                "schedule:" + value in seen for value in schedule["times"]
+            moment = timestamp(stamp)
+            previous = timestamp(state[1]) if state[1] else None
+            finished = (
+                finished
+                or (
+                    schedule["kind"] == "dates"
+                    and all("schedule:" + value in seen for value in schedule["times"])
+                )
+                or (
+                    next_due(schedule, moment) is None
+                    and all(
+                        "schedule:" + due.isoformat() in seen
+                        for due in due_times(schedule, moment, previous)
+                    )
+                )
             )
         if finished:
             db.execute(
@@ -335,6 +349,13 @@ class TriggerStore:
                 (stamp, owner, number),
             )
         return finished
+
+    def finish_exhausted(self, now=None):
+        """Retire spent rules even when an expired window produced no action."""
+        stamp = now_utc(now).isoformat()
+        with self.transaction() as db:
+            for trigger in self.active(db=db):
+                self._finish_if_settled(db, trigger["owner"], trigger["number"], stamp)
 
     @staticmethod
     def _cancel(db, owner, number, stamp):

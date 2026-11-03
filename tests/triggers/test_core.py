@@ -484,6 +484,112 @@ def test_all_dated_occurrences_settle_before_done_and_edit_can_add_future_time(s
     )
 
 
+@pytest.mark.parametrize(
+    "schedule,expected",
+    [
+        ({"at": "2026-11-02T09:50+08:00", "window_seconds": 60}, "done"),
+        ({"at": "2026-11-02T09:50+08:00"}, "active"),
+        (
+            {
+                "times": ["2026-11-02T09:50+08:00", "2026-11-04T09:50+08:00"],
+                "window_seconds": 60,
+            },
+            "active",
+        ),
+        ({"kind": "daily", "at": "09:50", "end_date": "2026-11-02"}, "done"),
+        (
+            {
+                "kind": "weekly",
+                "at": "09:50",
+                "weekdays": [0],
+                "end_date": "2026-11-02",
+            },
+            "done",
+        ),
+        ({"kind": "daily", "at": "09:50"}, "active"),
+        ({"kind": "daily", "at": "09:50", "end_date": "2026-11-03"}, "active"),
+    ],
+)
+def test_only_exhausted_schedule_opportunities_retire(store, schedule, expected):
+    moment = datetime.fromisoformat("2026-11-03T10:00+08:00")
+    store.create(
+        "alice", {"schedule": schedule, "actions": [{"kind": "daily"}]}, "finite"
+    )
+    store.finish_exhausted(now=moment)
+    record = store.get("alice", 1)
+    assert record["state"] == expected
+    assert record["last_result"] is None  # Expiration is not successful delivery.
+    assert store.actions("alice") == []
+    assert bool(store.list("alice")) is (expected == "active")
+
+
+def test_last_bounded_recurring_slot_waits_for_all_action_receipts(store):
+    moment = datetime.fromisoformat("2026-11-02T10:00+08:00")
+    store.create(
+        "alice",
+        {
+            "schedule": {"kind": "daily", "at": "09:50", "end_date": "2026-11-02"},
+            "actions": [{"kind": "daily"}, {"kind": "brief"}],
+        },
+        "last-slot",
+    )
+    TriggerEvaluator(store).evaluate(now=moment)
+    actions = store.claim_pending(now=moment)
+    assert len(actions) == 2
+    store.finish_exhausted(now=moment + timedelta(days=1))
+    assert store.get("alice", 1)["state"] == "active"
+    for index, action in enumerate(actions):
+        store.mark_submitted(action["id"], "run" + action["id"], now=moment)
+        store.mark_completed(action["id"], status="succeeded", now=moment)
+        assert store.get("alice", 1)["state"] == ("done" if index else "active")
+
+
+def test_bounded_catchup_keeps_unconsumed_history_until_window_expires(store):
+    moment = datetime.fromisoformat("2026-11-03T10:00+08:00")
+    store.create(
+        "alice",
+        {
+            "schedule": {
+                "kind": "weekly",
+                "at": "09:50",
+                "weekdays": [0],
+                "end_date": "2026-11-02",
+                "catch_up": True,
+                "window_seconds": 7 * 86400,
+            },
+            "actions": [{"kind": "daily"}],
+        },
+        "catchup",
+    )
+    with store.transaction() as db:
+        store.record_state(
+            "alice", 1, {"last_evaluated_at": "2026-11-01T00:00:00+08:00"}, db=db
+        )
+    store.finish_exhausted(now=moment)
+    assert store.get("alice", 1)["state"] == "active"
+    store.finish_exhausted(now=moment + timedelta(days=8))
+    assert store.get("alice", 1)["state"] == "done"
+
+
+def test_missing_event_or_price_facts_do_not_prove_rule_exhausted(store):
+    store.create("alice", price_spec(), "price")
+    store.create(
+        "alice",
+        {
+            "event": {
+                "kind": "announcement.q3_report",
+                "report_period": "2026Q3",
+                "symbols": ["601088"],
+                "day_offsets": [0, 1],
+            },
+            "actions": [{"kind": "daily"}],
+        },
+        "event",
+    )
+    store.finish_exhausted(now=datetime.fromisoformat("2027-01-01T10:00+08:00"))
+    assert len(store.list("alice")) == 2
+
+
 def test_two_evaluators_cannot_double_admit_same_crossing(store):
     store.create("alice", price_spec(), "racing-evaluation")
     snapshot = Snapshot({"quotes.601088.last": fact(49)})
