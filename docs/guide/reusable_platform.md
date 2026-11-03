@@ -11,7 +11,7 @@
 | 源站访问状态 | `src/task_runtime/request_policy.py` | 原SQL/文件限流状态只读导入，不能通过新入口清空封禁 |
 | 原件、中立解析、行情原响应 | `src/data_hub/` | 旧catalog、公告、研究/V2/API准备均通过受校验引用/共享解析接入 |
 | 模型副作用与账本 | `src/model_gateway/` | 旧summary/peer/API/V2及新研究使用同一准入与真实attempt账本 |
-| Pi/native工具循环 | `src/agent_runtime/` | `interactive/assistant/harness.py`只注入桥位置、工具和渠道错误策略 |
+| Pi工具桥接 | `src/agent_runtime/` | `interactive/assistant/harness.py`只注入桥位置、工具和渠道错误策略；v1.23.1已移除Python native循环并部署 |
 | 财务领域编排 | `src/research_pipeline/` | 仍是一份领域实现；不复制为第二套“financial_research”源码 |
 
 公共库不反向导入财务、Bot、脚本或项目组合层。资料库唯一拥有原件索引和中立解析；模型网关唯一拥有实际模型副作用证据，领域库原账本保留为业务记录/投影和历史读取。费用不能把两处投影相加。领域合同、prompt与输出正文不由通用库修改。
