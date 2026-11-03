@@ -182,8 +182,9 @@ class AnnouncementFetcher:
         """Strict, unenriched disclosure windows; failures are never empty success.
 
         This additive API deliberately bypasses legacy list fallbacks, PDF reads,
-        caches and LLM extraction. A-share/fund discovery uses official CNINFO
-        identity and pagination; HK/US use the existing strict official sources.
+        caches and LLM extraction. Companies use official CNINFO identity and
+        pagination; funds share the SSE/CNINFO metadata adapters with research.
+        HK/US use the existing strict official sources.
         """
         observed = observed_at or datetime.now(ZoneInfo("Asia/Shanghai"))
         if observed.tzinfo is None or start > end:
@@ -209,8 +210,19 @@ class AnnouncementFetcher:
             try:
                 _announcement_budget(cancelled, deadline)
                 if re.fullmatch(r"\d{6}", code):
-                    status["source"] = "cninfo"
-                    items = self._fetch_cninfo_status_window(
+                    from ..instruments.classifier import classify_instrument
+                    from ..instruments.models import InstrumentType
+
+                    fund = classify_instrument(code) != InstrumentType.EQUITY
+                    status["source"] = (
+                        "sse" if fund and code.startswith("5") else "cninfo"
+                    )
+                    fetch = (
+                        self._fetch_fund_disclosures
+                        if fund
+                        else self._fetch_cninfo_status_window
+                    )
+                    items = fetch(
                         code,
                         start,
                         end,
@@ -249,6 +261,36 @@ class AnnouncementFetcher:
                 status["error"] = str(exc)
             result[code] = status
         return result
+
+    def _fetch_fund_disclosures(
+        self,
+        code,
+        start,
+        end,
+        *,
+        max_pages=20,
+        cancelled=None,
+        deadline=None,
+        reports_only=False,
+    ):
+        from .fund_announcements import (
+            CninfoFundAnnouncementProvider,
+            SseFundAnnouncementProvider,
+        )
+
+        http = _AnnouncementBudgetHTTP(self._authority_http(), cancelled, deadline)
+        if code.startswith("5"):
+            return SseFundAnnouncementProvider(
+                http_get=http.get, max_pages=max_pages
+            ).fetch_disclosures(code, start, end)
+        return CninfoFundAnnouncementProvider(http=http, max_pages=max_pages).fetch(
+            code,
+            start,
+            end,
+            category="category_ndbg_jjgg;category_bndbg_jjgg;category_jdbg_jjgg;"
+            if reports_only
+            else "",
+        )
 
     def _fetch_cninfo_status_window(
         self, code, start, end, *, max_pages, cancelled=None, deadline=None
@@ -445,17 +487,19 @@ class AnnouncementFetcher:
                 stock_code = str(stock_code).strip()
                 logger.info(f"开始获取股票 {stock_code} 的公告（窗口: {fetch_days}天）")
 
-                # 跳过ETF基金（它们没有公司公告，只有基金公告）
-                # ETF代码通常以51、52开头，使用不同的公告系统
-                if len(stock_code) == 6 and stock_code.startswith(
-                    ("51", "52", "15", "16", "18")
-                ):
-                    logger.info(f"跳过ETF基金 {stock_code}，ETF使用不同的公告系统")
-                    announcements[stock_code] = []
-                    continue
+                from ..instruments.classifier import classify_instrument
+                from ..instruments.models import InstrumentType
+
+                fund = (
+                    stock_code.isdigit()
+                    and len(stock_code) == 6
+                    and classify_instrument(stock_code) != InstrumentType.EQUITY
+                )
 
                 # 根据股票代码判断交易所
-                if stock_code.isdigit() and len(stock_code) == 5:
+                if fund:
+                    exchange = "fund"
+                elif stock_code.isdigit() and len(stock_code) == 5:
                     exchange = "hkex"
                 elif len(stock_code) == 6 and stock_code.startswith(("6", "5", "9")):
                     exchange = "sse"  # 上海证券交易所
@@ -659,7 +703,21 @@ class AnnouncementFetcher:
             f"_fetch_from_exchange: stock_code={stock_code}, exchange={exchange}, fetch_days={fetch_days}, original_days={original_days}, dividend_days={dividend_days}"
         )
 
-        if exchange == "hkex":
+        if exchange == "fund":
+            from .fund_announcements import is_fund_report
+
+            today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+            result = [
+                item
+                for item in self._fetch_fund_disclosures(
+                    stock_code,
+                    today - timedelta(days=fetch_days),
+                    today,
+                    reports_only=True,
+                )
+                if is_fund_report(item)
+            ]
+        elif exchange == "hkex":
             if self._hk_announcements is None:
                 from .hk_announcements import HkexAnnouncementProvider
 
@@ -694,7 +752,7 @@ class AnnouncementFetcher:
                 f"股票 {stock_code} 获取到 {len(result)} 条公告，过滤后保留 {len(filtered_result)} 条"
             )
             # 现有 LLM 分红金额结构没有币种；港股金额沿用独立分红事件源。
-            if exchange in {"hkex", "sec"}:
+            if exchange in {"hkex", "sec", "fund"}:
                 return filtered_result
             enriched_result = self._enrich_announcements(filtered_result)
             return enriched_result
@@ -959,6 +1017,10 @@ class AnnouncementFetcher:
             "年报",
             "半年报",
             "季报",
+            "年度报告",
+            "半年度报告",
+            "中期报告",
+            "季度报告",
             *DIVIDEND_KEYWORDS,
             "重大合同",
             "重大投资",

@@ -53,7 +53,12 @@ def setup_source(monkeypatch):
         "src.instruments.point_in_time.CninfoAnnualReportProvider",
         lambda config: provider,
     )
-    return AnnouncementFetcher({}), http, provider
+    source = AnnouncementFetcher({})
+    monkeypatch.setattr(source, "_authority_http", lambda: http)
+    http.get.return_value = Response(
+        {"stockList": [{"code": "159655", "orgId": "unit-org"}]}
+    )
+    return source, http, provider
 
 
 def fetch(source):
@@ -237,7 +242,7 @@ def test_source_failure_is_per_security_not_global(setup_source):
     source, http, provider = setup_source
     provider._org_id.side_effect = [ValueError("identity unavailable"), "second-org"]
     http.post.return_value = Response(
-        {"announcements": [], "totalpages": 0, "hasMore": False}
+        {"announcements": [], "totalpages": 0, "totalAnnouncement": 0, "hasMore": False}
     )
     result = source.fetch_announcements_status(
         ["601088", "159655"], START, END, observed_at=NOW

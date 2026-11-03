@@ -25,12 +25,12 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
+from .fund_announcements import SSE_ORIGIN
+
 if TYPE_CHECKING:
     from .market_history import CorporateAction
 
 
-SSE_QUERY_URL = "https://query.sse.com.cn/commonQuery.do"
-SSE_ORIGIN = "https://www.sse.com.cn"
 _DATE = r"(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})日?"
 _MAX_PDF_BYTES = 10 * 1024 * 1024
 
@@ -317,82 +317,24 @@ class SseFundCorporateActionProvider:
         return digest
 
     def _index(self, code: str, end: date) -> list[dict]:
-        """Read every matching page, including notices before the price start."""
-        rows: list[dict] = []
-        seen_urls: set[str] = set()
-        total: int | None = None
-        for page in range(1, self.max_pages + 1):
-            params = {
-                "isPagination": "true",
-                "pageHelp.pageSize": self.page_size,
-                "pageHelp.pageNo": page,
-                "pageHelp.beginPage": page,
-                "pageHelp.endPage": page,
-                "pageHelp.cacheSize": 1,
-                "type": "inParams",
-                "sqlId": "COMMON_PL_JJXX_JJGG_NEW_L",
-                "TITLE": "",
-                "SECURITY_CODE": code,
-                "BULLETIN_TYPE": "",
-                "START_DATE": "",
-                "END_DATE": end.isoformat(),
-                "DATE_DESC": 1,
-            }
-            response = self._http_get(
-                SSE_QUERY_URL,
-                params=params,
-                headers=self.headers,
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            data = response.json()
-            self._archive(
-                json.dumps(
-                    {"url": SSE_QUERY_URL, "params": params, "response": data},
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ).encode("utf-8"),
-                "index.json",
-            )
-            if not isinstance(data, dict) or any(
-                data.get(key) for key in ("actionErrors", "fieldErrors")
-            ):
-                raise FundActionEvidenceError("SSE index returned an error")
-            pagination = data.get("pageHelp") or {}
-            try:
-                reported_total = int(pagination["total"])
-                returned_page = int(pagination["pageNo"])
-            except (TypeError, ValueError, KeyError) as exc:
-                raise FundActionEvidenceError(
-                    "SSE pagination metadata missing"
-                ) from exc
-            if returned_page != page or reported_total < 0:
-                raise FundActionEvidenceError("SSE pagination metadata invalid")
-            if total is None:
-                total = reported_total
-            elif total != reported_total:
-                raise FundActionEvidenceError("SSE index changed during pagination")
-            batch = data.get("result")
-            if not isinstance(batch, list) or len(rows) + len(batch) > total:
-                raise FundActionEvidenceError("SSE index row count is invalid")
-            for row in batch:
-                if (
-                    not isinstance(row, dict)
-                    or str(row.get("SECURITY_CODE", "")) != code
-                    or not row.get("URL")
-                ):
-                    raise FundActionEvidenceError("SSE index returned a different fund")
-                if row["URL"] in seen_urls:
-                    raise FundActionEvidenceError("SSE repeated a page or document")
-                seen_urls.add(row["URL"])
-                rows.append(row)
-            if len(rows) == total:
-                return rows
-            if not batch:
-                raise FundActionEvidenceError(
-                    "SSE index ended before the declared total"
-                )
-        raise FundActionEvidenceError("SSE index exceeds the pagination limit")
+        """Use the same official fund directory as annual-report acquisition."""
+        from .fund_announcements import (
+            FundAnnouncementError,
+            SseFundAnnouncementProvider,
+        )
+
+        provider = SseFundAnnouncementProvider(
+            http_get=self._http_get,
+            timeout=self.timeout,
+            page_size=self.page_size,
+            max_pages=self.max_pages,
+            archive=self._archive,
+            headers=self.headers,
+        )
+        try:
+            return provider.fetch(code, end)
+        except FundAnnouncementError as exc:
+            raise FundActionEvidenceError(str(exc)) from exc
 
     @staticmethod
     def _document_url(raw_url: str) -> str:

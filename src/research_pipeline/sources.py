@@ -335,7 +335,14 @@ class SourceService:
                 for r in rows
             ]
         elif instrument.market == "a_share":
-            found = self._cninfo(instrument, as_of)
+            from src.instruments.classifier import classify_instrument
+            from src.instruments.models import InstrumentType
+
+            fund = classify_instrument(instrument.code) != InstrumentType.EQUITY
+            if fund:
+                found = self._fund_annuals(instrument, as_of)
+            else:
+                found = self._cninfo(instrument, as_of)
         elif instrument.market == "hk":
             found = self._hkex(instrument, as_of)
         else:
@@ -405,7 +412,9 @@ class SourceService:
                 return mapped
             if candidate.document_id == document.document_id:
                 return True
-            if not document.document_id.startswith(("cninfo:", "hkex:", "sec:")):
+            if not document.document_id.startswith(
+                ("cninfo:", "hkex:", "sec:", "sse:")
+            ):
                 # Compatibility-only identities carry no official revision
                 # signal. Do not apply this to newly discovered official IDs.
                 return True
@@ -542,6 +551,64 @@ class SourceService:
                 raise SourceError("cninfo_directory_pagination_incomplete")
         return result
 
+    def _fund_annuals(self, instrument, as_of):
+        from src.data.fund_announcements import (
+            CninfoFundAnnouncementProvider,
+            FundAnnouncementError,
+            SseFundAnnouncementProvider,
+            is_fund_report,
+        )
+
+        start, end = self._years(as_of)
+        http = _OfficialHTTP(self)
+        try:
+            if instrument.code.startswith("5"):
+                rows = SseFundAnnouncementProvider(http_get=http.get).fetch_disclosures(
+                    instrument.code, date(start, 1, 1), as_of
+                )
+            else:
+                rows = CninfoFundAnnouncementProvider(http=http).fetch(
+                    instrument.code,
+                    date(start, 1, 1),
+                    as_of,
+                    category="category_ndbg_jjgg;",
+                )
+        except FundAnnouncementError as error:
+            raise SourceError(str(error)) from error
+        result = []
+        for row in rows:
+            title = re.sub(r"\s+", "", row["title"])
+            year = re.search(r"(20\d{2})年?年度报告", title)
+            if not year or not start <= int(year[1]) <= end or not is_fund_report(row):
+                continue
+            source = row["exchange"]
+            document_id = (
+                row["official_directory_row"].get("announcementId")
+                if source == "cninfo"
+                else None
+            ) or fingerprint(row["url"])
+            self._validate_url(instrument, row["url"])
+            result.append(
+                AnnualDocument(
+                    instrument.key,
+                    self._issuer(instrument),
+                    int(year[1]),
+                    source + ":" + str(document_id),
+                    url=row["url"],
+                    published_at=row.get("published_at") or row["date"],
+                    kind="amendment"
+                    if re.search(r"更正公告|更正说明|补充公告|补充说明|修订公告", title)
+                    else "annual",
+                    profiles=self.spec.profiles.get(instrument.key, []),
+                    provenance={
+                        "source": source,
+                        "title": title,
+                        "official_directory_row": row["official_directory_row"],
+                    },
+                )
+            )
+        return result
+
     def _hkex(self, instrument, as_of):
         from src.data.hk_announcements import HkexAnnouncementProvider
 
@@ -609,6 +676,23 @@ class SourceService:
         class AnnualSecProvider(SecAnnouncementProvider):
             """Scope validation to annuals; retain the general provider contract."""
 
+            def _fund_filings(self, code, cik, fund_class, start, end):
+                rows = super()._fund_filings(code, cik, fund_class, start, end)
+                result = []
+                for row in rows:
+                    if row["type"].removesuffix("/A") != "N-CSR":
+                        continue
+                    try:
+                        result.append(self.resolve_fund_report(row, cik, fund_class))
+                    except (ValueError, TypeError, AttributeError) as error:
+                        service._gap(
+                            instrument,
+                            "sec_fund_annual_row_invalid",
+                            detail=str(error),
+                            row=row,
+                        )
+                return result
+
             def _company_rows(self, columns, code, cik, start, end):
                 required = ("accessionNumber", "filingDate", "form", "primaryDocument")
                 forms = columns.get("form")
@@ -656,7 +740,7 @@ class SourceService:
         result = []
         for row in rows:
             form = row["type"]
-            if form.removesuffix("/A") not in {"10-K", "20-F", "40-F"}:
+            if form.removesuffix("/A") not in {"10-K", "20-F", "40-F", "N-CSR"}:
                 continue
             period = row.get("reportDate")
             if not period:
@@ -697,7 +781,7 @@ class SourceService:
     def _validate_url(instrument, url):
         parsed = urlsplit(url)
         allowed = {
-            "a_share": {"static.cninfo.com.cn"},
+            "a_share": {"static.cninfo.com.cn", "www.sse.com.cn", "static.sse.com.cn"},
             "hk": {"www.hkexnews.hk", "www1.hkexnews.hk"},
             "us": {"www.sec.gov", "data.sec.gov"},
         }[instrument.market]

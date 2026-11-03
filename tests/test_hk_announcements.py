@@ -174,6 +174,8 @@ def test_market_routing_keeps_hk_before_mainland_prefixes(fetcher, monkeypatch):
         ("601088", "sse"),
         ("000333", "szse"),
         ("002594", "szse"),
+        ("510300", "fund"),
+        ("159655", "fund"),
         ("VOO", "sec"),
         ("BRK.B", "sec"),
     ]

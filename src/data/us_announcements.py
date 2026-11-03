@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from datetime import date
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
@@ -225,3 +226,87 @@ class SecAnnouncementProvider:
             if len(entries) < 100 or (dates and min(dates) < start):
                 return records
         raise ValueError(f"{code}: SEC fund query limit exceeded")
+
+    def resolve_fund_report(self, record: dict, cik: str, fund_class: str) -> dict:
+        """Resolve an exact-class filing index to its dated N-CSR original.
+
+        The ordinary announcement feed stays lightweight. Report consumers ask
+        for this metadata explicitly, through the same SEC transport and policy.
+        """
+        index_url = record["url"]
+        index = urlsplit(index_url)
+        prefix = f"/Archives/edgar/data/{int(cik)}/"
+        if (
+            record["type"].removesuffix("/A") != "N-CSR"
+            or index.scheme != "https"
+            or index.netloc != "www.sec.gov"
+            or not re.fullmatch(
+                re.escape(prefix) + r"\d{18}/\d{10}-\d{2}-\d{6}-index\.html?",
+                index.path,
+            )
+        ):
+            raise ValueError("Invalid SEC fund annual index")
+        response = self._get(index_url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, "html.parser")
+        # A filing may contain several funds. Confirm the requested class and
+        # ticker on the same class row, rather than accepting its parent trust.
+        classes = [
+            row
+            for row in soup.select("tr")
+            if any(a.get_text(strip=True) == fund_class for a in row.select("a"))
+            and record["stock_code"].upper().replace(".", "-")
+            in [
+                cell.get_text(strip=True).upper().replace(".", "-")
+                for cell in row.find_all("td", recursive=False)
+            ]
+        ]
+        if len(classes) != 1:
+            raise ValueError("SEC fund annual class identity missing or ambiguous")
+        periods = []
+        for heading in soup.select(".infoHead"):
+            if heading.get_text(strip=True) == "Period of Report":
+                value = heading.find_next_sibling("div", class_="info")
+                if value:
+                    periods.append(date.fromisoformat(value.get_text(strip=True)))
+        if len(periods) != 1 or periods[0] > date.fromisoformat(record["date"]):
+            raise ValueError("SEC fund annual report period missing or invalid")
+        documents = []
+        for row in soup.select('table[summary="Document Format Files"] tr'):
+            cells = row.find_all("td", recursive=False)
+            if len(cells) < 4 or cells[3].get_text(strip=True) != record["type"]:
+                continue
+            link = cells[2].find("a", href=True)
+            if link is None:
+                continue
+            url = urlsplit(urljoin(index_url, link["href"]))
+            if url.path in {"/ix", "/ixviewer/doc/action"}:
+                targets = parse_qs(url.query).get("doc", [])
+                if (
+                    url.scheme != "https"
+                    or url.netloc != "www.sec.gov"
+                    or len(targets) != 1
+                ):
+                    raise ValueError("Invalid SEC fund annual viewer URL")
+                url = urlsplit(urljoin(index_url, targets[0]))
+            if (
+                url.scheme != "https"
+                or url.netloc != "www.sec.gov"
+                or not url.path.startswith(index.path.rsplit("/", 1)[0] + "/")
+                or any(part in {".", ".."} for part in url.path.split("/"))
+                or not url.path.lower().endswith((".htm", ".html", ".pdf"))
+                or url.query
+                or url.fragment
+            ):
+                raise ValueError("Invalid SEC fund annual document URL")
+            documents.append(url.geturl())
+        if len(documents) != 1:
+            raise ValueError("SEC fund annual original missing or ambiguous")
+        return {
+            **record,
+            "url": documents[0],
+            "reportDate": periods[0].isoformat(),
+            "filing_index_url": index_url,
+            "fund_class": fund_class,
+            "filing_index_sha256": hashlib.sha256(response.content).hexdigest(),
+        }
