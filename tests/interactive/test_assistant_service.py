@@ -9,11 +9,9 @@ import pytest
 from src.interactive.assistant.service import FeishuAssistant
 from src.interactive.assistant.store import ProposalStore
 
-pytestmark = pytest.mark.usefixtures("stub_pi_transport")
-
 
 @pytest.fixture
-def assistant(tmp_path, stub_pi_transport):
+def assistant(tmp_path, real_pi_bridge):
     configuration = Mock()
     configuration.describe.return_value = {
         "fields": [{"key": "stocks", "value": ["600036"]}]
@@ -175,7 +173,9 @@ def test_research_about_holdings_is_not_replaced_by_status_template(assistant):
     assistant.handle("chat", "owner", "分析我的持仓公司估值，需要看财报")
     assistant.personal.holdings_query_scope.assert_not_called()
     assert assistant.harness.run.call_args.kwargs["require_retrieval"]() is True
-    assert assistant.send_message.call_args.args[1] == "研究分析正文，当前资料仍有缺口。"
+    assert (
+        assistant.send_message.call_args.args[1] == "研究分析正文，当前资料仍有缺口。"
+    )
 
 
 def test_missing_stock_data_attempts_web_and_reports_network_failure(assistant):
@@ -506,7 +506,9 @@ def test_startup_reconciles_sealed_result_without_rerunning(tmp_path):
 
 
 @pytest.mark.parametrize("decision", ["确认", "取消"])
-def test_announcement_real_config_requires_owner_confirmation(tmp_path, decision):
+def test_announcement_real_config_requires_owner_confirmation(
+    tmp_path, decision, real_pi_bridge
+):
     from unittest.mock import patch
 
     import yaml

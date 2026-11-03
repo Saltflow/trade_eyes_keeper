@@ -8,16 +8,11 @@ import pytest
 
 import main
 from src.backtest.engine import evaluate_all_groups
-from src.search.config import get_execution_config
-from src.strategy import Params
-from src.strategy import get_strategy
-from src.search.artifacts import (
-    OptimizerGroupSummary,
-    load_latest_strategy_run,
-    publish_complete_run,
-)
-from src.interactive.commands import handlers
 from src.interactive.command_parser import ErrorCommand, parse_command
+from src.interactive.commands import handlers
+from src.search.artifacts import OptimizerGroupSummary
+from src.search.config import get_execution_config
+from src.strategy import Params, get_strategy
 
 
 def _price_history(periods: int = 2_000) -> pd.DataFrame:
@@ -139,15 +134,14 @@ def test_optimizer_excludes_short_history_before_date_alignment(monkeypatch, tmp
 def test_optimize_cli_runs_configured_strategy_for_all_markets(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(main, "load_config", lambda: {})
+    monkeypatch.setattr(main, "load_config", dict)
     monkeypatch.setattr(
         main, "setup_logging", lambda _config: SimpleNamespace(info=lambda *_args: None)
     )
     monkeypatch.setattr(
         main,
         "run_optimization",
-        lambda _config, target_groups=(): calls.append(target_groups)
-        or {"a_share": 1},
+        lambda _config, target_groups=(): calls.append(target_groups) or {"a_share": 1},
     )
 
     main.main(["--optimize"])
@@ -203,8 +197,7 @@ def test_evaluation_honors_requested_backtest_dates():
     strategy = get_strategy("percentile")
     params = Params(
         values={
-            dim.name: max((dim.levels - 1) // 2, 0)
-            for dim in strategy.param_space.dims
+            dim.name: max((dim.levels - 1) // 2, 0) for dim in strategy.param_space.dims
         },
         _engine=strategy.name,
     )
@@ -243,8 +236,7 @@ def test_evaluation_honors_requested_backtest_dates():
         "universe_equal_weight",
     }
     assert report.excess_return == round(
-        report.total_return
-        - report.benchmark_returns[report.primary_benchmark],
+        report.total_return - report.benchmark_returns[report.primary_benchmark],
         2,
     )
     assert report.primary_benchmark == max(
@@ -271,78 +263,6 @@ def test_configured_optimizer_groups_only_include_eligible_markets(monkeypatch):
     }
 
     assert main._configured_optimizer_groups(config) == ("a_share", "hk")
-
-
-@pytest.mark.skip(reason="v3 mixed manifests are intentionally unsupported")
-def test_latest_complete_manifest_selects_newest_timestamp(tmp_path):
-    groups = ("a_share", "hk", "us")
-
-    def make_run(run_id, timestamp, engine):
-        run_dir = tmp_path / "runs" / run_id
-        run_dir.mkdir(parents=True)
-        summaries = {}
-        for group in groups:
-            artifact = run_dir / f"{group}_best_params.yaml"
-            artifact.write_text(
-                "\n".join(
-                    [
-                        f"timestamp: {timestamp}",
-                        f"group: {group}",
-                        f"engine: {engine}",
-                        "params:",
-                        f"  _engine: {engine}",
-                        "  signal: 1",
-                        "wf_score: 1.0",
-                        "search:",
-                        "  selection_score: -0.5",
-                        "  ranking_diagnostics:",
-                        "    weighted_strategy_return: 2.5",
-                        "    positive_return_windows: 9",
-                        "    ranking_window_count: 13",
-                        "sensitivity:",
-                        "  base_score: 1.0",
-                        "  worst_score: -1.5",
-                        "  drop: 2.5",
-                        "  selection_score: -0.5",
-                    ]
-                ),
-                encoding="utf-8",
-            )
-            summaries[group] = OptimizerGroupSummary(
-                group=group,
-                candidate_count=1,
-                wf_score=1.0,
-                params={"signal": 1},
-                status="completed",
-                artifact=artifact.name,
-            )
-        assert publish_complete_run(
-            run_id, engine, timestamp, summaries, required_groups=groups, root=tmp_path
-        )
-
-    make_run("old", "2026-07-26T01:00:00", "percentile")
-    make_run("new", "2026-07-26T02:00:00", "simplified")
-
-    active = load_latest_strategy_run(groups=groups, root=tmp_path)
-    assert active is not None
-    assert active.strategy_name == "simplified"
-    assert active.run_id == "new"
-    assert active.params_by_group["hk"].values == {"signal": 1}
-    assert active.selection_by_group["a_share"] == {
-        "wf_score": 1.0,
-        "ranking_diagnostics": {
-            "weighted_strategy_return": 2.5,
-            "positive_return_windows": 9,
-            "ranking_window_count": 13,
-        },
-        "sensitivity": {
-            "base_score": 1.0,
-            "worst_score": -1.5,
-            "drop": 2.5,
-            "selection_score": -0.5,
-        },
-        "selection_score": -0.5,
-    }
 
 
 def test_optimizer_notification_uses_one_three_market_payload(monkeypatch):
@@ -372,62 +292,6 @@ def test_optimizer_notification_uses_one_three_market_payload(monkeypatch):
     assert len(sent) == 1
     assert sent[0][0].groups.keys() == {"a_share", "hk", "us"}
     assert sent[0][1] == "Percentile"
-
-
-@pytest.mark.skip(reason="v3 mixed manifests are intentionally unsupported")
-def test_partial_a_share_publish_retains_previous_hk_and_us_artifacts(tmp_path):
-    groups = ("a_share", "hk", "us")
-
-    def write_artifact(run_id, group, signal):
-        path = tmp_path / "runs" / run_id / f"{group}_best_params.yaml"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            "\n".join(
-                [
-                    "engine: percentile",
-                    "params:",
-                    "  _engine: percentile",
-                    f"  signal: {signal}",
-                ]
-            ),
-            encoding="utf-8",
-        )
-        return path
-
-    old_summaries = {}
-    for group in groups:
-        artifact = write_artifact("old", group, 1)
-        old_summaries[group] = OptimizerGroupSummary(
-            group=group, status="completed", artifact=artifact.name
-        )
-    assert publish_complete_run(
-        "old",
-        "percentile",
-        "2026-07-26T01:00:00",
-        old_summaries,
-        required_groups=groups,
-        root=tmp_path,
-    )
-
-    a_share = write_artifact("new", "a_share", 2)
-    assert publish_complete_run(
-        "new",
-        "percentile",
-        "2026-07-26T02:00:00",
-        {"a_share": OptimizerGroupSummary(
-            group="a_share", status="completed", artifact=a_share.name
-        )},
-        required_groups=("a_share",),
-        all_groups=groups,
-        root=tmp_path,
-    )
-
-    active = load_latest_strategy_run(groups=groups, root=tmp_path)
-    assert active is not None
-    assert active.run_id == "new"
-    assert active.params_by_group["a_share"].values == {"signal": 2}
-    assert active.params_by_group["hk"].values == {"signal": 1}
-    assert active.params_by_group["us"].values == {"signal": 1}
 
 
 def test_interactive_backtest_uses_unified_evaluator(monkeypatch):

@@ -36,9 +36,9 @@ def test_all_key_modules():
         "src.strategy",
         "src.backtest.engine",
         "src.search.workflow",
-        "src.strategy",
         "src.markets",
         # core
+        "src.core.ref_portfolio",
         "src.core.config_store",
         "src.core.runtime_service",
         "src.core.condition_checker",
@@ -56,20 +56,16 @@ def test_all_key_modules():
         "src.models.converters",
         # notification
         "src.notification.email_notifier",
+        "src.notification.feishu_notifier",
+        "src.notification.telegram_notifier",
         # utils
         "src.utils.font_setup",
         "src.utils.etf_detector",
     ]
     import importlib
 
-    failures = []
     for mod_name in modules:
-        try:
-            importlib.import_module(mod_name)
-        except Exception as e:
-            failures.append(f"{mod_name}: {e}")
-
-    assert not failures, f"Import failures ({len(failures)}): {failures}"
+        importlib.import_module(mod_name)
 
 
 def test_project_structure():

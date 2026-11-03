@@ -126,7 +126,9 @@ def execute_turn(world, message_id, *, attachments=None):
     return result, turn
 
 
-def test_shared_long_reply_is_complete_and_each_piece_is_durable(world_factory):
+def test_shared_long_reply_is_complete_and_each_piece_is_durable(
+    world_factory, real_pi_bridge
+):
     world = world_factory()
     answer = "完整回复" * 2500
     world.client.complete.return_value = {"role": "assistant", "content": answer}

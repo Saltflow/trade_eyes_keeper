@@ -29,7 +29,7 @@ def pi_node():
 
 
 @pytest.fixture
-def stub_pi_transport(monkeypatch, pi_node):
+def real_pi_bridge(monkeypatch, pi_node):
     """Keep temporary business roots while loading the actual installed Pi bridge."""
     original_init = ConversationHarness.__init__
     bridge = Path(__file__).resolve().parents[2] / "tools/feishu-pi/bridge.mjs"

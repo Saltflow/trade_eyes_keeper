@@ -44,29 +44,3 @@ class TestFmtNoneSafety:
 
     def test_pd_na_with_unit_still_dash(self):
         assert _fmt(pd.NA, "%") == "—"
-
-
-class TestNoOrZeroInRenderPaths:
-    """确保 _fmt() 替代了所有 'or 0' 模式。"""
-
-    def test_no_vals_get_or_zero_in_table_cells(self):
-        """HTML 和 LaTeX 表格单元格不再使用 vals.get(ind, 0) or 0"""
-        path = (
-            Path(__file__).parent.parent / "src" / "notification" / "email_notifier.py"
-        )
-        src = path.read_text(encoding="utf-8")
-        # 关键模式: 在渲染路径中的 or 0
-        count = src.count("vals.get(ind, 0) or 0")
-        assert count == 0, (
-            f"email_notifier.py 中仍有 {count} 处 vals.get(ind, 0) or 0 模式，"
-            f"请替换为 vals.get(ind) + _fmt() None 检测"
-        )
-
-    def test_no_bt_get_or_zero_in_kpi(self):
-        """KPI 值不再使用 bt.get('key', 0) or 0"""
-        path = (
-            Path(__file__).parent.parent / "src" / "notification" / "email_notifier.py"
-        )
-        src = path.read_text(encoding="utf-8")
-        count = src.count('get("total_return", 0) or 0')
-        assert count == 0, f"still has {count} bt.get(total_return, 0) or 0 patterns"

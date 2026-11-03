@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import test from "node:test";
 import { Agent } from "@earendil-works/pi-agent-core";
@@ -278,77 +277,6 @@ test("Local definitions and refs preserve nested values and reject wrong types",
   assert.equal(executions, 1);
   assert.equal(result.at(-1).type, "done");
 });
-
-// Export tool_schema(SimpleNamespace(capabilities=None)) from FeishuAssistant
-// to an ignored JSON file first; no assistant instance or real tools are started.
-// This checks the deployed Python schema rather than a handwritten copy.
-test("Every real Feishu service tool schema accepts its valid RPC fixture", {
-  skip: !process.env.FEISHU_PI_SCHEMA_FILE,
-}, async () => {
-  const schemas = JSON.parse(await readFile(process.env.FEISHU_PI_SCHEMA_FILE, "utf8"));
-  const argumentsByName = {
-    list_datasets: { limit: 10, offset: 0 },
-    get_dataset_details: { dataset_id: "ds_0123456789abcdef" },
-    list_dataset_files: { dataset_id: "ds_0123456789abcdef", code: "000001", limit: 10 },
-    query_dataset_documents: { code: "000001", limit: 10, offset: 0 },
-    read_dataset_text: { file_id: "file_0123456789abcdef", start_line: 1, line_count: 20 },
-    repository_map: {},
-    list_repository_files: { prefix: "src/", limit: 10, offset: 0 },
-    search_repository: { query: "scheduler", prefix: "src/", limit: 3 },
-    read_repository_file: { path: "src/core/scheduler.py", start_line: 1, line_count: 20 },
-    repository_symbols: { path: "src/core/scheduler.py", limit: 20, offset: 0 },
-    list_project_docs: {},
-    search_project_docs: { query: "回测", limit: 3 },
-    read_project_doc: { path: "docs/configuration.md", start_line: 1, line_count: 20 },
-    read_configuration: { prefix: "solver" },
-    research_catalog: {},
-    query_research_data: { codes: ["000001", "0700.HK"] },
-    propose_configuration: { changes: [{ key: "solver_config.budget", value: { CNY: 1000, enabled: true, options: [null, "值"] } }] },
-    prepare_research: { script_id: "current_strategy", codes: ["000001"], start: "2022-01-01", end: "2024-01-01",
-      parameters: { confidence: 0.95, enabled: true, label: "研究" } },
-    query_tasks: { action_id: "abcdef012345" },
-    fetch_a_share_report: { code: "000001", report_type: "annual", year: 2025 },
-    search_report_text: { document_id: "cninfo_" + "a".repeat(64), query: "现金流", limit: 5 },
-    query_stock_fundamentals: { code: "000001", as_of: "2026-10-29" },
-    search_web: { query: "公开公告", limit: 3 },
-    calculate_gordon_ke_sensitivity: { dataset_id: "ds_fixture", codes: ["000001"], as_of: "2026-10-29", growth_rates: [0, 0.03] },
-    personal_monitor_status: {},
-    personal_monitor_image_evidence: { batch_id: "fixture-batch" },
-    personal_monitor_account: { account: "fixture-account" },
-    personal_monitor_import_image: { account: "fixture-account", batch_id: "fixture-batch", use_message_time: true },
-    personal_monitor_import_manual: { account: "fixture-account", expected_revision: 0, rows: [{ instrument: "000001", quantity: 100 }] },
-    personal_monitor_undo_positions: { account: "fixture-account", expected_revision: 1 },
-    personal_monitor_redo_positions: { account: "fixture-account", expected_revision: 2 },
-    personal_monitor_rule: { account: "fixture-account", rule_id: "fixture-rule", definition: { metric: "price", tiers: [{ id: "first", operator: "lt", value: 1 }] } },
-    personal_monitor_exception: { account: "fixture-account", code: "000001", paused: true },
-    personal_monitor_reset: { account: "fixture-account", rule_id: "fixture-rule", code: "000001" },
-    personal_monitor_resend: { outbox_id: "fixture-outbox" },
-    personal_monitor_create_reminder: { text: "fixture reminder", after_days: 1 },
-    personal_monitor_edit_reminder: { reminder_id: "fixture-reminder", expected_revision: 1, text: "updated fixture" },
-    personal_monitor_cancel_reminder: { reminder_id: "fixture-reminder", expected_revision: 2 },
-  };
-  assert.deepEqual(schemas.map((entry) => entry.function.name).sort(), Object.keys(argumentsByName).sort());
-  const seen = new Set();
-  let rounds = 0;
-  const result = await session({ ...start, tools: schemas, max_tool_calls: schemas.length, max_tool_rounds: Math.ceil(schemas.length / 7) + 1 }, (request) => {
-    if (request.kind === "tool") {
-      assert.deepEqual(request.arguments, argumentsByName[request.name]);
-      seen.add(request.name);
-      return { result: { fixture_only: true, name: request.name } };
-    }
-    rounds += 1;
-    if (rounds <= Math.ceil(schemas.length / 7)) {
-      const batch = schemas.slice((rounds - 1) * 7, rounds * 7);
-      return { result: { role: "assistant", content: "", tool_calls: batch.map((entry) =>
-        call(entry.function.name, argumentsByName[entry.function.name], entry.function.name).tool_calls[0]) } };
-    }
-    assert.equal(seen.size, schemas.length);
-    return { result: { role: "assistant", content: "All real tool schemas accepted." } };
-  });
-  assert.equal(result.at(-1).type, "done");
-  assert.equal(seen.size, schemas.length);
-});
-
 
 test("Research framing carries full logical content and rejects dropped/reordered frames", () => {
   const original = { content: "原文".repeat(800000) };

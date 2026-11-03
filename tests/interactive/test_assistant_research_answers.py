@@ -71,9 +71,7 @@ def run(instance, invoke, audit, *, evidence_ready=False, require_retrieval=True
     )
 
 
-def test_unsupported_answer_is_withheld_until_real_retrieval(
-    tmp_path, stub_pi_transport
-):
+def test_unsupported_answer_is_withheld_until_real_retrieval(tmp_path, real_pi_bridge):
     bot, client = harness(tmp_path, [answer("未经检索的结论"), request(), answer()])
     invoke = Mock(return_value={"results": [{"url": "https://example.test/source"}]})
     audit = Mock()
@@ -82,9 +80,16 @@ def test_unsupported_answer_is_withheld_until_real_retrieval(
     invoke.assert_called_once_with("search_web", {"query": "evidence"})
     assert any(c.args[0] == "retrieval_required" for c in audit.call_args_list)
     assert audit.call_args_list[0].args == ("harness_start", {"backend": "pi"})
+    assert bot._process is None
+    finished = next(
+        c.args[1] for c in audit.call_args_list if c.args[0] == "harness_finished"
+    )
+    assert finished["backend"] == "pi"
+    assert finished["model_rounds"] == 3
+    assert finished["retrieval_attempts"] == 1
 
 
-def test_second_unsupported_answer_fails_without_delivery(tmp_path, stub_pi_transport):
+def test_second_unsupported_answer_fails_without_delivery(tmp_path, real_pi_bridge):
     bot, client = harness(tmp_path, [answer("猜测一"), answer("猜测二")])
     invoke = Mock()
     with pytest.raises(AssistantAPIError, match="未完成资料检索"):
@@ -93,16 +98,14 @@ def test_second_unsupported_answer_fails_without_delivery(tmp_path, stub_pi_tran
     invoke.assert_not_called()
 
 
-def test_repository_map_does_not_satisfy_evidence_requirement(
-    tmp_path, stub_pi_transport
-):
+def test_repository_map_does_not_satisfy_evidence_requirement(tmp_path, real_pi_bridge):
     bot, _ = harness(tmp_path, [request("repository_map"), answer(), answer()])
     with pytest.raises(AssistantAPIError, match="未完成资料检索"):
         run(bot, Mock(return_value={"files": 12}), Mock())
 
 
 def test_failed_search_is_given_back_to_model_for_limited_answer(
-    tmp_path, stub_pi_transport
+    tmp_path, real_pi_bridge
 ):
     bot, client = harness(tmp_path, [request(), answer("检索失败，无法核实最新公告。")])
     assert run(bot, Mock(side_effect=RuntimeError("HTTP 503")), Mock()) == (
@@ -114,7 +117,7 @@ def test_failed_search_is_given_back_to_model_for_limited_answer(
 
 
 def test_current_prefetched_data_is_analyzed_without_duplicate_lookup(
-    tmp_path, stub_pi_transport
+    tmp_path, real_pi_bridge
 ):
     bot, client = harness(tmp_path, [answer()])
     invoke = Mock()
@@ -134,7 +137,7 @@ def test_pi_unavailable_does_not_fall_back_to_native(tmp_path, monkeypatch):
 
 
 def test_mutating_tool_failure_returns_uncertainty_without_retry(
-    tmp_path, stub_pi_transport
+    tmp_path, real_pi_bridge
 ):
     bot, client = harness(
         tmp_path, [request("propose_configuration"), answer("结果不确定，停止写入。")]
@@ -157,19 +160,3 @@ def test_mutating_tool_failure_returns_uncertainty_without_retry(
         m["role"] == "tool" and "write result uncertain" in m["content"]
         for m in messages
     )
-
-
-def test_actual_pi_loop_performs_retrieval_then_analysis(tmp_path, stub_pi_transport):
-    bot, client = harness(tmp_path, [answer("先猜测"), request(), answer()])
-    invoke = Mock(return_value={"results": [{"title": "fixture source"}]})
-    audit = Mock()
-    assert run(bot, invoke, audit) == "有来源的分析"
-    assert client.complete.call_count == 3
-    invoke.assert_called_once()
-    assert bot._process is None
-    finished = next(
-        c.args[1] for c in audit.call_args_list if c.args[0] == "harness_finished"
-    )
-    assert finished["backend"] == "pi"
-    assert finished["model_rounds"] == 3
-    assert finished["retrieval_attempts"] == 1

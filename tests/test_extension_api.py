@@ -33,7 +33,9 @@ def test_public_strategy_api_and_automatic_discovery():
     }
     assert list_strategy_ids() == (
         "capm_dcf_value",
+        "causal_trend_allocation",
         "justified_pb_value",
+        "ke_threshold_allocation",
         "ma60_band",
         "percentile",
         "regime_pullback",
