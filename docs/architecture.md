@@ -1,10 +1,12 @@
 # 项目架构与模块职责
 
-源码与部署边界核对日期：2026-11-03（v1.23.0 / ae48293）。架构图集中保存在[架构图独立页](architecture_overview.md)，本页说明执行机制、业务合同、模块职责与依赖债务。其他文档见[文档索引](README.md)。
+生产基线核对日期：2026-11-03（v1.23.1 / 7e552d1）。Pi 会话删减已部署并核验运行版本、心跳与 Bot 连接。架构图集中保存在[架构图独立页](architecture_overview.md)，本页说明执行机制、业务合同、模块职责与依赖债务。其他文档见[文档索引](README.md)。
 
 ## 历史发布证据与当前源码边界
 
 2026-11-03 已将 v1.23.0 / `ae48293` 的公共代码同步到远端和生产，逐文件核验 870 项公共文件，并确认运行进程版本、心跳和 Bot 连接。生产凭据、私有配置、触发历史、固定调度开关与策略状态保持原值；发布回执位于生产 `data/deployments/full_code_sync_v1_23_0_20261103_ae48293/`。此核验不代表完成新的付费研究或研究业务质量验收。
+
+2026-11-03 随后发布 Pi 删减补丁 v1.23.1 / `7e552d1`：隔离验收通过后更新 19 个公共文件，870 个公共文件哈希匹配提交；私有配置、日程与触发历史保持原状。回执位于生产 `data/deployments/pi_conversations_v1_23_1_20261103_7e552d1/`。未发送真实业务消息或创建线上规则。
 
 以下旧部署记录保留为历史证据。五个可复用包、统一研究、触发器及报告开关见[总图与状态归属](architecture_overview.md)。
 
@@ -14,7 +16,9 @@
 
 ## 公共运行层
 
-飞书普通助手先受 `interactive.feishu.assistant.enabled` 控制。当前实现强制资料问题走 Pi，并移除股票/估值模板短路；其他问答仍由 `harness_backend: native|pi` 选择循环，两种后端均支持工具。2026-11-03 生产核验助手启用且使用 Pi / deepseek-flash；本机配置与生产分别管理，不能把本机关闭助手的值外推到线上。具体开关、模板提前返回和模型工具循环见[飞书路由图](architecture_overview.md#飞书开关与对话路由)。
+飞书普通助手先受 `interactive.feishu.assistant.enabled` 控制。当前源码只支持 `harness_backend: pi`，默认 Pi；旧 native 配置明确报错。自然语言、工具编排与工具错误交给 Pi，Python 保留模型传输、业务校验和持久化；触发器专用文本解析及 Python 会话循环已删除。桥接使用原有 RPC `error` 回包，不新增结果协议。2026-11-03 生产已核验 v1.23.1 / 7e552d1，助手使用 Pi / deepseek-flash。具体关系见[飞书路由图](architecture_overview.md#飞书开关与对话路由)。
+
+会话沿用既有文字历史；当前一轮一个 Pi 进程，不恢复上次失败的完整执行现场。条件不足时明确要求重新发送完整指令，不伪报未授权或猜测执行。简单价格规则在原事务内复用同用户、同会话、同条件和报告动作的 active 记录；参数冲突要求 update。模型请求失败不自动重发，助手沿用原错误回复出口，HealthReporter 不再重复推送 conversation.turn 逐轮失败卡；运行失败审计及服务级告警保留。
 
 实时对话、持仓行情/到期/投递、日报与简报接入同一个
 `src/task_runtime/execution.py` 实现；`src/core/execution.py` 仅为兼容别名。在线实例使用 `data/runtime/feishu_assistant.sqlite3`（可由 storage.data_dir 改址），研究实例绑定 authority 下的 `execution.sqlite3`，不是同一个队列库。SQLite保存入站和执行事实，内存/IPC只用于唤醒；
