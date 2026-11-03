@@ -24,7 +24,8 @@ It is an orchestration component, not an operating-system sandbox.
 ## Protocol
 
 Each process handles one user request over UTF-8 newline-delimited JSON on stdio.
-Stdout contains protocol frames only. Each frame is limited to 2 MiB.
+Stdout contains protocol frames only. The default text profile limits each
+message to 48 MiB; the existing research profile uses 2 MiB chunk frames.
 
 Python starts with:
 
@@ -57,7 +58,8 @@ results so the model can adjust its next request.
 The last allowed model round sends an empty tool list for summarization. Python
 is authoritative for actual model-call counts, including citation repair calls,
 and compacts the supplied transcript against `max_context_chars` before HTTP.
-The bridge applies only the 2 MiB transport cap to growing context.
+The default text bridge caps each message at 48 MiB, preserving the existing
+research request ceiling; model context and tool-call budgets remain host-owned.
 
 Terminal frames are either:
 
