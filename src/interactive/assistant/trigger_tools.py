@@ -241,6 +241,34 @@ def _untrusted_route(value, depth=0):
     return False
 
 
+def _quote_field(value):
+    """Translate dotted instrument names without changing other fact paths."""
+    if not isinstance(value, str):
+        return value
+    match = re.fullmatch(
+        r"quotes\.([A-Za-z][A-Za-z0-9-]*(?:\.[A-Za-z0-9-]+)+)\."
+        r"(last|open|high|low|prev_close|change_pct|fresh)",
+        value,
+    )
+    if not match:
+        return value
+    from ...triggers.facts import _symbol
+
+    return f"quotes.{_symbol(match.group(1))}.{match.group(2)}"
+
+
+def _normalize_quote_conditions(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in {"field", "path"}:
+                value[key] = _quote_field(child)
+            elif key in {"all", "any", "not"}:
+                _normalize_quote_conditions(child)
+    elif isinstance(value, list):
+        for child in value:
+            _normalize_quote_conditions(child)
+
+
 def _chinese_number(value: str) -> int:
     if value.isascii() and value.isdigit():
         return int(value)
@@ -366,6 +394,7 @@ class TriggerTools:
             payload["chat_id"] = self.chat
         from ...triggers.models import normalize_spec
 
+        _normalize_quote_conditions(value.get("condition"))
         value = normalize_spec(value)
         if "condition" in value:
             self._check_fields(value["condition"])

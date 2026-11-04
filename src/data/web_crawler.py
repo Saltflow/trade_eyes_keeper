@@ -1320,6 +1320,16 @@ class StockWebCrawler:
             quote = require_tencent_quote(response, qq_symbol, min_fields=40)
             items = quote.fields
 
+            if raw_market == "us" and any(mark in str(stock_code) for mark in ".-"):
+                returned = items[2].strip().upper()
+                expected = str(stock_code).strip().upper().replace(".", "-")
+                identities = {returned.replace(".", "-")}
+                head, separator, suffix = returned.rpartition(".")
+                if separator and suffix in {"N", "O", "OQ", "A", "P", "K", "B", "Z"}:
+                    identities.add(head.replace(".", "-"))
+                if expected not in identities:
+                    raise ValueError("quote security identity mismatch")
+
             if len(items) < 40:
                 logger.warning(
                     f"QQ 实时行情 {stock_code} 返回字段不足 (len={len(items)})"
@@ -1354,6 +1364,8 @@ class StockWebCrawler:
                 "name": items[1] if items[1] else stock_code,
                 "time": items[30] if len(items) > 30 else "",
             }
+            if raw_market == "us" and any(mark in str(stock_code) for mark in ".-"):
+                result["stock_code"] = stock_code
 
             if result["close"] is None or result["close"] == 0:
                 logger.warning(f"QQ 实时行情 {stock_code} close 无效")

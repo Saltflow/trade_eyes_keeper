@@ -427,6 +427,73 @@ def test_natural_price_request_uses_real_pi_and_business_idempotency(
     assert "已保存触发器 1" in assistant.send_message.call_args.args[1]
 
 
+def _multi_price_calls(last_field="quotes.BRK.B.last"):
+    calls = []
+    for index, (symbol, threshold, field) in enumerate(
+        [
+            ("01088", 40, "quotes.01088.last"),
+            ("01816", 2.9, "quotes.01816.last"),
+            ("BRK.B", 500, last_field),
+        ]
+    ):
+        value = {
+            "label": f"{symbol}跌破{threshold}",
+            "condition": {"field": field, "op": "lt", "value": threshold},
+            "actions": [{"kind": "daily", "payload": {"highlight_symbols": [symbol]}}],
+        }
+        calls.append(
+            {
+                "id": f"price-{index}",
+                "type": "function",
+                "function": {
+                    "name": "trigger_manage",
+                    "arguments": json.dumps({"action": "create", "spec": value}),
+                },
+            }
+        )
+    return {"role": "assistant", "content": "", "tool_calls": calls}
+
+
+def test_pi_creates_three_prices_with_dotted_symbol_and_reuses_rules(
+    assistant_factory, real_pi_bridge
+):
+    assistant = assistant_factory()
+    use_real_pi(
+        assistant, [_multi_price_calls(), {"role": "assistant", "content": "完成"}] * 2
+    )
+    text = "01088跌破40，或者01816跌破2.9，或者BRK.B跌破500告诉我"
+    send(assistant, text, "first")
+    send(assistant, text, "second")
+    rules = assistant.trigger_store.list("owner")
+    assert len(rules) == 3
+    assert [rule["spec"]["condition"]["field"] for rule in rules] == [
+        "quotes.01088.last",
+        "quotes.01816.last",
+        "quotes.BRK-B.last",
+    ]
+    assert all(rule["spec"]["actions"][0]["kind"] == "daily" for rule in rules)
+    assert "已保存触发器 3" in assistant.send_message.call_args.args[1]
+
+
+def test_pi_partial_failure_keeps_real_receipts_and_model_explanation(
+    assistant_factory, real_pi_bridge
+):
+    assistant = assistant_factory()
+    use_real_pi(
+        assistant,
+        [
+            _multi_price_calls("quotes.BRK.B.unsupported"),
+            {"role": "assistant", "content": "BRK.B 没有创建：字段不可用。"},
+        ],
+    )
+    send(assistant, "01088跌破40，或者01816跌破2.9，或者BRK.B跌破500告诉我")
+    assert len(assistant.trigger_store.list("owner")) == 2
+    answer = assistant.send_message.call_args.args[1]
+    assert "已保存触发器 1" in answer and "已保存触发器 2" in answer
+    assert "BRK.B 没有创建" in answer and "其他操作均未确认" in answer
+    assert "已保存触发器 3" not in answer
+
+
 @pytest.mark.parametrize("after_create", [False, True])
 def test_520_has_one_error_reply_no_replay_and_no_health_duplicate(
     assistant_factory,

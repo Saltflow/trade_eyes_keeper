@@ -576,6 +576,94 @@ def test_dotted_us_snapshot_identity_preserves_original_source_time():
     assert fact.as_of.isoformat() == "2026-10-29T16:00:00-04:00"
 
 
+@pytest.mark.parametrize(
+    "stocks, expected_calls",
+    [(["BRK.B"], ["BRK.B"]), (["BRK-B"], ["BRK-B", "BRK.B"]), ([], ["BRK-B", "BRK.B"])],
+)
+def test_dotted_us_quote_uses_verified_source_symbol_and_evaluates(
+    stocks, expected_calls
+):
+    from src.triggers.evaluator import TRUE, evaluate_condition
+
+    calls = []
+
+    def get_quote(code):
+        calls.append(code)
+        if code == "BRK-B":
+            return None
+        return quote(close=490, prev_close=490, stock_code="BRK.B")
+
+    snap = load_trigger_facts(
+        {"quotes.BRK-B.last"},
+        {"stocks": stocks},
+        as_of=NOW,
+        clock=lambda: NOW,
+        providers={"quote": get_quote, "market_session": open_session},
+    )
+    assert calls == expected_calls
+    assert snap.resolve("quotes.BRK-B.last").value == 490
+    assert (
+        evaluate_condition(
+            {"field": "quotes.BRK-B.last", "op": "lt", "value": 500}, snap, NOW
+        ).truth
+        == TRUE
+    )
+
+
+@pytest.mark.parametrize(
+    "fallback_quote",
+    [
+        None,
+        {"close": 490, "stock_code": "OTHER", "quote_time": NOW.isoformat()},
+        {"close": 490, "quote_time": NOW.isoformat()},
+    ],
+)
+def test_dotted_quote_fallback_requires_matching_identity(fallback_quote):
+    get_quote = Mock(side_effect=[None, fallback_quote])
+    snap = load_trigger_facts(
+        {"quotes.BRK-B.last"},
+        {"stocks": []},
+        as_of=NOW,
+        providers={"quote": get_quote, "market_session": open_session},
+    )
+    assert snap.resolve("quotes.BRK-B.last").status == "unknown"
+
+
+@pytest.mark.parametrize("identity", [None, "BRK.A"])
+def test_dotted_quote_first_response_requires_matching_identity(identity):
+    get_quote = Mock(return_value=quote(close=490, stock_code=identity))
+    snap = load_trigger_facts(
+        {"quotes.BRK-B.last"},
+        {"stocks": []},
+        as_of=NOW,
+        providers={"quote": get_quote, "market_session": open_session},
+    )
+    get_quote.assert_called_once_with("BRK-B")
+    assert snap.resolve("quotes.BRK-B.last").status == "unknown"
+
+
+def test_dotted_quote_is_not_actionable_outside_market_session():
+    from src.triggers.evaluator import UNKNOWN, evaluate_condition
+
+    snap = load_trigger_facts(
+        {"quotes.BRK-B.last"},
+        {"stocks": ["BRK.B"]},
+        as_of=NOW,
+        clock=lambda: NOW,
+        providers={
+            "quote": lambda code: quote(close=490, stock_code=code),
+            "market_session": lambda code, as_of: None,
+        },
+    )
+    assert snap.resolve("quotes.BRK-B.last").status == "stale"
+    assert (
+        evaluate_condition(
+            {"field": "quotes.BRK-B.last", "op": "lt", "value": 500}, snap, NOW
+        ).truth
+        == UNKNOWN
+    )
+
+
 def test_calendar_next_day_event_is_loaded_on_weekend():
     saturday = datetime(2026, 10, 31, 10, tzinfo=ZONE)
     event_row = announcement(published_at="2026-10-30T20:30:00+08:00")

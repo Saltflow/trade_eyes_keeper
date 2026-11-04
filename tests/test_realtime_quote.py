@@ -92,6 +92,37 @@ class TestQQRealtimeQuote:
         assert result is None
 
 
+@pytest.mark.parametrize(
+    "returned, accepted", [("BRK.B.N", True), ("BRK.A.N", False), ("", False)]
+)
+def test_dotted_us_quote_checks_provider_identity(monkeypatch, returned, accepted):
+    from types import SimpleNamespace
+
+    from src.data.web_crawler import StockWebCrawler
+
+    fields = [""] * 50
+    fields[1], fields[2], fields[3], fields[4], fields[5] = (
+        "Berkshire",
+        returned,
+        "490",
+        "490",
+        "490",
+    )
+    fields[30], fields[33], fields[34] = "20261103100000", "490", "490"
+    response = MagicMock()
+    fetch = MagicMock(return_value=response)
+    monkeypatch.setattr("src.data_hub.quotes.fetch_tencent", fetch)
+    monkeypatch.setattr(
+        "src.data_hub.quotes.require_tencent_quote",
+        lambda *a, **k: SimpleNamespace(fields=fields),
+    )
+    result = StockWebCrawler({}).fetch_realtime_quote("BRK.B")
+    assert (result is not None) is accepted
+    assert fetch.call_args.args[1].endswith("q=usBRK.B")
+    if accepted:
+        assert result["stock_code"] == "BRK.B" and result["close"] == 490
+
+
 class TestRealtimeModeInSession:
     """realtime_mode=True 时价格被补充进 Session"""
 

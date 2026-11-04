@@ -116,6 +116,21 @@ def test_price_rule_uses_fresh_last_not_day_low_and_preserves_full_pool(tools):
     assert set(payload) == {"highlight_symbols", "trigger_reason", "chat_id"}
 
 
+def test_dotted_and_canonical_price_field_reuse_the_same_rule(tools):
+    spec = price_spec()
+    spec["condition"]["field"] = "quotes.BRK.B.last"
+    first = tools.execute({"action": "create", "spec": spec}, message_id="dotted")
+    spec["condition"]["field"] = "quotes.BRK-B.last"
+    second = tools.execute({"action": "create", "spec": spec}, message_id="canonical")
+    assert first["status"] == second["status"] == "created"
+    assert first["data"]["trigger"]["number"] == second["data"]["trigger"]["number"]
+    assert len(tools.store.list(tools.owner)) == 1
+    assert (
+        tools.store.get(tools.owner, 1)["spec"]["condition"]["field"]
+        == "quotes.BRK-B.last"
+    )
+
+
 def test_price_reuse_preserves_original_and_request_replay_after_edit(tools):
     first = tools.execute({"action": "create", "spec": price_spec()})
     original = tools.store.get(tools.owner, 1)

@@ -537,13 +537,49 @@ def load_trigger_facts(
             crawler.timeout = max(0.001, min(30, remaining))
         return crawler
 
-    def quote_provider(code):
-        callback = _get_provider(providers, "quote")
-        return (
-            callback(code)
-            if callback
-            else crawler_instance().fetch_realtime_quote(code)
+    configured_quote_codes = {}
+    for row in config.get("stocks", []):
+        raw = row.get("code", row.get("stock_code")) if isinstance(row, dict) else row
+        canonical = _symbol(raw)
+        configured_quote_codes.setdefault(canonical, set()).add(
+            str(raw).strip().upper()
         )
+
+    def quote_provider(code):
+        from ..instruments.classifier import detect_market
+
+        callback = _get_provider(providers, "quote")
+        choices = configured_quote_codes.get(code, set())
+        if len(choices) > 1:
+            raise ValueError("ambiguous configured quote identity")
+        source_code = next(iter(choices), code)
+
+        def fetch(symbol):
+            remaining_budget()
+            return (
+                callback(symbol)
+                if callback
+                else crawler_instance().fetch_realtime_quote(symbol)
+            )
+
+        class_symbol = detect_market(code) == "us" and "-" in code
+        fallback = class_symbol and "." not in source_code
+        try:
+            quote = fetch(source_code)
+        except Exception:
+            if not fallback:
+                raise
+            quote = None
+        price = (
+            quote.get("last", quote.get("close")) if isinstance(quote, dict) else None
+        )
+        if fallback and (not _finite(price) or price <= 0):
+            quote = fetch(code.replace("-", "."))
+        if class_symbol and isinstance(quote, dict):
+            identity = quote.get("stock_code", quote.get("symbol"))
+            if identity is None or _symbol(identity) != code:
+                raise ValueError("quote security identity mismatch")
+        return quote
 
     def session_provider(code, *, as_of):
         callback = _get_provider(providers, "market_session")

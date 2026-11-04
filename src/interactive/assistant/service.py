@@ -949,7 +949,7 @@ class FeishuAssistant:
     @staticmethod
     def _trigger_numeric_values(condition, text, catalog):
         """Never invent a numeric comparison threshold from retrieved prose."""
-        from .trigger_tools import _chinese_number
+        from .trigger_tools import _chinese_number, _quote_field
 
         values = set()
         fractions = set()
@@ -980,7 +980,11 @@ class FeishuAssistant:
                 raise ValueError("条件嵌套过深，请简化规则")
             if isinstance(node, dict):
                 field = node.get("field", node.get("path"))
-                definition = catalog.resolve(field) if isinstance(field, str) else None
+                definition = (
+                    catalog.resolve(_quote_field(field))
+                    if isinstance(field, str)
+                    else None
+                )
                 if definition is not None:
                     allowed = (
                         values | fractions
@@ -1327,6 +1331,14 @@ class FeishuAssistant:
                 try:
                     result = self.call_tool(chat, sender, name, arguments)
                 except Exception:
+                    if name == "trigger_manage" and arguments.get("action") in {
+                        "create",
+                        "update",
+                        "pause",
+                        "resume",
+                        "remove",
+                    }:
+                        context["trigger_tool_failed"] = True
                     if name == "personal_monitor_status":
                         personal_read["results"].clear()
                     raise
@@ -1349,7 +1361,15 @@ class FeishuAssistant:
                 evidence_ready=evidence_ready,
             )
             if context.get("personal_receipts") or context.get("trigger_receipts"):
-                answer = self._committed_receipts(context)
+                receipts = self._committed_receipts(context)
+                if context.get("trigger_tool_failed") and answer:
+                    answer = (
+                        receipts
+                        + "\n\n助手说明（仅以上回执列出的操作已确认，其他操作均未确认）：\n"
+                        + answer
+                    )
+                else:
+                    answer = receipts
             elif (
                 not research_question
                 and personal_read["called"]
