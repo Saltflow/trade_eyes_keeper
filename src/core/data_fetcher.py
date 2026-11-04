@@ -215,6 +215,9 @@ class StockDataFetcher:
             "roe": None,  # ROE 必须由利润/平均净资产计算，旧快照不再伪造
         }
 
+        if str(stock_code).upper().endswith((".SI", "-SI")):
+            return fundamental_data  # SGX quote feed does not provide these fields.
+
         # 确保股票代码是字符串
         stock_code = str(stock_code)
 

@@ -11,6 +11,7 @@ import pandas as pd
 
 STRATEGY_ID = "ke_threshold_allocation"
 MARKETS = {"a_share": "A股", "hk": "港股", "us": "美股"}
+DISPLAY_MARKETS = {**MARKETS, "sg": "新加坡"}
 FUNDAMENTAL_COLUMNS = (
     ("stock_code", "代码"),
     ("stock_name", "名称"),

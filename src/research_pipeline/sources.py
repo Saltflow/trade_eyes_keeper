@@ -345,6 +345,8 @@ class SourceService:
                 found = self._cninfo(instrument, as_of)
         elif instrument.market == "hk":
             found = self._hkex(instrument, as_of)
+        elif instrument.market == "sg":
+            found = self._sgx(instrument, as_of)
         else:
             found = self._sec(instrument, as_of)
         result = []
@@ -609,6 +611,36 @@ class SourceService:
             )
         return result
 
+    def _sgx(self, instrument, as_of):
+        from src.data.sgx_disclosures import SGXDisclosureProvider
+
+        config = self._config()
+        provider = SGXDisclosureProvider(
+            config, http=_OfficialHTTP(self), authority=self.authority, hub=self.hub,
+        )
+        start, end = self._years(as_of)
+        result = []
+        for item in provider.annuals(instrument.code, date(start, 1, 1), as_of):
+            period_end = date.fromisoformat(item["period_end"])
+            if not start <= period_end.year <= end:
+                continue
+            attachment = item["annual_attachment"]
+            result.append(AnnualDocument(
+                instrument=instrument.key, issuer_id=self._issuer(instrument),
+                fiscal_year=period_end.year,
+                document_id="sgx:" + item["document_id"] + ":" + fingerprint(attachment["url"]),
+                url=attachment["url"], published_at=item["published_at"],
+                period_end=item["period_end"], kind="annual",
+                profiles=self.spec.profiles.get(instrument.key, []),
+                provenance={
+                    "official_directory_row": item["source_record"],
+                    "official_announcement": item["source_document"],
+                    "security_identity": item["security_identity"],
+                    "attachment": attachment,
+                },
+            ))
+        return result
+
     def _hkex(self, instrument, as_of):
         from src.data.hk_announcements import HkexAnnouncementProvider
 
@@ -784,6 +816,7 @@ class SourceService:
             "a_share": {"static.cninfo.com.cn", "www.sse.com.cn", "static.sse.com.cn"},
             "hk": {"www.hkexnews.hk", "www1.hkexnews.hk"},
             "us": {"www.sec.gov", "data.sec.gov"},
+            "sg": {"links.sgx.com"},
         }[instrument.market]
         if (
             parsed.scheme != "https"
@@ -982,6 +1015,15 @@ class SourceService:
             result = dict(self.quoter(instrument, as_of))
         elif self.spec.market_snapshot:
             result = self._snapshot_quote(instrument)
+        elif instrument.market == "sg":
+            from src.data.sgx import SGXSource
+
+            config = self._config()
+            config = {**config, "storage": {
+                **config.get("storage", {}), "authority_root": str(self.authority.root)
+            }}
+            result = SGXSource(config).quote(instrument.code + ".SI")
+            result.update(price=result["close"], price_basis="unadjusted")
         else:
             from src.data.quote_time import parse_quote_time
 

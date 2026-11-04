@@ -1,0 +1,14 @@
+# SGX source release 2026-11-04
+
+- Production source commit: `78062251bc012449a7f2f3a4387d1d2e7037713f`. Only the source adapter release was deployed; the concurrent retired-feature cleanup is retained in local main but was not part of this deployment.
+- Service: systemd PID 956446; ready, fresh heartbeat and Bot transport ready. All 315 managed runtime files match the release manifest.
+- Original 23 production instruments retained; C38U.SI and G3B.SI added (25 total). Existing three-daily acquisition and disabled fixed report schedules retained. Credentials and strategy state preserved.
+- Source-only scope: official delayed quotes, unadjusted OHLC, disclosures and annual PDF originals through existing source/material/report paths. Unsupported fundamentals remain missing; no new distribution arithmetic, financial profile, model extraction or scheduler.
+- Production real reads: both instruments returned 251 and 251 daily bars. Filtered report notices: {"C38U.SI": 5, "G3B.SI": 2}. Official 420-day directory checks found C38U 125 / G3B 75 rows.
+- C38U annual: discovered period ended 2025-12-31; acquisition blocked: `source_attempt_not_retried:failed`. Production has about 3.9 GiB free; the existing common downloader requires 10 GiB reserve. No threshold reduction, unrelated data deletion or substitute download was performed. This part remains unaccepted until capacity is restored.
+- G3B annual: discovered period ended 2026-06-30; acquisition blocked: `disk_space_reserve_reached`. Production has about 3.9 GiB free; the existing common downloader requires 10 GiB reserve. No threshold reduction, unrelated data deletion or substitute download was performed. This part remains unaccepted until capacity is restored.
+
+- Full configured production pool: 25/25 instruments; readiness `ready`; actual existing daily pipeline rendered HTML and PDF. Delivery was explicitly skipped at the sender boundary; zero messages and model calls. This does not constitute a real delivery receipt or financial extraction acceptance.
+- Unit/regression validation: frozen release candidate 366 passed locally and 366 passed on production; cleanup + SGX mainline merge candidate 250 passed, including `tests/validation/`.
+- One temporary DNS failure occurred at SGX website configuration. Its durable failed batch attempt was retained. A subsequent live same-URL official read succeeded; existing DataHub `register_original` registered those verified bytes into the current batch. Report acceptance then used the installed source/report path. No retry logic or source-policy bypass was added. Overall acceptance remains partial because the annual acquisition disk reserve gate is unresolved.
+- Detailed local receipts: `.tmp/sgx_release_20261104/`; production receipts: `data/deployments/sgx_source_20261104_7806225/`. Earlier scope-reduction records describe the pre-release phase and are superseded by this release receipt.

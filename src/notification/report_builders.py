@@ -618,7 +618,7 @@ EVENT_CATEGORIES = (
     "例行披露",
     "其他",
 )
-EVENT_MARKETS = {"a_share": "A股", "hk": "港股", "us": "美股"}
+EVENT_MARKETS = {"a_share": "A股", "hk": "港股", "us": "美股", "sg": "新加坡"}
 
 
 def _event_category(item):
@@ -733,6 +733,8 @@ def _event_category(item):
                 "n-csrs",
                 "quarterly results",
                 "annual results",
+                "annual report",
+                "full yearly results",
                 "interim results",
                 "earnings",
                 "financial statements",

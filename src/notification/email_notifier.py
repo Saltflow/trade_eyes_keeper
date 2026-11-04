@@ -212,7 +212,7 @@ class EmailNotifier(BaseNotifier):
             if stock_data is not None and hasattr(stock_data, "iterrows")
             else {}
         )
-        group_order = {"a_share": 0, "hk": 1, "us": 2}
+        group_order = {"a_share": 0, "hk": 1, "us": 2, "sg": 3}
         rows = []
         for code, configured_name in symbols:
             source_row = source_rows.get(code)
@@ -274,7 +274,9 @@ class EmailNotifier(BaseNotifier):
         return "".join(html)
 
     def _build_daily_watchlist_section(self, watchlist_rows) -> str:
-        labels = {"a_share": "A股", "hk": "港股", "us": "美股"}
+        from .report_policy import DISPLAY_MARKETS
+
+        labels = DISPLAY_MARKETS
         grouped = {group: [] for group in labels}
         for row in watchlist_rows:
             grouped.setdefault(row["group"], []).append(row)

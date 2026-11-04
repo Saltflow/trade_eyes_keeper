@@ -19,15 +19,16 @@ class Instrument:
     @classmethod
     def parse(cls, value: str) -> Instrument:
         market, separator, code = value.partition(":")
-        if not separator or market not in {"a_share", "hk", "us"}:
+        if not separator or market not in {"a_share", "hk", "us", "sg"}:
             raise ValueError(
-                "company_requires_explicit_market: a_share:600348, hk:00883, us:XOM"
+                "company_requires_explicit_market: a_share:600348, hk:00883, us:XOM, sg:C38U"
             )
         code = code.strip().upper()
         pattern = {
             "a_share": r"\d{6}",
             "hk": r"\d{1,5}",
             "us": r"[A-Z][A-Z0-9.\-]{0,14}",
+            "sg": r"[A-Z0-9]{1,10}",
         }[market]
         if not re.fullmatch(pattern, code):
             raise ValueError("invalid_instrument_code")

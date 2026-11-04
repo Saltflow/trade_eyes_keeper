@@ -61,7 +61,7 @@ class StockWebCrawler:
         stock_code = str(stock_code).upper()
 
         # 新加坡股市检测 (包含.SI或si后缀，或SG前缀优先)
-        if stock_code.endswith((".SI", ".si")) or stock_code.startswith(("SG", "sg")):
+        if stock_code.endswith((".SI", "-SI")) or stock_code.startswith(("SG", "sg")):
             return "sg"
 
         # 港股检测 (5位数字，或包含hk/HK前缀)
@@ -133,12 +133,9 @@ class StockWebCrawler:
 
         elif market == "sg":
             # 新加坡股市：去除SG前缀和.SI后缀
-            code = (
-                stock_code.replace("SG", "")
-                .replace("sg", "")
-                .replace(".SI", "")
-                .replace(".si", "")
-            )
+            code = stock_code.removesuffix(".SI").removesuffix("-SI")
+            if code == stock_code:
+                code = code.removeprefix("SG")
             qq_symbol = f"sg{code}"
             sina_symbol = f"sg_{code}"
             eastmoney_secid = f"117.{code}"
@@ -253,11 +250,8 @@ class StockWebCrawler:
             #   雅虎财经（真实历史数据，但国内服务器可能被屏蔽）
             #   腾讯财经国际版（备用，仅返回1条实时数据）
             if market == "sg":
-                # 新加坡：雅虎（唯一有历史数据的源，国内可能403）→ QQ国际（仅实时）
-                data_sources = [
-                    self._fetch_from_yahoo,  # 雅虎（唯一有历史数据的源）
-                    self._fetch_from_qq_international,  # 腾讯国际版（仅实时）
-                ]
+                # SGX public delayed feed supplies actual, unadjusted daily OHLC.
+                data_sources = [self._fetch_from_sgx]
             else:
                 # 美股：新浪美股K线优先 → Yahoo（备用）— Eastmoney 已被 GFW 阻断，已移除
                 if market == "us":
@@ -1282,9 +1276,22 @@ class StockWebCrawler:
         """
         return pd.DataFrame()
 
+    def _sgx_source(self):
+        from ..platform_composition import collection_expiry
+        from .sgx import SGXSource
+
+        return SGXSource(
+            self.config, timeout=self.timeout,
+            cache_until=lambda observed: collection_expiry(self.config, observed),
+        )
+
+    def _fetch_from_sgx(self, stock_code, days=120):
+        symbol = self._normalize_stock_code(stock_code, market="sg")[-1]
+        return self._sgx_source().history(symbol, days)
+
     def fetch_realtime_quote(self, stock_code):
         """
-        从腾讯实时行情 API 获取当前瞬时价格 — 全市场支持
+        获取腾讯行情或 SGX 官网延迟两分钟行情，保留各自源时间。
 
         Args:
             stock_code: 股票代码（A股/ETF/港股/美股/新加坡）
@@ -1296,6 +1303,9 @@ class StockWebCrawler:
         """
         try:
             raw_market, qq_symbol, _, _, _ = self._normalize_stock_code(stock_code)
+            if raw_market == "sg":
+                symbol = self._normalize_stock_code(stock_code, market="sg")[-1]
+                return self._sgx_source().quote(symbol)
             url = f"http://qt.gtimg.cn/q={qq_symbol}"
 
             headers = {"User-Agent": self.user_agent}

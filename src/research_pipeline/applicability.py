@@ -18,6 +18,7 @@ _OFFICIAL_DOMAINS = {
     "a_share": ("cninfo.com.cn", "sse.com.cn", "szse.cn"),
     "hk": ("hkexnews.hk", "hkex.com.hk"),
     "us": ("sec.gov",),
+    "sg": ("sgx.com",),
 }
 
 

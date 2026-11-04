@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from .models import InstrumentType
 
-
 US_ETF_SYMBOLS = {
     "BND",
     "DIA",
@@ -21,6 +20,8 @@ US_ETF_SYMBOLS = {
 
 def detect_market(code: str) -> str:
     normalized = str(code).upper().strip()
+    if normalized.endswith((".SI", "-SI")):
+        return "sg"
     if normalized.isdigit() and len(normalized) <= 5:
         return "hk"
     if normalized.isdigit() and len(normalized) == 6:
@@ -31,6 +32,8 @@ def detect_market(code: str) -> str:
 def normalize_yahoo_symbol(code: str, market: str | None = None) -> str:
     normalized = str(code).upper().strip()
     market = market or detect_market(normalized)
+    if market == "sg":
+        return normalized.removesuffix(".SI").removesuffix("-SI") + ".SI"
     if market == "us":
         return normalized.replace(".", "-")
     if market == "hk":
