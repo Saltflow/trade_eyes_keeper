@@ -129,7 +129,7 @@ def _is_dividend_announcement(announcement: dict) -> bool:
     if announcement.get("exchange") == "hkex":
         text = f"{title} {announcement.get('type', '')}".lower()
         return any(keyword in text for keyword in HK_DIVIDEND_KEYWORDS)
-    if announcement.get("exchange") == "sec":
+    if announcement.get("exchange") in {"sec", "sgx"}:
         return any(keyword in title.lower() for keyword in ("dividend", "distribution"))
     return any(keyword in title for keyword in DIVIDEND_KEYWORDS)
 
@@ -241,6 +241,19 @@ class AnnouncementFetcher:
                         ),
                     )
                     items = provider.fetch(code, start, end)
+                elif code.endswith("-SI"):
+                    from .sgx_disclosures import SGXDisclosureProvider
+
+                    status["source"] = "sgx"
+                    provider = SGXDisclosureProvider(
+                        self.config,
+                        http=_AnnouncementBudgetHTTP(
+                            self._authority_http(), cancelled, deadline
+                        ),
+                        deadline=deadline, cancelled=cancelled,
+                        cache_until=self._collection_expiry,
+                    )
+                    items = provider.fetch(code, start, end, max_pages=max_pages)
                 elif re.fullmatch(r"[A-Z][A-Z0-9-]{0,14}", code):
                     from .us_announcements import SecAnnouncementProvider
 
@@ -261,6 +274,18 @@ class AnnouncementFetcher:
                 status["error"] = str(exc)
             result[code] = status
         return result
+
+    def _collection_expiry(self, observed):
+        from ..platform_composition import collection_expiry
+
+        return collection_expiry(self.config, observed)
+
+    def _sgx_provider(self):
+        from .sgx_disclosures import SGXDisclosureProvider
+
+        return SGXDisclosureProvider(
+            self.config, http=self._authority_http(), cache_until=self._collection_expiry
+        )
 
     def _fetch_fund_disclosures(
         self,
@@ -505,6 +530,8 @@ class AnnouncementFetcher:
                     exchange = "sse"  # 上海证券交易所
                 elif len(stock_code) == 6 and stock_code.startswith(("0", "3", "2")):
                     exchange = "szse"  # 深圳证券交易所
+                elif stock_code.upper().endswith((".SI", "-SI")):
+                    exchange = "sgx"
                 elif re.fullmatch(r"[A-Za-z][A-Za-z0-9.\-]{0,14}", stock_code):
                     exchange = "sec"
                 else:
@@ -726,6 +753,10 @@ class AnnouncementFetcher:
             result = self._hk_announcements.fetch(
                 stock_code, today - timedelta(days=fetch_days), today
             )
+        elif exchange == "sgx":
+            today = datetime.now(ZoneInfo("Asia/Singapore")).date()
+            provider = self._sgx_provider()
+            result = provider.fetch(stock_code, today - timedelta(days=fetch_days), today)
         elif exchange == "sec":
             if self._us_announcements is None:
                 from .us_announcements import SecAnnouncementProvider
@@ -752,7 +783,7 @@ class AnnouncementFetcher:
                 f"股票 {stock_code} 获取到 {len(result)} 条公告，过滤后保留 {len(filtered_result)} 条"
             )
             # 现有 LLM 分红金额结构没有币种；港股金额沿用独立分红事件源。
-            if exchange in {"hkex", "sec", "fund"}:
+            if exchange in {"hkex", "sec", "fund", "sgx"}:
                 return filtered_result
             enriched_result = self._enrich_announcements(filtered_result)
             return enriched_result
@@ -1056,7 +1087,7 @@ class AnnouncementFetcher:
             for announcement in announcements:
                 title = announcement.get("title", "")
                 # 检查标题是否包含重要关键词
-                if announcement.get("exchange") == "hkex":
+                if announcement.get("exchange") in {"hkex", "sgx"}:
                     text = f"{title} {announcement.get('type', '')}".lower()
                     is_important = any(k in text for k in HK_IMPORTANT_KEYWORDS)
                 elif announcement.get("exchange") == "sec":

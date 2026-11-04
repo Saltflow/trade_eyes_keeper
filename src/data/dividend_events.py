@@ -372,31 +372,6 @@ class DailyDividendEventResolver:
             for item in items or []:
                 if not isinstance(item, dict):
                     continue
-                for raw in item.get("corporate_actions", []):
-                    from .market_history import CorporateAction
-
-                    action = CorporateAction(**raw)
-                    status = _event_status(action.ex_date, action.payable_date, as_of)
-                    if status is not None:
-                        events.append(
-                            {
-                                **self._event(
-                                    code=code,
-                                    ex_date=action.ex_date,
-                                    payment_date=action.payable_date,
-                                    cash_per_share=action.cash_per_share,
-                                    currency=action.currency,
-                                    status=status,
-                                    source=action.source,
-                                ),
-                                "event_id": action.event_id,
-                                "source_url": action.source_url,
-                                "source_documents": action.source_documents,
-                                "distribution_components": action.distribution_components,
-                                "income_per_share": action.income_per_share,
-                                "capital_return_per_share": action.capital_return_per_share,
-                            }
-                        )
                 dividend = item.get("llm_extracted_dividend") or {}
                 if not isinstance(dividend, dict) or not dividend.get("success"):
                     continue

@@ -383,7 +383,9 @@ def generate_daily_pdf(
                 row[0]: dict(zip((key for key, _ in FUNDAMENTAL_COLUMNS), row))
                 for row in fundamental_rows(stock_data)
             }
-            for group, label in (("a_share", "A股"), ("hk", "港股"), ("us", "美股")):
+            from .report_policy import DISPLAY_MARKETS
+
+            for group, label in DISPLAY_MARKETS.items():
                 codes = sorted(
                     code for code in by_code if _detect_fine_group(code) == group
                 )

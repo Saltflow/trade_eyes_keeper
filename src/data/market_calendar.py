@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from functools import lru_cache
+from types import SimpleNamespace
 
 import pandas as pd
 from packaging.version import Version
@@ -14,6 +15,7 @@ from ..instruments.classifier import detect_market
 _CALENDARS = {
     "a_share": ("XSHG", "Asia/Shanghai"),
     "hk": ("XHKG", "Asia/Hong_Kong"),
+    "sg": ("XSES", "Asia/Singapore"),
     "us": ("XNYS", "America/New_York"),
 }
 
@@ -59,6 +61,32 @@ def _load_calendar(name: str, year: int):
     calendar = exchange_calendars.get_calendar(
         name, start=date(year - 1, 1, 1), end=date(year, 12, 31)
     )
+    if name == "XSES":
+        # XSES omits breaks and half days. SGX's published 2025/2026 schedule:
+        # https://www.sgx.com/securities/trading (including trade-at-close).
+        if year != 2026:
+            raise ValueError("SGX calendar currently verified for 2026 only")
+        schedule = calendar.schedule.copy()
+        schedule["close"] += pd.Timedelta(minutes=16)
+        half_days = pd.to_datetime(
+            [
+                "2025-01-28",
+                "2025-12-24",
+                "2025-12-31",
+                "2026-02-16",
+                "2026-12-24",
+                "2026-12-31",
+            ]
+        )
+        schedule.loc[schedule.index.isin(half_days), "close"] -= pd.Timedelta(hours=5)
+        full_days = ~schedule.index.isin(half_days)
+        schedule.loc[full_days, "break_start"] = schedule.loc[
+            full_days, "open"
+        ] + pd.Timedelta(hours=3)
+        schedule.loc[full_days, "break_end"] = schedule.loc[
+            full_days, "open"
+        ] + pd.Timedelta(hours=4)
+        calendar = SimpleNamespace(schedule=schedule)
     return calendar, version
 
 
@@ -126,9 +154,7 @@ class MarketSession:
         )
 
 
-def resolve_market_session(
-    code: str, *, as_of: datetime
-) -> MarketSession | None:
+def resolve_market_session(code: str, *, as_of: datetime) -> MarketSession | None:
     """Today's actual regular session, including holidays, breaks and half days."""
     if as_of.tzinfo is None:
         raise ValueError("market session as_of must include a timezone")
@@ -150,8 +176,10 @@ def resolve_market_session(
         if opening is None or closing is None:
             raise ValueError("exchange session has no opening or closing time")
         return MarketSession(
-            open=opening, close=closing,
-            break_start=clock("break_start"), break_end=clock("break_end"),
+            open=opening,
+            close=closing,
+            break_start=clock("break_start"),
+            break_end=clock("break_end"),
         )
     except Exception as exc:
         raise ValueError(f"{name} session unavailable for {day}: {exc}") from exc

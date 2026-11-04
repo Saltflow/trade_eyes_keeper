@@ -10,6 +10,8 @@ def _detect_stock_group(stock_code: str) -> str:
 def _detect_fine_group(stock_code: str) -> str:
     """细分：a_share(6位) / hk(5位) / us(含字母)"""
     code = str(stock_code).strip()
+    if code.upper().endswith((".SI", "-SI")):
+        return "sg"
     if code.isdigit() and len(code) == 6:
         return "a_share"
     if code.isdigit() and len(code) == 5:

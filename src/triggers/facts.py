@@ -315,7 +315,7 @@ def _quote_facts(code, quote, *, now, observed, session_provider, max_age):
             else "unknown",
             as_of=source_time,
             observed_at=observed,
-            source="qq_realtime_quote",
+            source=quote.get("source", "qq_realtime_quote"),
             error=reason if valid else "quote field unavailable",
             security=code,
             path=path,

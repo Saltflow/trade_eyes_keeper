@@ -1,0 +1,76 @@
+{
+  "endpoints": {
+    "ANNOUNCEMENTS_API_URL": "https://api.sgx.com/announcements/v1.1/",
+    "CIRCULARS_API_URL": "https://api.sgx.com/circulars/v1.0",
+    "CORPORATE_ACTIONS_API_URL": "https://api.sgx.com/corporateactions/v1.0",
+    "CORPORATE_INFORMATION_API_URL": "https://api.sgx.com/corporateinformation/v1.0",
+    "DAILY_MARGINING_API_URL": "https://api.sgx.com/dailymargining/v1.0",
+    "DERIVATIVES_API_URL": "https://api.sgx.com/derivatives/v1.0",
+    "ETF_API_URL": "https://api.sgx.com/etfscreener/v1.0",
+    "EVALUATED_BONDS_PRICES_API_URL": "https://api.sgx.com/evaluatedbondprices/v1.0",
+    "FINANCIAL_REPORTS_API_URL": "https://api.sgx.com/financialreports/v1.0",
+    "INDICES_API_URL": "https://api.sgx.com/indices/v1.0/",
+    "THIRDPARTY_INDICES_API_URL": "https://api.sgx.com/thirdpartyindices/v1.0/",
+    "IPO_PERFORMANCE_API_URL": "https://api.sgx.com/ipoperformance/v1.0",
+    "IPO_PROSPECTUS_API_URL": "https://api.sgx.com/ipoprospectus/v1.0/",
+    "MEETING_SCHEDULES_API_URL": "https://api.sgx.com/meetingschedules/v1.0",
+    "METADATA_API_URL": "https://api.sgx.com/marketmetadata/v2",
+    "NLT_API_URL": "https://api.sgx.com/negotiatedlargetrades/v1.0",
+    "SECURITIES_API_URL": "https://api.sgx.com/securities/v1.1",
+    "STOCKS_API_URL": "https://apitrkd.trkd-hs.com/apitrkd/api/",
+    "WHOLESALE_BONDS_API_URL": "https://api.sgx.com/wholesalebonds/v1.0",
+    "STRUCTURED_PRODUCTS_API_URL": "https://api.sgx.com/marketmetadata/v2/structure-warrants",
+    "FFA_API_URL": "https://api.sgx.com/ffa",
+    "CMS_API_URL": "https://api2.sgx.com/content-api",
+
+    "ETF_SCREENER_URL": "https://scr.trkd-hs.com/sgxportalstc/ui/popupetfscreener",
+    "STRUCTURED_WARRANT_SCREENER_URL": "https://swtools.sgx.com/StructuredWarrantsTool2.0",
+    "ESG_SCREENER_URL": "https://swtools.sgx.com/ESG_Screener/Home/Screener",
+
+    "V1_CHART_API_URL": "https://api3.sgx.com/JsonRead/chartdata",
+    "V1_NEW_STRUCTURED_WARRANTS_URL": "https://api3.sgx.com/JsonRead/JsonstData?qryId=RSWnew&timeout=60",
+    "V1_NEWSLETTER_URL": "https://api3.sgx.com/sgxmail/",
+
+    "V1_DERIVATIVES_DAILY_LIST_URL": "https://api3.sgx.com/infofeed/Apps?A=COW_Infopubdtstat_Content&B=DailyDataDownload&S_T=1&C_T=60",
+    "V1_DERIVATIVES_HISTORICAL_LIST_URL": "https://api3.sgx.com/infofeed/Apps?A=COW_Tickdownload_Content&B=TimeSalesData&C_T=20",
+    "V1_ISIN_LIST_URL": "https://api3.sgx.com/infofeed/Apps?A=COW_App_DB&B=isincodedownload&C_T=20",
+    "V1_CORPORATE_ANNOUNCEMENTS_LIST_URL": "https://api3.sgx.com/infofeed/Apps?A=COW_CorpAnnouncement_Content&B=annccdpbuyingininfo&C_T=-1",
+    "V1_SECURITIES_HISTORICAL_LIST_URL": "https://api3.sgx.com/infofeed/Apps?A=COW_Prices_Content&B=SecuritiesHistoricalPrice&C_T=20",
+    "V1_SECURITIES_CPFIS_LIST_URL": "https://api3.sgx.com/infofeed/Apps?A=COW_App_DB&B=StocksNameByInitial&R_C=A&C_T=-1",
+
+    "V1_PROSPECTUS_CIRCULARS_DATA_URL": "https://links.sgx.com/1.0.0/prospectus-circulars",
+    "V1_CORPORATE_ACTIONS_DATA_URL": "https://links.sgx.com/1.0.0/corporate-actions",
+    "V1_CORPORATE_INFORMATION_DATA_URL": "https://links.sgx.com/1.0.0/corporate-information",
+    "V1_DERIVATIVES_DAILY_DATA_URL": "https://links.sgx.com/1.0.0/derivatives-daily",
+    "V1_DERIVATIVES_HISTORICAL_DATA_URL": "https://links.sgx.com/1.0.0/derivatives-historical",
+    "V1_CORPORATE_ANNOUNCEMENTS_DATA_URL": "https://links.sgx.com/1.0.0/corporate-announcements",
+    "V1_IPO_PROSPECTUS_DATA_URL": "https://links.sgx.com/1.0.0/ipo-prospectus",
+    "V1_ISIN_DATA_URL": "https://links.sgx.com/1.0.0/isin",
+    "V1_SECURITIES_HISTORICAL_DATA_URL": "https://links.sgx.com/1.0.0/securities-historical",
+    "V1_WARRANTS_DATA_URL": "https://links.sgx.com/1.0.0/warrants",
+
+    "ORDER_FORM_EMAIL_URL": "https://api.sgx.com/dataorderforms",
+    "ORDER_FORM_SIGN_URL": "https://api.sgx.com/dataorderforms/sign"
+  },
+  "links": {
+    "PLAY_STORE_LINK": "https://play.google.com/store/apps/details?id=com.sgx.SGXandroid",
+    "APP_STORE_LINK": "https://itunes.apple.com/us/app/sgx-mobile/id938618269",
+    "BONDS_CALCULATOR": "https://www.bondsupermart.com/bsm/SGX-RetailBond-Calculator",
+    "MDAQ_LINK": "https://trc-sg.m-daq.com/?utm_source=trc-sg&utm_medium=web-sg&utm_id=trc-sg",
+    "DT_PRICES_SURVEY": "https://www.research.net/r/delayed-prices",
+    "DT_PRICES_SURVEY_KEY": "delayed-prices-survey",
+    "A50_SURVEY": "https://www.research.net/r/derivatives-A50",
+    "A50_SURVEY_KEY": "derivatives-A50-survey",
+    "IRON_ORE_SURVEY": "https://www.research.net/r/derivatives-FE",
+    "IRON_ORE_SURVEY_KEY": "iron-ore-survey",
+    "INVESTORS_PORTAL_SECURITIES": "https://investors.sgx.com/market/securities",
+    "DLC_SOC_GEN": "https://dlc.socgen.com/",
+    "MAILING_LIST_URL": "https://x.edm.sgx.com/ats/show.aspx?cr=1160&fm=61"
+  },
+  "CMS_VERSION": "9c3e9f7f03300303a53a580b5a7e760732e5a320",
+  "CMS_ADS_QUERYMAP_ID": "47e96bb94690963a29d826e1c2fb25cc23a576ea",
+  "SGX_LINKEDIN_ID": "14894",
+  "recaptcha" : {
+    "SITE_KEY": "6LcMuKIZAAAAAC3Y66TAzeqeF1S09eSFqUfYo_7y"
+  }
+}

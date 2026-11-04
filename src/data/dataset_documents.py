@@ -39,6 +39,7 @@ PUBLIC_SOURCE_DOMAINS = (
     "hkexnews.hk",
     "sec.gov",
     "vanguard.com",
+    "sgx.com",
 )
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; trade-eyes-keeper document archive)",

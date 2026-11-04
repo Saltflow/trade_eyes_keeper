@@ -415,7 +415,7 @@ class EmailNotifier(BaseNotifier):
         alert_codes, signal_codes = self._daily_alert_code_sets(
             alert_stocks, signal_scan
         )
-        group_order = {"a_share": 0, "hk": 1, "us": 2}
+        group_order = {"a_share": 0, "hk": 1, "us": 2, "sg": 3}
         rows = []
         for code, configured_name in symbols:
             source_row = source_rows.get(code)
@@ -533,7 +533,9 @@ class EmailNotifier(BaseNotifier):
         return "".join(html)
 
     def _build_daily_watchlist_section(self, watchlist_rows) -> str:
-        labels = {"a_share": "A股", "hk": "港股", "us": "美股"}
+        from .report_policy import DISPLAY_MARKETS
+
+        labels = DISPLAY_MARKETS
         grouped = {group: [] for group in labels}
         for row in watchlist_rows:
             grouped.setdefault(row["group"], []).append(row)
@@ -545,7 +547,7 @@ class EmailNotifier(BaseNotifier):
                 f'<span class="section-count">{len(watchlist_rows)}只</span></div>'
             )
         ]
-        for group in ("a_share", "hk", "us"):
+        for group in labels:
             rows = grouped.get(group, [])
             if not rows:
                 continue
