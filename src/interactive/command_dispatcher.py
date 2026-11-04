@@ -14,13 +14,6 @@ def dispatch_command(command) -> str:
     """Execute an already parsed command through the common application handlers."""
     if isinstance(command, commands.HelpCommand):
         return handlers.handle_help()
-    if isinstance(command, commands.FundamentalCommand):
-        from ..fundamental_quant.reporting import format_query
-        from ..fundamental_quant.service import FundamentalQuantService
-
-        service = FundamentalQuantService(handlers._load_config())
-        result = service.status() if command.status else service.query(command.code)
-        return format_query(result)
     if isinstance(command, commands.ListCommand):
         return handlers.handle_list()
     if isinstance(command, commands.AddCommand):
@@ -45,10 +38,6 @@ def dispatch_command(command) -> str:
         return handlers.handle_schedule(
             command.action, command.task_id, command.time_str
         )
-    if isinstance(command, commands.AlertsCommand):
-        return handlers.handle_alerts()
-    if isinstance(command, commands.ResetAlertsCommand):
-        return handlers.handle_reset_alerts(command.stock_code)
     if isinstance(command, commands.ModeCommand):
         return handlers.handle_mode(command.mode)
     if isinstance(command, commands.ConfigCommand):

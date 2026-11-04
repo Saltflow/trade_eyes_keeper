@@ -9,7 +9,7 @@
 | `config/config.yaml` | 标的、数据采集、调度、通知、Bot、各市场策略与 profile 选择；本地文件，不进入 Git |
 | `config/config.yaml.example` | 主配置模板 |
 | `config/.env` / `.env.example` | SMTP、LLM、Bot 和部署凭证；只提交模板 |
-| `config/alerts.yaml` | 指标锚点、阈值区间、重复告警规则 |
+| `config/alerts.yaml` | 共享指标锚点（历史路径保留，旧技术告警规则已删除） |
 | `config/optimizer_constraints.yaml` | Solver 预算、执行费用、窗口、基准、Gate、稳健性和研究 profile |
 | `config/promotion_policy.yaml` | 候选相对活动策略的晋升要求 |
 | `pyproject.toml` / `pytest.ini` | Python 包、Ruff、测试设置，不属于交易运行配置 |
@@ -23,17 +23,15 @@
 ```yaml
 stocks: ["601728", "000001", "00883", "VOO"]
 skip_search: []       # 保留监控，但不参加搜参
-skip_signals: []      # 保留监控，但不显示策略信号
 alerts:
   config_path: ./config/alerts.yaml
-  enabled: true
 ```
 
-指标计算器与告警检查器读取同一指定规则文件。自定义路径不存在或内容损坏时会报错，不会静默使用默认锚点；不再使用跨路径的全局规则单例。
+指标计算器与托管触发器的指标字段读取指定锚点文件。自定义路径不存在或内容损坏时会报错，不会静默使用默认锚点。旧扫描、阈值告警和告警状态已删除；`skip_signals` 仅供独立 Ke 本地试验兼容使用，不再提供 Bot 开关。
 
 | 配置段 | 有效配置与作用 |
 | --- | --- |
-| `report` | 报告展示模式、Ke 曲线读取与公告展示期限；见下节 |
+| `report` | Ke 曲线读取与公告展示期限；见下节 |
 | `announcements` | `enable`、`days`、`dividend_days`、正文/PDF提取、LLM 调用额度；详见模板 |
 | `financial_reports` | `max_llm_calls_per_run` 仍供 LLM 额度使用；旧财报开关和股票数量限制已删除 |
 | `sina_options` | `enabled`、`timeout_seconds`、`quote_batch_size`，供新浪期权数据源使用 |
@@ -48,16 +46,13 @@ alerts:
 
 ```yaml
 report:
-  technical_signals:
-    enabled: false
-  strategy_display: returns_only
   return_curve_artifact: data/strategy_returns/ke_24m.json
   return_curve_max_age_days: 7
   events:
     announcement_lookback_months: 2
 ```
 
-`returns_only` 使用现有行情、基本面、事件和已完成的 Ke 历史模拟曲线；不回退旧技术扫描结果。日报与简报保留今开、昨收、现价、PE、PB、隐含 Ke 和 ROE，不展示股息率。ROE 优先使用已有财务值；缺失时仅在渲染层按有效 PB/PE×100 粗估并标记 `(估)`，无效输入显示 `—`，不写回财务数据。
+日报与简报统一展示现有行情、基本面、事件和已完成的 Ke 历史模拟曲线。旧 `technical_signals`、`strategy_display` 开关及其分支已删除。保留今开、昨收、现价、PE、PB、隐含 Ke 和 ROE，不展示股息率。ROE 优先使用已有财务值；缺失时仅在渲染层按有效 PB/PE×100 粗估并标记 `(估)`，无效输入显示 `—`，不写回财务数据。
 
 `announcement_lookback_months` 接受整数 **1–24**，默认 **2**；布尔值、字符串和小数不接受。以报告的上海日历日期减去指定自然月数，包含截止日，按实际发布日期筛选；日期不明保留并标注“日期待确认”。待派息分红、未解禁事项独立保留。该设置只过滤报表展示，不删除原始记录，不改变 `announcements.days/dividend_days` 的采集窗口；实际可展示历史取决于已采集数据。
 
@@ -65,7 +60,7 @@ report:
 
 ### 统一调度
 
-`python main.py` 与 `python main.py --service` 使用同一 `ScheduleManager`；任务调用现有 CLI 子进程。时间创建和在线修改都使用 `scheduler.timezone`。
+`python main.py` 与 `python main.py --service` 使用同一 `ScheduleManager`；任务进入现有报告队列及 worker。时间创建和在线修改都使用 `scheduler.timezone`。
 
 2026-11-03 生产核验使用触发器发起报告，固定日报、启动日报和固定简报均关闭。以下示例保留兼容时间字段；关闭的任务不会注册：
 
@@ -75,14 +70,11 @@ scheduler:
   daily_enabled: false
   run_time: '19:00'
   run_on_startup: false
-  optimize_enabled: false
-  optimize_time: '02:00'
   daily_report_frequency: daily   # daily / weekly / off
   daily_report_weekday: 4         # 0=周一，4=周五
   cache_bypass_cutoff: '15:55'
   daily_misfire_grace_seconds: 3600
   brief_misfire_grace_seconds: 900
-  optimize_misfire_grace_seconds: 7200
   brief_reports:
     - id: morning_snapshot
       run_time: '09:50'
@@ -96,7 +88,7 @@ scheduler:
       label: 午后简报
 ```
 
-`daily_enabled` 控制固定日报任务是否注册，`brief_reports[].enabled` 控制各固定简报；`daily_report_frequency: off` 不能代替关闭任务注册。显式开启后仍支持上述固定时间，不能把示例时间当作生产正在执行的计划。`daily_report_frequency` 控制普通日报的发送频次，告警和手动 `/daily` 的语义保持独立。定时优化缺省关闭，手动 `--optimize` 不受该开关影响。已有服务器的旧优化 cron 会在部署时迁移，见[部署指南](deployment.md)。
+`daily_enabled` 控制固定日报任务是否注册，`brief_reports[].enabled` 控制各固定简报；`run_on_startup` 保留启动日报。`daily_report_frequency: off` 不能代替关闭任务注册。显式开启后仍支持上述固定时间，不能把示例时间当作生产正在执行的计划。频次只影响固定日报，托管触发器和手动 `/daily` 独立执行。定时搜参及其配置入口已删除，手动 `--optimize`、`/optimize` 保留；旧搜参 cron 和持久任务仅清除，见[部署指南](deployment.md)。
 
 ### 受管触发器
 

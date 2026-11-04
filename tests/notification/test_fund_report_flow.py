@@ -223,12 +223,7 @@ def test_public_source_to_shared_session_reaches_email_pdf_and_both_bots(
     monkeypatch.setattr("src.notification.daily_pdf._compile_pdf", compile_pdf)
     pdf = generate_daily_pdf(
         session,
-        [],
-        None,
-        {},
         frame,
-        chart_deviation_timeline=lambda *a, **k: None,
-        pick_best_anchor=lambda *a: None,
         get_server_info=dict,
     )
     assert pdf and all(notices[code][0]["title"] in tex[0] for code in codes)

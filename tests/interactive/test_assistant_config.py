@@ -69,6 +69,7 @@ def test_describe_only_exposes_allowlisted_values(config_tools):
     assert "api_key" not in payload
     keys = {entry["key"] for entry in description["fields"]}
     assert "stocks" in keys
+    assert "skip_signals" not in keys
     assert "notification.feishu.enabled" in keys
     assert "optimizer.markets.a_share.solver_config.budget" in keys
     assert "execution_profiles.a_share_cny.commission_rate" in keys
@@ -81,7 +82,9 @@ def test_describe_only_exposes_allowlisted_values(config_tools):
         if item["key"] == "scheduler.daily_report_triggers"
     )
     assert trigger["schema"]["mode"] == ["any", "all"]
-    assert "signal_scan" in trigger["schema"]["allowed_roots"]
+    assert set(trigger["schema"]["allowed_roots"]) == {
+        "dividend_events", "placements", "announcements"
+    }
 
 
 def _announcement_fields(tools):
@@ -388,7 +391,7 @@ def test_announcement_proposal_rejects_stale_preview_after_independent_update(
 ):
     _app_store(config_tools).update(lambda raw: raw.update(announcements={"days": 7}))
     (proposal,) = config_tools.propose([_change("announcements.days", 14)])
-    _app_store(config_tools).update(lambda raw: raw.update(skip_signals=["600036"]))
+    _app_store(config_tools).update(lambda raw: raw.update(skip_search=["600036"]))
     before = _app_store(config_tools).path.read_bytes()
     with pytest.raises(ConfigurationConflict):
         config_tools.apply(proposal)
@@ -417,6 +420,7 @@ def test_announcement_credentials_stay_outside_writable_registry(config_tools):
         ("execution_params.commission_rate", 0.01),
         ("walk_forward.window_range_penalty", 0.8),
         ("search.solvers.local_genetic.budget", 1000),
+        ("skip_signals", ["600036"]),
     ],
 )
 def test_rejects_credentials_permissions_paths_and_shadow_fields(
@@ -444,7 +448,7 @@ def test_rejects_credentials_permissions_paths_and_shadow_fields(
         ),
         (
             "scheduler.brief_reports.morning_snapshot.triggers",
-            {"mode": "xor", "conditions": [{"path": "alerts", "operator": "non_empty"}]},
+            {"mode": "xor", "conditions": [{"path": "placements", "operator": "non_empty"}]},
         ),
         ("scheduler.daily_report_weekday", True),
         ("scheduler.daily_report_weekday", 7),
@@ -506,17 +510,17 @@ def test_revision_is_checked_after_store_acquires_lock(config_tools, monkeypatch
         nonlocal injected
         if store.path == _app_store(config_tools).path and not injected:
             injected = True
-            original(store, lambda raw: raw.update(skip_signals=["600036"]))
+            original(store, lambda raw: raw.update(skip_search=["600036"]))
         return original(store, mutate, **kwargs)
 
     monkeypatch.setattr(ConfigStore, "update", interleaved_update)
     with pytest.raises(ConfigurationConflict):
         config_tools.apply(proposal)
-    assert _app_store(config_tools).load_raw()["skip_signals"] == ["600036"]
+    assert _app_store(config_tools).load_raw()["skip_search"] == ["600036"]
 
 
 def test_concurrent_confirmation_writes_once(config_tools):
-    (proposal,) = config_tools.propose([_change("skip_signals", ["VOO"])])
+    (proposal,) = config_tools.propose([_change("skip_search", ["VOO"])])
 
     def apply():
         try:
@@ -852,7 +856,6 @@ def test_schedule_change_reloads_live_jobs_without_startup_execution(config_tool
         (proposal,) = config_tools.propose(
             [
                 _change("scheduler.run_time", "20:30"),
-                _change("scheduler.optimize_enabled", True),
                 _change("scheduler.brief_reports.morning_snapshot.enabled", False),
             ]
         )
@@ -861,11 +864,35 @@ def test_schedule_change_reloads_live_jobs_without_startup_execution(config_tool
         assert "立即生效" in result["effect"]
         daily = manager.scheduler.get_job("daily")
         assert (daily.next_run_time.hour, daily.next_run_time.minute) == (20, 30)
-        assert manager.scheduler.get_job("optimize") is not None
+        assert manager.scheduler.get_job("optimize") is None
         assert manager.scheduler.get_job("brief_morning_snapshot") is None
         assert manager.scheduler.get_job("startup_task") is None
     finally:
         manager.stop()
+
+
+def test_retired_optimizer_schedule_is_neither_exposed_nor_writable(config_tools):
+    values = {
+        "optimize_enabled": True,
+        "optimize_time": "02:00",
+        "optimize_misfire_grace_seconds": 7200,
+    }
+    store = _app_store(config_tools)
+    store.update(lambda raw: raw["scheduler"].update(values))
+    store.update(
+        lambda raw: raw["scheduler"]["brief_reports"].append(
+            {"id": "optimize", "run_time": "02:00", "enabled": True}
+        )
+    )
+    before = store.path.read_bytes()
+    keys = {item["key"] for item in config_tools.describe()["fields"]}
+    assert not any(key.startswith("scheduler.brief_reports.optimize.") for key in keys)
+    for key, value in values.items():
+        name = f"scheduler.{key}"
+        assert name not in keys
+        with pytest.raises(ValueError, match="不可修改"):
+            config_tools.propose([_change(name, value)])
+    assert store.path.read_bytes() == before
 
 
 def test_report_triggers_are_previewed_and_saved_under_confirmation(config_tools):
@@ -873,7 +900,7 @@ def test_report_triggers_are_previewed_and_saved_under_confirmation(config_tools
         "mode": "any",
         "conditions": [
             {"path": "dividend_events", "operator": "non_empty"},
-            {"path": "signal_scan.alerts", "operator": "non_empty"},
+            {"path": "placements", "operator": "non_empty"},
         ],
     }
     changes = [

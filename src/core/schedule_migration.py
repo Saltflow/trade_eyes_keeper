@@ -133,23 +133,19 @@ def _daily_time(jobs: list[_LegacyJob], timezone: str) -> str:
 
 
 def _adopt_missing_schedule(config: dict, jobs: list[_LegacyJob]) -> list[str]:
+    if not any(job.mode in {"--once", "--brief"} for job in jobs):
+        return []
     scheduler = config.setdefault("scheduler", {})
     timezone = scheduler.get("timezone", "Asia/Shanghai")
     changed = []
-    optimizer_jobs = [job for job in jobs if job.mode == "--optimize"]
-    if optimizer_jobs and "optimize_enabled" not in scheduler:
-        if any(job.arguments != ("--optimize",) for job in optimizer_jobs):
-            raise LegacyCronMigrationError(
-                "旧搜参 cron 带有额外参数，无法迁为全市场任务；配置与 cron 未修改"
-            )
-        scheduler["optimize_time"] = _daily_time(optimizer_jobs, timezone)
-        scheduler["optimize_enabled"] = True
-        changed.extend(["scheduler.optimize_enabled", "scheduler.optimize_time"])
     daily_jobs = [job for job in jobs if job.mode == "--once"]
-    if daily_jobs and scheduler.get("daily_enabled", True):
-        if "run_time" not in scheduler:
-            scheduler["run_time"] = _daily_time(daily_jobs, timezone)
-            changed.append("scheduler.run_time")
+    if (
+        daily_jobs
+        and scheduler.get("daily_enabled", True)
+        and "run_time" not in scheduler
+    ):
+        scheduler["run_time"] = _daily_time(daily_jobs, timezone)
+        changed.append("scheduler.run_time")
     brief_jobs: dict[str, list[_LegacyJob]] = {}
     for job in jobs:
         if job.mode != "--brief":
@@ -175,10 +171,9 @@ def _adopt_missing_schedule(config: dict, jobs: list[_LegacyJob]) -> list[str]:
 def migrate_legacy_cron(config_path: Path | str, project_root: Path | str) -> dict:
     """Adopt missing schedule fields and remove only this project's old jobs.
 
-    Explicit YAML settings win. In particular, explicit ``optimize_enabled:
-    false`` disables and removes the old optimizer cron without enabling it.
-    A missing flag adopts an existing, single daily optimizer time; no cron
-    never enables optimization. The returned summary contains no credentials.
+    Explicit report settings win. Retired optimizer cron jobs are removed,
+    never imported into the service scheduler. Manual optimization remains
+    available. The returned summary contains no credentials.
     """
     root = posixpath.normpath(str(project_root).replace("\\", "/"))
     if not posixpath.isabs(root):

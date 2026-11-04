@@ -19,8 +19,6 @@ class CommandType(Enum):
     DAILY = auto()
     DAILY_REPORT_FREQUENCY = auto()
     SCHEDULE = auto()
-    ALERTS = auto()
-    RESET_ALERTS = auto()
     MODE = auto()
     CONFIG = auto()
     SKIP = auto()
@@ -28,14 +26,6 @@ class CommandType(Enum):
     REF_DATE = auto()
     REF_POSITION = auto()
     ERROR = auto()
-    FUNDAMENTAL = auto()
-
-
-@dataclass
-class FundamentalCommand:
-    code: str | None = None
-    status: bool = False
-    cmd_type: CommandType = CommandType.FUNDAMENTAL
 
 
 @dataclass
@@ -122,17 +112,6 @@ class ScheduleCommand:
 
 
 @dataclass
-class AlertsCommand:
-    cmd_type: CommandType = CommandType.ALERTS
-
-
-@dataclass
-class ResetAlertsCommand:
-    stock_code: str = ""  # 空 = 全部重置
-    cmd_type: CommandType = CommandType.RESET_ALERTS
-
-
-@dataclass
 class ErrorCommand:
     message: str
     cmd_type: CommandType = CommandType.ERROR
@@ -154,7 +133,7 @@ class ConfigCommand:
 
 @dataclass
 class SkipCommand:
-    kind: str = "search"  # "search" / "signals"
+    kind: str = "search"
     codes: list[str] = None  # 标的列表
     remove: bool = False  # True=恢复(移出skip), False=关闭(加入skip)
     cmd_type: CommandType = CommandType.SKIP
@@ -258,16 +237,6 @@ def parse_command(text: str):
     cmd_name = parts[0][1:].lower()  # 去掉 / 并转小写
     args = parts[1] if len(parts) > 1 else ""
 
-    if cmd_name == "fundamental":
-        value = args.strip()
-        if value.lower() == "status":
-            return FundamentalCommand(status=True)
-        if value:
-            error = _validate_stock_code(value)
-            if error:
-                return ErrorCommand(message=error)
-        return FundamentalCommand(code=value.upper() or None)
-
     if cmd_name == "help":
         return HelpCommand()
 
@@ -368,13 +337,6 @@ def parse_command(text: str):
             return ErrorCommand(message=f"缺少时间。格式: /schedule {task_id} 20:00")
         return ScheduleCommand(action="set", task_id=task_id, time_str=parts[1])
 
-    if cmd_name == "alerts":
-        return AlertsCommand()
-
-    if cmd_name == "reset_alerts":
-        code = args.strip().upper() if args else ""
-        return ResetAlertsCommand(stock_code=code)
-
     if cmd_name == "backtest":
         arg_parts = args.split()
         if len(arg_parts) < 3:
@@ -415,14 +377,14 @@ def parse_command(text: str):
         return ErrorCommand(message="格式: /config [show|set KEY VAL|reset]")
 
     if cmd_name in ("skip", "unskip"):
-        # /skip search 601985,000958   /skip signals 508091   /unskip search 601985
+        # /skip search 601985,000958 /unskip search 601985
         remove = cmd_name == "unskip"
         sub = args.strip().split(None, 1)
-        if not sub or sub[0].lower() not in ("search", "signals", "signal"):
+        if not sub or sub[0].lower() != "search":
             return ErrorCommand(
-                message="格式: /skip search|signals 代码[,代码]  (/unskip 恢复)"
+                message="格式: /skip search 代码[,代码]  (/unskip 恢复)"
             )
-        kind = "search" if sub[0].lower() == "search" else "signals"
+        kind = "search"
         code_str = sub[1] if len(sub) > 1 else ""
         codes, err = _validate_codes(code_str)
         if err:

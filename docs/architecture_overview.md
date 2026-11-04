@@ -1,10 +1,10 @@
 # 全项目架构总览
 
-核对日期：2026-11-03。v1.23.2 / `1075195` 的触发器耗尽自动失效补丁已推送并部署，隔离验收通过后更新 6 个公共文件，逐文件核验 870 项公共文件，并确认运行进程版本、心跳和飞书接收入口状态。私有配置、固定调度与策略状态保持原值，触发动作与投递历史保留；允许已耗尽规则正常转为 done。发布回执位于生产 `data/deployments/trigger_lifecycle_v1_23_2_20261103_1075195/`。未新增立即报告入口、真实模型调用或测试消息。历史环境及本机配置快照保留在文末，与当前状态分开。
+历史生产核对日期：2026-11-03。v1.23.2 / `1075195` 的触发器耗尽自动失效补丁已推送并部署，隔离验收通过后更新 6 个公共文件，逐文件核验 870 项公共文件，并确认运行进程版本、心跳和飞书接收入口状态。私有配置、固定调度与策略状态保持原值，触发动作与投递历史保留；允许已耗尽规则正常转为 done。发布回执位于生产 `data/deployments/trigger_lifecycle_v1_23_2_20261103_1075195/`。未新增立即报告入口、真实模型调用或测试消息。历史环境及本机配置快照保留在文末，与当前状态分开。
 
 系统目前是**模块化单体，使用多个工作进程与 SQLite 持久化**。服务宿主负责在线任务，搜参使用独立优化进程，财报研究使用冻结版本的 host/worker。五个可复用包已经存在于源码中；共享实现不等于共享全部队列、业务库或配置。
 
-下方对话图描述已发布的 Pi 会话删减。文末带日期的环境表保留当时快照，不能当作当前运行配置。
+当前业务图按2026-11-04本地清理后的源码更新，本轮为本地源码清理，不代表已经部署。Pi会话删减的历史部署证据及文末带日期的环境表保留当时含义，不能当作当前运行配置。
 
 - [全项目总图](#全项目总图)
 - [公共运行层放大图](#公共运行层放大图)
@@ -59,11 +59,9 @@ flowchart TB
     BOT --> HOST
     MAIN -->|--once / --brief| QUEUE
     MAIN -->|--optimize| SEARCH
-    HOST -.->|定时优化开启| SEARCH
     HOST -.->|受控研究工具与确认| API
     FINCLI --> API
-    ACTIVE -.->|技术信号开启时消费| REPORT
-    KE -.->|returns_only 读取合格曲线| REPORT
+    KE -.->|只读合格的已完成曲线| REPORT
     DATA --> REPORT
     DATA --> SEARCH
     DATA --> KE
@@ -143,31 +141,28 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    ENTRY["CLI / Bot / ScheduleManager"] --> REPORTS["report_execution<br/>持久任务 → 独立报表 worker"]
+    ENTRY["CLI / Bot / 显式固定报告调度"] --> REPORTS["report_execution<br/>持久任务 → 独立报表 worker"]
     TRIGGER["TriggerRuntime<br/>条件 / 时间 / 快照 / 持久动作"] -->|daily / brief| REPORTS
-    REPORTS --> SESSION["Session / 行情 / 公告 / 公司行动"]
-    SESSION --> TECH{"technical_signals.enabled？"}
-    TECH -->|是| SIGNAL["条件检查 / 活动策略信号<br/>参考账户技术调仓"]
-    TECH -->|否| BASE["跳过技术信号路径<br/>保留基础数据与已有持仓公司行动"]
-    SIGNAL --> DISPLAY{"strategy_display？"}
-    BASE --> DISPLAY
-    DISPLAY -->|returns_only| KE["load_return_curves<br/>检查完成状态、类型、时效、覆盖与 NAV"]
+    REPORTS --> SESSION["Session / 行情与基本面 / 公告 / 派息 / 定增"]
+    SESSION --> KE["load_return_curves<br/>检查完成状态、类型、时效、覆盖与 NAV"]
     FILE["显式生成的 Ke 曲线文件"] -.-> KE
-    DISPLAY -->|旧展示模式| LEGACY["技术策略评估与展示路径"]
-    KE --> RENDER["HTML / PDF / 渠道内容渲染"]
-    LEGACY --> RENDER
-    RENDER --> DELIVERY["通知发送与回执"]
+    SESSION --> REF["已有参考持仓估值与公司行动<br/>不按技术信号自动调仓"]
+    SESSION --> SNAPSHOT["当前公开快照<br/>数据查询 / 触发条件"]
+    REF --> SNAPSHOT
+    SESSION --> RENDER["价格与基本面 / 曲线 / 事件<br/>HTML / PDF / 渠道内容渲染"]
+    KE --> RENDER
+    RENDER --> DELIVERY["通知发送与逐渠道回执"]
 ```
 
-TriggerRuntime 只派发已有日报/简报任务，optimize 仅预留、不执行；当前在宿主注册报告且存在飞书 Bot 时装配。持久触发器与旧技术条件扫描是独立路径。本机与本次生产报告均使用 `technical_signals.enabled: false`、`strategy_display: returns_only`；关闭技术扫描不等于关闭用户触发器、公告或全部报告。曲线只接收 `ke_threshold_allocation` / `ke-return-curves/1` 的合格产物，缺失或无效不会回退成旧技术图表。历史仿真曲线不修改真实账户。生产固定日报、启动日报和固定简报关闭，由触发器或手动入口运行；ScheduleManager 的显式固定调度能力仍在。
+TriggerRuntime 只派发已有日报/简报任务，optimize 仅预留、不执行；当前在宿主注册报告且存在飞书 Bot 时装配。旧技术条件告警、报告扫描/策略回测、按信号自动调仓和旧展示开关已移除；技术指标仍供受管条件使用，已有参考持仓的估值、公司行动与手工管理保留。曲线只接收 `ke_threshold_allocation` / `ke-return-curves/1` 的合格产物，缺失或无效不会回退成旧技术图表。历史仿真曲线不修改真实账户。已核验的生产固定日报、启动日报和固定简报关闭；本地固定报告调度能力保留，定时优化已移除。
 
-`returns_only` 的日报/简报沿用现有价格与基本面表、合格 Ke 曲线；缺失 ROE 仅渲染有效 PB/PE×100 并标 `(估)`。三市场曲线在邮件/PDF 合成一图，Bot 保留文字替代。事件使用同一共享构建器，类别 → 市场 → 标的 → 发布日期排序，合并例行披露并保留全部原文链接；默认展示两个自然月，Bot 可设 1–24，待派息分红与未解禁事项不受此期限裁剪。
+日报/简报沿用现有价格与基本面表、合格 Ke 曲线；缺失 ROE 仅渲染有效 PB/PE×100 并标 `(估)`。三市场曲线在邮件/PDF 合成一图，Bot 保留文字替代。事件使用同一共享构建器，类别 → 市场 → 标的 → 发布日期排序，合并例行披露并保留全部原文链接；默认展示两个自然月，Bot 可设 1–24，待派息分红与未解禁事项不受此期限裁剪。
 
 ## 搜参子系统放大图
 
 ```mermaid
 flowchart TB
-    START["CLI / 定时 / Bot 优化命令<br/>沿用优化进程合同与互斥"]
+    START["CLI / Bot 手动优化命令<br/>沿用优化进程合同与互斥"]
     CONFIG["按市场配置<br/>策略、Solver、参数域、预算、窗口、Gate、执行合同"]
     PREP["行情与基准预检<br/>日期、公司行动、时点特征与数据合同"]
     WF["search.workflow.run_optimizer<br/>窗口分工、资源计划、合同哈希"]
@@ -184,7 +179,7 @@ flowchart TB
     AUTO["相对晋升通过且自动替换开启<br/>publish_complete_run → activate_run"]
     MANUAL["显式 --activate-run<br/>重新校验完整性与可激活条件"]
     ACTIVE["按市场活动指针<br/>其他市场保持各自绑定"]
-    CONSUMER["显式回测 / 开启技术信号的报告消费者<br/>参考持仓仍按其绑定运行与合同读取"]
+    CONSUMER["显式回测 / 手工参考持仓管理<br/>估值与公司行动沿用绑定运行及合同"]
 
     START --> PREP
     CONFIG --> PREP
@@ -209,7 +204,7 @@ flowchart TB
 - **参数搜索、策略、评价解耦。** Solver 用 `ask/tell` 提议参数与接收评价，不直接访问留出窗口、执行成交或决定通知；统一策略和 Backtester 负责候选的交易计划及评价合同。
 - **门槛有不同层次。** 排名阶段的 `CandidateGatePipeline` 会影响可行性及分数；搜索完成后 `ValidationController` 才执行配置要求的后置稳健性和独立窗口评价，不能将这些结果反馈成 Solver 的训练窗口。
 - **候选发布与活动切换分开。** 候选文件可保留而不替换活动参数。自动切换要求同市场相对晋升通过且配置允许；人工切换也调用 `activate_run` 重新检查产物合同和资格。当前实现允许已记录的相对晋升作为激活路径，否则检查绝对留出通过条件，不能画成两条路径都必须再叠加同一绝对收益门槛。
-- **消费者只读取确定版本。** 开启技术信号时读取活动产物；已初始化参考持仓绑定运行、参数和执行合同，不因活动指针变化悄悄换成另一套策略。股票池扰动/benchmark 的诊断任务本身不激活结果。
+- **消费者只读取确定版本。** 显式回测和手工初始化按选定或活动产物读取；已初始化参考持仓绑定运行、参数和执行合同，不因活动指针变化自动换策略或技术调仓。日报不消费活动策略扫描；股票池扰动/benchmark 的诊断任务本身不激活结果。
 
 核对入口：[run_optimizer](../src/search/workflow.py)、[SearchController](../src/search/controller.py)、[EvaluationService](../src/search/evaluator.py)、[Gate](../src/search/gates.py)、[ValidationController](../src/search/validation.py)、[相对晋升](../src/search/promotion.py)、[产物与激活](../src/search/artifacts.py)。
 
@@ -272,7 +267,7 @@ flowchart TB
 
 - **既有策略版本仍有效。** YAML 的搜索或执行参数变化，不直接使已绑定的旧策略、参数与执行合同失效；配置与冻结产物承担不同职责。
 - **执行器已统一实现，状态尚按域分开。** 不把两个 SQLite 队列画成同一个，不把研究费用投影当成第二份权威账单。
-- **旧研究退出执行链。** `fundamental_quant` 当前仅四个历史读取文件；旧运行/周报入口返回退役结果，不再调用模型。`legacy_service.py`、`legacy_reporting.py` 与旧手工研究脚本已从当前提交和生产代码中删除。
+- **旧研究专用入口已删除。** `src/fundamental_quant` 四个历史适配模块及其CLI/Bot入口、旧周通知和孤立纵向配置已从本地源码删除，不保留占位执行器。历史文件、tokenizer和通用工具可读的公开导出保留；新研究编排及仍有消费者的手工财报/研究交接脚本保留。本轮为本地源码清理，不代表已经部署。
 - **保留的适配器仍有消费者。** `fundamental_embedding` 保留数据、行业及 PB/CAPM 等适配；已退役 MOE、旧评分和旧 Ke 实验不属于现行研究。助手的手工回测沙箱仍在，不能与旧 fundamental_quant 一起视为删除。
 - **仍有量化层依赖债务。** TradePlan、PortfolioTrace、EvaluationReport 位于 `strategy.api`；`backtest.api` 仍转导出，回测 engine 仍使用 `search.config`。目前 `shared_contracts` 提供 authority 合同，并未完成这些量化合同的下沉。
 
@@ -291,10 +286,10 @@ flowchart TB
 | 数据接入 | [data](../src/data)、[instruments](../src/instruments) | 行情、PIT、公司行动、财务推导与缓存 |
 | 策略与仿真 | [strategy](../src/strategy)、[backtest](../src/backtest)、[ref_portfolio](../src/core/ref_portfolio.py) | TradePlan、成交、现金流及绑定账户 |
 | 搜参 | [search](../src/search)、[promotion](../src/search/promotion.py)、[artifacts](../src/search/artifacts.py) | Solver、评价、验证、晋升与版本 |
-| Ke 展示 | [return_curves](../src/strategy/return_curves.py)、[report_policy](../src/notification/report_policy.py) | 已完成曲线验收与报告模式 |
+| Ke 展示 | [return_curves](../src/strategy/return_curves.py)、[report_policy](../src/notification/report_policy.py) | 已完成曲线验收与价格/基本面展示合同 |
 | 统一研究 | [research_pipeline](../src/research_pipeline)、[CLI](../scripts/financial_pipeline.py) | DAG、冻结执行、预算、缓存、修复和状态 |
 | 财报阶段合同 | [fundamental_data](../src/fundamental_data)、[财报指南](guide/financial_pipeline.md)、[正式研究](guide/research_report.md) | 提取、对齐、摘要、横评与三轮产物 |
-| 历史与保留适配 | [fundamental_quant](../src/fundamental_quant)、[fundamental_embedding](../src/fundamental_embedding) | 只读历史和仍有消费者的数据适配 |
+| 保留的数据适配 | [fundamental_embedding](../src/fundamental_embedding)、[旧研究退役记录](development/research_retirement_20261024.md) | 仍有消费者的数据合同；旧FQ专用代码已删除，历史文件保留 |
 | 输出与运维 | [notification](../src/notification)、[ci_cd_deploy](../ci_cd_deploy.py)、[tests](../tests) | 渲染、渠道投递、发布与核验 |
 
 ## 状态和文档维护
@@ -385,4 +380,4 @@ flowchart TB
 
 ### 2026-10-30 本地优先源码合并
 
-所选本地业务与生产9m评价节点已按修改块合并，历史经过见[源码合并范围和当时证据](development/local_preferred_merge_scope_20261030.md)。11月1日已按用户要求删除旧研究实现，当前只剩4个历史只读文件，以及14个仍有调用的基本面数据/估值工具；此前“55个争议旧文件保留”的决定不再适用。真实生产状态仍以之后部署核验为准；本次源码清理未推送或部署。
+所选本地业务与生产9m评价节点已按修改块合并，历史经过见[源码合并范围和当时证据](development/local_preferred_merge_scope_20261030.md)。11月1日删除旧研究实现后，该时点保留4个历史只读文件，以及14个仍有调用的基本面数据/估值工具；此前“55个争议旧文件保留”的决定不再适用。真实生产状态仍以之后部署核验为准；本次源码清理未推送或部署。

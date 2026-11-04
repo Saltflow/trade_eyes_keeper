@@ -62,9 +62,9 @@ sudo journalctl -u trade-eyes.service -f
 
 部署脚本会停止并禁用旧 `trade-eyes-health.service`、清理旧保活进程，安装并启动 `trade-eyes.service`。不会再启动 HTTP 探针或自签名证书逻辑。
 
-旧 cron 只迁移属于当前项目的 `main.py --once`、`--brief`、`--optimize` 行，保留其他项目任务。日报和简报以 YAML 为准。若 YAML 没有声明 `optimize_enabled`，但存在每天固定时间的旧优化 cron，会将其时间与启用状态写入 YAML 后移除该 cron；显式的 `false` 会被尊重。无法表达为单个每日时间的旧优化 cron 会使迁移报错，需先在 YAML 明确调度意图。
+旧 cron 只处理属于当前项目的 `main.py --once`、`--brief`、`--optimize` 行，保留其他项目任务。日报和简报以 YAML 为准。定时搜参已删除：旧优化 cron 直接移除，不导入其时间或启用状态；服务启动/刷新时也移除残留的 `optimize`、`brief_optimize` 持久任务。
 
-新配置模板将定时优化设为 `false`，避免服务启动隐式执行全量搜索。需要例行优化时明确设置 `optimize_enabled: true` 与 `optimize_time`。不要再为这些任务额外创建 cron。
+旧 YAML 中的 `optimize_enabled`、`optimize_time`、`optimize_misfire_grace_seconds` 不再生效，也不提供 Bot 配置入口。需要搜参时显式执行 `python main.py --optimize` 或 `/optimize 市场`。
 
 ## CI/CD
 

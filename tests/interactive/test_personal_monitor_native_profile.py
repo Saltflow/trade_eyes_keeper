@@ -30,9 +30,6 @@ def test_missing_host_runtime_rejects_before_transport_or_workspace(
 
 def test_retired_runtime_symbols_are_absent():
     from scripts import run_personal_monitor_feishu_group_test as group
-    from scripts import run_personal_monitor_feishu_test as discovery
-
-    assert not hasattr(discovery, "PersonalTestBridge")
     assert not hasattr(group, "run") and not hasattr(group, "_legacy_bridge")
     assert not hasattr(SharedPersonalTestBridge, "_observe_health")
     assert not hasattr(SharedPersonalTestBridge, "_send_health_notice")

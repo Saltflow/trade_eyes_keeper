@@ -127,7 +127,7 @@ class TestPlacementSection:
         }
         stock_data = pd.DataFrame([{"stock_code": "601088", "stock_name": "中国神华"}])
         html = n._build_daily_events_section({}, placements, stock_data)
-        assert "股权融资与解禁" in html
+        assert "未解禁定增" in html
         assert "601088" in html
         assert "中国神华" in html
         assert "4.58亿股" in html  # 457665903 / 1e8
@@ -165,9 +165,8 @@ class TestPlacementSection:
             ]
         )
         html = n._build_email_body(
-            alert_stocks=[],
             stock_data=stock_data,
             placements=placements,
         )
-        assert "股权融资与解禁" in html
+        assert "未解禁定增" in html
         assert "4.58亿股" in html

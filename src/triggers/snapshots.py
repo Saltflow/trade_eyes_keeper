@@ -12,7 +12,13 @@ from pathlib import Path
 
 from zoneinfo import ZoneInfo
 
-from .catalog import data_mapping, iter_safe_leaves, safe_path, safe_segment
+from .catalog import (
+    _RETIRED_REPORT_ROOTS,
+    data_mapping,
+    iter_safe_leaves,
+    safe_path,
+    safe_segment,
+)
 
 MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
 _KINDS = {"daily", "brief"}
@@ -84,7 +90,7 @@ def capture_report_snapshot(config: dict, session, kind: str) -> Path:
     )
     public = {}
     for key, value in mapping.items():
-        if not safe_segment(key) or (
+        if not safe_path(key) or key in _RETIRED_REPORT_ROOTS or (
             key not in explicitly_set
             and (value is None or isinstance(value, (dict, list, tuple)) and not value)
         ):
@@ -155,6 +161,8 @@ def _merge(target, incoming, prefix, metadata, incoming_metadata):
         if not safe_segment(key) or value is None:
             continue
         path = f"{prefix}.{key}".strip(".")
+        if not safe_path(path) or path.split(".")[0] in _RETIRED_REPORT_ROOTS:
+            continue
         if isinstance(value, dict) and isinstance(target.get(key), dict):
             _merge(target[key], value, path, metadata, incoming_metadata)
             continue

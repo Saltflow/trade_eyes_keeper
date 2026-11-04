@@ -61,7 +61,6 @@ def _stock_data():
 
 def _daily_body(notifier, *, alerts=None, signal_scan=None):
     return notifier._build_email_body(
-        alerts or [],
         _stock_data(),
         announcements={
             "601728": [
@@ -79,7 +78,6 @@ def _daily_body(notifier, *, alerts=None, signal_scan=None):
                 },
             ]
         },
-        signal_scan=signal_scan,
     )
 
 
@@ -123,13 +121,13 @@ def test_daily_alert_and_empty_paths_share_one_mobile_document(monkeypatch):
         assert "daily-node-01" in body
         assert "203.0.113.8" in body
         assert "完整行情矩阵" in body
-        assert "三市场决策板" in body
+        assert "三市场决策板" not in body
         assert "参考持仓" not in body
         assert "今日需关注" not in body
 
     assert alert_body.count("<html") == empty_body.count("<html") == 1
-    assert alert_body.find("三市场决策板") >= 0
-    assert empty_body.find("三市场决策板") >= 0
+    assert "三市场决策板" not in alert_body
+    assert "三市场决策板" not in empty_body
 
 
 def test_daily_data_is_escaped_and_reference_portfolio_is_not_in_body(monkeypatch):
@@ -153,15 +151,16 @@ def test_daily_data_is_escaped_and_reference_portfolio_is_not_in_body(monkeypatc
 def test_daily_missing_values_and_long_text_do_not_break_html(monkeypatch):
     notifier = _notifier(monkeypatch)
     sparse = pd.DataFrame(
-        [{
-            "stock_code": "000001",
-            "stock_name": "名称" * 100,
-            "close": None,
-            "ma60": None,
-        }]
+        [
+            {
+                "stock_code": "000001",
+                "stock_name": "名称" * 100,
+                "close": None,
+                "ma60": None,
+            }
+        ]
     )
     body = notifier._build_email_body(
-        [],
         sparse,
         announcements={"000001": [{"title": "标题" * 200}]},
     )

@@ -41,7 +41,7 @@ class TechnicalIndicators:
         )
 
     def _load_config(self, config_path: Optional[str]) -> Dict[str, Any]:
-        """Use the same validated alert rules as ConditionChecker."""
+        """Read the shared indicator anchors used by history and trigger facts."""
         alerts_config = get_alerts_config(config_path)
         logger.debug(f"成功加载指标配置: {alerts_config.path}")
         return alerts_config.to_dict()

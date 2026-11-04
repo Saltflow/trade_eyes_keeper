@@ -202,14 +202,6 @@ def test_retired_health_cli_is_rejected():
     assert error.value.code == 2
 
 
-def test_benchmark_config_error_logs_original_problem(monkeypatch, caplog):
-    monkeypatch.setattr(
-        main,
-        "get_market_optimizer_configs",
-        Mock(side_effect=ValueError("bad profile")),
-    )
-    assert main._fetch_benchmarks({}, SimpleNamespace()) == {}
-    assert "bad profile" in caplog.text
 
 
 def test_live_heartbeat_with_failed_assistant_is_not_ready(service_config):

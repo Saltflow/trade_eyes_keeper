@@ -28,15 +28,13 @@ def test_dynamic_safe_sections_are_discovered_beyond_legacy_roots():
     session = SessionContext(
         session_id="unit",
         stocks_data={"601088": StockPriceData(stock_code="601088", custom_anchor=44.5)},
-        signal_scan={"stocks": {"601088": {"signal": "buy"}}},
-        backtest={"hk": {"max_drawdown": 0.2}},
+        dividend_schedule={"status": "partial"},
     )
     object.__setattr__(session, "ref_portfolio_status", Reference(12.5, "ready"))
     catalog = build_report_field_catalog(session)
     for path in (
         "stocks_data.601088.custom_anchor",
-        "signal_scan.stocks.601088.signal",
-        "backtest.hk.max_drawdown",
+        "dividend_schedule.status",
         "ref_portfolio_status.pending_cash",
     ):
         assert catalog.resolve(path).availability == "observed"
@@ -120,8 +118,19 @@ def test_quote_change_percent_and_unknown_extra_units_are_explicit():
     extra = catalog.resolve("stocks_data.601088.custom_anchor")
     assert extra.unit == "report_native_unknown"
     assert "不能猜测百分数" in extra.description
-    deviation = catalog.resolve("alerts.*.percentage_difference")
-    assert deviation.unit == "percent_0_100" and "-10" in deviation.description
+
+
+@pytest.mark.parametrize("root", [
+    "alerts", "signal_scan", "portfolio_results", "backtest", "evaluation_reports",
+    "opt_data_a",
+    "opt_data_non_a", "opt_data_hk", "opt_data_us",
+])
+def test_retired_report_sections_cannot_reenter_catalog_from_observed_data(root):
+    path = root + ".old_value"
+    catalog = build_report_field_catalog({root: {"old_value": 1}})
+    assert safe_path(path)
+    assert catalog.resolve(path) is None
+    assert not any(item["path"].startswith(root) for item in catalog.describe_fields())
 
 
 def test_etf_expensive_valuation_is_snapshot_only_while_equity_is_on_demand():

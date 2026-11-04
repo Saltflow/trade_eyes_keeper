@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 import requests
 
-from src.notification import email_notifier, feishu_notifier
+from src.notification import email_notifier
 from src.notification.email_notifier import EmailNotifier
 from src.notification.feishu_notifier import FeishuNotifier
 from src.notification.manager import NotifierManager
@@ -245,9 +245,6 @@ def test_email_public_reports_propagate_receipt(smtp, monkeypatch, method):
     monkeypatch.setattr(notifier, "_prepare_brief_report", lambda *_: ("title", "body"))
     monkeypatch.setattr(notifier, "_generate_daily_pdf", lambda *_: None)
     monkeypatch.setattr(notifier, "_build_email_body", lambda *_a, **_k: "body")
-    monkeypatch.setattr(
-        email_notifier, "generate_combined_chart", lambda **_k: (None, None)
-    )
     session = SimpleNamespace(
         get_all_dataframe=lambda: pd.DataFrame(),
         get_alerts_as_dicts=list,
@@ -345,18 +342,16 @@ def test_explicit_provider_rejection_is_failed(config, monkeypatch, channel, bod
 def test_feishu_report_records_each_card_and_stops_after_unknown(config, monkeypatch):
     notifier = FeishuNotifier(config)
     monkeypatch.setattr(
-        notifier,
-        "_build_report_sections",
-        lambda *_a, **_k: [
-            ("price", "body1", None),
-            ("fundamental", "body2", None),
-            ("technical", "body3", None),
-        ],
+        email_notifier, "build_strategy_text_summary", lambda *_a, **_k: "curve"
     )
     monkeypatch.setattr(
-        email_notifier, "build_strategy_text_summary", lambda *_a, **_k: ""
+        "src.notification.report_builders.build_daily_events_text", lambda *_: "events"
     )
-    monkeypatch.setattr(feishu_notifier, "_build_ref_portfolio_markdown", lambda *_: "")
+    monkeypatch.setattr(
+        notifier,
+        "_fundamental_table",
+        lambda *_: {"tag": "markdown", "content": "price"},
+    )
     post = Mock(
         side_effect=[response({"code": 0}), requests.exceptions.ReadTimeout("unknown")]
     )
@@ -395,18 +390,14 @@ def test_telegram_report_stops_remaining_sections_after_partial_chunk(
 ):
     notifier = TelegramNotifier(config)
     monkeypatch.setattr(
-        notifier,
-        "_build_daily_sections",
-        lambda *_: [
-            ("price", "a" * 9000),
-            ("fundamental", "body2"),
-            ("technical", "body3"),
-        ],
+        email_notifier, "build_strategy_text_summary", lambda *_a, **_k: "curve"
     )
     monkeypatch.setattr(
-        email_notifier, "build_strategy_text_summary", lambda *_a, **_k: ""
+        "src.notification.report_builders.build_daily_events_text", lambda *_: "events"
     )
-    monkeypatch.setattr(notifier, "_build_ref_portfolio_text", lambda *_: "")
+    monkeypatch.setattr(
+        "src.notification.telegram_notifier.fundamental_text", lambda *_: "a" * 9000
+    )
     post = Mock(
         side_effect=[response({"ok": True}), requests.exceptions.ReadTimeout("unknown")]
     )

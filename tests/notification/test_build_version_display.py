@@ -21,7 +21,7 @@ def test_daily_html_keeps_visible_and_escaped_build_label(monkeypatch):
             "ip_address": "local",
         },
     )
-    body = notifier._build_email_body([], pd.DataFrame())
+    body = notifier._build_email_body(pd.DataFrame())
     assert "<strong>版本 " + label + "</strong>" in body
     assert "&lt;untrusted&gt;" in body
     assert "{release_label}" not in body
@@ -34,7 +34,6 @@ def test_brief_renders_same_shared_version_without_os_or_provider_probes(monkeyp
         report_builders, "get_brief_dataframe", lambda _: pd.DataFrame()
     )
     notifier = EmailNotifier({})
-    monkeypatch.setattr(notifier, "_build_ref_portfolio_html", lambda *_: "")
     _, body = notifier._prepare_brief_report(SimpleNamespace(), {"label": "简报"})
     assert "版本 " + label in body
     assert "{release_label}" not in body
@@ -105,12 +104,7 @@ def test_pdf_renders_the_same_build_and_consumes_template_placeholder(monkeypatc
     session = SimpleNamespace(config={"stocks": []})
     result = daily_pdf.generate_daily_pdf(
         session,
-        [],
-        None,
-        {},
         pd.DataFrame(),
-        chart_deviation_timeline=lambda *a, **k: None,
-        pick_best_anchor=lambda *_: None,
         get_server_info=lambda: {"hostname": "fixture", "release_label": label},
     )
     assert result == b"%PDF-unit-fixture"

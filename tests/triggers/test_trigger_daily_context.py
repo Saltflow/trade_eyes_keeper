@@ -148,7 +148,6 @@ def test_context_merge_keeps_existing_announcements_and_never_mutates_sources(tm
     old, config_before = deepcopy(previous), deepcopy(routed)
     session = SimpleNamespace(
         announcements=previous,
-        alerts=[{"stock_code": "601088"}],
         placements={},
         dividend_events=[],
     )
@@ -230,7 +229,7 @@ def daily_notification_decision():
         )
     ]
     assert len(candidates) == 1, (
-        "managed daily must own a full-report branch before alerts"
+        "managed daily must own a full-report branch"
     )
     module = ast.parse(
         "def decide(config, session, notifier, managed_daily):\n    delivery = None\n    trigger_mode = False\n    force = True\n    daily_triggers = []\n    skip_reason = ''\n"
@@ -250,7 +249,7 @@ def daily_notification_decision():
     return namespace["decide"], daily
 
 
-def test_managed_daily_with_alerts_uses_full_report_and_all_source_content(tmp_path):
+def test_managed_daily_uses_full_report_and_all_source_content(tmp_path):
     sources = [event("601088"), event("600036")]
     config = {
         "_trigger_context": binding(
@@ -259,12 +258,11 @@ def test_managed_daily_with_alerts_uses_full_report_and_all_source_content(tmp_p
     }
     session = SimpleNamespace(
         announcements={},
-        alerts=[{"stock_code": "601088"}],
         placements={},
         dividend_events=[],
     )
     populate_trigger_announcements(session, config)
-    notifier = Mock()
+    notifier = Mock(spec=["send_daily_report_from_session"])
     notifier.send_daily_report_from_session.side_effect = lambda supplied: {
         "status": "sent",
         "body": build_daily_events_text(supplied, pd.DataFrame()),
@@ -272,7 +270,6 @@ def test_managed_daily_with_alerts_uses_full_report_and_all_source_content(tmp_p
     decide, daily = daily_notification_decision()
     result = decide(config, session, notifier, is_managed_daily(config))
     notifier.send_daily_report_from_session.assert_called_once_with(session)
-    notifier.send_from_session.assert_not_called()
     assert all(
         source.title in result["body"] and source.url in result["body"]
         for source in sources
@@ -290,10 +287,7 @@ def test_managed_daily_with_alerts_uses_full_report_and_all_source_content(tmp_p
         node
         for node in calls
         if isinstance(node.func, ast.Attribute)
-        and node.func.attr == "resolve"
-        and isinstance(node.func.value, ast.Call)
-        and isinstance(node.func.value.func, ast.Name)
-        and node.func.value.func.id == "DailyDividendEventResolver"
+        and node.func.attr == "public_schedule"
     )
     assert merge.lineno < resolver.lineno < candidates_delivery_line(daily)
     assert any(
@@ -319,10 +313,10 @@ def candidates_delivery_line(daily):
     )
 
 
-def test_nonmanaged_alert_routing_keeps_its_existing_contract():
+def test_nonmanaged_daily_uses_the_same_full_report_entry():
     config = {"_trigger_context": {"kind": "brief"}}
-    session, notifier = SimpleNamespace(alerts=[{"stock_code": "601088"}]), Mock()
+    session = SimpleNamespace(announcements={}, placements={}, dividend_events=[])
+    notifier = Mock(spec=["send_daily_report_from_session"])
     decide, _ = daily_notification_decision()
     decide(config, session, notifier, is_managed_daily(config))
-    notifier.send_from_session.assert_called_once_with(session)
-    notifier.send_daily_report_from_session.assert_not_called()
+    notifier.send_daily_report_from_session.assert_called_once_with(session)

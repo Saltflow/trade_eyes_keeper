@@ -1,147 +1,72 @@
-"""
-Session链路集成测试 - 验证新的Session数据流是否正常工作
-"""
+"""Offline stock-source, model-conversion and session integration contracts."""
 
-import sys
-import os
+from unittest.mock import Mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../src"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../src/models"))
-
-import pytest
 import pandas as pd
 
-
-class TestSessionFlow:
-    """Session数据流测试"""
-
-    def test_session_manager_creation(self):
-        """测试SessionManager创建"""
-        from src.session.session_manager import SessionManager
-
-        config = {"stocks": []}
-        session_manager = SessionManager(config)
-        assert session_manager is not None
-        print("✅ SessionManager创建成功")
-
-    def test_session_creation(self):
-        """测试Session创建"""
-        from src.session.session_manager import SessionManager
-        from src.models.schemas import SessionContext
-
-        config = {"stocks": []}
-        session_manager = SessionManager(config)
-        session = session_manager.create_session(config)
-
-        assert session is not None
-        assert isinstance(session, SessionContext)
-        assert hasattr(session, "session_id")
-        assert hasattr(session, "stocks_data")
-        assert hasattr(session, "alerts")
-        print(f"✅ Session创建成功: {session.session_id}")
-
-    def test_fetch_to_session(self):
-        """测试fetch_to_session方法"""
-        from src.session.session_manager import SessionManager
-        from src.core.data_fetcher import StockDataFetcher
-
-        config = {
-            "stocks": ["000001"],  # 只测试一只股票，节省时间
-            "data_source": {"type": "web_crawler"},
-            "storage": {"data_dir": "./cache"},
-        }
-
-        session_manager = SessionManager(config)
-        session = session_manager.create_session(config)
-
-        fetcher = StockDataFetcher(config)
-        fetcher.fetch_to_session(session, session_manager)
-
-        # 验证session中的数据
-        assert len(session.stocks_data) >= 0  # 可能为0（数据获取失败）
-        print(f"✅ fetch_to_session执行成功: {len(session.stocks_data)}只股票")
-
-    def test_check_from_session(self):
-        """测试check_from_session方法"""
-        from src.session.session_manager import SessionManager
-        from src.core.condition_checker import ConditionChecker
-
-        config = {"stocks": [], "alerts": {"enabled": False}}
-
-        session_manager = SessionManager(config)
-        session = session_manager.create_session(config)
-
-        # 手动添加测试数据到session
-
-        test_df = pd.DataFrame(
-            [
-                {
-                    "stock_code": "000001",
-                    "date": pd.Timestamp.now(),
-                    "open": 10.0,
-                    "close": 10.5,
-                    "high": 11.0,
-                    "low": 9.8,
-                    "volume": 1000000,
-                    "amount": 10000000,
-                    "ma60": 10.2,
-                }
-            ]
-        )
-
-        session_manager.update_stock_from_dataframe(session, "000001", test_df)
-
-        checker = ConditionChecker(config)
-        checker.check_from_session(session, session_manager)
-
-        # 验证session中的警报
-        assert isinstance(session.alerts, list)
-        print(f"✅ check_from_session执行成功: {len(session.alerts)}个警报")
-
-    def test_email_notifier_from_session(self):
-        """测试email_notifier的send_from_session方法"""
-        from src.session.session_manager import SessionManager
-        from src.notification.email_notifier import EmailNotifier
-        from src.models.schemas import AlertStock
-
-        config = {
-            "stocks": [],
-            "email": {
-                "sender_email": "test@example.com",
-                "sender_password": "test",
-                "receiver_email": "test@example.com",
-            },
-        }
-
-        session_manager = SessionManager(config)
-        session = session_manager.create_session(config)
-
-        # 添加测试数据到session
-        test_alert = AlertStock(
-            stock_code="000001",
-            low_price=9.8,
-            price=9.8,
-            ma60=10.2,
-            price_difference=0.4,
-            percentage_difference=3.92,
-            condition="test",
-        )
-        session.alerts.append(test_alert)
-
-        notifier = EmailNotifier(config)
-
-        # 测试send_from_session（会跳过实际发送，因为我们设置了SKIP_EMAIL）
-        import os
-
-        os.environ["SKIP_EMAIL"] = "true"
-
-        try:
-            notifier.send_from_session(session)
-            print("✅ send_from_session执行成功")
-        except Exception as e:
-            print(f"❌ send_from_session失败: {e}")
-            raise
+from src.core.data_fetcher import StockDataFetcher
+from src.models.converters import (
+    dataframe_to_stock_price_data,
+    stock_price_data_list_to_dataframe,
+)
+from src.models.schemas import SessionContext
+from src.session.session_manager import SessionManager
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+def test_session_manager_creation():
+    manager = SessionManager({"stocks": []})
+    assert manager.global_config == {"stocks": []}
+
+
+def test_session_creation_has_only_current_report_fields():
+    manager = SessionManager({"stocks": []})
+    session = manager.create_session()
+    assert isinstance(session, SessionContext)
+    assert manager.get_session(session.session_id) is session
+    assert session.stocks_data == {}
+    assert {"alerts", "signal_scan", "portfolio_results", "backtest",
+            "opt_data_a", "opt_data_non_a", "opt_data_hk", "opt_data_us"}.isdisjoint(
+        session.__fields__
+    )
+
+
+def stock_frame():
+    return pd.DataFrame([{
+        "date": pd.Timestamp("2026-11-04"),
+        "open": 10.0, "close": 10.5, "high": 11.0, "low": 9.8,
+        "volume": 1000000, "amount": 10000000, "ma60": 10.2,
+        "custom_observed_indicator": 42.25,
+    }])
+
+
+def test_fetch_to_session_uses_source_data_and_writes_only_temp_history(tmp_path):
+    config = {"stocks": ["000001"], "storage": {"data_dir": str(tmp_path)}}
+    manager = SessionManager(config)
+    session = manager.create_session()
+    fetcher = StockDataFetcher(config)
+    fetcher._data_source = Mock()
+    fetcher._data_source.fetch_stock_data.return_value = stock_frame()
+    fetcher._fetch_fundamental_data = Mock(return_value={
+        "dividend_per_share": 0.21, "pe_ratio": 10.0, "pb_ratio": 1.2, "roe": 12.0,
+    })
+    fetcher.technical_indicators.calculate_indicators = Mock(
+        side_effect=lambda frame, **_: frame
+    )
+    fetcher.fetch_to_session(session, manager)
+    fetcher._data_source.fetch_stock_data.assert_called_once_with("000001", days=730)
+    assert set(session.stocks_data) == {"000001"}
+    assert session.stocks_data["000001"].close == 10.5
+    assert session.stocks_data["000001"].dividend_yield == 2.0
+    assert session.stocks_data["000001"].roe == 12.0
+    assert session.errors == []
+    assert (tmp_path / "000001_history.csv").is_file()
+    assert session._historical["000001"].iloc[-1]["close"] == 10.5
+
+
+def test_stock_model_roundtrip_keeps_dynamic_indicator():
+    stock = dataframe_to_stock_price_data(stock_frame(), "000001")
+    assert stock is not None
+    frame = stock_price_data_list_to_dataframe([stock])
+    assert frame.iloc[0]["custom_observed_indicator"] == 42.25
+    session = SessionContext(session_id="roundtrip", stocks_data={"000001": stock})
+    assert session.get_all_dataframe().iloc[0]["custom_observed_indicator"] == 42.25

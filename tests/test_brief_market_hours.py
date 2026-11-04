@@ -1,5 +1,6 @@
 """Scheduled briefs use exchange sessions and source timestamps, not fetch dates."""
 
+import json
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -91,7 +92,7 @@ def test_scheduled_run_exits_before_fetching_or_rebalancing(monkeypatch, clock):
     fetcher.assert_not_called()
 
 
-def test_open_day_with_only_cached_quotes_exits_before_scan(monkeypatch):
+def test_open_day_with_only_cached_quotes_exits_before_report(monkeypatch):
     import main
 
     frozen = Mock()
@@ -119,11 +120,9 @@ def test_open_day_with_only_cached_quotes_exits_before_scan(monkeypatch):
     manager.create_session.return_value = session
     monkeypatch.setattr(main, "SessionManager", Mock(return_value=manager))
     monkeypatch.setattr(main, "StockDataFetcher", Mock())
-    scan, notifier = Mock(), Mock()
-    monkeypatch.setattr(main, "_get_active_group_context", scan)
+    notifier = Mock()
     monkeypatch.setattr(main, "NotifierManager", notifier)
     main.run_brief_report()
-    scan.assert_not_called()
     notifier.assert_not_called()
 
 
@@ -162,10 +161,14 @@ def test_channel_rows_use_the_same_active_codes_and_previous_close():
     # Fixture models the existing local calendar/date filter, not an instant.
     today = datetime(2026, 10, 21)  # noqa: DTZ001
     assert build_brief_entries(selected, today)[0]["prev_close"] == 5.97
-    for output in [
-        FeishuNotifier._build_brief_rows(selected, today),
-        TelegramNotifier._build_brief_blocks(selected, today),
-    ]:
+    selected_session = SimpleNamespace(get_all_dataframe=lambda: selected)
+    for output in (
+        json.dumps(
+            FeishuNotifier({})._prepare_brief_report(selected_session, {}),
+            ensure_ascii=False,
+        ),
+        str(TelegramNotifier({})._prepare_brief_report(selected_session, {})),
+    ):
         assert "昨收" in output and "5.97" in output and "VOO" not in output
 
 
@@ -221,7 +224,6 @@ def test_actual_email_and_feishu_card_include_previous_close(monkeypatch):
     )
     session = SimpleNamespace(
         get_all_dataframe=lambda: frame,
-        signal_scan=None,
         brief_active_codes=("601728",),
         ref_portfolio_status=None,
     )
@@ -238,7 +240,11 @@ def test_actual_email_and_feishu_card_include_previous_close(monkeypatch):
     elements = send_card.call_args.args[0]["card"]["body"]["elements"]
     table = next(e for e in elements if e["tag"] == "table")
     assert any(c["display_name"] == "昨收" for c in table["columns"])
-    assert table["rows"][0]["prev_close"] == "5.97"
+    previous_column = next(
+        column["name"] for column in table["columns"]
+        if column["display_name"] == "昨收"
+    )
+    assert table["rows"][0][previous_column] == "5.97"
 
 
 def test_explicit_manual_force_retains_closed_market_snapshot(monkeypatch):

@@ -1,6 +1,5 @@
 """Missing holding quotes must never turn into a fabricated NAV loss."""
 
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pandas as pd
@@ -153,26 +152,3 @@ def test_invalid_fx_rate_cannot_create_a_valuation(fx_rate):
     with pytest.raises(ValueError, match="FX rate"):
         _reference_portfolio_prices(_portfolio(), pd.DataFrame(), fx_rate, fetch_quote)
     fetch_quote.assert_not_called()
-
-
-def test_bots_show_missing_valuation_and_preserve_trading_block():
-    from src.notification.feishu_notifier import _build_ref_portfolio_markdown
-    from src.notification.telegram_notifier import TelegramNotifier
-
-    status = RefPortfolioManager.get_status(_portfolio(), {"VOO": 4200.0})
-    status["_label"] = "美股（停单）"
-    status["_trading_blocked_reason"] = "固定运行或执行合同不可恢复"
-    session = SimpleNamespace(ref_portfolio_status={"us": status})
-
-    for render in (
-        _build_ref_portfolio_markdown,
-        TelegramNotifier._build_ref_portfolio_text,
-    ):
-        body = render(session)
-        assert "净值 待补全" in body
-        assert "回报 待补全" in body
-        assert "缺少 QQQ 行情" in body
-        assert "现金 50,000" in body
-        assert "QQQ" in body
-        assert "停单原因：固定运行或执行合同不可恢复" in body
-        assert "-29.0%" not in body

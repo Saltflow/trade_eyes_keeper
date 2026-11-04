@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-_ROOTS = {"dividend_events", "placements", "announcements", "signal_scan", "alerts"}
+_ROOTS = {"dividend_events", "placements", "announcements"}
 _PATH_PART = re.compile(r"(?:[A-Za-z][A-Za-z0-9_]*|\*)\Z")
 _OPERATORS = {"exists", "non_empty", "contains", "equals", "gt", "gte", "lt", "lte"}
 _MAX_CONDITIONS = 20

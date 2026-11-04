@@ -3,9 +3,9 @@
 股票量化系统主程序
 功能：
 1. 获取自选股票天级别交易数据
-2. 检查当天最低价 < MA60（前复权）条件
-3. 满足条件时发送邮件提醒
-4. 获取股票报告并分析基本面（LLM API）
+2. 生成完整日报与简报，通过配置渠道投递
+3. 查询公司行为并更新参考持仓估值
+4. 按显式请求执行策略优化与数据维护
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ from pathlib import Path
 from time import monotonic
 from typing import Callable
 
-import numpy as np
 import pandas as pd
 import yaml
 from dotenv import load_dotenv
@@ -37,25 +36,21 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "config", ".env"
 # 添加src目录到Python路径
 logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent / "src"))
-from src.backtest import build_trade_plan, evaluate_all_groups
-from src.core.condition_checker import ConditionChecker
+from src.backtest import evaluate_all_groups
 from src.core.config_store import load_config as load_runtime_config
 from src.core.data_fetcher import StockDataFetcher
 from src.core.process_lock import exclusive_process_lock
 from src.core.ref_portfolio import (
     RefPortfolio,
     RefPortfolioManager,
-    reference_execution_binding_status,
-    reference_execution_contract,
     reference_valuation_price,
 )
 from src.data.announcement_fetcher import AnnouncementFetcher
 from src.data.backtest_data import prepare_backtest_data
 from src.instruments import InstrumentAuditService
 from src.instruments.audit import load_latest_audit
-from src.markets import _detect_fine_group, get_skip_search, get_skip_signals
+from src.markets import _detect_fine_group, get_skip_search
 from src.notification.manager import NotifierManager
-from src.notification.report_policy import returns_only, technical_signals_enabled
 from src.search import (
     get_market_optimizer_config,
     get_market_optimizer_configs,
@@ -66,13 +61,11 @@ from src.search.artifacts import (
     OptimizerRunSummary,
     activate_run,
     load_latest_strategy_run,
-    load_strategy_run,
     new_run_id,
     persist_group_summary,
     prune_optimizer_runs,
     publish_complete_run,
 )
-from src.search.contracts import stable_hash
 from src.search.promotion import (
     PromotionDecision,
     PromotionPolicy,
@@ -87,53 +80,10 @@ from src.strategy.return_curves import load_return_curves
 OPTIMIZER_GROUPS = ("a_share", "hk", "us")
 DEFAULT_OPTIMIZER_GROUPS = OPTIMIZER_GROUPS
 DAILY_REPORT_FREQUENCIES = {"daily", "weekly", "off"}
-# Keep the existing three-year daily decision-history chart.
-DAILY_PORTFOLIO_HISTORY_MONTHS = 36
-DAILY_PORTFOLIO_HISTORY_BUFFER_DAYS = 35
-
-
-def _prepare_report_signals(session, session_manager, config, *, brief=False):
-    """Keep retired technical scans out of reports and reference orders."""
-    if not technical_signals_enabled(config):
-        session.signal_scan = None
-        logger.info("技术信号已停用，跳过条件检查和策略扫描")
-        return
-    if not brief:
-        ConditionChecker(config).check_from_session(session, session_manager)
-    try:
-        strategies, params, timestamp, _ = _get_active_group_context(config)
-        if timestamp:
-            logger.info("Report scan uses active optimizer run from %s", timestamp)
-        session.signal_scan = _collect_signal_scan(
-            session, strategies, params, config,
-            skip_codes=get_skip_signals(config) if brief else None,
-        )
-        if not brief:
-            session.alerts.extend(session.signal_scan.alerts)
-    except Exception:  # The optional scan cannot abort report delivery.
-        logger.exception("报告技术信号扫描失败")
-        session.signal_scan = None
 
 
 def _attach_return_curves(session, config):
-    if returns_only(config):
-        object.__setattr__(session, "strategy_return_curves", load_return_curves(config))
-
-
-
-
-def _daily_portfolio_history_days() -> int:
-    """Return the fetch horizon needed for an exact 36-calendar-month chart."""
-    return int(DAILY_PORTFOLIO_HISTORY_MONTHS * 30.4375) + (
-        DAILY_PORTFOLIO_HISTORY_BUFFER_DAYS
-    )
-
-
-def _daily_portfolio_evaluation_start(end_date: pd.Timestamp) -> pd.Timestamp:
-    """Anchor the daily NAV overview to a calendar, rather than a 9m holdout."""
-    return pd.Timestamp(end_date).normalize() - pd.DateOffset(
-        months=DAILY_PORTFOLIO_HISTORY_MONTHS
-    )
+    object.__setattr__(session, "strategy_return_curves", load_return_curves(config))
 
 
 def _stock_code(stock: object) -> str:
@@ -499,8 +449,8 @@ def _reference_portfolio_actions(config: dict, portfolio) -> list[object]:
     either has a point-in-time action record for every holding or its next
     rebalance is blocked with an explicit reason.
     """
-    from src.data.market_history import PointInTimeMarketStore
     from src.data.in_kind_estimation import validate_cached_in_kind_estimates
+    from src.data.market_history import PointInTimeMarketStore
 
     settings = config.get("point_in_time_data", {}) or {}
     store = PointInTimeMarketStore(settings.get("output_dir", "data/point_in_time"))
@@ -1339,44 +1289,6 @@ def _notify_optimizer_run(config: dict, report: OptimizerRunSummary) -> None:
         logging.getLogger(__name__).exception("Unable to send optimizer summary")
 
 
-def _get_active_strategy_and_params(config: dict):
-    """Return a uniform active strategy only for a single requested market."""
-    strategies, params, timestamp, _ = _get_active_group_context(config)
-    if len(strategies) == 1:
-        return next(iter(strategies.values())), params, timestamp
-    return None, params, timestamp
-
-
-def _get_active_group_context(config: dict):
-    """Resolve strategy and parameters independently for each market group."""
-    groups = _configured_optimizer_groups(config)
-    strategies = {}
-    params = {}
-    active_groups = []
-    timestamps = []
-    for group in groups:
-        active = load_latest_strategy_run(groups=(group,))
-        if active is None:
-            logging.getLogger(__name__).warning(
-                "%s has no active optimizer artifact; no fallback strategy will be used",
-                group,
-            )
-            continue
-        strategy = active.strategy_for(group)
-        group_params = active.params_by_group.get(group)
-        if strategy is None or group_params is None:
-            continue
-        strategies[group] = strategy
-        params[group] = group_params
-        active_groups.append(group)
-        timestamps.append(active.timestamp)
-    combined = (
-        load_latest_strategy_run(groups=tuple(active_groups))
-        if active_groups
-        else None
-    )
-    return strategies, params, max(timestamps) if timestamps else None, combined
-
 # 设置日志
 def setup_logging(config):
     """配置日志系统"""
@@ -1598,11 +1510,7 @@ def run_daily_task(
             progress("daily_stock_data")
         logger.info("开始获取股票数据")
         fetcher = StockDataFetcher(config)
-        fetcher.fetch_to_session(
-            session,
-            session_manager,
-            history_days=_daily_portfolio_history_days(),
-        )
+        fetcher.fetch_to_session(session, session_manager)
         if not session.stocks_data:
             logger.warning("Session中无股票数据")
             return _report_result("failed", "stock_data_unavailable", session)
@@ -1640,127 +1548,10 @@ def run_daily_task(
 
         if progress:
             progress("daily_evaluation")
-        _prepare_report_signals(session, session_manager, config)
         _attach_return_curves(session, config)
 
         # 4. 创建通知管理器（统一入口）
         notifier = NotifierManager(config)
-
-        if not returns_only(config):
-            # 5. 投资组合策略分析（参数唯一来源: data/optimizer/{group}_best_params.yaml）
-            try:
-                logger.info("开始投资组合策略分析")
-
-                strategies_by_group, active_params, active_timestamp, active_run = (
-                    _get_active_group_context(config)
-                )
-
-                if not strategies_by_group:
-                    logger.warning("未找到有效策略，跳过策略评估")
-                else:
-                    market_configs = get_market_optimizer_configs(
-                        config, groups=OPTIMIZER_GROUPS
-                    )
-                    stocks_data = {}
-                    for configured_stock in config.get("stocks", []):
-                        code = _stock_code(configured_stock)
-                        df = getattr(session, "_historical", {}).get(code)
-                        if df is not None and len(df) >= 60:
-                            stocks_data[code] = df
-
-                    benchmark_data = _fetch_benchmarks(config, session)
-                    reports = {}
-                    if active_timestamp:
-                        logger.info("Portfolio evaluation uses active optimizer run from %s", active_timestamp)
-                    active_run = load_latest_strategy_run(
-                        groups=tuple(
-                            group
-                            for group in _configured_optimizer_groups(config)
-                            if group in active_params
-                        )
-                    )
-                    for group in OPTIMIZER_GROUPS:
-                        strategy = strategies_by_group.get(group)
-                        if strategy is None:
-                            continue
-                        if not strategy.supports_market(group):
-                            logger.info(
-                                "Strategy %s does not support %s; skip evaluation",
-                                strategy.name,
-                                group,
-                            )
-                            continue
-                        params = active_params.get(group)
-                        if params is None:
-                            logger.warning(
-                                "No %s parameters for %s; skip this group. "
-                                "Run python main.py --optimize to generate them.",
-                                strategy.name,
-                                group,
-                            )
-                            continue
-                        exec_cfg = market_configs[group].execution
-                        group_last_dates = []
-                        for code, frame in stocks_data.items():
-                            if _detect_fine_group(code) != group or frame.empty:
-                                continue
-                            raw_dates = frame["date"] if "date" in frame.columns else frame.index
-                            parsed_dates = pd.to_datetime(raw_dates, errors="coerce")
-                            if len(parsed_dates):
-                                group_last_dates.append(pd.Timestamp(parsed_dates.max()))
-                        validation_end = max(group_last_dates) if group_last_dates else None
-                        validation_start = (
-                            _daily_portfolio_evaluation_start(validation_end)
-                            if validation_end is not None
-                            else None
-                        )
-                        group_reports = evaluate_all_groups(
-                            stocks_data,
-                            list(stocks_data),
-                            strategy,
-                            params,
-                            exec_cfg,
-                            benchmark_data=benchmark_data,
-                            target_groups=[group],
-                            start_date=(
-                                validation_start.strftime("%Y-%m-%d")
-                                if validation_start is not None
-                                else None
-                            ),
-                            end_date=(
-                                validation_end.strftime("%Y-%m-%d")
-                                if validation_end is not None
-                                else None
-                            ),
-                            context_enricher=_strategy_context_enricher(
-                                strategy, config, group, list(stocks_data)
-                            ),
-                            market_constraints=market_configs[group].constraints,
-                        )
-                        for report in group_reports.values():
-                            if active_run is not None:
-                                report.selection_diagnostics = dict(
-                                    active_run.selection_by_group.get(group, {})
-                                )
-                        reports.update(group_reports)
-
-                    if reports:
-                        object.__setattr__(session, "evaluation_reports", reports)
-                        object.__setattr__(session, "_yaml_eval_cache", {
-                            gk: report.to_cache_dict() for gk, report in reports.items()
-                        })
-                        logger.info(
-                            f"投资组合策略分析完成 ({len(reports)}组: "
-                            + ", ".join(
-                                f"{group}:{report.total_return:+.1f}%"
-                                for group, report in reports.items()
-                            )
-                            + ")"
-                        )
-                    else:
-                        logger.warning("无可用回测结果，跳过投资组合分析")
-            except Exception:
-                logger.exception("投资组合策略分析失败")
 
         # ── 参考持仓状态（只读，日报不做调仓，三分仓）──
 
@@ -1854,17 +1645,8 @@ def run_daily_task(
                 delivery = notifier.send_daily_report_from_session(session)
             else:
                 logger.info("日报触发条件未满足，跳过发送: %s", daily_triggers)
-                if session.alerts:
-                    # Preserve the existing standalone alert channel; trigger
-                    # rules gate reports, not ordinary price/signal alerts.
-                    skip_reason = ""
-                    delivery = notifier.send_from_session(session)
-        elif session.alerts:
-            logger.info(f"发现{len(session.alerts)}个满足条件的警报")
-            skip_reason = ""
-            delivery = notifier.send_from_session(session)
         elif should_send_daily_report(config, force=force):
-            logger.info("没有满足条件的股票，发送每日报告")
+            logger.info("按配置频次发送每日报告")
             skip_reason = ""
             delivery = notifier.send_daily_report_from_session(session)
         else:
@@ -1874,7 +1656,7 @@ def run_daily_task(
                 )
             ).lower()
             logger.info(
-                "日报频次为 %s，今日无告警，跳过普通日报发送；手动 /daily 仍可触发",
+                "日报频次为 %s，跳过普通日报发送；手动 /daily 仍可触发",
                 frequency,
             )
         logger.info("每日任务执行完成")
@@ -1961,7 +1743,6 @@ def run_brief_report(
 
         logger.info(f"简报：获取到 {len(session.stocks_data)} 只股票数据")
 
-        _prepare_report_signals(session, session_manager, config, brief=True)
         _attach_return_curves(session, config)
 
         brief_triggers = report_config.get("triggers", {})
@@ -1978,7 +1759,7 @@ def run_brief_report(
             except Exception as exc:  # noqa: BLE001 - Trigger preparation fails closed.
                 logger.warning("简报事件触发数据准备失败，按未满足处理: %s", exc)
 
-        # ── 参考持仓三分仓调仓（A股/港股/美股各自独立资金池）──
+        # ── 参考持仓估值与公司行为（不自动调仓）──
         if progress:
             progress("brief_reference_portfolio")
 
@@ -1986,8 +1767,6 @@ def run_brief_report(
             config, groups=OPTIMIZER_GROUPS
         )
         stock_data_df = session.get_all_dataframe()
-        historical = getattr(session, "_historical", {}) or {}
-        skipped_signals = get_skip_signals(config)
 
         POOLS = {
             "a_share": {
@@ -2035,129 +1814,14 @@ def run_brief_report(
                     external_prices=_reference_portfolio_external_prices(config, pf),
                 )
                 mgr.save(new_pf)
-            # Corporate action failure blocks trades.
+            # Preserve the last holdings when corporate action data is unavailable.
             except Exception as exc:  # noqa: BLE001
                 trading_blocked_reason = "公司行为数据不就绪"
                 logger.error(
-                    "参考持仓%s 无法应用公司行为；跳过交易: %s",
+                    "参考持仓%s 无法应用公司行为；保留已有持仓: %s",
                     pool["label"],
                     exc,
                 )
-            if not technical_signals_enabled(config):
-                trading_blocked_reason = "技术信号已停用，保留已有持仓，不自动调仓"
-            if trading_blocked_reason:
-                pass
-            elif not pf.is_bound:
-                trading_blocked_reason = "未绑定运行，需手动重置"
-                logger.warning(
-                    "参考持仓%s 是旧格式且未绑定运行；跳过交易，等待手动 /ref_date 重置",
-                    pool["label"],
-                )
-            else:
-                exec_cfg = pool["execution"]
-                pinned = load_strategy_run(pf.strategy_run_id, groups=(group_key,))
-                pinned_strategy = (
-                    pinned.strategy_for(group_key) if pinned is not None else None
-                )
-                params = (
-                    pinned.params_by_group.get(group_key)
-                    if pinned is not None
-                    else None
-                )
-                strategy_binding_valid = bool(
-                    pinned is not None
-                    and pinned_strategy is not None
-                    and pinned_strategy.name == pf.strategy_id
-                    and params is not None
-                    and stable_hash(
-                        {
-                            "strategy_id": pinned_strategy.name,
-                            "values": params.values,
-                        }
-                    )
-                    == pf.params_hash
-                )
-                binding_status = (
-                    reference_execution_binding_status(
-                        pf.execution_hash,
-                        reference_execution_contract(
-                            params.execution_snapshot,
-                            exec_cfg,
-                            group_key,
-                        ),
-                    )
-                    if strategy_binding_valid
-                    else "unavailable"
-                )
-                if binding_status != "current":
-                    trading_blocked_reason = (
-                        "旧版执行合同缺少分红税率绑定，需保留持仓迁移"
-                        if binding_status == "legacy_missing_withholding"
-                        else "固定运行或执行合同不可恢复"
-                    )
-                    logger.error(
-                        "参考持仓%s %s；跳过交易，保留当前持仓及交易历史",
-                        pool["label"],
-                        trading_blocked_reason,
-                    )
-                else:
-                    active_codes = sorted(
-                        {
-                            str(row.get("stock_code", ""))
-                            for _, row in stock_data_df.iterrows()
-                            if _detect_fine_group(
-                                str(row.get("stock_code", ""))
-                            )
-                            == group_key
-                            and str(row.get("stock_code", "")) not in skipped_signals
-                            and str(row.get("stock_code", "")) in historical
-                        }
-                    )
-                    if active_codes:
-                        try:
-                            trade_plan, market_data, _, _ = build_trade_plan(
-                                historical,
-                                active_codes,
-                                pinned_strategy,
-                                params,
-                                start_date=pf.inception_date,
-                                end_date=today.strftime("%Y-%m-%d"),
-                                context_enricher=_strategy_context_enricher(
-                                    pinned_strategy,
-                                    config,
-                                    group_key,
-                                    active_codes,
-                                ),
-                            )
-                            if trade_plan is not None and market_data is not None:
-                                new_pf, _ = mgr.rebalance_plan(
-                                    new_pf,
-                                    trade_plan,
-                                    market_data,
-                                    today.strftime("%Y-%m-%d"),
-                                    run_id=pinned.run_id,
-                                    strategy_id=pinned_strategy.name,
-                                    lot_size=pool["lot"],
-                                    commission_rate=exec_cfg.commission_rate,
-                                    min_holding_days=exec_cfg.min_holding_days,
-                                    fx_rate=pool["fx"],
-                                    label=pool["label"],
-                                    force=force,
-                                )
-                                mgr.save(new_pf)
-                        except Exception:
-                            trading_blocked_reason = "统一计划构建或执行失败"
-                            logger.exception(
-                                "参考持仓%s 统一计划构建或执行失败；保留原状态",
-                                pool["label"],
-                            )
-                    else:
-                        trading_blocked_reason = "没有完整历史数据"
-                        logger.warning(
-                            "参考持仓%s 没有可构建统一计划的完整历史数据",
-                            pool["label"],
-                        )
-
             # 本组 status（现价 × FX → CNY，与成本基准一致）
             cny_prices = _reference_portfolio_prices(
                 new_pf,
@@ -2302,279 +1966,6 @@ def _populate_brief_event_context(
         session.placements = placements
 
 
-def _fetch_benchmarks(config, session) -> dict:
-    """拉取当前三个市场合同声明的基准数据。
-
-    优先从 session._historical 读（已拉取过的历史数据）。
-    """
-    historical = getattr(session, "_historical", {}) or {}
-    try:
-        market_configs = get_market_optimizer_configs(
-            config, groups=OPTIMIZER_GROUPS
-        )
-    except ValueError as exc:
-        logger.error("无法读取市场基准合同，跳过基准拉取: %s", exc)
-        return {}
-    benchmark_codes = {
-        code
-        for market_config in market_configs.values()
-        for code in market_config.constraints.benchmark_codes
-        if code != "risk_free"
-    }
-    bench_data = {}
-
-    for bc in sorted(benchmark_codes):
-        if bc in historical:
-            bench_data[bc] = historical[bc]
-            continue
-        try:
-            df = StockDataFetcher(config).data_source.fetch_stock_data(
-                bc, days=max(
-                    _optimizer_lookback_days(market_config.constraints)
-                    for market_config in market_configs.values()
-                )
-            )
-            if df is not None and not df.empty:
-                bench_data[bc] = df
-                historical[bc] = df
-        # Optional benchmarks never abort signal scans; retain a debug traceback.
-        except Exception as exc:
-            logging.getLogger(__name__).debug(
-                "Signal benchmark %s unavailable: %s", bc, exc, exc_info=True
-            )
-    return bench_data
-
-
-def _collect_signal_scan(session, strategies, params, config, skip_codes=None):
-    """Keep each market's completion evidence separate from its alert count."""
-    outcomes = {}
-    alerts = []
-    for group in OPTIMIZER_GROUPS:
-        try:
-            alerts.extend(
-                _scan_group(
-                    session,
-                    strategies.get(group),
-                    group,
-                    params.get(group),
-                    skip_codes=skip_codes,
-                    config=config,
-                    scan_outcomes=outcomes,
-                )
-            )
-        except Exception as exc:
-            logging.getLogger(__name__).exception("%s signal scan failed", group)
-            outcomes[group] = {
-                "status": "failed",
-                "reason": f"策略扫描异常：{type(exc).__name__}: {exc}",
-            }
-    return type(
-        "ScanResult",
-        (),
-        {
-            "alerts": alerts,
-            "group_outcomes": outcomes,
-            "consensus": None,
-            "indicator_snapshot": {},
-            "divergence_warnings": [],
-        },
-    )()
-
-
-def _scan_group(
-    session,
-    strategy,
-    group: str,
-    params=None,
-    top_n: int = 5,
-    skip_codes: set[str] | None = None,
-    config: dict | None = None,
-    scan_outcomes: dict | None = None,
-):
-    """Derive today's alerts from the canonical full-market TradePlan."""
-    outcome = {"status": "not_run", "reason": "扫描尚未执行"}
-    if scan_outcomes is not None:
-        scan_outcomes[group] = outcome
-    df = session.get_all_dataframe()
-    skipped = skip_codes or set()
-    expected_codes = sorted(
-        {
-            _stock_code(stock)
-            for stock in (config or {}).get("stocks", [])
-            if _detect_fine_group(_stock_code(stock)) == group
-            and _stock_code(stock) not in skipped
-        }
-    )
-    if "stocks" not in (config or {}):
-        expected_codes = sorted(
-            {
-                str(row.get("stock_code", ""))
-                for _, row in df.iterrows()
-                if _detect_fine_group(str(row.get("stock_code", ""))) == group
-                and str(row.get("stock_code", "")) not in skipped
-            }
-        )
-    outcome.update(expected_codes=expected_codes, scanned_codes=[])
-    if not expected_codes:
-        outcome.update(status="not_applicable",
-                       reason="该市场无待扫描标的（含配置跳过）")
-        return []
-    if strategy is None:
-        compatibility = {}
-        load_latest_strategy_run(
-            groups=(group,), compatibility_diagnostics=compatibility
-        )
-        detail = compatibility.get(group, {})
-        if detail.get("status") == "incompatible_execution_contract":
-            outcome.update(status="blocked", reason=str(detail["reason"]))
-            outcome["execution_compatibility"] = detail
-        else:
-            outcome["reason"] = "未激活可用策略"
-        return []
-    if not strategy.supports_market(group):
-        outcome["reason"] = "策略不支持该市场"
-        return []
-    if params is None:
-        active = load_latest_strategy_run(groups=(group,))
-        params = (
-            active.params_by_group.get(group)
-            if active is not None
-            and active.strategy_for(group) is not None
-            and active.strategy_for(group).name == strategy.name
-            else None
-        )
-    if params is None:
-        outcome.update(status="blocked", reason="缺少已激活策略参数")
-        return []
-    historical = getattr(session, "_historical", {}) or {}
-    active_codes = sorted(
-        {
-            str(row.get("stock_code", ""))
-            for _, row in df.iterrows()
-            if _detect_fine_group(str(row.get("stock_code", ""))) == group
-            and str(row.get("stock_code", "")) not in skipped
-            and str(row.get("stock_code", "")) in historical
-        }
-    )
-    missing_codes = sorted(set(expected_codes) - set(active_codes))
-    outcome.update(
-        expected_codes=expected_codes,
-        available_codes=active_codes,
-        missing_codes=missing_codes,
-    )
-    if not active_codes:
-        outcome.update(
-            status="blocked" if expected_codes else "not_run",
-            reason="无可扫描的行情及历史数据"
-            if expected_codes
-            else "该市场无待扫描标的（含配置跳过）",
-        )
-        return []
-    try:
-        trade_plan, _, _, _ = build_trade_plan(
-            historical,
-            active_codes,
-            strategy,
-            params,
-            context_enricher=_strategy_context_enricher(
-                strategy,
-                config or {},
-                group,
-                active_codes,
-            ),
-        )
-    except Exception as exc:
-        outcome.update(
-            status="failed", reason=f"交易计划生成失败：{type(exc).__name__}: {exc}"
-        )
-        logging.getLogger(__name__).exception(
-            "Unable to build %s live TradePlan",
-            group,
-        )
-        return []
-    if trade_plan is None or not trade_plan.dates:
-        outcome.update(status="blocked", reason="交易计划为空或没有可用交易日期")
-        return []
-    row = len(trade_plan.dates) - 1
-    buys = np.asarray(
-        trade_plan.entry_events
-        if trade_plan.entry_events is not None
-        else trade_plan.buy_signals,
-        dtype=bool,
-    )
-    sells = np.asarray(
-        trade_plan.exit_events
-        if trade_plan.exit_events is not None
-        else trade_plan.sell_signals,
-        dtype=bool,
-    )
-    if trade_plan.force_exit_signals is not None:
-        sells |= np.asarray(trade_plan.force_exit_signals, dtype=bool)
-    buy_priority = np.asarray(trade_plan.buy_priority, dtype=float)
-    sell_priority = np.asarray(trade_plan.sell_priority, dtype=float)
-    alerts = []
-    signal_date = str(trade_plan.dates[row])[:10]
-    for column, code in enumerate(trade_plan.symbols):
-        for side, matrix, priorities in (
-            ("buy", buys, buy_priority),
-            ("sell", sells, sell_priority),
-        ):
-            if not matrix[row, column]:
-                continue
-            score = float(priorities[row, column])
-            alerts.append(
-                {
-                    "stock_code": code,
-                    "side": side,
-                    "priority": score,
-                    "label": f"{strategy.label} {side.upper()}",
-                    # 通知契约字段（日报/简报/PDF/飞书统一读取）
-                    "rule_label": f"{strategy.label} {side.upper()}",
-                    "current_value": f"评分 {score:.2f}",
-                    "detail": f"TradePlan event on {signal_date}",
-                    "rule_id": f"{strategy.name}_{side}",
-                    "type": f"strategy_{side}",
-                    "signal_date": signal_date,
-                }
-            )
-    # Live alerts use the same priority semantics as simulated orders; source
-    # configuration order must never decide which candidate is surfaced first.
-    alerts.sort(
-        key=lambda item: (
-            -float(item.get("priority", 0.0)),
-            str(item.get("stock_code", "")),
-            str(item.get("side", "")),
-        )
-    )
-    missing_codes = sorted(set(expected_codes) - set(trade_plan.symbols))
-    outcome.update(
-        status="blocked"
-        if missing_codes
-        else ("completed" if alerts else "completed_no_signal"),
-        reason="部分标的缺少扫描数据：" + ", ".join(missing_codes)
-        if missing_codes
-        else "",
-        scanned_codes=list(trade_plan.symbols),
-        missing_codes=missing_codes,
-    )
-    return alerts[:top_n]
-
-
-def _eval_opt_lookback() -> int:
-    """读 optimizer_constraints.yaml 的 walk_forward.test_months，返回日历天数。
-
-    fetch_stock_data(days=N) 的 N 是日历天，不是交易日。
-    """
-    try:
-        import yaml
-        with open("config/optimizer_constraints.yaml", "r", encoding="utf-8") as f:
-            raw = yaml.safe_load(f) or {}
-        months = int((raw.get("walk_forward", {}) or {}).get("test_months", 9))
-        return int(months * 30.4375)  # 9 个月 ≈ 274 日历天
-    except Exception:
-        return 274
-
-
 def _send_restart_notification(config: dict, service):
     """Announce a started service through the common notification policy."""
     from src.notification.settings import env_flag
@@ -2633,17 +2024,6 @@ def _build_argument_parser() -> argparse.ArgumentParser:
     )
     mode.add_argument("--service", action="store_true", help="run scheduler and outbound Bots")
     mode.add_argument("--status", action="store_true", help="read local service status")
-    for flag, description in (
-        ("--fundamental-materials", "retired mixed materials pipeline (returns an error)"),
-        (
-            "--fundamental-quant",
-            "retired research entrypoint; returns an explicit error",
-        ),
-        ("--fundamental-quant-status", "read historical research metadata (read-only)"),
-        ("--fundamental-quant-report", "list existing historical report paths (read-only)"),
-        ("--fundamental-quant-notify", "retired research notification entry (returns an error)"),
-    ):
-        mode.add_argument(flag, action="store_true", help=description)
     mode.add_argument("--interactive", action="store_true", help="run configured outbound Bots")
     mode.add_argument(
         "--report-worker", choices=("daily", "brief"), help=argparse.SUPPRESS
@@ -2690,39 +2070,6 @@ def main(argv: list[str] | None = None):
             environment,
         )
     config = load_config(args.config) if args.config else load_config()
-    if args.fundamental_materials:
-        import json
-
-        print(json.dumps({
-            "status": "blocked",
-            "error_codes": ["mixed_materials_pipeline_retired"],
-            "entrypoint": "scripts/financial_pipeline.py",
-            "paid_model_calls": 0,
-        }, ensure_ascii=False))
-        return 1
-    fundamental_action = next(
-        (method for flag, method in (
-            (args.fundamental_quant, "run"),
-            (args.fundamental_quant_status, "status"),
-            (args.fundamental_quant_report, "report"),
-            (args.fundamental_quant_notify, "notify_weekly"),
-        ) if flag), None,
-    )
-    if fundamental_action:
-        import json
-
-        from src.fundamental_quant.service import FundamentalQuantService
-
-        result = getattr(FundamentalQuantService(config), fundamental_action)()
-        print(json.dumps(result, ensure_ascii=False, allow_nan=False))
-        retired = any(
-            error.get("code") in {
-                "legacy_fundamental_workflow_retired", "pdf_research_workflow_retired",
-                "model_led_research_retired"
-            }
-            for error in result.get("errors", [])
-        )
-        return 1 if retired or result.get("status") in {"failed", "error"} else 0
     if args.status:
         import json
 

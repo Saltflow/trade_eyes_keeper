@@ -49,10 +49,9 @@ def handle_help() -> str:
             [
                 ("/daily", "触发完整日报"),
                 ("/brief [afternoon]", "触发简报（默认早盘）"),
-                ("/fundamental [代码|status]", "只读查询历史价投记录和原状态"),
                 (
                     "/report_frequency [daily|weekly|off]",
-                    "设置日报频次；weekly 每周五，告警仍即时发送",
+                    "设置固定日报频次；weekly 每周五",
                 ),
                 (
                     "/backtest 代码 起 止",
@@ -81,17 +80,15 @@ def handle_help() -> str:
             "🎯 标的开关",
             [
                 (
-                    "/skip search|signals 代码",
-                    "关闭标的搜参/信号 例 <code>/skip search 601985</code>",
+                    "/skip search 代码",
+                    "关闭标的搜参 例 <code>/skip search 601985</code>",
                 ),
-                ("/unskip search|signals 代码", "恢复搜参/信号"),
+                ("/unskip search 代码", "恢复标的搜参"),
             ],
         ),
         (
-            "🔔 报警与调度",
+            "🔔 调度",
             [
-                ("/alerts", "查看报警状态"),
-                ("/reset_alerts [代码]", "重置报警"),
                 (
                     "/schedule [任务 时间]",
                     "查看/修改调度 例 <code>/schedule daily 20:00</code>",
@@ -120,32 +117,31 @@ def handle_list() -> str:
         return "监控列表为空。使用 <code>/add 代码</code> 添加。"
 
     skip_search = {str(c) for c in (config.get("skip_search") or [])}
-    skip_signals = {str(c) for c in (config.get("skip_signals") or [])}
 
     lines = [f"<b>监控列表</b>（共 {len(stocks)} 只）"]
-    lines.append("标记: 🔍搜参 📊信号 (划掉=已关闭)\n")
+    lines.append("标记: 🔍搜参 (划掉=已关闭)\n")
     for code in stocks:
         c = str(code)
         s1 = "🔍" if c not in skip_search else "<s>🔍</s>"
-        s2 = "📊" if c not in skip_signals else "<s>📊</s>"
-        lines.append(f"<code>{code}</code> {s1}{s2}")
+        lines.append(f"<code>{code}</code> {s1}")
     n_skip_s = len(skip_search)
-    n_skip_g = len(skip_signals)
-    if n_skip_s or n_skip_g:
-        lines.append(f"\n不搜参: {n_skip_s} 只 | 不显示信号: {n_skip_g} 只")
+    if n_skip_s:
+        lines.append(f"\n不搜参: {n_skip_s} 只")
     return "\n".join(lines)
 
 
 def handle_skip(kind: str, codes: list[str], remove: bool = False) -> str:
-    """管理 skip_search / skip_signals 列表。
+    """管理手动搜参排除列表。
 
     Args:
-        kind: "search" 或 "signals"
+        kind: "search"
         codes: 标的代码列表
         remove: True=移出skip(恢复), False=加入skip
     """
-    key = "skip_search" if kind == "search" else "skip_signals"
-    label = "搜参" if kind == "search" else "信号"
+    if kind != "search":
+        return "❌ 仅支持 search；旧技术信号扫描已删除。"
+    key = "skip_search"
+    label = "搜参"
     changed = []
 
     def mutate(config: dict) -> None:
@@ -609,7 +605,7 @@ def handle_daily() -> str:
 def handle_daily_report_frequency(frequency: str | None = None) -> str:
     """查看或修改定时普通日报的发送频次。
 
-    频次只控制无告警时的定时日报；有价格/策略告警仍立即发送，
+    频次控制固定定时日报；托管触发器按自己的条件执行，
     ``/daily`` 手动触发也始终发送。
     """
     labels = {
@@ -628,7 +624,7 @@ def handle_daily_report_frequency(frequency: str | None = None) -> str:
             f"<b>日报频次</b>: {labels[current]} (<code>{current}</code>)\n"
             "可选: <code>daily</code> 每个交易日、"
             "<code>weekly</code> 每周五、<code>off</code> 关闭普通日报。\n"
-            "价格/策略告警仍即时发送；手动 <code>/daily</code> 不受影响。"
+            "托管触发器与手动 <code>/daily</code> 不受影响。"
         )
 
     mode = str(frequency).strip().lower()
@@ -671,81 +667,9 @@ def handle_schedule(action: str, task_id: str, time_str: str) -> str:
             "daily": "日报",
             "morning_snapshot": "早盘简报",
             "afternoon_snapshot": "收盘简报",
-            "optimize": "策略优化",
         }.get(task_id, task_id)
         return f"✅ {label}时间已改为 <code>{time_str}</code>（立即生效）"
     return f"❌ 修改失败。任务名: {task_id}，时间: {time_str}"
-
-
-def handle_alerts() -> str:
-    """查看当前报警状态。"""
-    import json
-    from pathlib import Path
-
-    state_path = Path("cache/alerts/alerts_state.json")
-    if not state_path.exists():
-        return "暂无报警状态记录"
-
-    try:
-        data = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return "报警状态文件读取失败"
-
-    alerts = data.get("alerts", {})
-    if not alerts:
-        return "当前无活跃报警状态"
-
-    lines = [f"<b>报警状态</b>（共 {len(alerts)} 条）\n"]
-    for key, info in alerts.items():
-        parts = key.split("_", 2)
-        code = parts[0] if parts else "?"
-        anchor = parts[1] if len(parts) > 1 else "?"
-        interval = parts[2] if len(parts) > 2 else "?"
-        days = info.get("consecutive_days", 0)
-        suppressed = " ⚠️ 已抑制" if days > 5 else ""
-        lines.append(
-            f"<code>{code}</code>  {anchor}  {interval}  连续 {days} 天{suppressed}"
-        )
-    return "\n".join(lines)
-
-
-def handle_reset_alerts(stock_code: str = "") -> str:
-    """清零报警状态。"""
-    import json
-    from pathlib import Path
-
-    state_path = Path("cache/alerts/alerts_state.json")
-    if not state_path.exists():
-        return "暂无报警状态记录，无需重置"
-
-    try:
-        data = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return "报警状态文件读取失败"
-
-    alerts = data.get("alerts", {})
-    if not alerts:
-        return "当前无报警状态，无需重置"
-
-    if stock_code:
-        # 定向清除
-        keys_to_delete = [k for k in alerts if k.startswith(f"{stock_code}_")]
-        if not keys_to_delete:
-            return f"<code>{stock_code}</code> 无报警状态记录"
-        for k in keys_to_delete:
-            del alerts[k]
-        data["alerts"] = alerts
-        state_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        return f"✅ 已重置 <code>{stock_code}</code> 的报警状态（清除 {len(keys_to_delete)} 条）"
-    else:
-        # 全部清除
-        data["alerts"] = {}
-        state_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        return f"✅ 已重置所有报警状态（清除 {len(alerts)} 条）"
 
 
 # ── /mode 和 /config ────────────────────
@@ -1005,7 +929,6 @@ def _set_config_value(cfg: dict, key: str, raw_value: str) -> None:
         cfg.setdefault("search", {})["workers"] = parsed
     else:
         _path_set(cfg, spec["path"], parsed)
-
 
 
 def handle_config(action: str, key: str, value: str) -> str:

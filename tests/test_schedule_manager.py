@@ -58,7 +58,7 @@ def _make_config(tmp_path):
 
 class TestScheduleManager:
     def test_registers_jobs_on_start(self, tmp_path):
-        """日报和两份简报启用；优化器必须显式启用。"""
+        """日报和两份简报启用；优化器不再支持固定调度。"""
         config, cfg_path = _make_config(tmp_path)
         mgr = ScheduleManager(config, config_path=cfg_path)
         mgr.start()
@@ -72,7 +72,7 @@ class TestScheduleManager:
         finally:
             mgr.stop()
 
-    def test_optimizer_schedule_requires_explicit_enable(self, tmp_path):
+    def test_stale_optimizer_settings_cannot_register_or_reschedule(self, tmp_path):
         config, cfg_path = _make_config(tmp_path)
         config["scheduler"]["optimize_enabled"] = True
         with open(cfg_path, "w", encoding="utf-8") as handle:
@@ -80,10 +80,12 @@ class TestScheduleManager:
         mgr = ScheduleManager(config, config_path=cfg_path)
         mgr.start()
         try:
-            job = mgr.scheduler.get_job("optimize")
-            assert job is not None
-            assert job.next_run_time.hour == 2
-            assert job.next_run_time.minute == 0
+            assert mgr.scheduler.get_job("optimize") is None
+            assert mgr.reschedule("optimize", "02:00") is False
+            assert all(
+                "--optimize" not in spec[3]
+                for spec in mgr._scheduled_specs(config)
+            )
         finally:
             mgr.stop()
 
@@ -237,10 +239,10 @@ class TestScheduleManager:
         finally:
             mgr.stop()
 
-    def test_disabled_daily_and_optimizer_are_not_registered(self, tmp_path):
+    def test_disabled_daily_does_not_schedule_startup(self, tmp_path):
         config, cfg_path = _make_config(tmp_path)
         config["scheduler"].update(
-            daily_enabled=False, optimize_enabled=False, run_on_startup=True
+            daily_enabled=False, run_on_startup=True
         )
         mgr = ScheduleManager(config, config_path=cfg_path)
         mgr.start()

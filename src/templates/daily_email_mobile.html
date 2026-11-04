@@ -19,32 +19,12 @@
   .deployment-strip {{ margin-bottom:12px; padding:8px 10px; border:1px solid #c9d8e7;
     border-radius:7px; background:#f5f9fd; color:#53687d; font-size:11px; overflow-wrap:anywhere; }}
   .deployment-strip strong {{ color:#173b62; }}
-  .summary-grid,.metric-grid,.watchlist-table {{ width:100%; border-collapse:separate;
+  .summary-grid,.watchlist-table {{ width:100%; border-collapse:separate;
     border-spacing:0; table-layout:fixed; }}
-  .summary-cell,.metric-cell {{ padding:7px 8px; border:1px solid #e3ebf3;
+  .summary-cell {{ padding:7px 8px; border:1px solid #e3ebf3;
     background:#f8fbfe; vertical-align:top; }}
-  .summary-label,.metric-label {{ color:#718096; font-size:10px; }}
-  .summary-value,.metric-value {{ margin-top:2px; color:#173b62; font-size:16px; font-weight:700; }}
-  .market-card {{ margin-top:8px; padding:9px 10px; border:1px solid #e0e8f0;
-    border-radius:8px; background:#fff; }}
-  .market-card-inactive {{ background:#fafbfd; }}
-  .market-title {{ display:flex; justify-content:space-between; gap:8px; color:#173b62;
-    font-size:13px; overflow-wrap:anywhere; }}
-  .market-title span,.market-benchmark {{ color:#65778a; font-size:11px; text-align:right; }}
-  .market-benchmark {{ margin:4px 0 6px; text-align:left; }}
-  .metric-grid .metric-cell {{ width:50%; padding:6px 7px; }}
-  .metric-grid tr:first-child .metric-cell:first-child {{ border-radius:5px 0 0 0; }}
-  .metric-grid tr:first-child .metric-cell:last-child {{ border-radius:0 5px 0 0; }}
-  .metric-grid tr:last-child .metric-cell:first-child {{ border-radius:0 0 0 5px; }}
-  .metric-grid tr:last-child .metric-cell:last-child {{ border-radius:0 0 5px 0; }}
-  .metric-positive {{ color:#1f7a4d !important; }}
-  .metric-negative {{ color:#b43b3b !important; }}
-  .holdout-title {{ margin-top:8px; color:#526b86; font-size:11px; font-weight:700; }}
-  .holdout-summary,.holdout-note {{ margin-top:3px; color:#53687d; font-size:11px; overflow-wrap:anywhere; }}
-  .holdout-note {{ color:#8a6435; }}
-  .holdout-chip-row {{ display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }}
-  .holdout-chip {{ flex:1 1 45%; min-width:0; padding:4px 5px; border:1px solid #d9e7f2;
-    border-radius:5px; background:#f7fbff; color:#526b86; font-size:10px; overflow-wrap:anywhere; }}
+  .summary-label {{ color:#718096; font-size:10px; }}
+  .summary-value {{ margin-top:2px; color:#173b62; font-size:16px; font-weight:700; }}
   .status-badge {{ display:inline-block; margin-left:4px; padding:1px 5px; border-radius:8px;
     white-space:nowrap; font-size:10px; font-weight:600; vertical-align:1px; }}
   .status-stale {{ color:#876b2c; background:#fbf4df; }}
@@ -74,11 +54,6 @@
   .chart-card {{ margin-top:8px; padding:8px; border:1px solid #e0e8f0;
     border-radius:8px; background:#fbfdff; }}
   .chart-card img {{ display:block; width:100%; max-width:100%; height:auto; }}
-  .signal-row {{ padding:8px 1px; border-bottom:1px solid #e8eef4;
-    color:#4a5c70; font-size:11px; overflow-wrap:anywhere; }}
-  .signal-title {{ margin-bottom:3px; color:#173b62; font-size:12px; }}
-  .signal-title span {{ display:inline-block; padding:1px 5px; border-radius:4px;
-    background:#eef6ff; color:#315a82; }}
   .event-row {{ padding:6px 1px; border-bottom:1px solid #e8eef4; color:#4a5c70;
     font-size:11px; overflow-wrap:anywhere; }}
   .event-row:last-of-type {{ border-bottom:0; }}
@@ -90,10 +65,7 @@
     .mobile-hide {{ display:none !important; }}
     .watchlist-table th:first-child {{ width:28% !important; }}
     .watchlist-table th,.watchlist-table td {{ padding:5px 3px !important; }}
-    .market-title {{ display:block !important; }}
-    .market-title span {{ display:block; margin-top:2px; text-align:left !important; }}
     .deployment-strip span {{ display:block; margin-top:2px; }}
-    .holdout-chip {{ flex-basis:100%; }}
   }}
 </style>
 </head>
@@ -109,10 +81,7 @@
         {deployment_status}
         {summary_section}
         <!-- Strategy Search Results -->
-        {signal_section}
-        {decision_section}
         {watchlist_section}
-        {chart_section}
         {portfolio_chart_section}
         {events_section}
 

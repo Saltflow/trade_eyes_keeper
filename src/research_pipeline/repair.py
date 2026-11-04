@@ -269,7 +269,7 @@ class RepairManager:
                 if not public_config:
                     continue
                 if relative.as_posix() == "config/alerts.yaml":
-                    # Existing validation uses the public alert-rule contract.
+                    # Shared indicators use this public anchor configuration.
                     # Never pull credentials or arbitrary live YAML into a
                     # candidate merely to satisfy an old test dependency.
                     import yaml
@@ -278,10 +278,6 @@ class RepairManager:
                     if not isinstance(rules, dict) or set(rules) - {
                         "version",
                         "anchors",
-                        "thresholds",
-                        "boundary_rules",
-                        "consecutive_days_threshold",
-                        "auto_reset",
                     }:
                         raise ValueError("validation_alert_rules_not_public_contract")
             if path.stat().st_size > 16 * 1024 * 1024:

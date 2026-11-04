@@ -1,4 +1,4 @@
-"""Legacy research settings cannot register or revive automatic execution."""
+"""Retired research and timed optimization cannot revive automatic execution."""
 
 from copy import deepcopy
 
@@ -39,7 +39,7 @@ def manager(tmp_path, monkeypatch):
         pytest.fail("retirement tests must not launch a subprocess")
 
     monkeypatch.setattr(
-        "src.core.schedule_manager.subprocess.Popen", unexpected_process
+        "subprocess.Popen", unexpected_process
     )
     set_schedule_manager(None)
     yield current
@@ -52,7 +52,7 @@ def job_ids(manager):
 
 
 def test_enabled_stale_research_config_never_registers_jobs(manager):
-    expected = {"daily", "brief_morning_snapshot", "optimize"}
+    expected = {"daily", "brief_morning_snapshot"}
     specs = manager._scheduled_specs(manager.config)
     assert {spec[0] for spec in specs} == expected
     manager.start()
@@ -75,6 +75,11 @@ def test_enabled_stale_research_config_never_registers_jobs(manager):
         ("custom", ["--fundamental-quant-notify"], None),
         ("custom", ["--fundamental-quant-report"], None),
         ("custom", ["--fundamental-quant-status"], None),
+        ("optimize", ["--once"], None),
+        ("brief_optimize", ["--brief", "optimize"], None),
+        ("custom", ["--once"], "optimize"),
+        ("custom", ["--optimize"], None),
+        ("custom", ["--once", "--optimize"], None),
     ],
 )
 def test_direct_registration_cannot_reintroduce_research(
@@ -88,6 +93,8 @@ def test_legacy_job_runner_cannot_launch_a_child(manager):
     for task_id, args in (
         ("fundamental_quant", []),
         ("custom", ["--fundamental-quant-notify"]),
+        ("optimize", ["--optimize"]),
+        ("custom", ["--optimize"]),
     ):
         manager._job_runner(task_id, args)()
     assert not (manager.config_path.parent / "logs").exists()
@@ -98,20 +105,24 @@ def test_stale_brief_alias_is_filtered_without_changing_other_jobs(manager):
         [
             {"id": "fundamental_quant", "run_time": "20:00"},
             {"id": "fundamental_quant_weekly", "run_time": "09:00"},
+            {"id": "optimize", "run_time": "02:00"},
             {"id": "custom", "run_time": "11:30"},
         ]
     )
-    expected = {"daily", "brief_morning_snapshot", "brief_custom", "optimize"}
+    expected = {"daily", "brief_morning_snapshot", "brief_custom"}
     assert {spec[0] for spec in manager._scheduled_specs(manager.config)} == expected
     manager.start()
     assert job_ids(manager) == expected
 
 
-@pytest.mark.parametrize("legacy_id", ["fundamental_quant", "fundamental_quant_weekly"])
+@pytest.mark.parametrize(
+    "legacy_id",
+    ["fundamental_quant", "fundamental_quant_weekly", "optimize", "brief_optimize"],
+)
 def test_startup_removes_previously_registered_legacy_jobs(manager, legacy_id):
     manager.scheduler.add_job(lambda: None, "cron", hour=20, id=legacy_id)
     manager.start()
-    assert job_ids(manager) == {"daily", "brief_morning_snapshot", "optimize"}
+    assert job_ids(manager) == {"daily", "brief_morning_snapshot"}
 
 
 def test_reload_removes_legacy_jobs_preserves_unowned_and_disables_daily(manager):
@@ -120,6 +131,8 @@ def test_reload_removes_legacy_jobs_preserves_unowned_and_disables_daily(manager
         "fundamental_quant",
         "fundamental_quant_weekly",
         "fundamental_quant_startup",
+        "optimize",
+        "brief_optimize",
     ):
         manager.scheduler.add_job(lambda: None, "cron", hour=20, id=legacy_id)
     manager.scheduler.add_job(lambda: None, "cron", hour=12, id="independent")
@@ -127,16 +140,17 @@ def test_reload_removes_legacy_jobs_preserves_unowned_and_disables_daily(manager
     saved["scheduler"].update(daily_enabled=False, run_on_startup=True)
     manager.config_path.write_text(yaml.safe_dump(saved), encoding="utf-8")
     manager.reload_config()
-    assert job_ids(manager) == {"brief_morning_snapshot", "optimize", "independent"}
+    assert job_ids(manager) == {"brief_morning_snapshot", "independent"}
     assert manager.config["fundamental_quant"]["schedule"]["enabled"] is True
 
 
 def test_reload_does_not_restore_legacy_jobs_when_new_config_is_invalid(manager):
     manager.start()
-    manager.scheduler.add_job(lambda: None, "cron", hour=20, id="fundamental_quant")
+    for legacy_id in ("fundamental_quant", "optimize", "brief_optimize"):
+        manager.scheduler.add_job(lambda: None, "cron", hour=20, id=legacy_id)
     saved = deepcopy(manager.config)
     saved["scheduler"]["run_time"] = "invalid"
     manager.config_path.write_text(yaml.safe_dump(saved), encoding="utf-8")
     with pytest.raises(ValueError, match="调度时间无效"):
         manager.reload_config()
-    assert job_ids(manager) == {"daily", "brief_morning_snapshot", "optimize"}
+    assert job_ids(manager) == {"daily", "brief_morning_snapshot"}

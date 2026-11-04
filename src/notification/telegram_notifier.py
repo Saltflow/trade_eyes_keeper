@@ -11,7 +11,6 @@ import os
 import re
 from datetime import datetime
 
-import pandas as pd
 import requests
 
 from .base import BaseNotifier
@@ -19,9 +18,6 @@ from .receipts import combine_receipts, legacy_tuple, normalize_receipt
 from .report_policy import (
     build_return_curves_text,
     fundamental_text,
-    report_view,
-    returns_only,
-    technical_signals_enabled,
 )
 from .settings import channel_enabled
 
@@ -164,61 +160,50 @@ class TelegramNotifier(BaseNotifier):
     # ── 接口实现 ───────────────────────────────
 
     def send_from_session(self, session) -> dict:
-        return self._send_report(session, alert_only=True)
+        return self._send_report(session)
 
     def send_daily_report_from_session(self, session) -> dict:
-        return self._send_report(session, alert_only=False)
+        return self._send_report(session)
 
-    def _send_report(self, session, *, alert_only: bool) -> dict:
-        session = report_view(session, self.config)
-        simple = returns_only(self.config) or not technical_signals_enabled(self.config)
+    def _send_report(self, session) -> dict:
         try:
             df = session.get_all_dataframe()
-            alerts = session.get_alerts_as_dicts() if alert_only else None
-            sections = [("价格与基本面", f"<pre>{_esc(fundamental_text(df))}</pre>")] if simple else list(self._build_daily_sections(df, alerts))
+            sections = [("价格与基本面", f"<pre>{_esc(fundamental_text(df))}</pre>")]
         except Exception as exc:  # noqa: BLE001 - no HTTP call has started
             return {
                 "status": "failed",
                 "reason": "telegram_report_preparation_failed",
                 "error": type(exc).__name__,
             }
-        title = f"股票{'提醒' if alert_only else '日报'} - {datetime.now().astimezone():%Y-%m-%d}"
+        title = f"股票日报 - {datetime.now().astimezone():%Y-%m-%d}"
         preparation_failures = []
         try:
             from .report_builders import build_daily_events_text
 
-            events = "" if alert_only and not simple else build_daily_events_text(session, df)
+            events = build_daily_events_text(session, df)
             if events:
                 sections.append(("事件速览", events))
         except Exception as exc:  # noqa: BLE001 - preparation before transport
             preparation_failures.append(
-                {"label": "事件速览", "status": "failed", "attempted": False,
-                 "reason": "preparation_failed", "error": type(exc).__name__}
+                {
+                    "label": "事件速览",
+                    "status": "failed",
+                    "attempted": False,
+                    "reason": "preparation_failed",
+                    "error": type(exc).__name__,
+                }
             )
         try:
             from .email_notifier import build_strategy_text_summary
 
             summary = build_strategy_text_summary(session, markdown=False)
             if summary:
-                sections.append(("收益曲线" if simple else "策略与信号", f"<pre>{_esc(summary)}</pre>"))
+                sections.append(("收益曲线", f"<pre>{_esc(summary)}</pre>"))
         except Exception as exc:  # noqa: BLE001 - retain other report sections
             preparation_failures.append(
                 {
                     "status": "failed",
                     "label": "策略与信号",
-                    "reason": "preparation_failed",
-                    "error": type(exc).__name__,
-                }
-            )
-        try:
-            ref_text = self._build_ref_portfolio_text(session)
-            if ref_text:
-                sections.append(("", ref_text))
-        except Exception as exc:  # noqa: BLE001 - retain other report sections
-            preparation_failures.append(
-                {
-                    "status": "failed",
-                    "label": "参考持仓",
                     "reason": "preparation_failed",
                     "error": type(exc).__name__,
                 }
@@ -254,28 +239,12 @@ class TelegramNotifier(BaseNotifier):
         return normalize_receipt(self._send(title, body, classified=True))
 
     def _prepare_brief_report(self, session, report_config: dict):
-        if returns_only(self.config) or not technical_signals_enabled(self.config):
-            session = report_view(session, self.config)
-            title = report_config.get("label", "简报")
-            text = fundamental_text(session.get_all_dataframe())
-            text += "\n\n" + build_return_curves_text(getattr(session, "strategy_return_curves", None))
-            return title, f"<pre>{_esc(text)}</pre>"
-        label = report_config.get("label", "简报")
-        from .report_builders import get_brief_dataframe
-
-        stock_data = get_brief_dataframe(session)
-        today = datetime.now().astimezone()
-        title = f"{label} - {today.strftime('%Y-%m-%d')}"
-        body = self._build_brief_blocks(stock_data, today)
-        if not body:
-            body = "无活跃标的"
-
-        # ── 参考持仓 ──
-        ref_text = self._build_ref_portfolio_text(session)
-        if ref_text:
-            body += "\n\n" + ref_text
-
-        return title, body
+        title = report_config.get("label", "简报")
+        text = fundamental_text(session.get_all_dataframe())
+        text += "\n\n" + build_return_curves_text(
+            getattr(session, "strategy_return_curves", None)
+        )
+        return title, f"<pre>{_esc(text)}</pre>"
 
     def send_deployment_notification(
         self, status: str, version: str = "", summary: str = ""
@@ -308,212 +277,6 @@ class TelegramNotifier(BaseNotifier):
             logger.error("Telegram optimizer notification failed: %s", detail)
 
     # ── 构建方法 ─────────────────────────────
-
-    @staticmethod
-    @staticmethod
-    def _build_brief_blocks(stock_data, today) -> str:
-        """简报：每只标的独立小段，emoji 着色。三端共享数据。"""
-        from ..notification.email_notifier import build_brief_entries
-
-        entries = build_brief_entries(stock_data, today)
-        if not entries:
-            return ""
-
-        lines = []
-        for e in entries:
-            close_str = f"{e['close']:.2f}" if e["close"] is not None else "-"
-            prev_str = f"{e['prev_close']:.2f}" if e["prev_close"] is not None else "—"
-            anchor_str = (
-                f"{e['anchor_val']:.2f}" if e["anchor_val"] is not None else "-"
-            )
-            if e["dev_pct"] is not None:
-                emoji = UP if e["dev_pct"] > 0 else DOWN if e["dev_pct"] < 0 else FLAT
-            else:
-                emoji = FLAT
-            lines.append(
-                f"<code>{e['code']}</code> {e['name']}\n"
-                f"昨收 {prev_str}  现价 {close_str}  {e['anchor_name']} {anchor_str}  "
-                f"<b>{e['dev_str']}</b>  {emoji}"
-            )
-        return "\n\n".join(lines)
-
-    @staticmethod
-    def _build_ref_portfolio_text(session) -> str:
-        """构建参考持仓文本片段（Telegram HTML），三组各自一行。"""
-        all_statuses = getattr(session, "ref_portfolio_status", None)
-        if not all_statuses:
-            return ""
-
-        lines = ["<b>📊 参考持仓</b>"]
-        for gk in ("a_share", "hk", "us"):
-            s = all_statuses.get(gk)
-            if not s:
-                continue
-            label = s.get("_label", gk)
-            hd = (
-                ", ".join(
-                    f"<code>{h['code']}</code> {h['shares']}股" for h in s["holdings"]
-                )
-                if s["holdings"]
-                else "空仓"
-            )
-            nav = f"{s['nav']:,.0f}" if s.get("nav") is not None else "待补全"
-            nav_return = (
-                f"{s['nav_return_pct']:+.1f}%"
-                if s.get("nav_return_pct") is not None
-                else "待补全"
-            )
-            lines.append(
-                f"{_esc(str(label))}: 净值 {nav} | "
-                f"回报 {nav_return} | "
-                f"现金 {s['cash']:,.0f} | "
-                f"{hd}"
-            )
-            if s.get("valuation_reason"):
-                lines.append(_esc(str(s["valuation_reason"])))
-            if s.get("_trading_blocked_reason"):
-                lines.append("停单原因：" + _esc(str(s["_trading_blocked_reason"])))
-        return "\n".join(lines)
-
-    @staticmethod
-    def _build_daily_sections(stock_data, alerts=None) -> list:
-        """日报三分段: 价格+锚点 / 基本面 / 技术指标
-
-        Returns:
-            [(section_label, body), ...]
-        """
-        from .email_notifier import EmailNotifier
-
-        today_date = datetime.now().astimezone().date()
-
-        # 过滤活跃标的
-        entries = []
-        for _, row in stock_data.iterrows():
-            data_date = row.get("date")
-            in_trading = False
-            if data_date is not None and not pd.isna(data_date):
-                try:
-                    d = pd.Timestamp(str(data_date)[:10]).date()
-                    in_trading = 0 <= (today_date - d).days <= 3
-                except (TypeError, ValueError, OverflowError) as exc:
-                    logger.debug("Invalid report date: %s", type(exc).__name__)
-                    continue
-            if not in_trading:
-                continue
-
-            close_price = row.get("close")
-            anchors = {}
-            for an in ("ma60", "wma20", "wma30", "wma50"):
-                v = row.get(an)
-                if v is not None and not pd.isna(v):
-                    anchors[an] = float(v)
-
-            best = None
-            dev_pct = None
-            anchor_name = ""
-            if close_price is not None and not pd.isna(close_price) and anchors:
-                best = EmailNotifier._pick_best_anchor(float(close_price), anchors)
-            if best:
-                anchor_name, _, dev_pct = best
-
-            code = str(row.get("stock_code", ""))
-            name = str(row.get("stock_name", code))
-            close_str = (
-                f"{close_price:.2f}"
-                if close_price is not None and not pd.isna(close_price)
-                else "-"
-            )
-            dev_str = f"{dev_pct:+.2f}%" if dev_pct is not None else "-"
-
-            pe = _fmt(row.get("pe_ratio"), ".2f")
-            pb = _fmt(row.get("pb_ratio"), ".2f")
-            roe = _fmt(row.get("roe"), ".2f")
-            div_yield = _fmt(row.get("dividend_yield"), ".2f")
-            rsi = _fmt(row.get("rsi"), ".1f")
-            macd_hist = _fmt(row.get("macd_hist"), ".3f")
-            vol_ratio = _fmt(row.get("vol_ratio"), ".2f")
-            boll_pct_b = _fmt(row.get("boll_pct_b"), ".2f")
-            adx = _fmt(row.get("adx"), ".1f")
-
-            sort_key = dev_pct if dev_pct is not None else float("inf")
-            entries.append(
-                {
-                    "sk": sort_key,
-                    "code": code,
-                    "name": name,
-                    "close": close_str,
-                    "aname": anchor_name,
-                    "dev": dev_str,
-                    "pe": pe,
-                    "pb": pb,
-                    "roe": roe,
-                    "div_y": div_yield,
-                    "rsi": rsi,
-                    "macd_h": macd_hist,
-                    "vol_r": vol_ratio,
-                    "boll": boll_pct_b,
-                    "adx": adx,
-                }
-            )
-
-        entries.sort(key=lambda x: x["sk"])
-        if not entries:
-            return [("无活跃标的", "—")]
-
-        sections = []
-
-        # 第一段：价格 + 锚点偏离
-        lines = ["<pre>"]
-        lines.append(f"{'代码':<10} {'收盘':>7} {'锚点':>7} {'偏离':>8} {'名称'}")
-        for e in entries:
-            lines.append(
-                f"{e['code']:<10} {e['close']:>7} {e['aname']:>7} {e['dev']:>8} {e['name'][:6]}"
-            )
-        lines.append("</pre>")
-        sections.append(("价格", "\n".join(lines)))
-
-        # 第二段：基本面
-        lines = ["<pre>"]
-        lines.append(f"{'代码':<10} {'PE':>6} {'PB':>6} {'ROE%':>7} {'息%':>6}")
-        for e in entries:
-            lines.append(
-                f"{e['code']:<10} {e['pe']:>6} {e['pb']:>6} {e['roe']:>7} {e['div_y']:>6}"
-            )
-        lines.append("</pre>")
-        sections.append(("基本面", "\n".join(lines)))
-
-        # 第三段：技术指标 — 只在有数据时显示
-        has_tech = any(
-            e["rsi"] != "-" or e["adx"] != "-" or e["macd_h"] != "-" for e in entries
-        )
-        if has_tech:
-            lines = ["<pre>"]
-            lines.append(
-                f"{'代码':<10} {'RSI':>5} {'MACD_H':>8} {'VOL比':>6} {'ADX':>5} {'布林%':>7}"
-            )
-            for e in entries:
-                lines.append(
-                    f"{e['code']:<10} {e['rsi']:>5} {e['macd_h']:>8} {e['vol_r']:>6} {e['adx']:>5} {e['boll']:>7}"
-                )
-            lines.append("</pre>")
-            sections.append(("技术指标", "\n".join(lines)))
-
-        return sections
-
-
-def _fmt(v, spec=".2f"):
-    """安全格式化 None/NaN → '-'"""
-    if v is None:
-        return "-"
-    try:
-        if pd.isna(v):
-            return "-"
-    except (TypeError, ValueError):
-        pass
-    try:
-        return f"{float(v):{spec}}"
-    except (ValueError, TypeError):
-        return "-"
 
 
 def _esc(text: str) -> str:

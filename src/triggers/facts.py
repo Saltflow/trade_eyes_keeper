@@ -18,6 +18,7 @@ from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from .catalog import (
+    _RETIRED_REPORT_ROOTS,
     HISTORY_FIELDS,
     VALUATION_FIELDS,
     build_report_field_catalog,
@@ -336,10 +337,13 @@ def _snapshot_fields(snapshot, source, *, observed):
     prepared = {
         key: value
         for key, value in mapping.items()
-        if key in fields_set
-        or (
-            value is not None
-            and not (isinstance(value, (list, dict, tuple)) and not value)
+        if key not in _RETIRED_REPORT_ROOTS
+        and (
+            key in fields_set
+            or (
+                value is not None
+                and not (isinstance(value, (list, dict, tuple)) and not value)
+            )
         )
     }
     rows = {

@@ -14,11 +14,9 @@ import pandas as pd
 from ..models.schemas import (
     SessionContext,
     StockPriceData,
-    AlertStock,
 )
 from ..models.converters import (
     dataframe_to_stock_price_data,
-    alert_dict_to_alert_stock,
 )
 from ..utils import safe_session_write
 
@@ -182,29 +180,9 @@ class SessionManager:
         session.errors.append(error_msg)
         return False
 
-    def add_alert(self, session: SessionContext, alert: AlertStock) -> bool:
-        """添加警报到Session"""
-        try:
-            session.alerts.append(alert)
-            return True
-        except Exception as e:
-            logger.error(f"添加警报失败: {e}")
-            return False
-
-    def add_alert_from_dict(self, session: SessionContext, alert_dict: dict) -> bool:
-        """从dict添加警报（兼容旧代码）"""
-        alert = alert_dict_to_alert_stock(alert_dict)
-        if alert:
-            return self.add_alert(session, alert)
-        return False
-
     def get_all_dataframe(self, session: SessionContext) -> pd.DataFrame:
         """获取所有股票合并DataFrame（兼容旧代码）"""
         return session.get_all_dataframe()
-
-    def get_alerts_as_dicts(self, session: SessionContext) -> list[dict]:
-        """获取警报列表dict格式（兼容旧代码）"""
-        return session.get_alerts_as_dicts()
 
     def get_historical_data(
         self,

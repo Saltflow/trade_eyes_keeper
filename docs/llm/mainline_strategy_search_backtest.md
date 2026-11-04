@@ -50,7 +50,7 @@ ValidationController
 | `ma60_band` | MA60 上下 5%，四个固定 25% 仓位槽 | 0 | target weight |
 | `capm_dcf_value` | CAPM-DCF 公允价值与入场价策略 | 2 | cash cap |
 
-当前配置默认选择 `technical_ensemble`。不过日报会优先读取最新完整的 active optimizer run；没有 active artifact 时才回退到 `config/config.yaml` 的策略选择。
+策略按市场配置。手动搜参、回测和参考持仓绑定使用对应市场合同；日报/简报已删除技术信号扫描和旧策略评估，不再消费活动策略生成技术报告。
 
 ### 2.1 Cash-cap 策略
 
@@ -188,7 +188,7 @@ A 股默认控制基准为 `510880`、`510300` 和 `risk_free`，多数基准收
 
 可交易基准也使用对应的成交价、手续费、整手和公司行动口径；报告同时保留策略收益、基准收益、超额收益、原始价格收益、胜率、MDD、Sharpe、交易数、平均仓位、最终现金和最终持仓等字段。
 
-## 8. 搜参、激活与日报
+## 8. 手动搜参与激活
 
 主要命令：
 
@@ -207,7 +207,7 @@ python main.py --brief
 比较结果不完整或新候选未改善时，仅保留 candidate，可另行显式执行
 `--activate-run`。相对晋升仍允许覆盖绝对留出表现门槛，沿用现有安全底线。
 
-日报读取 active artifact 后，使用同一套策略参数、成交合同和基准合同生成信号与组合评估，避免扫描器、日报和优化器各自实现一套交易逻辑。
+日报/简报仅展示行情、基本面、事件及校验通过的 Ke 曲线，不执行旧技术策略评估、技术告警或自动调仓。共享 TradePlan 和 Backtester 继续用于手动搜参与回测；定时搜参已删除。
 
 ### 8.1 三市场完全独立的策略、Solver 与激活
 
@@ -251,7 +251,7 @@ python main.py --optimize --group a_share
 python main.py --activate-run RUN_ID --group a_share
 ```
 
-active manifest 为 schema v4，只保存各市场独立 entry 的 run、artifact、strategy、Solver、配置指纹和激活时间；不保存可回退的全局策略。旧版单策略或混合 manifest 不会自动读取，必须重新搜参并按市场显式激活。缺少某市场 entry 时，该市场为“未激活”，日报、信号扫描、回测和参考组合均 fail closed，不会套用其他市场策略。
+active manifest 为 schema v4，只保存各市场独立 entry 的 run、artifact、strategy、Solver、配置指纹和激活时间；不保存可回退的全局策略。旧版单策略或混合 manifest 不会自动读取，必须重新搜参并按市场显式激活。缺少某市场 entry 时，该市场为“未激活”，需要活动策略的回测和参考持仓绑定明确失败，不会套用其他市场策略；不影响普通日报/简报。
 
 无候选或失败也必须保存单市场 `run_summary.yaml` 和状态 HTML；已经执行搜索时，保留 archive、checkpoint、readiness 和 `*_search_diagnostics.yaml` 中的 Solver/Gate 合同、实际评估数及硬 Gate 淘汰次数。`search.run_retention_count` 按市场保留最近的终态运行，有候选和无候选共用该市场配额，活动指针及运行中的显式保护额外保留。诊断记录不是可激活 manifest，不能因为没有候选就立即删除，也不能将“搜索完成但未过 Gate”称为运行崩溃。
 
@@ -281,7 +281,7 @@ active manifest 为 schema v4，只保存各市场独立 entry 的 run、artifac
 当前配置中：
 
 - `510300` 位于 `skip_search`，默认不参加普通主链路搜参；
-- `510500` 位于 `skip_signals`，默认不参加普通日报信号扫描；
+- `skip_signals` 仅由独立 Ke 本地试验保留兼容读取，不再控制日报扫描；
 - 二者仍可以作为 A 股控制基准或在独立脚本中使用。
 
 新浪期权数据源已单独支持中金所 IO/HO/MO，以及上交所 510300/510500 ETF 期权的 Call/Put 链和日线历史。但 `SinaOptionDataSource` 尚未注册为普通 `TradingStrategy`，也没有接入 `run_optimizer → FastEvaluator`。

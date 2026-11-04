@@ -36,11 +36,11 @@ class TestSkipCommandParse:
         assert isinstance(c, SkipCommand)
         assert c.kind == "search" and c.codes == ["601985"] and c.remove is False
 
-    def test_skip_signals_multi(self):
-        from interactive.command_parser import parse_command
+    def test_retired_skip_signals_rejected(self):
+        from interactive.command_parser import ErrorCommand, parse_command
 
         c = parse_command("/skip signals 508091,000958")
-        assert c.kind == "signals" and c.codes == ["508091", "000958"]
+        assert isinstance(c, ErrorCommand)
 
     def test_unskip(self):
         from interactive.command_parser import parse_command
@@ -106,5 +106,5 @@ class TestHandleSkip:
         }
         with patch.object(handlers, "_load_config", return_value=cfg):
             out = handlers.handle_list()
-        assert "不搜参: 1" in out and "不显示信号: 1" in out
+        assert "不搜参: 1" in out and "信号" not in out
         assert "<s>🔍</s>" in out  # 601985 搜参关闭

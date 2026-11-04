@@ -1002,26 +1002,7 @@ def test_target_symbol_cap_includes_same_security_donated_rights(
         withholding_rate=0.2,
         external_prices=external,
     )
-    updated, trades = manager.rebalance_plan(
-        captured,
-        plan,
-        market,
-        "2026-01-02",
-        run_id="run",
-        strategy_id="strategy",
-        lot_size=1,
-        commission_rate=0,
-        min_holding_days=0,
-        fx_rate=1,
-        force=True,
-    )
-    status = manager.get_status(updated, {"PARENT": 8, "EXTERNAL": 20})
-    direct = updated.holdings.get("EXTERNAL")
-    assert (direct.shares * 20 if direct else 0) <= max(
-        status["nav"] * 0.2 - forced_value, 0
-    ) + 1e-8
+    status = manager.get_status(captured, {"PARENT": 8, "EXTERNAL": 20})
+    assert set(captured.holdings) == {"PARENT"}
     assert status["in_kind_positions"][0]["quantity"] == forced_shares
     assert status["in_kind_positions"][0]["delivered"] is False
-    assert not any(
-        trade.action == "sell" and trade.code == "EXTERNAL" for trade in trades
-    )

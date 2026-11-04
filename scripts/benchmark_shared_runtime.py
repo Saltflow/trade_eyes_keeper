@@ -71,7 +71,6 @@ def main():
         "interactive": {},
         "scheduler": {
             "daily_enabled": False,
-            "optimize_enabled": False,
             "run_time": "00:00",
             "brief_reports": [],
         },

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import html
 import io
 from datetime import datetime
@@ -58,30 +57,6 @@ def implied_ke(pe_ratio) -> float | None:
         return result if result is not None and np.isfinite(result) else None
     except (TypeError, ValueError):
         return None
-
-
-def technical_signals_enabled(config: dict | None) -> bool:
-    report = (config or {}).get("report") or {}
-    return (report.get("technical_signals") or {}).get("enabled", True) is not False
-
-
-def returns_only(config: dict | None) -> bool:
-    return ((config or {}).get("report") or {}).get(
-        "strategy_display"
-    ) == "returns_only"
-
-
-def report_view(session, config: dict | None = None):
-    """Suppress stale technical results on a shallow, non-mutating view."""
-    config = config if config is not None else getattr(session, "config", {})
-    if technical_signals_enabled(config) and not returns_only(config):
-        return session
-    view = copy.copy(session)
-    object.__setattr__(view, "config", config)
-    object.__setattr__(view, "signal_scan", None)
-    for name in ("evaluation_reports", "backtest", "ref_portfolio_status"):
-        object.__setattr__(view, name, {})
-    return view
 
 
 def return_curve_markets(payload) -> list[dict]:

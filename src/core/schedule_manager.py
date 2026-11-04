@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
-import sys
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
@@ -23,14 +21,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DAILY_MISFIRE_GRACE_SECONDS = 3600
 DEFAULT_BRIEF_MISFIRE_GRACE_SECONDS = 900
-DEFAULT_OPTIMIZE_MISFIRE_GRACE_SECONDS = 7200
 
 # task_id → job_id 映射
 _JOB_IDS = {
     "daily": "daily",
     "morning_snapshot": "brief_morning_snapshot",
     "afternoon_snapshot": "brief_afternoon_snapshot",
-    "optimize": "optimize",
 }
 
 _schedule_manager: ScheduleManager | None = None
@@ -82,7 +78,7 @@ class ScheduleManager:
 
     def start(self):
         """注册所有 job 并启动调度器。"""
-        self._remove_retired_research_jobs()
+        self._remove_retired_jobs()
         if self.scheduler.running:
             return
         sched_cfg = self.config.get("scheduler", {})
@@ -132,21 +128,6 @@ class ScheduleManager:
                 ),
             )
 
-        # 策略优化（每天凌晨 2:00）
-        opt_time = sched_cfg.get("optimize_time", "02:00")
-        # A full 155k-candidate run is opt-in; daily overlap can exhaust RAM.
-        if sched_cfg.get("optimize_enabled", False):
-            self._add_job(
-                "optimize",
-                opt_time,
-                ["--optimize"],
-                "策略优化",
-                misfire_grace_seconds=self._grace_seconds(
-                    sched_cfg.get("optimize_misfire_grace_seconds"),
-                    DEFAULT_OPTIMIZE_MISFIRE_GRACE_SECONDS,
-                ),
-            )
-
         self.scheduler.start()
         set_schedule_manager(self)
         logger.info(f"调度器已启动: {len(self.scheduler.get_jobs())} 个任务")
@@ -161,8 +142,8 @@ class ScheduleManager:
         misfire_grace_seconds: int = DEFAULT_BRIEF_MISFIRE_GRACE_SECONDS,
     ):
         """Register a trigger; report callbacks only submit durable work."""
-        if self._retired_research_job(task_id, cli_args, job_id_override):
-            logger.warning("跳过已退役研究调度: %s", task_id)
+        if self._retired_job(task_id, cli_args, job_id_override):
+            logger.warning("跳过已退役调度: %s", task_id)
             return
         hour, minute = self._parse_time(time_str)
         if hour is None:
@@ -191,24 +172,26 @@ class ScheduleManager:
         )
 
     @staticmethod
-    def _retired_research_job(task_id, cli_args=(), job_id=None) -> bool:
+    def _retired_job(task_id, cli_args=(), job_id=None) -> bool:
         identifiers = (str(task_id).lower(), str(job_id or "").lower())
         return any(
-            value.startswith(("fundamental_quant", "brief_fundamental_quant"))
+            value in {"optimize", "brief_optimize"}
+            or value.startswith(("fundamental_quant", "brief_fundamental_quant"))
             for value in identifiers
         ) or any(
-            str(argument)
+            str(argument).split("=", 1)[0] == "--optimize"
+            or str(argument)
             .split("=", 1)[0]
             .startswith(("--fundamental-quant", "--fundamental-materials"))
             for argument in cli_args
         )
 
-    def _remove_retired_research_jobs(self) -> None:
+    def _remove_retired_jobs(self) -> None:
         """Discard legacy jobs even when the saved legacy settings stay enabled."""
         for job in self.scheduler.get_jobs():
-            if self._retired_research_job(job.id):
+            if self._retired_job(job.id):
                 self.scheduler.remove_job(job.id)
-                logger.info("已移除退役研究调度: %s", job.id)
+                logger.info("已移除退役调度: %s", job.id)
 
     def _job_runner(self, task_id: str, cli_args: list[str], source: str = "schedule"):
         generation = (self._generation, self._task_generations.get(task_id, 0))
@@ -217,8 +200,8 @@ class ScheduleManager:
             if generation != (self._generation, self._task_generations.get(task_id, 0)):
                 logger.info("已忽略失效的调度触发器: %s", task_id)
                 return None
-            if ScheduleManager._retired_research_job(task_id, cli_args):
-                logger.warning("已阻止退役研究任务: %s", task_id)
+            if ScheduleManager._retired_job(task_id, cli_args):
+                logger.warning("已阻止退役调度任务: %s", task_id)
                 return None
             if "--once" in cli_args or "--brief" in cli_args:
                 from .report_execution import submit_report
@@ -257,25 +240,7 @@ class ScheduleManager:
                     raise
                 logger.info("调度任务已持久入队 run_id=%s: %s", run_id, task_id)
                 return run_id
-            # Optimizer is not migrated in this tranche. Its own existing
-            # process guard and execution contract remain authoritative.
-            project_root = Path(__file__).resolve().parents[2]
-            cmd = [sys.executable, str(project_root / "main.py"), *cli_args]
-            try:
-                log_file = project_root / "logs" / "quant_system.log"
-                log_file.parent.mkdir(parents=True, exist_ok=True)
-                with log_file.open("a", encoding="utf-8") as output:
-                    process = subprocess.Popen(
-                        cmd,
-                        cwd=str(project_root),
-                        env=os.environ.copy(),
-                        stdout=output,
-                        stderr=subprocess.STDOUT,
-                        start_new_session=True,
-                    )
-                logger.info("调度任务已启动 pid=%s: %s", process.pid, task_id)
-            except Exception:
-                logger.exception("调度任务启动失败: %s", task_id)
+            raise ValueError("固定调度仅支持日报和简报")
 
         return run
 
@@ -302,7 +267,7 @@ class ScheduleManager:
         with self._change_lock:
             if not self.scheduler.running:
                 raise RuntimeError("调度器尚未启动，配置在下次启动后生效")
-            self._remove_retired_research_jobs()
+            self._remove_retired_jobs()
             saved = ConfigStore(self.config_path).load_runtime()
             previous = self._scheduled_specs(self.config)
             proposed = self._scheduled_specs(saved)
@@ -373,24 +338,10 @@ class ScheduleManager:
                     ),
                 )
             )
-        if sched.get("optimize_enabled", False):
-            specs.append(
-                (
-                    "optimize",
-                    "optimize",
-                    sched.get("optimize_time", "02:00"),
-                    ["--optimize"],
-                    "策略优化",
-                    cls._grace_seconds(
-                        sched.get("optimize_misfire_grace_seconds"),
-                        DEFAULT_OPTIMIZE_MISFIRE_GRACE_SECONDS,
-                    ),
-                )
-            )
         specs = [
             spec
             for spec in specs
-            if not cls._retired_research_job(spec[1], spec[3], spec[0])
+            if not cls._retired_job(spec[1], spec[3], spec[0])
         ]
         ids = [spec[0] for spec in specs]
         if len(ids) != len(set(ids)):
@@ -437,14 +388,14 @@ class ScheduleManager:
         """修改任务时间，立即生效 + 写回 config。
 
         Args:
-            task_id: "daily" / "morning_snapshot" / "afternoon_snapshot" / "optimize"
+            task_id: "daily" or an enabled brief report id
             time_str: "HH:MM"
 
         Returns:
             True = 成功, False = 无效任务或时间
         """
         hour, minute = self._parse_time(time_str)
-        if hour is None:
+        if hour is None or self._retired_job(task_id):
             return False
 
         with self._change_lock:
@@ -487,10 +438,6 @@ class ScheduleManager:
                 if not config.get("scheduler", {}).get("daily_enabled", True):
                     raise ValueError("daily schedule is disabled")
                 config.setdefault("scheduler", {})["run_time"] = time_str
-            elif task_id == "optimize":
-                if not config.get("scheduler", {}).get("optimize_enabled", False):
-                    raise ValueError("optimizer schedule is disabled")
-                config.setdefault("scheduler", {})["optimize_time"] = time_str
             else:
                 # brief_reports 里找对应的 id
                 for br in config.get("scheduler", {}).get("brief_reports", []):

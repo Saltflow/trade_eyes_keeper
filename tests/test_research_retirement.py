@@ -1,7 +1,6 @@
-"""Retired research code stays deleted; historical archive reads remain usable."""
+"""Retired research and private launchers cannot be restored by old entrypoints."""
 
 import ast
-import json
 import socket
 from pathlib import Path
 
@@ -57,50 +56,20 @@ def test_old_executable_script_is_physically_removed(name):
     assert not (ROOT / "scripts" / (name + ".py")).exists()
 
 
-def test_archive_package_contains_only_the_four_readonly_modules():
-    folder = ROOT / "src/fundamental_quant"
-    assert {path.name for path in folder.glob("*.py")} == {
-        "__init__.py",
-        "archive.py",
-        "service.py",
-        "reporting.py",
-    }
-    files = [
-        folder / (name + ".py")
-        for name in ("__init__", "archive", "service", "reporting")
-    ]
-    assert all(path.is_file() for path in files)
-    for path in files:
-        text = path.read_text(encoding="utf8")
-        assert len(text.splitlines()) <= 100
-        for node in ast.walk(ast.parse(text)):
-            assert not (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id in {"exec", "eval", "__import__"}
-            )
-            if isinstance(node, ast.Import):
-                assert not {a.name.split(".")[0] for a in node.names} & {
-                    "requests",
-                    "subprocess",
-                    "httpx",
-                    "openai",
-                    "importlib",
-                }
-            if isinstance(node, ast.ImportFrom) and node.level:
-                assert node.module == "archive"
+def test_retired_packages_launchers_and_configuration_are_removed():
+    assert not list((ROOT / "src/fundamental_quant").glob("*.py"))
+    for path in (
+        "scripts/run_personal_monitor_feishu_test.py",
+        "config/personal_monitor_feishu_test.yaml.example",
+        "config/longitudinal_research.json",
+    ):
+        assert not (ROOT / path).exists(), path
     assert not (
         ROOT / "skills/fundamental-research/scripts/build_offline_reports.py"
     ).exists()
 
 
 def test_runtime_imports_do_not_depend_on_deleted_research_implementations():
-    allowed = {
-        "fundamental_quant",
-        "fundamental_quant.archive",
-        "fundamental_quant.service",
-        "fundamental_quant.reporting",
-    }
     paths = [ROOT / "main.py"]
     for name in ("src", "scripts"):
         paths.extend((ROOT / name).rglob("*.py"))
@@ -114,36 +83,42 @@ def test_runtime_imports_do_not_depend_on_deleted_research_implementations():
                 continue
             for name in names:
                 if "fundamental_quant" in name.split("."):
-                    normalized = name.removeprefix("src.")
-                    assert normalized in allowed, (path, node.lineno, name)
+                    pytest.fail(f"Deleted research import: {path}:{node.lineno}: {name}")
                 assert name != "scripts.run_longitudinal_research", path
 
 
 @pytest.mark.parametrize(
     "flag",
-    ["--fundamental-quant", "--fundamental-quant-notify", "--fundamental-materials"],
+    [
+        "--fundamental-quant", "--fundamental-quant-status",
+        "--fundamental-quant-report", "--fundamental-quant-notify",
+        "--fundamental-materials",
+    ],
 )
-def test_legacy_flags_block_even_with_enabled_old_configuration(
-    flag, tmp_path, monkeypatch, capsys
-):
+def test_legacy_flags_are_unavailable(flag, monkeypatch, capsys):
     import main as app
 
-    config = {
-        "fundamental_quant": {
-            "root": str(tmp_path / "never_created"),
-            "enabled": True,
-            "llm": {"enabled": True},
-            "schedule": {"enabled": True},
-            "materials": {"enabled": True},
-            "notifications": {"enabled": True},
-        }
-    }
-    monkeypatch.setattr(app, "load_config", lambda: config)
-    assert app.main([flag]) == 1
-    result = json.loads(capsys.readouterr().out)
-    assert result["status"] == "blocked"
-    assert result.get("paid_model_calls", 0) == 0
-    assert not (tmp_path / "never_created").exists()
+    def no_configuration_read(*args, **kwargs):
+        pytest.fail("Removed CLI must reject before loading business configuration")
+
+    monkeypatch.setattr(app, "load_config", no_configuration_read)
+    with pytest.raises(SystemExit) as exc:
+        app.main([flag])
+    assert exc.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("text", [
+    "/fundamental", "/fundamental status", "/fundamental 600036",
+    "/alerts", "/reset_alerts 600036",
+])
+def test_removed_bot_command_is_unknown(text):
+    from src.interactive import command_parser as commands
+    from src.interactive.command_dispatcher import dispatch_command
+
+    result = commands.parse_command(text)
+    assert isinstance(result, commands.ErrorCommand)
+    assert "未知命令" in dispatch_command(result)
 
 
 def test_current_data_and_independent_technical_tools_are_preserved():

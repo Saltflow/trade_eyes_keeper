@@ -64,11 +64,6 @@ def report_session():
     frame = pd.DataFrame(rows)
     return SimpleNamespace(
         get_all_dataframe=lambda: frame.copy(deep=True),
-        get_alerts_as_dicts=list,
-        signal_scan=None,
-        backtest=None,
-        portfolio_results=None,
-        evaluation_reports={},
         placements={},
         dividend_events=[],
         announcements={
@@ -222,12 +217,11 @@ def test_real_report_builders_reach_strict_schema2_http_boundary(
         code in json.dumps(tables, ensure_ascii=False)
         for code in ("601088", "00700", "VOO")
     )
-    assert "合成参考组合" in blob
+    assert "合成参考组合" not in blob
     if kind == "daily":
-        assert len(transport.transmitted) >= 4
         assert all(
             label in blob
-            for label in ("价格", "基本面", "技术", "合成公告正文必须保留")
+            for label in ("价格", "基本面", "Ke策略收益曲线", "合成公告正文必须保留")
         )
 
 

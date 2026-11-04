@@ -2,7 +2,6 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from src.notification.chart_generator import generate_portfolio_overview_chart
 from src.notification.email_notifier import EmailNotifier
 
 
@@ -96,31 +95,35 @@ def _stock_data():
 def _complete_holdout():
     return {
         "time_contract": {
-            "holdout_test_months": 9, "holdout_window_count": 4,
+            "holdout_test_months": 9,
+            "holdout_window_count": 4,
             "holdout_calendar_span_months": 18,
         },
         "holdout_summary": {
-            "return_pct": 2.0, "excess_return_pct": 1.0,
-            "max_drawdown_pct": -4.0, "sharpe_ratio": 0.8,
+            "return_pct": 2.0,
+            "excess_return_pct": 1.0,
+            "max_drawdown_pct": -4.0,
+            "sharpe_ratio": 0.8,
         },
-        "windows": [{
-            "role": "holdout", "role_index": index,
-            "return": 2.0, "excess_return": 0.5,
-            "max_drawdown": -2.0, "sharpe_ratio": 0.6,
-        } for index in range(1, 5)],
+        "windows": [
+            {
+                "role": "holdout",
+                "role_index": index,
+                "return": 2.0,
+                "excess_return": 0.5,
+                "max_drawdown": -2.0,
+                "sharpe_ratio": 0.6,
+            }
+            for index in range(1, 5)
+        ],
     }
 
 
 def test_daily_matrix_keeps_all_markets_prioritizes_actions_without_badges(monkeypatch):
     notifier = _notifier(monkeypatch)
-    scan = SimpleNamespace(
-        alerts=[{"stock_code": "VOO", "rule_label": "<b>买入</b>"}]
-    )
+    SimpleNamespace(alerts=[{"stock_code": "VOO", "rule_label": "<b>买入</b>"}])
     body = notifier._build_email_body(
-        [{"stock_code": "601728", "condition": "<b>跌破</b>"}],
         _stock_data(),
-        signal_scan=scan,
-        evaluation_reports={"a_share": _report()},
     )
 
     assert "完整行情矩阵" in body
@@ -140,8 +143,8 @@ def test_daily_matrix_keeps_all_markets_prioritizes_actions_without_badges(monke
     assert "周 NAV 箱线图" not in body
     assert "参考持仓" not in body
     matrix = body[body.index("完整行情矩阵") :]
-    assert 'status-badge status-alert' not in matrix
-    assert 'status-badge status-signal' not in matrix
+    assert "status-badge status-alert" not in matrix
+    assert "status-badge status-signal" not in matrix
 
 
 def test_daily_matrix_uses_configured_pool_and_keeps_missing_data(monkeypatch):
@@ -165,37 +168,13 @@ def test_daily_matrix_uses_configured_pool_and_keeps_missing_data(monkeypatch):
         ignore_index=True,
     )
 
-    body = notifier._build_email_body([], source_data)
+    body = notifier._build_email_body(source_data)
 
-    assert "完整行情矩阵<span class=\"section-count\">2只" in body
+    assert '完整行情矩阵<span class="section-count">2只' in body
     assert "601728" in body
     assert "01339" in body
     assert "GOOG" not in body
     assert body.count("未就绪") == 1
-
-
-def test_daily_holdout_renders_only_when_the_production_four_windows_are_complete(monkeypatch):
-    notifier = _notifier(monkeypatch)
-    complete = notifier._build_daily_strategy_section(
-        {"a_share": _report(_complete_holdout())}
-    )
-    incomplete = notifier._build_daily_strategy_section(
-        {
-            "a_share": _report(
-                {
-                    "holdout_summary": _complete_holdout()["holdout_summary"],
-                    "windows": [],
-                }
-            )
-        }
-    )
-
-    assert "84个月 Holdout" in complete
-    assert all(f"H{index}" in complete for index in range(1, 5))
-    assert "H1" in complete
-    assert "H—" not in complete
-    assert "完整 22/16/2/4 产物" in incomplete
-    assert "H—" not in incomplete
 
 
 def test_daily_events_are_complete_and_urls_are_sanitized(monkeypatch):
@@ -211,7 +190,6 @@ def test_daily_events_are_complete_and_urls_are_sanitized(monkeypatch):
         ]
     }
     body = notifier._build_email_body(
-        [],
         _stock_data(),
         announcements=announcements,
         placements={"000001": {"unlock_date": "2026-10-01"}},
@@ -227,7 +205,6 @@ def test_daily_events_are_complete_and_urls_are_sanitized(monkeypatch):
 def test_daily_events_render_pending_stock_and_etf_dividends(monkeypatch):
     notifier = _notifier(monkeypatch)
     body = notifier._build_email_body(
-        [],
         _stock_data(),
         dividend_events=[
             {
@@ -249,7 +226,7 @@ def test_daily_events_render_pending_stock_and_etf_dividends(monkeypatch):
     )
 
     assert "行动清单" not in body
-    assert "分红派息" in body
+    assert "未除权" in body
     assert "除权 2026-09-24 · 派息 2026-09-30" in body
     assert "除权 2026-09-18 · 派息 2026-09-22" in body
     assert "每股/份现金 0.2000" in body
@@ -259,7 +236,6 @@ def test_daily_events_render_pending_stock_and_etf_dividends(monkeypatch):
 def test_daily_events_keep_all_event_types_without_truncation(monkeypatch):
     notifier = _notifier(monkeypatch)
     body = notifier._build_email_body(
-        [],
         _stock_data(),
         report_as_of="2026-09-30T19:00:00+08:00",
         announcements={
@@ -289,62 +265,6 @@ def test_daily_events_keep_all_event_types_without_truncation(monkeypatch):
     )
 
     assert body.count('class="event-row"') == 10
-    assert "分红派息" in body
-    assert "股权融资与解禁" in body
+    assert "未除权" in body
+    assert "未解禁定增" in body
     assert "公告 4" in body
-
-
-def test_daily_portfolio_overview_is_one_normalized_chart(monkeypatch):
-    reports = {}
-    for offset, group in enumerate(("a_share", "hk", "us")):
-        report = _report()
-        report.nav_dates = pd.date_range("2026-01-01", periods=4, freq="B").astype(
-            str
-        ).tolist()
-        report.nav_series = [100000.0, 101000.0 + offset, 99000.0, 103000.0]
-        reports[group] = report
-
-    png = generate_portfolio_overview_chart(reports)
-    notifier = _notifier(monkeypatch)
-    section = notifier._daily_portfolio_chart_section({"overview": png})
-
-    assert png.startswith(b"\x89PNG")
-    assert 'src="cid:chart002"' in section
-    assert "chart003" not in section
-    assert "chart004" not in section
-
-
-def test_daily_portfolio_overview_crops_shared_flat_warmup(monkeypatch):
-    import matplotlib.axes
-
-    dates = pd.date_range("2023-09-18", periods=12, freq="B")
-    reports = {
-        group: SimpleNamespace(
-            nav_dates=dates.astype(str).tolist(),
-            nav_series=[100_000.0] * 6
-            + [100_000.0 + (index + offset) * 100.0 for index in range(6)],
-        )
-        for offset, group in enumerate(("a_share", "hk", "us"))
-    }
-    captured = {}
-    original_set_title = matplotlib.axes.Axes.set_title
-    original_set_xlim = matplotlib.axes.Axes.set_xlim
-
-    def capture_title(axis, label, *args, **kwargs):
-        captured["title"] = label
-        return original_set_title(axis, label, *args, **kwargs)
-
-    def capture_xlim(axis, *args, **kwargs):
-        left = kwargs.get("left")
-        if left is not None:
-            captured["left"] = pd.Timestamp(left)
-        return original_set_xlim(axis, *args, **kwargs)
-
-    monkeypatch.setattr(matplotlib.axes.Axes, "set_title", capture_title)
-    monkeypatch.setattr(matplotlib.axes.Axes, "set_xlim", capture_xlim)
-
-    png = generate_portfolio_overview_chart(reports)
-
-    assert png.startswith(b"\x89PNG")
-    assert captured["left"] == dates[5]
-    assert captured["title"] == "三市场组合净值总览（有效期自2023-09-25，起点=100）"

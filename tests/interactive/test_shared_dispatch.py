@@ -91,8 +91,6 @@ def test_both_transports_dispatch_same_commands(text, handler, args):
             ("weekly",),
             {},
         ),
-        (commands.AlertsCommand(), "handle_alerts", (), {}),
-        (commands.ResetAlertsCommand("600036"), "handle_reset_alerts", ("600036",), {}),
         (commands.ModeCommand("frac"), "handle_mode", ("frac",), {}),
         (commands.ConfigCommand("show", "", ""), "handle_config", ("show", "", ""), {}),
         (

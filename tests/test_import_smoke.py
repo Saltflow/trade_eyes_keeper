@@ -8,6 +8,24 @@
 from pathlib import Path
 
 
+def test_models_keep_stock_session_contracts_without_retired_alert_api():
+    from src import models
+    from src.models import converters
+
+    assert models.StockPriceData and models.SessionContext
+    assert not hasattr(models, "AlertStock")
+    assert not hasattr(converters, "alert_dict_to_alert_stock")
+
+
+def test_reference_portfolio_keeps_manual_management_without_auto_rebalance():
+    from src.core.ref_portfolio import RefPortfolioManager
+
+    assert callable(RefPortfolioManager.adjust_position)
+    assert callable(RefPortfolioManager.apply_corporate_actions)
+    assert callable(RefPortfolioManager.get_status)
+    assert not hasattr(RefPortfolioManager, "rebalance_plan")
+
+
 def test_extension_package_imports():
     """Strategy, search and backtest expose stable package APIs."""
     import src.backtest
@@ -41,7 +59,6 @@ def test_all_key_modules():
         "src.core.ref_portfolio",
         "src.core.config_store",
         "src.core.runtime_service",
-        "src.core.condition_checker",
         "src.core.data_fetcher",
         "src.core.schedule_manager",
         # Bot transports (SDK imports must be lazy)

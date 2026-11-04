@@ -169,7 +169,6 @@ class _Rule:
                 "max_conditions": 20,
                 "allowed_roots": [
                     "dividend_events", "placements", "announcements",
-                    "signal_scan", "alerts",
                 ],
             }
         return result
@@ -535,7 +534,6 @@ class ConfigurationTools:
         for key, label in (
             ("stocks", "监控标的"),
             ("skip_search", "跳过策略搜索的标的"),
-            ("skip_signals", "跳过信号扫描的标的"),
         ):
             add(key, _Rule("symbols"), label, default=[])
         announcement_values = _announcement_values(app)
@@ -550,22 +548,20 @@ class ConfigurationTools:
             key = f"announcements.{name}"
             add(key, rule, description)
             fields[key] = replace(fields[key], value=announcement_values[key]["value"])
-        for key, default in (("run_time", "19:00"), ("optimize_time", "02:00")):
-            add(
-                f"scheduler.{key}",
-                _Rule("time"),
-                "调度时间 HH:MM",
-                default=default,
-                effect=_SCHEDULE_EFFECT,
-            )
-        for key, default in (("daily_enabled", True), ("optimize_enabled", False)):
-            add(
-                f"scheduler.{key}",
-                _Rule("boolean"),
-                "启用定时任务",
-                default=default,
-                effect=_SCHEDULE_EFFECT,
-            )
+        add(
+            "scheduler.run_time",
+            _Rule("time"),
+            "日报调度时间 HH:MM",
+            default="19:00",
+            effect=_SCHEDULE_EFFECT,
+        )
+        add(
+            "scheduler.daily_enabled",
+            _Rule("boolean"),
+            "启用定时日报",
+            default=True,
+            effect=_SCHEDULE_EFFECT,
+        )
         add(
             "scheduler.daily_report_frequency",
             _Rule("enum", choices=("daily", "weekly", "off")),
@@ -597,6 +593,8 @@ class ConfigurationTools:
                 r"[a-zA-Z0-9_-]+", brief_id
             ):
                 raise ValueError("简报 id 无效")
+            if ScheduleManager._retired_job(brief_id):
+                continue
             if brief_id in seen_briefs:
                 raise ValueError("简报 id 重复")
             seen_briefs.add(brief_id)

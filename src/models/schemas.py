@@ -93,7 +93,7 @@ class StockPriceData(BaseModel):
     last_updated: datetime = Field(default_factory=lambda: datetime.now())
 
     class Config:
-        extra = "allow"  # 允许动态锚点字段（alerts.yaml 自定义指标名）
+        extra = "allow"  # 允许配置的自定义技术指标字段
 
     # ── 统一 Validator：所有浮点字段保留3位小数 ──
     _float_fields = [
@@ -248,72 +248,6 @@ class StockPriceData(BaseModel):
             return None
 
 
-class AlertStock(BaseModel):
-    """警报股票 - 兼容单锚点和多锚点"""
-
-    stock_code: str
-    date: Optional[datetime] = None
-    condition: Optional[str] = None
-    low_price: float
-    price: float  # 兼容字段，等于low_price
-    ma60: Optional[float] = None
-    anchor_name: Optional[str] = None
-    anchor_value: Optional[float] = None
-    interval_label: Optional[str] = None
-    consecutive_days: int = 1
-    price_difference: float
-    percentage_difference: float
-    percentage: Optional[float] = None
-
-    @validator(
-        "low_price",
-        "price",
-        "ma60",
-        "anchor_value",
-        "percentage",
-        "price_difference",
-        "percentage_difference",
-    )
-    def round_prices(cls, v):
-        return round(v, 3) if v is not None else None
-
-    @validator("price")
-    def price_equals_low_price(cls, v, values):
-        if "low_price" in values and v != values["low_price"]:
-            return values["low_price"]
-        return v
-
-    @validator("percentage")
-    def percentage_equals_percentage_difference(cls, v, values):
-        if "percentage_difference" in values:
-            return values["percentage_difference"]
-        return v
-
-    def to_dict(self):
-        d = {
-            "stock_code": self.stock_code,
-            "low_price": self.low_price,
-            "price": self.low_price,
-            "price_difference": self.price_difference,
-            "percentage_difference": self.percentage_difference,
-            "percentage": self.percentage_difference,
-            "consecutive_days": self.consecutive_days,
-        }
-        if self.date:
-            d["date"] = self.date
-        if self.condition:
-            d["condition"] = self.condition
-        if self.ma60:
-            d["ma60"] = self.ma60
-        if self.anchor_name:
-            d["anchor_name"] = self.anchor_name
-        if self.anchor_value:
-            d["anchor_value"] = self.anchor_value
-        if self.interval_label:
-            d["interval_label"] = self.interval_label
-        return d
-
-
 class SessionContext(BaseModel):
     """Session全局上下文 - 统一模型版本"""
 
@@ -321,18 +255,10 @@ class SessionContext(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     config: dict = Field(default_factory=dict)
     stocks_data: dict[str, StockPriceData] = Field(default_factory=dict)
-    alerts: list[AlertStock] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     # 扩展字段
     announcements: dict[str, list] = Field(default_factory=dict)
-    portfolio_results: Optional[dict] = None
-    signal_scan: Optional["object"] = None  # 信号扫描结果
     strategy_return_curves: Optional[dict] = None  # 明确标识来源的 Ke 模拟收益曲线
-    backtest: Optional[dict] = None  # backtest results {group: dict}
-    opt_data_a: Optional[dict] = None  # A股最新优化器 YAML (供邮件展示预估收益)
-    opt_data_non_a: Optional[dict] = None  # 非A股最新优化器 YAML (向后兼容)
-    opt_data_hk: Optional[dict] = None  # 港股最新优化器 YAML
-    opt_data_us: Optional[dict] = None  # 美股最新优化器 YAML
     placements: dict[str, dict] = Field(default_factory=dict)  # {code: 定增数据}
     dividend_events: list[dict] = Field(default_factory=list)  # 日报待处理分红/分派
     dividend_schedule: dict | None = None  # 有来源的公开派息日及覆盖，不等于账户到账
@@ -350,17 +276,3 @@ class SessionContext(BaseModel):
             dfs.append(pd.DataFrame([d]))
 
         return pd.concat(dfs, ignore_index=True)
-
-    def get_alerts_as_dicts(self):
-        """返回告警列表（plain dict 直接通过，AlertStock 则转 dict）"""
-        result = []
-        for a in self.alerts:
-            if isinstance(a, dict):
-                result.append(a)
-            elif hasattr(a, "to_dict"):
-                result.append(a.to_dict())
-            elif hasattr(a, "dict"):
-                result.append(a.dict())
-            else:
-                result.append({"stock_code": str(a)})
-        return result

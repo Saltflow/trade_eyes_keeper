@@ -152,44 +152,6 @@ def test_optimize_cli_runs_configured_strategy_for_all_markets(monkeypatch):
         main.main(["--optimize", "--all-markets"])
 
 
-def test_ref_portfolio_trade_plan_accepts_configured_commission(tmp_path):
-    from src.core.ref_portfolio import RefPortfolio, RefPortfolioManager
-    from src.strategy import StrategyMarketData, TradePlan
-
-    manager = RefPortfolioManager(file_path=tmp_path / "ref_portfolio.yaml")
-    plan = TradePlan(
-        buy_signals=np.array([[True]]),
-        sell_signals=np.array([[False]]),
-        buy_priority=np.array([[1.0]]),
-        sell_priority=np.array([[0.0]]),
-        buy_cash_limit=5000,
-        sell_cash_limit=5000,
-        dates=["2026-07-15"],
-        symbols=["600000"],
-        warmup_rows=0,
-    )
-    portfolio = RefPortfolio(
-        inception_date="2026-07-01",
-        market_group="a_share",
-        strategy_run_id="run-1",
-        strategy_id="percentile",
-        params_hash="params",
-        execution_hash="execution",
-    )
-    _, trades = manager.rebalance_plan(
-        portfolio,
-        plan,
-        StrategyMarketData(
-            indicator_matrix=np.zeros((1, 1, 1)), prices=np.array([[10.0]])
-        ),
-        "2026-07-15",
-        run_id="run-1",
-        strategy_id="percentile",
-        commission_rate=0.001,
-    )
-
-    assert len(trades) == 1
-    assert trades[0].commission == pytest.approx(trades[0].cost * 0.001)
 
 
 def test_evaluation_honors_requested_backtest_dates():

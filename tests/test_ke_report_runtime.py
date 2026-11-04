@@ -39,8 +39,6 @@ def config_for(path):
     return {
         "stocks": UNIVERSE,
         "report": {
-            "technical_signals": {"enabled": False},
-            "strategy_display": "returns_only",
             "return_curve_artifact": str(path),
         },
     }
@@ -139,12 +137,10 @@ def offline_report(monkeypatch, tmp_path):
         session_id="offline-ke-report",
         config=config,
         stocks_data={code: object() for code in UNIVERSE},
-        alerts=[],
         errors=[],
         announcements={},
         placements={},
         dividend_events=[],
-        signal_scan=object(),
         _historical={},
         get_all_dataframe=lambda: frame,
     )
@@ -177,13 +173,8 @@ def offline_report(monkeypatch, tmp_path):
 
     forbidden = {}
     for name in (
-        "ConditionChecker",
-        "_get_active_group_context",
-        "_collect_signal_scan",
         "evaluate_all_groups",
         "load_latest_strategy_run",
-        "load_strategy_run",
-        "build_trade_plan",
     ):
         forbidden[name] = Mock(
             side_effect=AssertionError(f"retired technical path: {name}")
@@ -203,7 +194,7 @@ def offline_report(monkeypatch, tmp_path):
         },
     )
     portfolio = SimpleNamespace()
-    accounts = Mock()
+    accounts = Mock(spec=main.RefPortfolioManager)
     accounts.load.return_value = portfolio
     accounts.is_initialized.return_value = True
     accounts.apply_corporate_actions.return_value = (portfolio, [])
@@ -212,9 +203,6 @@ def offline_report(monkeypatch, tmp_path):
         "nav_return_pct": 0,
         "valuation_reason": "",
     }
-    accounts.rebalance_plan.side_effect = AssertionError(
-        "automatic technical rebalance"
-    )
     monkeypatch.setattr(main, "RefPortfolioManager", Mock(return_value=accounts))
     monkeypatch.setattr(main, "_reference_portfolio_actions", lambda *args: [])
     monkeypatch.setattr(main, "_reference_portfolio_external_prices", lambda *args: {})
@@ -273,11 +261,10 @@ def test_real_report_entrypoints_skip_technical_calls_but_keep_events_snapshots_
         result = main.run_brief_report("fixture", force=True, config=fixture.config)
         fixture.notifier.send_brief_report.assert_called_once()
         assert all(
-            "技术信号已停用" in item["_trading_blocked_reason"]
+            not item["_trading_blocked_reason"]
             for item in fixture.session.ref_portfolio_status.values()
         )
     assert result.status == "succeeded"
-    assert fixture.session.signal_scan is None
     assert (
         fixture.session.strategy_return_curves["strategy_id"]
         == "ke_threshold_allocation"
@@ -286,6 +273,5 @@ def test_real_report_entrypoints_skip_technical_calls_but_keep_events_snapshots_
     fixture.snapshots.assert_called_once_with(fixture.config, fixture.session, kind)
     assert fixture.accounts.apply_corporate_actions.call_count == 3
     assert fixture.accounts.save.call_count == 3
-    fixture.accounts.rebalance_plan.assert_not_called()
     for forbidden in fixture.forbidden.values():
         forbidden.assert_not_called()

@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import date
 from typing import Any
 
-from ..models.schemas import AlertStock, SessionContext, StockPriceData
+from ..models.schemas import SessionContext, StockPriceData
 
 _PART = re.compile(r"(?:[A-Za-z0-9][A-Za-z0-9_-]*|\*)\Z")
 _PRIVATE = re.compile(
@@ -15,6 +15,10 @@ _PRIVATE = re.compile(
     re.IGNORECASE,
 )
 _EXCLUDED = {"config", "env", "errors", "session_id", "created_at"}
+_RETIRED_REPORT_ROOTS = {
+    "alerts", "signal_scan", "portfolio_results", "backtest", "evaluation_reports",
+    "opt_data_a", "opt_data_non_a", "opt_data_hk", "opt_data_us",
+}
 HISTORY_FIELDS = frozenset(
     [
         "date",
@@ -179,7 +183,9 @@ def iter_safe_leaves(value: Any, prefix: str = "", *, limit: int = 4096):
     emitted = 0
     while pending and emitted < limit:
         path, current = pending.pop()
-        if path and not safe_path(path):
+        if path and (
+            not safe_path(path) or path.split(".")[0] in _RETIRED_REPORT_ROOTS
+        ):
             continue
         mapping = data_mapping(current)
         if mapping:
@@ -217,7 +223,7 @@ class FieldCatalog:
         return [self.fields[key] for key in sorted(self.fields)]
 
     def resolve(self, path: str) -> FieldDefinition | None:
-        if not safe_path(path):
+        if not safe_path(path) or path.split(".")[0] in _RETIRED_REPORT_ROOTS:
             return None
         if path in self.fields:
             return self._instrument_definition(path, self.fields[path])
@@ -269,17 +275,6 @@ def _definition(path: str, value_type: str, *, observed: bool = False):
         )
     unit = _unit(field)
     meaning = _FIELD_MEANINGS.get(field, "日报字段 " + path)
-    if path.startswith("alerts."):
-        if field in {"percentage", "percentage_difference"}:
-            unit = "percent_0_100"
-            meaning = "警报价格相对锚点的偏离百分数（-10表示低于锚点10%）"
-        elif field in {"price", "low_price", "anchor_value", "price_difference"}:
-            unit = "quote_currency"
-            meaning = (
-                "警报日内最低价（非实时最新价）"
-                if field in {"price", "low_price"}
-                else "警报锚点价/价格差"
-            )
     return FieldDefinition(
         path,
         value_type,
@@ -307,13 +302,6 @@ def build_report_field_catalog(session=None) -> FieldCatalog:
             fields.append(_definition(f"stocks_data.*.{name}", kind))
     for name in sorted(HISTORY_FIELDS - set(StockPriceData.__fields__)):
         fields.append(_definition(f"stocks_data.*.{name}", "number"))
-    for name, field in AlertStock.__fields__.items():
-        if safe_segment(name):
-            fields.append(
-                _definition(
-                    f"alerts.*.{name}", getattr(field.type_, "__name__", "scalar")
-                )
-            )
     for name in SessionContext.__fields__:
         if safe_segment(name) and name != "stocks_data":
             fields.append(_definition(name, "object"))

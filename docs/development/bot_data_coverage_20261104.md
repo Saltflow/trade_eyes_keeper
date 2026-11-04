@@ -43,7 +43,7 @@
 - 当前完整报告执行入口只有 `reports.daily`、`reports.brief`；托管 `optimize` 预留，
   不执行；没有托管 `reminder` 报告。个人监控提醒是独立业务。
 - `scheduler.daily_report_frequency=weekly` 是日报的发送频次，默认周五、可配置星期，
-  不是独立周报 worker。旧 fundamental 周报入口只返回退休状态，历史归档可只读查询。
+  不是独立周报 worker。旧 fundamental 周报及专用历史查询入口已删除；公开历史导出仍可经通用数据工具读取。
 - 日报/简报任务保存在 `data/runtime/feishu_assistant.sqlite3` 的 `execution_runs`，
   运行文件在 `data/runtime/reports/<run_id>/`；结果与逐渠道投递收据关联。
 - `data/email_archive/` 是 HTML 副本，生成时间早于实际发送；副本存在不证明已投递。
@@ -63,7 +63,7 @@
 `src/triggers/snapshots.py`、`src/notification/email_notifier.py`、
 `src/notification/daily_pdf.py`、`src/search/artifacts.py`、
 `src/search/run_diagnostics.py`、`src/notification/manager.py`、
-`src/data/dataset_catalog.py`、`src/fundamental_quant/service.py` 与 `main.py`。
+`src/data/dataset_catalog.py` 与 `main.py`。
 
 ## 本地验收记录
 

@@ -1,6 +1,6 @@
 # 项目架构与模块职责
 
-生产基线核对日期：2026-11-03（v1.23.2 / 1075195）。Pi 会话删减已部署并核验运行版本、心跳与飞书接收入口状态。架构图集中保存在[架构图独立页](architecture_overview.md)，本页说明执行机制、业务合同、模块职责与依赖债务。其他文档见[文档索引](README.md)。
+历史生产基线核对日期：2026-11-03（v1.23.2 / 1075195）。2026-11-04本页业务链路按本地清理后的源码更新，本轮为本地源码清理，不代表已经部署。Pi 会话删减已部署并核验运行版本、心跳与飞书接收入口状态。架构图集中保存在[架构图独立页](architecture_overview.md)，本页说明执行机制、业务合同、模块职责与依赖债务。其他文档见[文档索引](README.md)。
 
 ## 历史发布证据与当前源码边界
 
@@ -8,11 +8,11 @@
 
 2026-11-03 随后发布 Pi 删减补丁 v1.23.1 / `7e552d1`：隔离验收通过后更新 19 个公共文件，870 个公共文件哈希匹配提交；私有配置、日程与触发历史保持原状。回执位于生产 `data/deployments/pi_conversations_v1_23_1_20261103_7e552d1/`。未发送真实业务消息或创建线上规则。
 
-以下旧部署记录保留为历史证据。五个可复用包、统一研究、触发器及报告开关见[总图与状态归属](architecture_overview.md)。
+以下旧部署记录保留为历史证据。五个可复用包、统一研究、触发器及报告链路见[总图与状态归属](architecture_overview.md)。
 
 公共运行层已于 2026-10-28 按独立提交 `c7d7656` 部署，实际采用 38 个明确文件的哈希覆盖，并保留线上业务补丁。本机其他研究、采集和优化实验没有随之发布。发布事实见[迁移验收记录](development/shared_runtime_migration.md#2026-10-28-已授权发布与生产切换)。10 月 29 日 09:03 另只读核对了线上飞书配置、关键源码与既有审计，范围见[本机/线上对照](architecture_overview.md#本机与线上环境对照)，不代表全量源码一致或新消息验收。
 
-本机 `TradeEyesPersonalMonitorTest` 已于 10 月 29 日按用户授权注销；旧独立对话/消费循环、专用 watchdog、安装脚本及专属测试已退役。测试入口仅保留公共宿主适配与只读发现功能，三份历史数据库、源码及任务 XML 均保留。线上 v1.18.0（6a55894，构建 b7e30404）只读核实无旧业务进程和调度；该次退役核对没有重启生产。部分真实对话补验仍单列，不据此补写通过。见[退役记录](development/shared_runtime_retirement_20261029.md)。
+本机 `TradeEyesPersonalMonitorTest` 已于 10 月 29 日按用户授权注销；旧独立对话/消费循环、专用 watchdog、安装脚本及专属测试已退役。群测试保留公共宿主适配；11月4日进一步删除旧私聊发现launcher及专属配置、测试，三份历史数据库、源码及任务 XML 均保留。线上 v1.18.0（6a55894，构建 b7e30404）只读核实无旧业务进程和调度；该次退役核对没有重启生产。部分真实对话补验仍单列，不据此补写通过。见[退役记录](development/shared_runtime_retirement_20261029.md)。
 
 2026-11-03 发布触发器耗尽自动失效补丁 v1.23.2 / `1075195`。复用原日历、回执和 reconcile 检查有限规则是否还有未来或补发机会，耗尽后转为 done；在途任务先结算，历史保留。没有新增模块、状态或定时任务。暂停的立即发报工具草稿未发布；生产回执位于 `data/deployments/trigger_lifecycle_v1_23_2_20261103_1075195/`。
 
@@ -48,35 +48,32 @@
 
 手工提取可显式选择 `extract --subagent --subagent-native` 使用本地 Codex CLI；这是可选 transport，普通服务、日报与默认 API 提取不依赖 Codex。当前生产未安装或启用该后端。代码部署、程序成功与独立研究质量验收分别记录。
 
-旧 `src/fundamental_quant` 仅剩四个历史读取模块，以只读 SQLite 返回已有元数据和文件路径。旧研究执行、补修、发布、通知和调度已退役；旧执行命令返回退役错误。统一边界见[旧研究退役记录](development/research_retirement_20261024.md)。
+旧 `src/fundamental_quant`、专用历史 CLI/Bot 入口、研究执行及周通知已删除。历史文件与现行流程仍使用的 tokenizer 保留；公开历史导出通过现有数据目录读取，归属未确认的旧混合 SQLite 不对机器人开放。统一边界见[旧研究退役记录](development/research_retirement_20261024.md)。
 
 ## 三条权威业务链路
 
-### 日报、今日扫描与参考持仓
+### 日报、简报与参考持仓估值
 
 生产当前由受管触发器发起既有 `reports.daily` / `reports.brief`，固定日报、启动日报及固定简报关闭；CLI/Bot 手动入口和显式固定调度能力仍保留。触发动作只支持 daily/brief，optimize 预留不执行，不生成独立提醒报告。
 
-下列技术分支仅在 `report.technical_signals.enabled` 开启时执行。本机当前为 false，`strategy_display: returns_only` 读取已完成且通过类型/覆盖/时效检查的 Ke 曲线，不回退旧技术评估。用户触发器、公告、基础行情与已有持仓公司行动保持各自路径，详见[报告与告警分图](architecture_overview.md#告警链路放大图)。
+报告直接读取已完成且通过类型、覆盖和时效检查的 Ke 曲线。旧技术条件告警、今日扫描、报告内策略回测和参考持仓按信号自动调仓已删除，不再由开关恢复。技术指标计算和用户触发器仍保留；已有参考持仓继续估值、处理公司行动并供手工管理，详见[报告与触发器分图](architecture_overview.md#告警链路放大图)。
 
 ```text
-main.py --once
+CLI / Bot / 受管触发器发起 daily 或 brief
   -> report_cli / report_execution
   -> 公共执行器 -> 独立 report worker
   -> SessionManager
   -> StockDataFetcher / DataSource / TechnicalIndicators
-  -> ConditionChecker + AlertEngine
-  -> 读取最近一次完整激活的 Search Artifact
-  -> 活动 Strategy.make_signals(...) 生成 TradePlan
-  -> Backtester 生成 EvaluationReport
-  -> NotifierManager 渲染 HTML/PDF/Email/Feishu/Telegram
+  -> 公告、公开派息、定增等事件及验证后的 Ke 曲线
+  -> 已有参考持仓估值与公司行动 -> 当前快照（不自动技术调仓）
+  -> NotifierManager 渲染价格/基本面、曲线和事件 -> 渠道投递回执
 ```
 
-简报走同一报表执行适配。在 `returns_only` 模式下展示适用标的的完整价格/基本面表与合格 Ke 曲线，不执行完整技术扫描/回测，也不回退旧技术建议。日报与简报均保留今开、昨收、现价、PE、PB、隐含 Ke、ROE；缺失 ROE 仅在渲染时按有效 PB/PE×100 粗估并标 `(估)`，不改写财务原值。
+简报走同一报表执行适配，展示适用标的的完整价格/基本面表、合格 Ke 曲线及事件；日报与简报均不调用旧扫描或报告内回测。日报与简报均保留今开、昨收、现价、PE、PB、隐含 Ke、ROE；缺失 ROE 仅在渲染时按有效 PB/PE×100 粗估并标 `(估)`，不改写财务原值。
 
 邮件与 PDF 使用共享三市场单图曲线；Bot 用文字曲线替代。事件由同一构建入口分类、按市场/代码/日期排序并合并例行公告，默认展示最近两个自然月，`report.events.announcement_lookback_months` 可经 Bot 调整为 1–24；待派息分红与未解禁事项保留。详见[公告展示](guide/announcements.md)。
 
-今日信号是完整 `TradePlan` 最后有效交易日的事件；通知层只消费
-`EvaluationReport`，不重新计算收益、胜率或持仓。
+参考持仓的估值、公司行动与手工持仓命令沿用绑定运行及执行合同；活动策略切换不自动改变已有持仓。显式回测与手动搜参仍使用 `TradePlan`、`Backtester` 和 `EvaluationReport`，其评价结果不再接入日报扫描。
 
 ### 搜参、相对晋升与激活
 
@@ -101,7 +98,7 @@ Solver 只能看到排名窗口。隔离窗口、最终留出窗口、策略判�
 `ask/tell`。当前 Solver 插件为 `genetic`、`local_genetic`、`random` 和
 `simulated_annealing`。
 
-候选发布不等于活动指针更新；自动相对晋升与人工激活都经过产物合同和可激活性检查，具体相对/绝对留出路径以 `search/artifacts.py` 为准。详细调用、状态及与告警的连接见[搜参子系统放大图](architecture_overview.md#搜参子系统放大图)；价格阈值和活动策略信号两条分支见[告警链路放大图](architecture_overview.md#告警链路放大图)。
+候选发布不等于活动指针更新；自动相对晋升与人工激活都经过产物合同和可激活性检查，具体相对/绝对留出路径以 `search/artifacts.py` 为准。详细调用和状态见[搜参子系统放大图](architecture_overview.md#搜参子系统放大图)；受管条件与发报关系见[报告与触发器分图](architecture_overview.md#告警链路放大图)。定时搜参已移除，CLI/Bot手动搜参及显式激活仍保留。
 
 ### 已终止的量化实验
 
@@ -136,7 +133,7 @@ MOE/基本面定价训练、旧估值特征/行业评分/消融、Ke 搜参与�
 
 - 策略插件、Solver 插件、候选 Gate 和 Backtester 已分离，新增算法无需修改
   `SearchController`。
-- 搜参、日报和扫描共用 `TradePlan + Backtester + EvaluationReport`。
+- 搜参与显式回测共用 `TradePlan + Backtester + EvaluationReport`；日报读取合格的已完成曲线，不再执行扫描或策略回测。
 - benchmark 位于 `src/experiments`，不会发布或激活生产参数。
 - 逐时点基本面研究与活动技术策略隔离，具有明确的防前视合同。
 - HTTP/HTTPS health server、Web 管理、OTP 和临时报告路由已整体下线。
@@ -150,9 +147,9 @@ MOE/基本面定价训练、旧估值特征/行业评分/消融、Ke 搜参与�
 
 1. **共享合同所有权不够中立。** `TradePlan`、`PortfolioTrace` 和
    `EvaluationReport` 仍位于 `strategy/api.py`；Backtester 必须反向依赖
-   strategy，strategy 的兼容扫描又会导入 backtest/search。后续应迁到中立的
+   strategy；搜索评价同时使用策略与回测合同。后续应迁到中立的
    `src/contracts`，使依赖固定为“策略和回测都依赖合同”。
-2. **`main.py` 仍是大型编排文件。** CLI、日报、扫描、审计和激活用例都集中在
+2. **`main.py` 仍是大型编排文件。** CLI、日报、搜参、审计和激活用例都集中在
    同一文件中。应逐步迁到 `src/application`，让 `main.py` 只解析
    参数并分派用例。
 3. **Bot handler 仍直接调用应用编排。** 共用分发器已消除渠道分叉，后续可随着

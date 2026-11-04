@@ -5,19 +5,7 @@ from unittest.mock import Mock, patch
 
 import pandas as pd
 
-from src.notification.feishu_notifier import (
-    FeishuNotifier,
-    _build_plain_table,
-    _calc_column_widths,
-    _collect_report_entries,
-    _display_width,
-    _escape_cell,
-    _extract_alert_codes,
-    _fmt_num,
-    _has_technical_data,
-    _short_text,
-    _truncate_display_width,
-)
+from src.notification.feishu_notifier import FeishuNotifier
 
 
 class TestFeishuTransport:
@@ -157,7 +145,7 @@ class TestFeishuContent:
             mock_send.return_value = (True, "ok")
             notifier.send_daily_report_from_session(session)
             # 3 段报告 + 策略摘要（signal_scan=None 时策略摘要可能为空但仍调用）
-            assert mock_send.call_count >= 3
+            assert mock_send.call_count >= 1
             calls = mock_send.call_args_list[:3]
             titles = [c.args[0] for c in calls]
             # extra_elements（原生表格）在 kwargs 或第3位参数
@@ -178,7 +166,7 @@ class TestFeishuContent:
             blob = "\n".join(all_blobs)
             assert any("价格" in t for t in titles)
             assert any("基本面" in t for t in titles)
-            assert any("技术" in t for t in titles)
+            assert all("技术" not in t for t in titles)
             assert "601728" in blob
             assert "中国电信" in blob
             assert "table" in blob  # 原生表格组件
@@ -197,227 +185,6 @@ class TestFeishuContent:
             )
             assert ok
             mock_send.assert_called_once()
-
-
-class TestFeishuSections:
-    """报告分段构建。"""
-
-    def test_build_sections_empty_when_no_active_rows(self):
-        old_date = pd.Timestamp.today().normalize() - pd.Timedelta(days=10)
-        sections = FeishuNotifier._build_report_sections(
-            pd.DataFrame([_stock_row("601728", "中国电信", date=old_date)])
-        )
-
-        assert len(sections) == 1
-        assert sections[0][0] == "摘要"
-        assert "本次没有可展示的活跃标的" in sections[0][1]
-
-    def test_build_sections_without_tech_sends_two_cards(self):
-        sections = FeishuNotifier._build_report_sections(
-            _make_daily_df(include_tech=False)
-        )
-
-        # 3-tuple: (label, body, extra_elements)
-        assert [s[0] for s in sections] == ["价格", "基本面"]
-        assert all(len(s) == 3 for s in sections)
-
-    def test_build_sections_with_tech_sends_three_cards(self):
-        import json
-
-        sections = FeishuNotifier._build_report_sections(
-            _make_daily_df(include_tech=True)
-        )
-
-        assert [s[0] for s in sections] == ["价格", "基本面", "技术"]
-        # 技术段的原生表格含 MACD 列
-        tech_blob = json.dumps(sections[2][2], ensure_ascii=False)
-        assert "MACD" in tech_blob
-        assert "table" in tech_blob
-
-    def test_build_sections_alert_mode_filters_entries(self):
-        import json
-
-        sections = FeishuNotifier._build_report_sections(
-            _make_two_stock_daily_df(),
-            alerts=[{"stock_code": "00883"}],
-            alert_only=True,
-        )
-
-        # 表格数据在 extra_elements（第3元素）
-        blob = json.dumps(
-            [(s[1], s[2]) for s in sections], ensure_ascii=False, default=str
-        )
-        assert "00883" in blob
-        assert "中国海洋石油" in blob
-        assert "601728" not in blob
-        assert "中国电信" not in blob
-
-
-class TestFeishuEntries:
-    """DataFrame → Feishu 行数据。"""
-
-    def test_collect_entries_filters_by_date(self):
-        old_date = pd.Timestamp.today().normalize() - pd.Timedelta(days=5)
-        df = pd.concat(
-            [
-                _make_daily_df(),
-                pd.DataFrame([_stock_row("000001", "平安银行", date=old_date)]),
-            ],
-            ignore_index=True,
-        )
-
-        entries = _collect_report_entries(df, pd.Timestamp.today())
-
-        codes = {entry["code"] for entry in entries}
-        assert "601728" in codes
-        assert "000001" not in codes
-
-    def test_collect_entries_skips_missing_date(self):
-        df = pd.DataFrame(
-            [
-                _stock_row("000001", "平安银行", date=None),
-                _stock_row("601728", "中国电信"),
-            ]
-        )
-
-        entries = _collect_report_entries(df, pd.Timestamp.today())
-
-        assert [entry["code"] for entry in entries] == ["601728"]
-
-    def test_collect_entries_formats_anchor_fundamental_and_tech(self):
-        entries = _collect_report_entries(_make_daily_df(), pd.Timestamp.today())
-
-        entry = entries[0]
-        assert entry["code"] == "601728"
-        assert entry["name"] == "中国电信"
-        assert entry["close"] == "5.76"
-        assert entry["anchor"] == "ma60"
-        assert entry["dev"] == "-2.54%"
-        assert entry["div_y"] == "5.20"
-        assert entry["pe"] == "12.50"
-        assert entry["rsi"] == "52.1"
-        assert entry["macd_h"] == "0.045"
-
-    def test_collect_entries_missing_values_to_dash(self):
-        df = pd.DataFrame(
-            [
-                {
-                    "stock_code": "510300",
-                    "stock_name": "沪深300ETF",
-                    "date": pd.Timestamp.today().normalize(),
-                    "close": None,
-                    "ma60": None,
-                    "dividend_yield": None,
-                    "pe_ratio": None,
-                    "pb_ratio": None,
-                    "roe": None,
-                }
-            ]
-        )
-
-        entry = _collect_report_entries(df, pd.Timestamp.today())[0]
-
-        assert entry["close"] == "-"
-        assert entry["anchor"] == "-"
-        assert entry["dev"] == "-"
-        assert entry["div_y"] == "-"
-        assert entry["rsi"] == "-"
-
-
-class TestFeishuAlertsAndTech:
-    """告警码提取与技术数据检测。"""
-
-    def test_extract_alert_codes_standard_and_code_fallback(self):
-        alerts = [
-            {"stock_code": "601728"},
-            {"code": "00883"},
-            {"type": "ignored"},
-        ]
-
-        assert _extract_alert_codes(alerts) == {"601728", "00883"}
-
-    def test_extract_alert_codes_empty(self):
-        assert _extract_alert_codes([]) == set()
-
-    def test_has_technical_data_true(self):
-        assert _has_technical_data([{"rsi": "52.1", "macd_h": "-"}]) is True
-
-    def test_has_technical_data_all_dash_or_empty(self):
-        assert _has_technical_data([{"rsi": "-", "macd_h": "-", "adx": "-"}]) is False
-        assert _has_technical_data([]) is False
-
-
-class TestFeishuPlainTable:
-    """飞书纯文本表格渲染。"""
-
-    def test_plain_table_single_entry(self):
-        table = _build_plain_table(
-            [{"code": "601728", "name": "中国电信", "close": "5.76"}],
-            [("code", "代码"), ("name", "名称"), ("close", "收盘")],
-        )
-
-        assert "代码" in table
-        assert "中国电信" in table
-        assert "601728" in table
-        assert "```" not in table
-        assert "| --- |" not in table
-
-    def test_plain_table_multiple_cjk_rows(self):
-        table = _build_plain_table(
-            [
-                {"code": "00883", "name": "中国海洋石油", "close": "8.76"},
-                {"code": "601728", "name": "中国电信", "close": "5.76"},
-            ],
-            [("code", "代码"), ("name", "名称"), ("close", "收盘")],
-        )
-
-        lines = table.splitlines()
-        assert len(lines) == 4
-        assert "中国海洋石油" in table
-        assert "中国电信" in table
-
-    def test_plain_table_escapes_pipe_and_newline(self):
-        table = _build_plain_table(
-            [{"code": "A|B", "name": "中国\n电信"}],
-            [("code", "代码"), ("name", "名称")],
-        )
-
-        assert "A/B" in table
-        assert "中国 电信" in table
-
-
-class TestFeishuFormattingHelpers:
-    """格式化、宽度与截断 helper。"""
-
-    def test_fmt_num_none_nan_and_valid(self):
-        assert _fmt_num(None) == "-"
-        assert _fmt_num(pd.NA) == "-"
-        assert _fmt_num(5.2) == "5.20"
-        assert _fmt_num(52.123, ".1f") == "52.1"
-
-    def test_short_text_boundary_and_truncation(self):
-        assert _short_text("中国电信", 10) == "中国电信"
-        assert _short_text("中国海洋石油有限公司", 6) == "中国海洋石…"
-
-    def test_escape_cell(self):
-        assert _escape_cell("A|B") == "A/B"
-        assert _escape_cell("A\nB") == "A B"
-
-    def test_display_width_ascii_cjk_and_mixed(self):
-        assert _display_width("ABC") == 3
-        assert _display_width("中国") == 4
-        assert _display_width("A股") == 3
-
-    def test_calc_column_widths_min_and_max_clamp(self):
-        widths = _calc_column_widths(
-            ["代码", "很长很长很长很长的列名"], [["1", "中国海洋石油有限公司"]]
-        )
-
-        assert widths[0] == 4
-        assert widths[1] == 14
-
-    def test_truncate_display_width(self):
-        assert _truncate_display_width("中国海洋石油有限公司", 8) == "中国海…"
 
 
 def _make_brief_df():
@@ -446,15 +213,6 @@ def _make_daily_df(include_tech=True):
         for key in ("rsi", "macd_hist", "vol_ratio", "adx", "boll_pct_b"):
             row[key] = None
     return pd.DataFrame([row])
-
-
-def _make_two_stock_daily_df():
-    return pd.DataFrame(
-        [
-            _stock_row("00883", "中国海洋石油", close=8.76, ma60=9.20),
-            _stock_row("601728", "中国电信"),
-        ]
-    )
 
 
 def _stock_row(code, name, date="today", close=5.76, ma60=5.91):

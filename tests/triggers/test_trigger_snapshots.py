@@ -33,7 +33,7 @@ def test_safe_public_snapshot_roundtrip_excludes_config_env_and_secrets(config):
                 access_token="never-persist",
             )
         },
-        signal_scan={"stocks": {"601088": {"signal": "buy"}}},
+        dividend_schedule={"status": "partial"},
     )
     object.__setattr__(session, "ref_portfolio_status", {"nav": 123.0})
     path = capture_report_snapshot(config, session, "daily")
@@ -41,6 +41,7 @@ def test_safe_public_snapshot_roundtrip_excludes_config_env_and_secrets(config):
     assert "never-persist" not in text and '"config"' not in text
     loaded = load_report_snapshot(config)
     assert loaded["stocks_data"]["601088"]["custom_anchor"] == 50.5
+    assert loaded["dividend_schedule"]["status"] == "partial"
     assert loaded["ref_portfolio_status"]["nav"] == 123
     assert loaded["created_at"] == NOW.isoformat()
     assert list(path.parent.glob("*.tmp")) == []
@@ -61,7 +62,7 @@ def test_brief_missing_or_none_fields_do_not_erase_daily_and_clocks_stay_per_fie
                     "roe_as_of": "2026-09-30T00:00:00+08:00",
                 }
             },
-            "signal_scan": {"601088": {"signal": "buy"}},
+            "announcements": {"601088": [{"title": "公开公告"}]},
         },
         "daily",
     )
@@ -78,7 +79,7 @@ def test_brief_missing_or_none_fields_do_not_erase_daily_and_clocks_stay_per_fie
     loaded = load_report_snapshot(config)
     assert loaded["stocks_data"]["601088"]["close"] == 49
     assert loaded["stocks_data"]["601088"]["roe"] == 9
-    assert loaded["signal_scan"]["601088"]["signal"] == "buy"
+    assert loaded["announcements"]["601088"][0]["title"] == "公开公告"
     snap = load_trigger_facts(
         {"stocks_data.601088.roe", "stocks_data.601088.close"},
         config,
@@ -117,6 +118,33 @@ def test_explicit_zero_false_and_empty_collections_remain_known(config):
     assert loaded["dividend_events"] == []
     snap = load_trigger_facts({"dividend_events"}, config, as_of=NOW, session=loaded)
     assert snap.resolve("dividend_events").status == "available"
+
+
+def test_retired_report_roots_are_not_captured_or_restored_from_old_snapshots(config):
+    roots = {
+        "alerts", "signal_scan", "portfolio_results", "backtest", "evaluation_reports",
+        "opt_data_a",
+        "opt_data_non_a", "opt_data_hk", "opt_data_us",
+    }
+    old_values = {root: {"old_value": 1} for root in roots}
+    path = capture_report_snapshot(
+        config, {"created_at": NOW, "dividend_events": [], **old_values}, "daily"
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert roots.isdisjoint(payload["data"])
+    # Historical files stay in place, but their retired sections are not facts.
+    payload["data"].update(old_values)
+    for root in roots:
+        payload["fact_metadata"][root + ".old_value"] = {
+            "as_of": NOW.isoformat(), "observed_at": NOW.isoformat(),
+            "source": "historical_snapshot",
+        }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    loaded = load_report_snapshot(config)
+    assert roots.isdisjoint(loaded)
+    assert not any(
+        key.split(".")[0] in roots for key in loaded["_fact_metadata"]
+    )
 
 
 def test_unprepared_brief_defaults_do_not_erase_daily_sections(config):

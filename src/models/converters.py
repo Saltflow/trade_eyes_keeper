@@ -11,7 +11,6 @@ import pandas as pd
 
 from .schemas import (
     StockPriceData,
-    AlertStock,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,47 +71,3 @@ def stock_price_data_list_to_dataframe(
         dfs.append(pd.DataFrame([d]))
 
     return pd.concat(dfs, ignore_index=True)
-
-
-def alert_dict_to_alert_stock(alert_dict: dict) -> Optional[AlertStock]:
-    """
-    将警报dict转换为AlertStock对象
-    """
-    try:
-
-        def safe_float(value, default=None):
-            if value is None:
-                return default
-            try:
-                return float(value)
-            except (ValueError, TypeError):
-                return default
-
-        def safe_int(value, default=1):
-            if value is None:
-                return default
-            try:
-                return int(value)
-            except (ValueError, TypeError):
-                return default
-
-        return AlertStock(
-            stock_code=alert_dict.get("stock_code", ""),
-            date=alert_dict.get("date"),
-            condition=alert_dict.get("condition"),
-            low_price=safe_float(alert_dict.get("low_price"), 0.0),
-            price=safe_float(alert_dict.get("price", alert_dict.get("low_price")), 0.0),
-            ma60=safe_float(alert_dict.get("ma60")),
-            anchor_name=alert_dict.get("anchor_name"),
-            anchor_value=safe_float(alert_dict.get("anchor_value")),
-            interval_label=alert_dict.get("interval_label"),
-            percentage=safe_float(alert_dict.get("percentage")),
-            consecutive_days=safe_int(alert_dict.get("consecutive_days"), 1),
-            price_difference=safe_float(alert_dict.get("price_difference"), 0.0),
-            percentage_difference=safe_float(
-                alert_dict.get("percentage_difference"), 0.0
-            ),
-        )
-    except Exception as e:
-        logger.warning(f"转换AlertStock失败: {e}")
-        return None

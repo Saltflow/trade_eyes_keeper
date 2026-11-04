@@ -19,18 +19,11 @@ from src.notification.report_policy import (
     build_return_curves_text,
     format_roe,
     generate_return_curve_png,
-    report_view,
     return_curve_markets,
-    technical_signals_enabled,
 )
 from src.notification.telegram_notifier import TelegramNotifier
 
-CONFIG = {
-    "report": {
-        "technical_signals": {"enabled": False},
-        "strategy_display": "returns_only",
-    }
-}
+CONFIG = {}
 
 
 def curves():
@@ -138,20 +131,6 @@ def assert_clean(text):
     assert "股息率" not in text and "ROE" in text
 
 
-def test_default_legacy_policy_and_non_mutating_stale_session_projection():
-    assert technical_signals_enabled({})
-    original = session()
-    projected = report_view(original)
-    assert projected is not original
-    assert projected.signal_scan is None
-    assert projected.evaluation_reports == {}
-    assert projected.ref_portfolio_status == {}
-    assert original.signal_scan.alerts[0].rule_label == "OLD_TECH_BUY"
-    assert original.evaluation_reports
-    assert projected.announcements is original.announcements
-    assert report_view(original, {}) is original
-
-
 @pytest.mark.parametrize(
     "roe,pe,pb,expected",
     [
@@ -236,18 +215,10 @@ def test_png_uses_one_axis_no_watermark_and_no_unavailable_zero_return_line(
 @pytest.mark.parametrize(
     "method", ["send_from_session", "send_daily_report_from_session"]
 )
-@pytest.mark.parametrize(
-    "report_config",
-    [
-        CONFIG["report"],
-        {"technical_signals": {"enabled": False}},
-        {"strategy_display": "returns_only"},
-    ],
-)
 def test_daily_email_uses_only_ke_curve_and_retains_full_fundamentals_events(
-    monkeypatch, method, report_config
+    monkeypatch, method
 ):
-    notifier = EmailNotifier({"report": deepcopy(report_config)})
+    notifier = EmailNotifier({})
     sent = []
     monkeypatch.setattr(
         notifier,
@@ -258,10 +229,6 @@ def test_daily_email_uses_only_ke_curve_and_retains_full_fundamentals_events(
     monkeypatch.setattr(
         "src.notification.email_notifier.generate_return_curve_png",
         lambda payload: b"synthetic-png",
-    )
-    monkeypatch.setattr(
-        "src.notification.email_notifier.generate_portfolio_overview_chart",
-        lambda *args: pytest.fail("old technical chart requested"),
     )
     original = session()
     assert getattr(notifier, method)(original)["status"] == "sent"
@@ -311,14 +278,6 @@ def test_bot_daily_retains_events_and_never_calls_legacy_technical_builder(
         "_send",
         lambda *args, **kwargs: pieces.append((args, kwargs)) or {"status": "sent"},
     )
-    legacy = (
-        "_build_report_sections" if cls is FeishuNotifier else "_build_daily_sections"
-    )
-    monkeypatch.setattr(
-        notifier,
-        legacy,
-        lambda *args, **kwargs: pytest.fail("legacy technical builder called"),
-    )
     assert notifier.send_daily_report_from_session(session())["status"] == "sent"
     text = json.dumps(pieces, ensure_ascii=False)
     assert_clean(text)
@@ -343,14 +302,7 @@ def test_pdf_uses_original_template_and_keeps_escaped_fundamentals_and_events(
     source = session()
     result = daily_pdf.generate_daily_pdf(
         source,
-        [],
-        source.signal_scan,
-        source.backtest,
         source.get_all_dataframe(),
-        chart_deviation_timeline=lambda *args, **kwargs: pytest.fail(
-            "old indicator chart requested"
-        ),
-        pick_best_anchor=lambda *args: pytest.fail("old anchor requested"),
         get_server_info=dict,
     )
     assert result == b"%PDF-synthetic"
@@ -371,10 +323,7 @@ def test_disabled_scan_does_not_make_fundamental_data_readiness_blocked():
 def test_missing_ke_curve_keeps_daily_template_and_full_pool():
     source = session()
     body = EmailNotifier(deepcopy(CONFIG))._build_email_body(
-        [],
         source.get_all_dataframe(),
-        signal_scan=source.signal_scan,
-        evaluation_reports=source.evaluation_reports,
     )
     assert "<style>" in body and 'class="shell"' in body
     assert "完整行情矩阵" in body and "Ke策略收益曲线" in body

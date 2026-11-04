@@ -10,12 +10,6 @@ def get_StockDataFetcher():
     return StockDataFetcher
 
 
-def get_ConditionChecker():
-    from .core.condition_checker import ConditionChecker
-
-    return ConditionChecker
-
-
 def get_EmailNotifier():
     from .notification.email_notifier import EmailNotifier
 

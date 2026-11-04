@@ -26,16 +26,26 @@ def session():
         errors=[],
         evaluation_reports={},
         reference_portfolio_status={},
-        announcements={"601088": [{
-            "date": "2026-10-21", "title": "权益分派实施公告",
-            "url": "https://example.invalid/notice?a=1&b=2",
-        }]},
+        announcements={
+            "601088": [
+                {
+                    "date": "2026-10-21",
+                    "title": "权益分派实施公告",
+                    "url": "https://example.invalid/notice?a=1&b=2",
+                }
+            ]
+        },
         placements={},
-        dividend_events=[{
-            "code": "601088", "status": "未除权", "ex_date": "2026-10-26",
-            "payment_date": "2026-10-26", "cash_per_share": 0.98,
-            "currency": "CNY",
-        }],
+        dividend_events=[
+            {
+                "code": "601088",
+                "status": "未除权",
+                "ex_date": "2026-10-26",
+                "payment_date": "2026-10-26",
+                "cash_per_share": 0.98,
+                "currency": "CNY",
+            }
+        ],
         signal_scan=SimpleNamespace(alerts=[], group_outcomes={}),
         get_all_dataframe=lambda: frame,
         get_alerts_as_dicts=list,
@@ -60,9 +70,9 @@ def pdf_source(monkeypatch, session):
 
     monkeypatch.setattr("subprocess.run", compile_stub)
     result = generate_daily_pdf(
-        session, [], None, {"a_share": {"total_return": 8.0}},
-        session.get_all_dataframe(), chart_deviation_timeline=lambda *a, **k: None,
-        pick_best_anchor=lambda *_: None, get_server_info=lambda: {"hostname": "test"},
+        session,
+        session.get_all_dataframe(),
+        get_server_info=lambda: {"hostname": "test"},
     )
     assert result == b"%PDF-unit-test"
     return captured[-1]
@@ -78,11 +88,14 @@ def test_pdf_shows_implementation_notice_and_payment_dates(monkeypatch, session)
 
 
 def test_pdf_includes_hk_announcements_alongside_a_shares(monkeypatch, session):
-    session.announcements["00700"] = [{
-        "date": "2026-10-21", "title": "截至六月三十日止六個月業績公佈",
-        "url": "https://www1.hkexnews.hk/listedco/notice_c.pdf",
-        "exchange": "hkex",
-    }]
+    session.announcements["00700"] = [
+        {
+            "date": "2026-10-21",
+            "title": "截至六月三十日止六個月業績公佈",
+            "url": "https://www1.hkexnews.hk/listedco/notice_c.pdf",
+            "exchange": "hkex",
+        }
+    ]
     tex = pdf_source(monkeypatch, session)
     assert "权益分派实施公告" in tex
     assert "截至六月三十日止六個月業績公佈" in tex
@@ -117,25 +130,15 @@ def test_pdf_keeps_cross_reference_pass_without_duplicate_pdf_conversion(
 
     monkeypatch.setattr("subprocess.run", compile_stub)
     result = generate_daily_pdf(
-        session, [], None, {}, session.get_all_dataframe(),
-        chart_deviation_timeline=lambda *a, **k: None,
-        pick_best_anchor=lambda *_: None, get_server_info=dict,
+        session,
+        session.get_all_dataframe(),
+        get_server_info=dict,
     )
     assert len(commands) == (2 if final_pass_fails else 3)
     assert "-no-pdf" in commands[0] and "-no-pdf" in commands[1]
     if not final_pass_fails:
         assert commands[2][0] == "xdvipdfmx"
     assert result == (None if final_pass_fails else b"%PDF-final-pass")
-
-
-@pytest.mark.parametrize("status", ["blocked", "failed", "not_run"])
-def test_pdf_cannot_claim_valid_strategy_when_market_not_ready(
-    monkeypatch, session, status
-):
-    session.signal_scan.group_outcomes = {"hk": {"status": status}}
-    tex = pdf_source(monkeypatch, session)
-    assert "数据未就绪" in tex and "港股：" + status.replace("_", r"\_") in tex
-    assert "策略有效" not in tex
 
 
 def test_pdf_escapes_untrusted_announcement_tex(monkeypatch, session):
@@ -157,27 +160,20 @@ def test_daily_messages_include_events_but_alert_only_keeps_scope(
         return {"status": "sent"}
 
     monkeypatch.setattr(notifier, "_send", capture)
-    method = "_build_report_sections" if kind == "feishu" else "_build_daily_sections"
-    monkeypatch.setattr(notifier, method, lambda *_a, **_kw: [])
-    if kind == "feishu":
-        monkeypatch.setattr(
-            "src.notification.feishu_notifier._build_ref_portfolio_markdown",
-            lambda *_: "",
-        )
-    else:
-        monkeypatch.setattr(notifier, "_build_ref_portfolio_text", lambda *_: "")
     notifier.send_daily_report_from_session(session)
     body = "\n".join(row[1] for row in sent)
     assert "权益分派实施公告" in body and "派息 2026-10-26" in body
     sent.clear()
     notifier.send_from_session(session)
-    assert not any("派息 2026-10-26" in row[1] for row in sent)
+    assert any("派息 2026-10-26" in row[1] for row in sent)
 
 
 def test_event_rows_keep_finite_missing_amounts_and_safe_links(session):
     session.placements = {"000001": {"issue_num": 1e8, "issue_price": None}}
     rows = build_daily_event_rows(
-        session.announcements, session.placements, session.get_all_dataframe(),
+        session.announcements,
+        session.placements,
+        session.get_all_dataframe(),
         session.dividend_events,
     )
     assert len(rows) == 3
@@ -185,7 +181,10 @@ def test_event_rows_keep_finite_missing_amounts_and_safe_links(session):
     placement = next(row for row in rows if row["kind"] == "未解禁定增")
     assert "1.00亿股" in placement["title"]
     assert "定增价 —" in placement["title"]
-    assert next(row for row in rows if row["url"])["url"] == "https://example.invalid/notice?a=1&b=2"
+    assert (
+        next(row for row in rows if row["url"])["url"]
+        == "https://example.invalid/notice?a=1&b=2"
+    )
 
 
 @pytest.mark.parametrize("channel", ["rows", "email", "pdf", "feishu", "telegram"])
@@ -193,25 +192,41 @@ def test_pending_items_stay_pinned_before_categorized_notices(
     monkeypatch, session, tmp_path, channel
 ):
     session.created_at = "2026-11-04"
-    session.dividend_events.append({
-        "code": "601088", "status": "已除权未派息", "ex_date": "2026-09-01",
-        "payment_date": "2026-11-06", "cash_per_share": 0.1234,
-    })
+    session.dividend_events.append(
+        {
+            "code": "601088",
+            "status": "已除权未派息",
+            "ex_date": "2026-09-01",
+            "payment_date": "2026-11-06",
+            "cash_per_share": 0.1234,
+        }
+    )
     session.placements = {"601088": {"unlock_date": "2028-01-10"}}
     for title in ("重大资产重组公告", "第三季度报告", "股份回购公告"):
-        session.announcements["601088"].append({
-            "date": "2026-11-03", "title": title,
-            "url": "https://example.invalid/" + title,
-        })
+        session.announcements["601088"].append(
+            {
+                "date": "2026-11-03",
+                "title": title,
+                "url": "https://example.invalid/" + title,
+            }
+        )
     expected = [
-        "已除权未派息", "未除权", "未解禁定增", "重组并购与重大事项",
-        "财报业绩", "分红派息", "股权融资与解禁",
+        "已除权未派息",
+        "未除权",
+        "未解禁定增",
+        "重组并购与重大事项",
+        "财报业绩",
+        "分红派息",
+        "股权融资与解禁",
     ]
     frame = session.get_all_dataframe()
     if channel == "rows":
         rows = build_daily_event_rows(
-            session.announcements, session.placements, frame,
-            session.dividend_events, as_of=session.created_at,
+            session.announcements,
+            session.placements,
+            frame,
+            session.dividend_events,
+            as_of=session.created_at,
         )
         assert [group["category"] for group in group_daily_event_rows(rows)] == expected
         assert [row["kind"] for row in rows[:3]] == expected[:3]
@@ -219,8 +234,11 @@ def test_pending_items_stay_pinned_before_categorized_notices(
     if channel == "email":
         body = EmailNotifier({"email": {"archive_dir": str(tmp_path)}})
         body = body._build_daily_events_section(
-            session.announcements, session.placements, frame,
-            session.dividend_events, report_as_of=session.created_at,
+            session.announcements,
+            session.placements,
+            frame,
+            session.dividend_events,
+            report_as_of=session.created_at,
         )
     elif channel == "pdf":
         body = pdf_source(monkeypatch, session)
@@ -228,18 +246,10 @@ def test_pending_items_stay_pinned_before_categorized_notices(
         notifier = FeishuNotifier({}) if channel == "feishu" else TelegramNotifier({})
         sent = []
         monkeypatch.setattr(
-            notifier, "_send",
+            notifier,
+            "_send",
             lambda title, body, **kwargs: sent.append(body) or {"status": "sent"},
         )
-        method = "_build_report_sections" if channel == "feishu" else "_build_daily_sections"
-        monkeypatch.setattr(notifier, method, lambda *a, **k: [])
-        if channel == "feishu":
-            monkeypatch.setattr(
-                "src.notification.feishu_notifier._build_ref_portfolio_markdown",
-                lambda *a: "",
-            )
-        else:
-            monkeypatch.setattr(notifier, "_build_ref_portfolio_text", lambda *a: "")
         notifier.send_daily_report_from_session(session)
         body = "\n".join(sent)
     positions = [body.index(label) for label in expected]

@@ -306,6 +306,32 @@ def test_missing_paid_research_and_unknown_fields_never_launch_full_report():
     assert snap.resolve("backtest.hk.sharpe").status == "unknown"
 
 
+def test_retired_snapshot_dependencies_do_not_block_quote_or_reference_valuation():
+    get_quote = Mock(return_value=quote())
+    snap = load_trigger_facts(
+        {"quotes.601088.last", "backtest", "backtest.hk.sharpe", "alerts",
+         "evaluation_reports",
+         "ref_portfolio_status.a_share.nav"},
+        CONFIG,
+        as_of=NOW,
+        session={
+            "created_at": NOW,
+            "backtest": {"hk": {"sharpe": 99}},
+            "alerts": [{"stock_code": "601088"}],
+            "evaluation_reports": {"hk": {"sharpe": 99}},
+            "ref_portfolio_status": {"a_share": {"nav": 12345}},
+        },
+        providers={"quote": get_quote, "market_session": open_session},
+    )
+    assert snap.resolve("quotes.601088.last").value == 51
+    assert snap.resolve("quotes.601088.last").status == "available"
+    assert snap.resolve("ref_portfolio_status.a_share.nav").value == 12345
+    for path in ("backtest", "backtest.hk.sharpe", "alerts", "evaluation_reports"):
+        assert snap.resolve(path).status == "unknown"
+        assert snap.resolve(path).value is None
+    get_quote.assert_called_once_with("601088")
+
+
 @pytest.mark.parametrize(
     "title",
     [

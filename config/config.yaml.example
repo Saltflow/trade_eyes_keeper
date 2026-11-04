@@ -3,9 +3,6 @@ report:
   events:
     # 仅限制已采集公告在日报中的展示；不删除原文，不影响待派息/未解禁事项。
     announcement_lookback_months: 2
-  technical_signals:
-    enabled: false
-  strategy_display: returns_only
   return_curve_artifact: data/strategy_returns/ke_24m.json
   return_curve_max_age_days: 7
 
@@ -74,9 +71,7 @@ scheduler:
   daily_enabled: true
   run_time: '19:00'
   run_on_startup: false
-  # 优化器定时执行需显式开启；手动 --optimize 不受此开关影响。
-  optimize_enabled: false
-  optimize_time: '02:00'
+  # 策略搜参仅支持手动 --optimize 或 Bot /optimize。
   # 普通日报频次：daily=每个交易日，weekly=每周五，off=关闭。
   # 有价格/策略告警时仍即时发送；/daily 手动触发不受影响。
   daily_report_frequency: daily
@@ -86,7 +81,6 @@ scheduler:
   # 服务器繁忙时允许错过整点后补跑；APScheduler 默认约1秒会误跳任务。
   daily_misfire_grace_seconds: 3600
   brief_misfire_grace_seconds: 900
-  optimize_misfire_grace_seconds: 7200
   brief_reports:
     - id: morning_snapshot
       run_time: '09:50'
@@ -268,7 +262,6 @@ historical_cache:
   historical_lookback_days: 730
   enable_historical_cache: true
 
-# ── 多层警报系统 ──
+# ── 共享指标锚点（用于历史指标和托管触发器字段）──
 alerts:
   config_path: "./config/alerts.yaml"
-  enabled: true

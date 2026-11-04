@@ -41,7 +41,7 @@ def _setup(tmp_path: Path, monkeypatch, config: dict, contents: str):
     return path, cron
 
 
-def test_adopts_optimizer_time_and_preserves_foreign_jobs_verbatim(
+def test_removes_optimizer_cron_and_preserves_foreign_jobs_verbatim(
     tmp_path, monkeypatch
 ):
     original = (
@@ -56,17 +56,15 @@ def test_adopts_optimizer_time_and_preserves_foreign_jobs_verbatim(
     result = migrate_legacy_cron(path, "/srv/trade")
 
     assert result["removed_jobs"] == 1
-    assert ConfigStore(path).load_raw() == {
-        "stocks": ["600036"],
-        "scheduler": {"optimize_enabled": True, "optimize_time": "03:05"},
-    }
+    assert result["migrated_fields"] == []
+    assert ConfigStore(path).load_raw() == {"stocks": ["600036"]}
     assert cron.contents == original.splitlines(keepends=True)[0] + "".join(
         original.splitlines(keepends=True)[1:2] + original.splitlines(keepends=True)[3:]
     )
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_explicit_optimizer_switch_wins_over_legacy_cron(
+def test_retired_optimizer_config_is_ignored_and_old_cron_is_removed(
     tmp_path, monkeypatch, enabled
 ):
     config = {"scheduler": {"optimize_enabled": enabled, "optimize_time": "01:10"}}
@@ -97,16 +95,16 @@ def test_explicit_optimizer_switch_wins_over_legacy_cron(
         "CRON_TZ=UTC\n0 2 * * * cd /srv/trade && python3 main.py --optimize\n",
     ],
 )
-def test_ambiguous_optimizer_migration_preserves_both_files(
+def test_all_retired_optimizer_schedules_are_removed_without_importing_config(
     tmp_path, monkeypatch, cron_contents
 ):
     path, cron = _setup(tmp_path, monkeypatch, {"stocks": []}, cron_contents)
     before = path.read_bytes()
-    with pytest.raises(LegacyCronMigrationError):
-        migrate_legacy_cron(path, "/srv/trade")
+    result = migrate_legacy_cron(path, "/srv/trade")
+    assert result["removed_jobs"] >= 1
+    assert result["migrated_fields"] == []
     assert path.read_bytes() == before
-    assert cron.contents == cron_contents
-    assert cron.installs == []
+    assert "--optimize" not in cron.contents
 
 
 def test_no_old_cron_does_not_enable_optimizer(tmp_path, monkeypatch):
@@ -191,7 +189,7 @@ def test_install_failure_does_not_save_config(tmp_path, monkeypatch):
 
 
 def test_config_commit_failure_restores_old_crontab(tmp_path, monkeypatch):
-    contents = "0 2 * * * cd /srv/trade && python3 main.py --optimize\n"
+    contents = "0 19 * * * cd /srv/trade && python3 main.py --once\n"
     path, cron = _setup(tmp_path, monkeypatch, {"stocks": []}, contents)
     before = path.read_bytes()
 
