@@ -7,9 +7,11 @@ import pandas as pd
 import pytest
 
 from src.notification.daily_pdf import generate_daily_pdf
+from src.notification.email_notifier import EmailNotifier
 from src.notification.feishu_notifier import FeishuNotifier
 from src.notification.report_builders import (
     build_daily_event_rows,
+    group_daily_event_rows,
     report_data_readiness,
 )
 from src.notification.telegram_notifier import TelegramNotifier
@@ -184,6 +186,66 @@ def test_event_rows_keep_finite_missing_amounts_and_safe_links(session):
     assert "1.00亿股" in placement["title"]
     assert "定增价 —" in placement["title"]
     assert next(row for row in rows if row["url"])["url"] == "https://example.invalid/notice?a=1&b=2"
+
+
+@pytest.mark.parametrize("channel", ["rows", "email", "pdf", "feishu", "telegram"])
+def test_pending_items_stay_pinned_before_categorized_notices(
+    monkeypatch, session, tmp_path, channel
+):
+    session.created_at = "2026-11-04"
+    session.dividend_events.append({
+        "code": "601088", "status": "已除权未派息", "ex_date": "2026-09-01",
+        "payment_date": "2026-11-06", "cash_per_share": 0.1234,
+    })
+    session.placements = {"601088": {"unlock_date": "2028-01-10"}}
+    for title in ("重大资产重组公告", "第三季度报告", "股份回购公告"):
+        session.announcements["601088"].append({
+            "date": "2026-11-03", "title": title,
+            "url": "https://example.invalid/" + title,
+        })
+    expected = [
+        "已除权未派息", "未除权", "未解禁定增", "重组并购与重大事项",
+        "财报业绩", "分红派息", "股权融资与解禁",
+    ]
+    frame = session.get_all_dataframe()
+    if channel == "rows":
+        rows = build_daily_event_rows(
+            session.announcements, session.placements, frame,
+            session.dividend_events, as_of=session.created_at,
+        )
+        assert [group["category"] for group in group_daily_event_rows(rows)] == expected
+        assert [row["kind"] for row in rows[:3]] == expected[:3]
+        return
+    if channel == "email":
+        body = EmailNotifier({"email": {"archive_dir": str(tmp_path)}})
+        body = body._build_daily_events_section(
+            session.announcements, session.placements, frame,
+            session.dividend_events, report_as_of=session.created_at,
+        )
+    elif channel == "pdf":
+        body = pdf_source(monkeypatch, session)
+    else:
+        notifier = FeishuNotifier({}) if channel == "feishu" else TelegramNotifier({})
+        sent = []
+        monkeypatch.setattr(
+            notifier, "_send",
+            lambda title, body, **kwargs: sent.append(body) or {"status": "sent"},
+        )
+        method = "_build_report_sections" if channel == "feishu" else "_build_daily_sections"
+        monkeypatch.setattr(notifier, method, lambda *a, **k: [])
+        if channel == "feishu":
+            monkeypatch.setattr(
+                "src.notification.feishu_notifier._build_ref_portfolio_markdown",
+                lambda *a: "",
+            )
+        else:
+            monkeypatch.setattr(notifier, "_build_ref_portfolio_text", lambda *a: "")
+        notifier.send_daily_report_from_session(session)
+        body = "\n".join(sent)
+    positions = [body.index(label) for label in expected]
+    assert positions == sorted(positions)
+    assert "0.1234" in body and "2028-01-10" in body
+    assert all(item["title"] in body for item in session.announcements["601088"])
 
 
 def test_readiness_reuses_execution_contract_for_missing_and_failed_data(session):

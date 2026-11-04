@@ -1351,7 +1351,8 @@ def _event_date(value):
 def group_daily_event_rows(events):
     """Stable category/market/instrument groups for every presentation channel."""
     for _, rows in groupby(
-        events, key=lambda row: (row["category"], row["market"], row["code"])
+        events,
+        key=lambda row: (row["priority"], row["category"], row["market"], row["code"]),
     ):
         rows = list(rows)
         first = rows[0]
@@ -1408,6 +1409,7 @@ def build_daily_event_rows(
                 "title": f"{name} · {amount} · {schedule}",
                 "url": "",
                 "category": 2,
+                "priority": 0 if status == "已除权未派息" else 1,
             }
         )
     months = (
@@ -1453,6 +1455,7 @@ def build_daily_event_rows(
                     "title": title,
                     "url": url,
                     "category": category,
+                    "priority": 3,
                 }
             )
     for code, item in (placements or {}).items():
@@ -1481,10 +1484,15 @@ def build_daily_event_rows(
                 ),
                 "url": "",
                 "category": 3,
+                "priority": 2,
             }
         )
     for event in events:
-        event["category_label"] = EVENT_CATEGORIES[event["category"]]
+        event["category_label"] = (
+            event["kind"]
+            if event["priority"] < 3
+            else EVENT_CATEGORIES[event["category"]]
+        )
         event["market"] = _detect_fine_group(event["code"])
         event["market_label"] = EVENT_MARKETS[event["market"]]
         event["name"] = str(
@@ -1492,6 +1500,7 @@ def build_daily_event_rows(
         )
     events.sort(
         key=lambda row: (
+            row["priority"],
             row["category"],
             tuple(EVENT_MARKETS).index(row["market"]),
             row["code"],

@@ -1,12 +1,12 @@
 # 文档索引
 
-整理日期：2026-10-29。当前使用方式以入口指南和源码合同为准；带日期的开发、审计与报告记录只说明当时的结果。
+整理日期：2026-11-01。当前使用方式以入口指南和源码合同为准；带日期的开发、审计与报告记录只说明当时的结果。
 
 ## 架构与运行
 
 | 文档 | 内容 |
 |---|---|
-| [架构图独立页](architecture_overview.md) | 全项目、飞书开关与路由、公共层、告警、搜参、财报研究六张图，以及本机/线上环境对照 |
+| [架构图独立页](architecture_overview.md) | 当前源码总图与五张分图；五个可复用包、队列/账本归属、触发器、Ke 展示、统一研究及历史环境证据 |
 | [架构与模块职责](architecture.md) | 当前执行机制、业务合同、发布边界与依赖债务 |
 | [数据/Pi/执行底座新旧对比](design/reusable_data_research_runtime.md) | 迁移前重复归属、目标边界与本地实现映射；生产尚未发布 |
 | [共享资料与可复用平台使用](guide/reusable_platform.md) | 本地统一authority、资料引用、全局容量、模型网关、Pi注入和跨命名空间源包导出；生产尚未发布 |
@@ -23,7 +23,7 @@
 | [策略搜索与回测](llm/mainline_strategy_search_backtest.md) / [相对晋升](llm/relative_strategy_promotion.md) | 统一策略、回测、搜索窗口与激活合同 |
 | [财报流程](guide/financial_pipeline.md) | 提取、跨年整合、摘要、第三阶段文件交接 |
 | [一键年报研究](guide/research_pipeline.md) / [统一编排设计](design/research_pipeline_orchestration.md) | A/HK/US年报、跨批缓存、共享预算、Pi候选维修、进度和故障隔离 |
-| [正式研究](guide/research_report.md) | 输入驱动的 v6 模板、固定三轮与图表交接 |
+| [调查建模](design/research_investigation.md) / [正式研究](guide/research_report.md) | Agent 自主调查与公司模型、v7 通用约束、固定三轮与一次模型返工；业务验收案例与实机边界 |
 | [单公司摘要](design/company_summary_contract.md) / [横评](design/peer_research_v1.md) | 阶段输入输出合同 |
 | [财报数据 V2](design/fundamental_data_contract_v2.md) | 提取结构与边界 |
 | [公告](guide/announcements.md) / [A 股源资料采集](guide/ashare_source_backfill.md) | 数据抓取、归档、缺口与回填 |
@@ -43,7 +43,7 @@
 - [财报与prompt缓存审计](development/financial_prompt_cache_audit_20261030.md)：真实阶段命中率、公共前缀断点、零丢失排列实验及费用优化边界；未执行付费改版验证。
 - [公共运行层迁移记录](development/shared_runtime_migration.md)：历史失败、生产部署证据及本机未完成项。公共层已于 10 月 28 日部署，本机测试任务随后主动停用，旧测试源码退役仍未完成。
 - [飞书研究问答修复](development/feishu_research_qa_20261029.md)：去模板短路、强制Pi检索、真实模型回放与两文件发布候选；尚未部署。
-- [旧研究退役与历史只读](development/research_retirement_20261024.md)：旧执行链已移除；历史查询和已有文件保留。被替代的旧模块操作说明已合并至此。
+- [旧研究退役与历史只读](development/research_retirement_20261024.md)：旧包已从60个文件清到4个只读文件（198行），其余实现和手工入口删除；历史查询和已有资料保留。
 - [基本面量化复盘](reports/fundamental_quant_postmortem_20261023.md)：历史问题与经验，不能按其中旧入口启动任务。
 - `development/` 中其他带日期记录、`reports/`、`archive/`：历史审计、验收与产物说明；旧命令和状态不代表当前能力。
 - `design/` 及 `llm/` 中研究性合同：设计或实验边界，是否接入生产以架构页和具体发布证据为准。

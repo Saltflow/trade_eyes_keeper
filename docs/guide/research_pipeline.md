@@ -53,6 +53,22 @@ python -B -X utf8 scripts/financial_pipeline.py run `
 
 `--issuer-map`接受“市场证券ID→已确认发行人ID”的JSON映射。没有证据时不要合并A/H或ADR。`--assumptions`可提供明确假设文件；它和`--focus`变化只影响最终研究。
 
+## 调查建模与重新研究
+
+新研究在底稿交接后默认先运行 Agent 调查、补证及 Python 建模，再进行原三轮写作。行业、业务分部、驱动和公式由 Agent 根据资料决定；完整合同与行业验收案例见[调查建模设计](../design/research_investigation.md)。提取阶段的 profile 不限制研究阶段能够查看的全文或业务字段。
+
+运行主机需提前准备 Docker 和可信的本地 Python 镜像。仓库提供只有标准库的镜像定义，以下命令由管理员显式构建，使用 stdin 避免发送仓库构建上下文：
+
+```powershell
+Get-Content config/research_model.Dockerfile | docker build -t trade-eyes-research:local -
+```
+
+构建会获取基础镜像；研究运行不会拉取镜像。可用 RESEARCH_MODEL_IMAGE 指定事先准备的镜像。容器无网络且不挂载源码或凭据，默认单次计算最多 120 秒、1 GiB 内存、2 CPU；实际镜像 ID 和输入输出哈希留档。缺 Docker / 镜像时保留 unavailable 和条件结论，不在宿主执行模型。
+
+已有有效报告继续按原版本复用。要明确重新调查，在新输出目录的 run 命令加 --reinvestigate；仍须 --paid 和已授权预算。它只建立新的研究身份，复用已有原件、对齐、摘要及横评，保留旧报告。Python 对应 reinvestigate=True，Bot 的 prepare 参数也同名并进入既有确认预览。
+
+delivery/investigation 包含冻结来源、模型及计算产物；handoff.md 为完整研究交接。审阅可触发一次预算内建模返工，产生新版本和新图片；旧版本不改。初始调查和返工分别预留三轮 / 最后一轮写作费用。达到预算、工具或时间上限保存 partial，不把执行 complete 当成独立财务验证。
+
 ## 查进度、日志、取消与续接
 
 ```powershell

@@ -2,7 +2,7 @@
 
 需要“年报获取到完整研究”时使用[统一研究入口](research_pipeline.md)。本页保留独立三轮入口的既有合同；新全流程对500k软告警、完整上下文硬限、partial交接、跨批缓存及共享预算由统一编排器负责，不执行历史批次runner。
 
-当前v6：公司数量、行业、比较组和参照角色由本轮公司清单、行业证据与用户研究重点确定，默认不指定固定行业组合或参照对象。多家公司按主题横比，单公司结合自身历史与情景；同指标、时间、单位和分母一起展示。实际收到几年资料就展示几年，不能为未提供年份造空列或扩展坐标轴，未来五年另标E。前面数据阶段与旧产物保持原字节。
+当前默认 v7 增加[通用因果建模约束](../design/research_investigation.md)，对象、行业和比较角色仍由本轮证据决定。统一研究入口负责新增的调查建模和一次审阅返工；本页独立三轮脚本仅保留显式文件交接能力，不会自行执行调查 Agent。需要新调查应使用统一入口，不能把缺失的运行模型冒充已有成果。历史 v6 prompt 和旧产物保留。
 
 ```mermaid
 flowchart TD
@@ -38,7 +38,7 @@ python -B -X utf8 scripts/research_report.py --source data/fundamental_data/peer
 
 ## 研究形式与图表
 
-默认配置加载research_basis_v4.md、research_valuation_v6.md、draft/audit/final_v6.md以及docs/design/research_report_example_v6.md，三轮都收到通用结构与完整的本轮证据。行业现金方法按实际业务选择，不把一种行业的CFO/投入/资本规则硬套给所有公司。hurdle未指定时列具名敏感性，不冒充用户门槛；ROE不等于买入回报；现金分配与期末价值不重复计入。
+默认配置加载 research_basis_v4.md、research_valuation_v6.md、research_causal_chain_v1.md、draft/audit/final_v7.md 及 docs/design/research_report_example_v6.md，三轮共读通用约束与完整本轮证据。统一入口还加入冻结的调查模型与实际计算结果。方法按实际业务选择，不硬套行业现金公式；hurdle 未指定时列具名敏感性，不冒充用户门槛；ROE 不等于买入回报，现金分配与期末价值不重复。
 
 默认入口已解除对历史案例中固定公司和角色的依赖。旧版prompt和旧排版示例作为历史版本原字节保留，默认配置不再引用；测试中的历史案例仍可验证原数据/图像交接，但不能要求通用system携带该案例的公司或角色。新增通用性回归从默认CLI准备并模拟三轮，覆盖不同公司数量和主题，禁止联网。
 
@@ -58,7 +58,7 @@ python -B -X utf8 scripts/research_report.py --source data/fundamental_data/peer
 
 v5离线样例与受保护旧文件核对见data/acceptance/research_known_price_20261024。当时的样本实际三年，旧v4七年空列样例只保留为历史记录，不决定其他批次的窗口。虚构U算例与真实公司隔离，形式验收不代表实际模型研究、预测合理性或资料完整验收。
 
-## v6默认模板通用性修复
+## 历史：v6默认模板通用性修复
 
 只新增版本化通用prompt/布局示例并更新默认配置指针，未增加或修改运行脚本。测试从未传--config的正式CLI准备，模拟三轮并验证system不包含历史案例公司、固定公司数量或固定行业组合，user材料与明确角色原字节保留。覆盖四家银行、两家保险、一家能源及用户明确指定参照角色的混合主题；历史案例测试继续验证数据/图表，不再把案例指令当通用契约。
 
