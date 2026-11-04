@@ -1,6 +1,6 @@
 [project]
 name = "stock-quant-system"
-version = "1.23.2"
+version = "1.23.3"
 description = "A股/美股/港股量化监控系统: 策略搜索优化器 + 日报/简报 + 飞书/Telegram Bot"
 readme = "README.md"
 license = {text = "BSD-3-Clause"}
@@ -11,6 +11,7 @@ authors = [
 repository = "https://github.com/Saltflow/trade_eyes_keeper"
 dependencies = [
     "pandas>=2.0.0",
+    "pyarrow>=18,<24",
     "exchange-calendars>=4.13.1,<5",
     "xlrd>=2.0.1",
     "openpyxl>=3.1.0",

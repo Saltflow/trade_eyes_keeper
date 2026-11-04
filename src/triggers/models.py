@@ -253,6 +253,17 @@ def normalize_spec(spec: dict) -> dict:
         ):
             raise ValueError("invalid event offset time override")
         normalized["offset_times"] = {str(k): clock(v) for k, v in overrides.items()}
+        if kind == "dividend.next_payment":
+            if offsets != [0] or "report_period" in event or overrides:
+                raise ValueError("next payment uses only its public payment date")
+            if zone != "Asia/Shanghai":
+                raise ValueError("public payment triggers use Asia/Shanghai")
+            if "condition" in result:
+                raise ValueError("next payment cannot add a separate condition")
+            normalized["notify_at"] = clock(event.get("notify_at", "09:50"))
+            result["match_policy"] = "once"
+            if len(normalized_actions) != 1 or normalized_actions[0]["kind"] != "daily":
+                raise ValueError("next payment triggers one full daily report")
         result["event"] = normalized
     if not set(result) & {"condition", "schedule", "event"} or {
         "schedule",

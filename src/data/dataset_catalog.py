@@ -50,6 +50,12 @@ DATA_EXTENSIONS = {
     ".jpeg",
     ".webp",
     ".svg",
+    ".yaml",
+    ".yml",
+    ".xml",
+    ".sqlite",
+    ".sqlite3",
+    ".db",
 }
 TEXT_EXTENSIONS = {
     ".csv",
@@ -63,6 +69,9 @@ TEXT_EXTENSIONS = {
     ".html",
     ".htm",
     ".svg",
+    ".yaml",
+    ".yml",
+    ".xml",
 }
 SECRET_ASSIGNMENT = re.compile(
     rb"[\"']?(?:api[_-]?key|app[_-]?secret|access[_-]?token|refresh[_-]?token|password|passwd|bot[_-]?token|secret[_-]?key)[\"']?\s*[:=]\s*[\"']?([^\"'\s,;}]{4,})",
@@ -89,7 +98,9 @@ EXCLUDED_PARTS = {
     "positions",
     "credentials",
     "feishu_research",
-    "email_archive",
+    "research_runs",
+    "shared_research",
+    "personal_monitor",
     "chat",
     "chats",
     "config",
@@ -101,6 +112,10 @@ EXCLUDED_NAMES = {
     "supervisor_progress.json",
     "resume_receipt.json",
     "startup_check.json",
+    "settings.yaml",
+    "settings.yml",
+    "default.yaml",
+    "default.yml",
 }
 CODE_KEYS = {"code", "stock_code", "symbol", "ticker", "instrument", "instrument_id"}
 DATE_KEYS = {
@@ -168,7 +183,7 @@ def _excluded(relative: str) -> str:
         )
     ) or name.startswith("ref_portfolio"):
         return "private_or_configuration_file"
-    if name.endswith((".pid", ".lock", ".log", ".sqlite", ".sqlite3", ".db")):
+    if name.endswith((".pid", ".lock", ".log")):
         return "operational_file"
     return ""
 
@@ -188,6 +203,16 @@ def _business_file_reason(path: Path) -> str:
                     or b"-----BEGIN RSA PRIVATE KEY-----" in content
                 ):
                     return "suspected_sensitive_content"
+                if re.search(
+                    rb'["\'](?:sender_id|chat_id|requester_id|owner_id|user_id)["\']\s*:',
+                    content,
+                ):
+                    return "private_origin_metadata"
+                if re.search(
+                    rb'["\']origin["\']\s*:\s*\{[^}]{0,2048}["\'](?:chat|sender)["\']\s*:',
+                    content,
+                ):
+                    return "private_origin_metadata"
                 for match in SECRET_ASSIGNMENT.finditer(content):
                     value = match.group(1).lower()
                     if value not in {
@@ -224,7 +249,7 @@ def eligibility_reason(
     if logical != _logical_path(relative):
         return "logical_path_mismatch"
     logical_allowed = _business_root(logical) or (
-        is_directory and logical in {"data", "cache"}
+        is_directory and logical in {"data", "cache", "output", "outputs", "reports"}
     )
     if not _business_root(relative) or not logical_allowed:
         return "outside_business_data_roots"
@@ -243,6 +268,8 @@ def _business_root(relative: str) -> bool:
     parts = PurePosixPath(relative).parts
     if len(parts) < 2:
         return False
+    if parts[0] in {"output", "outputs", "reports"}:
+        return True
     if parts[0] == "cache":
         return parts[1] in {
             "data",
@@ -255,6 +282,18 @@ def _business_root(relative: str) -> bool:
         }
     if parts[0] != "data":
         return False
+    if parts[1] == "fundamental_quant":
+        # Retired public exports only; the mixed research/session database has
+        # no verified user ownership projection and stays outside this catalog.
+        return (
+            len(parts) == 2
+            or (
+                len(parts) == 3
+                and parts[2]
+                in {"index.html", "report.json", "report.csv", "research_notes"}
+            )
+            or (len(parts) == 4 and parts[2:] == ("research_notes", "index.html"))
+        )
     if len(parts) == 2 and parts[1].endswith("_history.csv"):
         return True
     if parts[1].startswith("point_in_time") or parts[1] in {
@@ -264,6 +303,9 @@ def _business_root(relative: str) -> bool:
         "optimizer_recovery",
         "instrument_audit",
         "optimizer",
+        "email_archive",
+        "strategy_returns",
+        "fundamental_data",
     }:
         return True
     if parts[1] in {"dataset_imports", "server_imports"}:
@@ -306,7 +348,7 @@ def _scan_roots(root: Path) -> list[Path]:
     # Inspect top-level names so future roots cannot disappear from the audit.
     # The shared policy below prunes unknown/private directories before traversal.
     paths = []
-    for name in ("data", "cache"):
+    for name in ("data", "cache", "output", "outputs", "reports"):
         base = root / name
         try:
             info = base.lstat()
@@ -470,6 +512,10 @@ def _url(value) -> str:
 def _kind(logical: str) -> str:
     lower = logical.lower()
     suffix = PurePosixPath(logical).suffix.lower()
+    if "/email_archive/" in lower or (
+        suffix in {".html", ".htm"} and "template" not in lower
+    ):
+        return "report"
     if suffix == ".pdf":
         return "pdf"
     if suffix in {".txt", ".md"}:
@@ -531,7 +577,11 @@ def _metadata(path: Path, logical: str, size: int) -> dict:
         "documents": [],
     }
     filename = PurePosixPath(logical).name
-    match = re.match(r"^([0-9]{5,6}|[A-Z]{1,7}(?:\.[A-Z])?)(?:[_.]|$)", filename)
+    if kind == "report":
+        stamp = re.match(r"(\d{8})_", filename)
+        if stamp and (archive_date := _date(stamp.group(1))):
+            result["dates"].add(archive_date)
+    match = re.match(r"^([0-9]{5,6}|[A-Z]{1,7}(?:[.-][A-Z]{1,2})?)(?:[_.]|$)", filename)
     filename_code = _code(match.group(1)) if match else ""
     if (
         filename_code
@@ -1928,6 +1978,24 @@ class DatasetCatalog:
             except (OSError, ValueError):
                 continue
         raise ValueError("dataset has no safe materialized market/fundamentals root")
+
+    def resolve_file(self, file_id: str) -> tuple[Path, dict]:
+        """Resolve an indexed ID; refuse changed bytes or linked/private paths."""
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM files WHERE file_id=? AND present=1", (file_id,)
+            ).fetchone()
+        if row is None:
+            raise ValueError("unknown file_id")
+        path = _checked_file(self.root, row["relative_path"])
+        info = path.stat()
+        if (
+            info.st_size != row["bytes"]
+            or info.st_mtime_ns != row["mtime_ns"]
+            or _sha256(path) != row["sha256"]
+        ):
+            raise ValueError("data changed; refresh the catalog before reading")
+        return path, dict(row)
 
     def read_text(self, file_id, start_line=1, line_count=100):
         if (

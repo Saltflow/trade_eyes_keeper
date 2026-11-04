@@ -615,17 +615,18 @@ class ResearchRunner:
                 if not page["items"]:
                     break
                 all_matches.extend(page["items"])
+        file_stem = PointInTimeMarketStore._safe_code(code)
         data_matches = [
             row
             for row in all_matches
             if row.get("kind") in {"price", "fundamental"}
-            and Path(row.get("relative_path", "")).name.startswith(code + ".")
+            and Path(row.get("relative_path", "")).name.startswith(file_stem + ".")
         ]
         reference_matches = [
             row
             for row in all_matches
             if Path(row.get("relative_path", "")).name.lower()
-            == f"{code}.json"
+            == f"{code}.json".lower()
             and "/codes/" in row.get("relative_path", "").lower()
         ]
         candidates = []

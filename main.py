@@ -1612,10 +1612,12 @@ def run_daily_task(
         try:
             from src.data.dividend_events import DailyDividendEventResolver
 
-            session.dividend_events = DailyDividendEventResolver(config).resolve(
+            resolver = DailyDividendEventResolver(config)
+            session.dividend_schedule = resolver.public_schedule(
                 session.announcements,
                 session.get_all_dataframe(),
             )
+            session.dividend_events = resolver.pending_events(session.dividend_schedule)
             logger.info("日报待处理分红/分派: %s 条", len(session.dividend_events))
         # Optional event context stays nonfatal.
         except Exception as exc:  # noqa: BLE001
@@ -2271,10 +2273,12 @@ def _populate_brief_event_context(
         from src.data.dividend_events import DailyDividendEventResolver
 
         try:
-            session.dividend_events = DailyDividendEventResolver(config).resolve(
+            resolver = DailyDividendEventResolver(config)
+            session.dividend_schedule = resolver.public_schedule(
                 session.announcements,
                 session.get_all_dataframe(),
             )
+            session.dividend_events = resolver.pending_events(session.dividend_schedule)
         # Missing dividends leave triggers unmet.
         except Exception as exc:  # noqa: BLE001
             logging.getLogger(__name__).warning("简报分红事件解析失败: %s", exc)

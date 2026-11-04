@@ -266,6 +266,141 @@ def event_occurrences(rule, snapshot, now: datetime, *, future=False):
                 }
 
 
+def dividend_target(rule, state, snapshot, now):
+    """Select public dates, retaining only a minimal restart-safe target.
+
+    Absence is not cancellation. A supported replacement for the same security
+    and ex-date supersedes the old date; failures keep its original provenance.
+    """
+    local = now.astimezone(ZoneInfo(rule["timezone"]))
+    try:
+        saved = json.loads(state.get("event_state") or "{}")
+    except (TypeError, ValueError):
+        saved = {}
+    fact = _resolve(snapshot, "events.dividend.next_payment")
+    value = _get(fact, "value") or {}
+    if not isinstance(value, Mapping):
+        value = {}
+    symbols = _get(snapshot, "wildcard_symbols")
+    if symbols is None:
+        symbols = value.get("monitored_symbols")
+    requested = rule.get("symbols")
+
+    def included(row):
+        code = str(row.get("code", "")).upper().replace(".", "-")
+        return (symbols is None or code in symbols) and (
+            not requested or code in requested
+        )
+
+    old = [row for row in saved.get("events", []) if included(row)]
+    rows = [
+        row
+        for row in value.get("events", [])
+        if isinstance(row, Mapping) and included(row)
+    ]
+    # A later explicit disclosure supersedes an older one. When publication
+    # dates are unavailable, use the existing source priority, not read time.
+    rank = {
+        "announcement": 0,
+        "fund_distribution": 1,
+        "hk_dividend_schedule": 1,
+        "stored_corporate_action": 2,
+        "yahoo_calendar": 3,
+    }
+    selected = {}
+    for row in sorted(
+        rows,
+        key=lambda r: (
+            bool(r.get("published_at")),
+            str(r.get("published_at") or ""),
+            -rank.get(r.get("source"), 9),
+        ),
+    ):
+        if row.get("ex_date"):
+            selected[(row.get("code"), row["ex_date"])] = dict(row)
+    retained = []
+    for row in old:
+        key = (row.get("code"), row.get("ex_date"))
+        replacement = selected.get(key)
+        if (
+            replacement
+            and row.get("published_at")
+            and (str(replacement.get("published_at") or "") < str(row["published_at"]))
+        ):
+            selected.pop(key)
+            replacement = None
+        if replacement is None:
+            retained.append({**row, "freshness": "unconfirmed"})
+    current = [
+        {
+            **row,
+            "freshness": (
+                "unconfirmed"
+                if row.get("freshness") == "unconfirmed"
+                or _get(fact, "status") not in {"available", "partial"}
+                else "observed"
+            ),
+        }
+        for row in selected.values()
+        if not row.get("cancelled")
+    ]
+    candidates = []
+    for row in retained + current:
+        try:
+            day = (
+                timestamp(str(row.get("payment_date")))
+                .astimezone(ZoneInfo(rule["timezone"]))
+                .date()
+            )
+        except (ValueError, TypeError):
+            continue
+        # Old persisted targets are marked missed, never silently advanced to
+        # another dividend after an outage. Historical newly-read rows are not
+        # pending targets and may be ignored.
+        if (
+            day >= local.date()
+            or row in retained
+            or any(
+                old_row.get("code") == row.get("code")
+                and old_row.get("ex_date") == row.get("ex_date")
+                for old_row in old
+            )
+        ):
+            candidates.append(row)
+    if not candidates:
+        return {"events": [], "status": "waiting_for_data"}, None
+    day = min(row["payment_date"] for row in candidates)
+    events = sorted(
+        (row for row in candidates if row["payment_date"] == day),
+        key=lambda row: (row["code"], row.get("ex_date", "")),
+    )
+    target = {"events": events, "payment_date": day, "status": "pending"}
+    if day < local.date().isoformat():
+        target["status"] = "missed"
+        return target, None
+    hour, minute = map(int, rule["notify_at"].split(":"))
+    due = datetime.fromisoformat(day).replace(
+        hour=hour, minute=minute, tzinfo=ZoneInfo(rule["timezone"])
+    )
+    occurrence = {
+        "key": "dividend:next_payment:" + day,
+        "due": due,
+        "context": {
+            "event_id": "dividend:next_payment:" + day,
+            "kind": "dividend.next_payment",
+            "date": day,
+            "payment_date": day,
+            "dividends": events,
+            "source": "public_dividend_schedule",
+            "title": "公开派息日（非券商实际到账确认）",
+            "freshness": "unconfirmed"
+            if any(row.get("freshness") == "unconfirmed" for row in events)
+            else "observed",
+        },
+    }
+    return target, occurrence
+
+
 class TriggerEvaluator:
     def __init__(self, store):
         self.store = store
@@ -309,7 +444,19 @@ class TriggerEvaluator:
                 if result.truth == TRUE and not (
                     spec["match_policy"] == "once" and state["fired_once"]
                 ):
-                    if "event" in spec:
+                    if spec.get("event", {}).get("kind") == "dividend.next_payment":
+                        target, occurrence = dividend_target(
+                            spec["event"], state, snapshot, now
+                        )
+                        updates["event_state"] = json.dumps(target, ensure_ascii=False)
+                        updates["diagnostic"] = json.dumps(
+                            {"truth": result.truth, "status": target["status"]}
+                        )
+                        if target["status"] == "missed":
+                            updates["fired_once"] = 1
+                        if occurrence and occurrence["due"] <= now:
+                            candidates = [occurrence]
+                    elif "event" in spec:
                         candidates = list(
                             event_occurrences(spec["event"], snapshot, now)
                         )
@@ -365,6 +512,10 @@ class TriggerEvaluator:
                 self.store.record_state(
                     trigger["owner"], trigger["number"], updates, db=db
                 )
+                if updates.get("event_state") and target["status"] == "missed":
+                    self.store._finish_if_settled(
+                        db, trigger["owner"], trigger["number"], now.isoformat()
+                    )
                 actions.extend(created)
                 outcomes.append(
                     {
@@ -387,7 +538,12 @@ class TriggerEvaluator:
                 due = next_due(spec["schedule"], now)
                 if due is not None:
                     candidates.append(due)
-            if "event" in spec:
+            if spec.get("event", {}).get("kind") == "dividend.next_payment":
+                state = self.store.evaluation_state(trigger["owner"], trigger["number"])
+                _, occurrence = dividend_target(spec["event"], state, snapshot, now)
+                if occurrence and occurrence["due"] > now:
+                    candidates.append(occurrence["due"])
+            elif "event" in spec:
                 candidates.extend(
                     item["due"]
                     for item in event_occurrences(

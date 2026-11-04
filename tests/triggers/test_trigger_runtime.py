@@ -381,3 +381,63 @@ def test_unknown_report_receipt_survives_restart_without_replay(profile, monkeyp
     reboot.reconcile()
     assert len(reboot.store.actions("alice")) == 1
     handler.assert_called_once()
+
+
+def test_public_payment_uses_existing_full_daily_lane_with_source_context(
+    profile, monkeypatch
+):
+    observed = []
+
+    def report(payload, ctx):
+        observed.append(payload)
+        return RunResult(
+            "succeeded", "mock_report", deliveries={"feishu": {"status": "sent"}}
+        )
+
+    monkeypatch.setattr(reports, "_report_handler", report)
+    trigger, execution = make_runtime(profile)
+    trigger.store.create(
+        "alice",
+        {
+            "label": "公开派息日",
+            "event": {"kind": "dividend.next_payment"},
+            "actions": [{"kind": "daily", "payload": {"chat_id": "chat-a"}}],
+        },
+        "payment",
+        now=NOW,
+    )
+    snapshot = FactSnapshot(
+        as_of=NOW, observed_at=NOW, wildcard_symbols=tuple(profile["stocks"])
+    )
+    snapshot.facts["events.dividend.next_payment"] = FactValue(
+        value={
+            "events": [
+                {
+                    "code": "601088",
+                    "ex_date": "2026-10-20",
+                    "payment_date": "2026-11-02",
+                    "source": "announcement",
+                    "source_url": "https://example.org/public-date",
+                    "observed_at": NOW.isoformat(),
+                }
+            ]
+        },
+        status="available",
+        observed_at=NOW,
+    )
+    trigger.evaluator.evaluate(snapshot, NOW)
+    trigger._submit_pending(profile)
+    action = trigger.store.actions("alice")[0]
+    assert run_and_settle(trigger, execution, action).status == "succeeded"
+    assert len(observed) == 1
+    payload = observed[0]
+    assert payload["kind"] == "daily"
+    assert payload["config_snapshot"]["stocks"] == profile["stocks"]
+    context = payload["config_snapshot"]["_trigger_context"]
+    assert "2026-11-02" in context["reason"]
+    assert "非券商账户实际到账确认" in context["reason"]
+    assert (
+        context["events"][0]["dividends"][0]["source_url"]
+        == "https://example.org/public-date"
+    )
+    assert trigger.store.get("alice", 1)["state"] == "done"

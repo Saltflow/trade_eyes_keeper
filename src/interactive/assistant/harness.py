@@ -16,6 +16,8 @@ from .client import AssistantAPIError
 
 RETRIEVAL_TOOLS = frozenset(
     {
+        "data_find",
+        "data_read",
         "get_dataset_details",
         "query_dataset_documents",
         "fetch_a_share_report",

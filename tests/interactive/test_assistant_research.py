@@ -558,6 +558,52 @@ def selected_dataset(project, codes=("600036",)):
     return item["dataset_id"], root
 
 
+@pytest.mark.parametrize("code", ["BRK.B", "BRK-B", "600036"])
+@pytest.mark.parametrize("restrict_dataset", [False, True])
+def test_stock_query_uses_store_filename_contract(
+    runner, project, monkeypatch, code, restrict_dataset
+):
+    dataset_id, root = selected_dataset(project, (code,))
+    stem = PointInTimeMarketStore._safe_code(code)
+    assert (root / "market" / f"{stem}.csv").is_file()
+    monkeypatch.setattr(
+        runner, "_backfill_stock_data",
+        lambda *_: pytest.fail("indexed data must not cause source acquisition"),
+    )
+
+    result = runner.query_stock_fundamentals(
+        code, as_of="2021-03-01",
+        dataset_id=dataset_id if restrict_dataset else None,
+    )
+
+    assert result["code"] == code
+    assert result["selected"]["dataset_id"] == dataset_id
+    assert result["selected"]["status"] == "available"
+    assert result["selected"]["raw_close"] == 11.0
+    assert result["selected"]["statement_count"] == 1
+    assert result["selected"]["statement_published_at"] == "2021-03-01"
+    assert result["matched_file_inventory"]
+    assert "automatic_backfill" not in result
+
+
+def test_stock_query_recognizes_alphabetic_reference_metadata(
+    runner, project, monkeypatch
+):
+    path = project / "data/reference_universe/fixture_batch/codes/BRK.B.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"code": "BRK.B"}), encoding="utf-8")
+    DatasetCatalog(project).build()
+    monkeypatch.setattr(runner, "_backfill_stock_data", lambda *_: {
+        "status": "disabled", "indexed_files": 0,
+    })
+
+    result = runner.query_stock_fundamentals("BRK.B")
+
+    assert result["selected"] is None
+    assert result["datasets_checked"] == 1
+    assert result["dataset_results"][0]["status"] == "reference_metadata_only"
+
+
 def test_missing_stock_query_uses_shared_single_code_backfill_and_indexes_result(
     runner, project, monkeypatch
 ):

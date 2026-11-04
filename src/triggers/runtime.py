@@ -21,7 +21,7 @@ from ..core.report_execution import (
     runtime_path,
 )
 from . import TriggerEvaluator, TriggerStore, collect_dependencies
-from .evaluator import event_occurrences
+from .evaluator import dividend_target, event_occurrences
 from .facts import FactSnapshot, load_trigger_facts, monitored_symbols
 from .schedule import due_times
 
@@ -237,6 +237,20 @@ class TriggerRuntime:
                         "schedule:" + due.isoformat()
                         for due in due_times(spec["schedule"], now)
                     ]
+                elif spec.get("event", {}).get("kind") == "dividend.next_payment":
+                    state = self.store.evaluation_state(
+                        item["owner"], item["number"], db=db
+                    )
+                    target, occurrence = dividend_target(
+                        spec["event"], state, self._snapshot, now
+                    )
+                    if target["status"] == "missed":
+                        return True
+                    keys = (
+                        [occurrence["key"]]
+                        if occurrence and occurrence["due"] <= now
+                        else []
+                    )
                 elif "event" in spec and self._snapshot is not None:
                     keys = [
                         event["key"]
@@ -418,7 +432,9 @@ class TriggerRuntime:
                 raise ValueError("trigger runtime database path changed")
             self.config = copy.deepcopy(config)
             # Manual dates must not wait behind slow market/disclosure sources.
-            self.evaluator.evaluate(None, now=self.clock())
+            clock_snapshot = FactSnapshot(as_of=self.clock(), observed_at=self.clock())
+            clock_snapshot.wildcard_symbols = tuple(monitored_symbols(config))
+            self.evaluator.evaluate(clock_snapshot, now=self.clock())
             self._submit_pending(config)
             dependencies = set().union(
                 *(collect_dependencies(item["spec"]) for item in self.store.active())
@@ -449,6 +465,20 @@ class TriggerRuntime:
     def _binding(self, action, label, grouped=None):
         context = action.get("context", {})
         details = []
+        if context.get("kind") == "dividend.next_payment":
+            details.append("公开派息日 " + str(context.get("payment_date", "")))
+            details.append(
+                "、".join(
+                    str(row.get("code", "")) for row in context.get("dividends", [])
+                )
+            )
+            if context.get("freshness") == "unconfirmed":
+                details.append("日期尚未重新核实，沿用最后已知公开计划")
+            details.extend(
+                f"{row.get('code')} 来源 {row.get('source')} 观测 {row.get('observed_at')}"
+                for row in context.get("dividends", [])
+            )
+            details.append("非券商账户实际到账确认")
         if context.get("symbol"):
             details.append(str(context["symbol"]))
         if context.get("report_period"):

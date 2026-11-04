@@ -2,12 +2,26 @@ import json
 from datetime import date, datetime, timezone
 
 import pandas as pd
+import pytest
 
 from src.data.dividend_events import (
     DIVIDEND_EX_UNPAID,
     DIVIDEND_PENDING,
     DailyDividendEventResolver,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_action_store(monkeypatch, tmp_path):
+    """Source parser tests must not read the developer's real PIT store."""
+    from src.data.market_history import PointInTimeMarketStore
+
+    original = PointInTimeMarketStore.__init__
+    monkeypatch.setattr(
+        PointInTimeMarketStore,
+        "__init__",
+        lambda self, *args, **kwargs: original(self, tmp_path / "pit"),
+    )
 
 
 class _Response:

@@ -110,6 +110,7 @@ class TriggerFactProviders:
     announcements: Callable | None = None  # (codes, start, end) -> strict statuses
     report: Callable | None = None  # (paths, symbols, as_of) -> prepared report mapping
     market_session: Callable | None = None  # (code, *, as_of) -> MarketSession
+    dividends: Callable | None = None  # (codes, as_of) -> public payable-date view
 
 
 def _clock(value, *, zone=LOCAL_ZONE, date_only=True):
@@ -770,6 +771,39 @@ def load_trigger_facts(
             source="official_disclosures",
             error="; ".join(errors) or None,
         )
+    dividend_path = "events.dividend.next_payment"
+    if dividend_path in dependencies:
+        try:
+            remaining_budget()
+            callback = _get_provider(providers, "dividends")
+            if callback:
+                schedule = callback(codes, as_of)
+            else:
+                import pandas as pd
+
+                from ..data.dividend_events import DailyDividendEventResolver
+
+                resolver = DailyDividendEventResolver(config)
+                remaining = remaining_budget()
+                if remaining is not None:
+                    resolver.timeout = max(0.001, min(resolver.timeout, remaining))
+                schedule = resolver.public_schedule(
+                    data_mapping(session).get("announcements", {}),
+                    pd.DataFrame({"stock_code": codes}),
+                    as_of=as_of.astimezone(LOCAL_ZONE).date(),
+                    before_read=remaining_budget,
+                )
+            snapshot.facts[dividend_path] = FactValue(
+                value=schedule,
+                status=schedule.get("status", "partial"),
+                observed_at=observed,
+                source="public_dividend_schedule",
+                path=dividend_path,
+            )
+        except Exception as exc:  # noqa: BLE001 - keep durable known date on failure
+            snapshot.facts[dividend_path] = FactValue(
+                error=str(exc), observed_at=observed, path=dividend_path
+            )
     finished = clock() if clock else as_of
     if not isinstance(finished, datetime) or finished.tzinfo is None:
         raise ValueError("trigger collection clock must return an aware datetime")

@@ -350,6 +350,16 @@ def build_report_field_catalog(session=None) -> FieldCatalog:
             "有完整窗口覆盖证明的披露源",
         )
     )
+    fields.append(
+        FieldDefinition(
+            "events.dividend.next_payment",
+            "event_list",
+            "监控池下一次公开派息日；最早日期同日合并一次完整日报，非券商到账确认",
+            "dividends",
+            "on_demand",
+            "已采集公开派息日与逐来源覆盖状态",
+        )
+    )
     if session is not None:
         fields.extend(
             _definition(path, type(value).__name__, observed=True)

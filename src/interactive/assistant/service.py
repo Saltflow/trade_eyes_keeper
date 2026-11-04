@@ -107,9 +107,9 @@ read_configuration 返回标记writable的开放字段，包含公告业务设�
 用户目标不在配置字段中时，明确区分需要开发的新功能和已有配置，不得虚构字段或已完成修改。
 writable=false的字段只能解释，不能承诺生成变更提案或差异预览，也不存在隐藏的授权修改流程。
 工具未开放的实时字段应明确说当前助手无法查询；不能承诺以后能查，不能用默认值代替。
-数据库存、批次、原始资料、PDF和待分析问题，先用list_datasets查看统一索引；
-get_dataset_details查覆盖和索引缺口，list_dataset_files查行情/财报/分析产物，
-query_dataset_documents查原文/PDF及补取状态，read_dataset_text按file_id读取已有文字。
+数据库存、批次、原始资料及已有报告，先用data_find定位，再用data_read读取实际内容；
+目录与字段定义不是数据值。list_datasets/get_dataset_details用于核对索引覆盖与缺口，
+query_dataset_documents用于原文/PDF补取状态；旧read_dataset_text只读TXT/MD，不能据此认为结构化数据不可读。
 query_research_data可指定索引中的dataset_id查询某个数据集，省略时只查默认仓。
 讨论已选批次时query_research_data必须传该批dataset_id；漏传导致默认仓missing应重新指定查询，
 不能据此声称该批缺数、需要导入默认仓或不可用。qfq=前复权，hfq=后复权，raw=不复权。
@@ -869,6 +869,278 @@ class FeishuAssistant:
             catalog=catalog,
         )
 
+    def _data_tools_for(self, chat: str, sender: str):
+        """Bind read adapters to authenticated identity, never model arguments."""
+        from ...platform_composition import authority_for
+        from .data_tools import BusinessDataTools, paginate_rows, read_path
+
+        context = getattr(self._turn_context, "current", None) or {}
+        if context and (context.get("sender") != sender or context.get("chat") != chat):
+            raise PermissionError("数据查询只能使用本条认证消息的用户和会话")
+
+        def report_runs():
+            # Use existing execution records; never expose request configuration.
+            result = []
+            for kind in ("daily", "brief"):
+                for run in self.execution_runtime.store.list_runs(
+                    job_id="reports." + kind, limit=1000
+                ):
+                    binding = (
+                        run.get("payload", {})
+                        .get("config_snapshot", {})
+                        .get("_trigger_context", {})
+                    )
+                    if binding and (
+                        binding.get("owner") != sender or binding.get("chat_id") != chat
+                    ):
+                        continue
+                    result.append(
+                        {
+                            "run_id": run["id"],
+                            "report_type": kind,
+                            **{
+                                key: run.get(key)
+                                for key in (
+                                    "status",
+                                    "created",
+                                    "updated",
+                                    "started",
+                                    "finished",
+                                    "stage",
+                                    "reason",
+                                    "result",
+                                )
+                            },
+                        }
+                    )
+            return result
+
+        def private_find(**options):
+            domain = options.get("domain")
+            items = []
+            if domain in (None, "personal") and (
+                self.capabilities is None or "personal" in self.capabilities
+            ):
+                items.append(
+                    {
+                        "data_id": "personal:status",
+                        "domain": "personal",
+                        "title": "本人账户、持仓、提醒及事实记录",
+                        "format": "json",
+                        "source": "personal_monitor_status",
+                        "readable": True,
+                        "scope": "authenticated_owner_chat",
+                    }
+                )
+            if domain in (None, "dividends"):
+                items.append(
+                    {
+                        "data_id": "dividend:public",
+                        "domain": "dividends",
+                        "title": "监控池公开分红派息日期",
+                        "format": "json",
+                        "source": "report_snapshot",
+                        "readable": True,
+                        "coverage": "last_report_only",
+                    }
+                )
+            if domain in (None, "reports", "snapshots"):
+                for kind in ("daily", "brief"):
+                    items.append(
+                        {
+                            "data_id": "snapshot:" + kind,
+                            "domain": "snapshots",
+                            "format": "json",
+                            "report_type": kind,
+                            "source": "report_snapshot",
+                            "readable": True,
+                            "product": "current_snapshot",
+                            "delivery_status": "unknown",
+                        }
+                    )
+            if domain in (None, "reports", "executions"):
+                for run in report_runs():
+                    items.append(
+                        {
+                            "data_id": "report_run:" + run["run_id"],
+                            "domain": "executions",
+                            "format": "json",
+                            "report_type": run["report_type"],
+                            "source": "execution_store",
+                            "readable": True,
+                            "observed_at": run["updated"],
+                        }
+                    )
+            if domain in (None, "research") and (
+                self.capabilities is None or "research" in self.capabilities
+            ):
+                from ...research_pipeline.tools import ResearchTools
+
+                tools = ResearchTools(self.root)
+                runs = tools.call(
+                    "research_pipeline_tasks", {"limit": 20}, chat, sender
+                )
+                for run in runs["runs"]:
+                    run_id = run.get("id", run.get("run_id"))
+                    for item in tools.call(
+                        "research_pipeline_artifacts", {"run_id": run_id}, chat, sender
+                    )["files"]:
+                        items.append(
+                            {
+                                "data_id": "research:"
+                                + run_id
+                                + ":"
+                                + item["relative_path"],
+                                "domain": "research",
+                                "format": Path(item["relative_path"]).suffix[1:],
+                                "source": "research_pipeline_artifacts",
+                                "readable": True,
+                                "sha256": item["sha256"],
+                                "scope": "authenticated_owner_chat",
+                            }
+                        )
+            if options.get("report_type"):
+                items = [
+                    item
+                    for item in items
+                    if item.get("report_type") == options["report_type"]
+                ]
+            if options.get("query"):
+                query = options["query"].casefold()
+                items = [
+                    item
+                    for item in items
+                    if query in json.dumps(item, ensure_ascii=False).casefold()
+                ]
+            # Domain adapters can lack a complete code/date index. Keep those
+            # candidates discoverable and describe the gap rather than infer absence.
+            gaps = []
+            if any(options.get(key) for key in ("code", "date_from", "date_to")):
+                gaps.append(
+                    "领域入口缺少完整代码/日期索引；返回候选须读取后按实际字段筛选。"
+                )
+            offset, limit = options.get("offset", 0), options.get("limit", 20)
+            return {
+                "items": items[offset : offset + limit],
+                "total": len(items),
+                "complete": False,
+                "coverage_gaps": gaps
+                + ["执行记录每类最多1000条；私人研究最多20项、每项100份产物。"],
+            }
+
+        def private_read(data_id, **options):
+            if data_id == "personal:status":
+                if (
+                    self.capabilities is not None
+                    and "personal" not in self.capabilities
+                ):
+                    raise PermissionError("当前会话未开放个人数据")
+                value = self.personal.invoke(sender, chat, "status", {}, context)
+                return paginate_rows(value, authenticated=True, **options)
+            if data_id in {"snapshot:daily", "snapshot:brief"}:
+                from .data_tools import MAX_BYTES
+
+                config = self._personal_runtime_config()
+                directory = Path(config.get("storage", {}).get("data_dir", "data"))
+                path = (
+                    self.root
+                    / directory
+                    / "runtime"
+                    / "trigger_snapshots"
+                    / ("last_" + data_id.split(":")[1] + ".json")
+                )
+                if not path.is_file() or path.is_symlink():
+                    return {
+                        "data_id": data_id,
+                        "available": False,
+                        "coverage_gaps": ["该类型当前快照不存在。"],
+                    }
+                if path.stat().st_size > MAX_BYTES:
+                    raise ValueError("当前快照超出读取大小限制")
+                result = read_path(path, **options)
+                return {
+                    **result,
+                    "data_id": data_id,
+                    "source": str(path),
+                    "product": "current_snapshot",
+                    "delivery_status": "unknown",
+                    "notice": "逐字段时点见fact_metadata；当前快照不等于历史正文或投递成功。",
+                }
+            if data_id == "dividend:public":
+                config = copy.deepcopy(self._personal_runtime_config())
+                storage = config.setdefault("storage", {})
+                directory = Path(storage.get("data_dir", "data"))
+                storage["data_dir"] = str(self.root / directory)
+                from ...triggers.snapshots import load_report_snapshot
+
+                snapshot = load_report_snapshot(config)
+                value = snapshot.get("dividend_schedule")
+                if not value:
+                    value = {
+                        "events": snapshot.get("dividend_events", []),
+                        "complete": False,
+                        "coverage": "legacy_pending_only",
+                        "fact_metadata": snapshot.get("_fact_metadata", {}).get(
+                            "dividend_events", {}
+                        ),
+                    }
+                return {
+                    **paginate_rows(value, **options),
+                    "data_id": data_id,
+                    "source": "report_snapshot.dividend_schedule",
+                    "notice": "公开派息日，不代表券商账户实际到账；只查已有快照，不刷新来源。",
+                }
+            if data_id.startswith("report_run:"):
+                run = next(
+                    (
+                        run
+                        for run in report_runs()
+                        if run["run_id"] == data_id.removeprefix("report_run:")
+                    ),
+                    None,
+                )
+                if run is None:
+                    raise PermissionError("报告执行记录不可用或不属于当前会话")
+                return {
+                    **paginate_rows(run, **options),
+                    "data_id": data_id,
+                    "source": "execution_store",
+                    "product": "execution_receipt",
+                }
+            if data_id.startswith("research:"):
+                if (
+                    self.capabilities is not None
+                    and "research" not in self.capabilities
+                ):
+                    raise PermissionError("当前会话未开放研究数据")
+                from ...research_pipeline.observability import run_spec
+                from ...research_pipeline.tools import ResearchTools
+
+                _, run_id, relative = data_id.split(":", 2)
+                tools = ResearchTools(self.root)
+                run = tools._owned(run_id, chat, sender)
+                files = tools.call(
+                    "research_pipeline_artifacts", {"run_id": run_id}, chat, sender
+                )["files"]
+                if relative not in {item["relative_path"] for item in files}:
+                    raise PermissionError("不是当前研究的可读产物")
+                root = Path(run_spec(run)["output"]).resolve()
+                path = root / relative
+                if not path.resolve().is_relative_to(root) or any(
+                    part.is_symlink() for part in (path, *path.parents)
+                ):
+                    raise PermissionError("研究产物路径不安全")
+                return read_path(path, **options)
+            return None
+
+        config = self._personal_runtime_config()
+        return BusinessDataTools(
+            self.root,
+            material_authority=authority_for(self.root, config),
+            private_find=private_find,
+            private_read=private_read,
+        )
+
     def _trigger_changed(self):
         """A committed rule remains committed even if a wakeup fails."""
         try:
@@ -1061,12 +1333,15 @@ class FeishuAssistant:
         history = self._history.get(key, (now, None))[1]
         if history is None:
             history = self._restore_history(chat, sender, now)
+        from .data_tools import DATA_GUIDE
         from .personal_tools import PERSONAL_PROMPT, history_only_action
 
         messages = [
             {
                 "role": "system",
-                "content": SYSTEM_PROMPT + PERSONAL_PROMPT + self._trigger_prompt(),
+                "content": (
+                    SYSTEM_PROMPT + PERSONAL_PROMPT + self._trigger_prompt() + DATA_GUIDE
+                ),
             },
             *history,
             {"role": "user", "content": text},
@@ -1315,6 +1590,8 @@ class FeishuAssistant:
             tools = self.tool_schema()
             if history_action:
                 allowed = {
+                    "data_find",
+                    "data_read",
                     "personal_monitor_status",
                     "personal_monitor_" + history_action,
                 }
@@ -1436,6 +1713,7 @@ class FeishuAssistant:
 
     def tool_schema(self) -> list[dict]:
         from ...research_pipeline.tools import research_tool_schema
+        from .data_tools import TOOLS
         from .personal_tools import personal_tool_schema
         from .research import ResearchJobSpec
         from .trigger_tools import trigger_tool_schema
@@ -1445,6 +1723,7 @@ class FeishuAssistant:
             if self.capabilities is None or "personal" in self.capabilities
             else []
         )
+        personal.extend(TOOLS)
         triggers = trigger_tool_schema() if self._triggers_enabled() else []
         if self.capabilities is not None and "research" not in self.capabilities:
             return personal + triggers
@@ -1766,6 +2045,11 @@ class FeishuAssistant:
     def _call_tool(self, chat: str, sender: str, name: str, arguments: dict):
         if self._stop.is_set():
             raise ValueError("助手正在停止")
+        if name in {"data_find", "data_read"}:
+            if not isinstance(arguments, dict):
+                raise ValueError("数据查询参数必须为对象")
+            tools = self._data_tools_for(chat, sender)
+            return getattr(tools, "find" if name == "data_find" else "read")(**arguments)
         if name.startswith("research_pipeline_"):
             from ...research_pipeline.tools import ResearchTools
 
@@ -1983,7 +2267,7 @@ class FeishuAssistant:
             dataset_id = arguments.get("dataset_id")
             if as_of is not None and (
                 not isinstance(as_of, str)
-                or not re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", as_of)
+                or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", as_of)
             ):
                 raise ValueError("as_of必须为YYYY-MM-DD")
             if dataset_id is not None and not isinstance(dataset_id, str):

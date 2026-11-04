@@ -73,6 +73,8 @@ personal_monitor保留持仓及既有账户规则；投资条件和到期事件�
 身份和回复位置由认证消息注入；不得在spec或payload指定owner、chat、sender或route。
 价格条件使用quotes.<证券代码>.last；日报字段以catalog返回路径为准，未知字段说明缺项。
 触发brief/daily时始终运行完整监控池；标的只作为条件、触发原因和高亮，不能缩成单股报告。
+公开派息日事件使用dividend.next_payment，省略symbols表示当前监控池，默认北京时间09:50、once和完整daily；无需个人持仓，支持“最近一笔到公开派息日告诉我”。
+先用data_find/data_read查询已有公开派息计划及来源，不把公开派息日说成券商实际到账；缺日期仍可保存等待数据的规则，不要求用户猜日期。
 三季报事件使用announcement.q3_report、report_period=Q3、day_offsets=[0,1]，按监控池动态匹配。
 到期事件缺时刻默认Asia/Shanghai 09:50，命中后生成完整日报；回执必须给出完整年月日和时区。未给年份且今年日期已过时询问年份，不偷偷跨年。
 编号是持久number，不是列表行号；先list/get取得真实状态，不猜编号或他人身份。
@@ -130,7 +132,7 @@ def trigger_tool_schema() -> list[dict]:
                                 },
                                 "event": {
                                     "type": "object",
-                                    "description": "kind、可选symbols/report_period及day_offsets；省略symbols表示监控池全部标的。",
+                                    "description": "kind为announcement.q3_report或dividend.next_payment；后者默认09:50、once、完整daily，缺日期等待数据；省略symbols表示动态监控池。",
                                 },
                                 "match_policy": {
                                     "type": "string",
@@ -402,7 +404,7 @@ class TriggerTools:
             "event" in value
             and self._catalog().resolve("events." + value["event"]["kind"]) is None
         ):
-            raise ValueError("未知公告事件种类；请先查询catalog")
+            raise ValueError("未知业务事件种类；请先查询catalog")
         return value
 
     def _saved_reply(self, status, created):
@@ -448,6 +450,12 @@ class TriggerTools:
                 f"，{season}披露"
                 + "发送、".join(moments)
                 + f"发送（{event['timezone']}，含周末）"
+            )
+        if event.get("kind") == "dividend.next_payment":
+            when += (
+                f"，监控范围内下一次公开派息日 {event['notify_at']}"
+                "（Asia/Shanghai）触发一次完整日报；尚无有效日期时等待数据，"
+                "不代表券商账户实际到账"
             )
         if "condition" in value:
             when += "，条件为" + self._condition_summary(value["condition"])
@@ -836,7 +844,24 @@ class TriggerTools:
                 name + "披露" + "及".join(offsets) + f"（{event['timezone']}，含周末）"
             )
             next_label = "等待符合规则的正式公告；按原披露日计算"
-        if record["state"] != "active":
+        if spec.get("event", {}).get("kind") == "dividend.next_payment":
+            event = spec["event"]
+            summary[-1] = (
+                f"下一次公开派息日 {event['notify_at']}（Asia/Shanghai），同日合并一次完整日报"
+            )
+            evaluation = self.store.evaluation_state(self.owner, record["number"])
+            target = json.loads(evaluation.get("event_state") or "{}")
+            next_label = (
+                target["payment_date"] + " " + event["notify_at"] + "（Asia/Shanghai）"
+                if target.get("payment_date")
+                else "等待公开派息日期，尚未排定时间"
+            )
+            if target.get("status") == "missed":
+                next_label = "已错过派息日，不跨日补发"
+        if record["state"] != "active" and not (
+            spec.get("event", {}).get("kind") == "dividend.next_payment"
+            and target.get("status") == "missed"
+        ):
             next_label = "已停止后续触发"
         kinds = {
             "brief": "简报（完整监控池）",
@@ -882,6 +907,8 @@ class TriggerTools:
             readiness = (
                 "等待符合规则的公告证据" if "event" in spec else "按计划等待执行"
             )
+        if spec.get("event", {}).get("kind") == "dividend.next_payment":
+            readiness = "仅公开派息计划，不代表券商实际到账"
         message = f"{record['number']}. {record['label']}【{state}】\n条件/计划：{'；'.join(summary)}\n动作：{actions}\n下一次：{next_label}\n最近结果：{recent}；{readiness}"
         data = _clean(record)
         data["action_results"] = action_results

@@ -78,6 +78,13 @@ class TriggerStore:
                     "ALTER TABLE trigger_actions ADD COLUMN result TEXT NOT NULL DEFAULT '{}'"
                 )
 
+            if "event_state" not in {
+                row[1] for row in db.execute("PRAGMA table_info(trigger_state)")
+            }:
+                db.execute(
+                    "ALTER TABLE trigger_state ADD COLUMN event_state TEXT NOT NULL DEFAULT '{}'"
+                )
+
     @contextmanager
     def _connection(self, db=None, *, write=False):
         if db is not None:
@@ -154,6 +161,35 @@ class TriggerStore:
                         "request key already belongs to a different trigger"
                     )
                 return self.get(owner, old["number"], db=db)
+            if spec.get("event", {}).get("kind") == "dividend.next_payment":
+
+                def business(value):
+                    result = {
+                        key: item for key, item in value.items() if key != "label"
+                    }
+                    result["actions"] = [
+                        {
+                            **action,
+                            "payload": {
+                                key: item
+                                for key, item in action["payload"].items()
+                                if key != "trigger_reason"
+                            },
+                        }
+                        for action in value["actions"]
+                    ]
+                    return result
+
+                for row in db.execute(
+                    "SELECT * FROM trigger_definitions WHERE owner=? AND state='active'",
+                    (owner,),
+                ):
+                    if business(json.loads(row["spec"])) == business(spec):
+                        db.execute(
+                            "INSERT INTO trigger_requests VALUES(?,?,?,?)",
+                            (owner, request_key, row["number"], encoded),
+                        )
+                        return self.get(owner, row["number"], db=db)
             condition = spec.get("condition", {})
             chat = spec["actions"][0]["payload"].get("chat_id")
             if (
@@ -424,21 +460,29 @@ class TriggerStore:
             spec.update(changes)
             spec = normalize_spec(spec)
             condition_changed = spec.get("condition") != item["spec"].get("condition")
+            dividend_changed = spec.get("event") != item["spec"].get(
+                "event"
+            ) and "dividend.next_payment" in {
+                spec.get("event", {}).get("kind"),
+                item["spec"].get("event", {}).get("kind"),
+            }
             self._cancel(db, owner, number, stamp)
             db.execute(
                 "UPDATE trigger_definitions SET label=?,spec=?,revision=revision+1,updated_at=? WHERE owner=? AND number=?",
                 (spec["label"], _encode(spec), stamp, owner, number),
             )
-            if condition_changed:
+            if condition_changed or dividend_changed:
                 db.execute(
-                    "UPDATE trigger_state SET last_truth='unknown',fired_once=0,last_fired_at=NULL,last_evaluated_at=NULL,diagnostic=? WHERE owner=? AND number=?",
+                    "UPDATE trigger_state SET last_truth='unknown',fired_once=0,last_fired_at=NULL,last_evaluated_at=NULL,event_state='{}',diagnostic=? WHERE owner=? AND number=?",
                     (
                         _encode({"truth": "unknown", "reasons": ["condition_changed"]}),
                         owner,
                         number,
                     ),
                 )
-            if item["state"] == "done" and ("schedule" in changes or condition_changed):
+            if item["state"] == "done" and (
+                "schedule" in changes or condition_changed or dividend_changed
+            ):
                 db.execute(
                     "UPDATE trigger_definitions SET state='active' WHERE owner=? AND number=?",
                     (owner, number),
@@ -498,6 +542,7 @@ class TriggerStore:
             "last_evaluated_at",
             "last_fired_at",
             "diagnostic",
+            "event_state",
         }
         if not values or set(values) - allowed:
             raise ValueError("invalid evaluator state")

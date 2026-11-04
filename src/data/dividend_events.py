@@ -1,8 +1,8 @@
 """Current dividend events for the daily-report event feed.
 
-This module is deliberately reporting-only.  It does not alter the historical
-corporate-action contract used by the optimizer or backtester: it merely
-collects announced or currently unsettled distributions for the daily email.
+Public schedules and pending-report views share the same source parsers.
+Historical corporate-action contracts remain unchanged; public dates can also
+be used by the existing durable report trigger.
 """
 
 from __future__ import annotations
@@ -17,10 +17,10 @@ from typing import Any, Callable, Iterable
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+from zoneinfo import ZoneInfo
 
 from ..utils.etf_detector import is_etf, is_reit
 from .etf_valuation import ETF_VALUATION_REFERENCES
-
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,11 @@ def _as_date(value: object) -> date | None:
         return None
     for pattern in ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"):
         try:
-            return datetime.strptime(text[:10], pattern).date()
+            return (
+                datetime.strptime(text[:10], pattern)
+                .replace(tzinfo=timezone.utc)
+                .date()
+            )
         except ValueError:
             continue
     return None
@@ -65,9 +69,11 @@ def _finite_positive(value: object) -> float | None:
 
 
 def _event_status(
-    ex_date: date | None, payment_date: date | None, as_of: date
+    ex_date: date | None, payment_date: date | None, as_of: date, *, public=False
 ) -> str | None:
     """Classify only the two actionable stages requested by the report."""
+    if public and payment_date is not None:
+        return "公开派息计划"
     if ex_date is None or payment_date is None:
         return None
     if as_of < ex_date:
@@ -104,7 +110,7 @@ class DailyDividendEventResolver:
         as_of: date | None = None,
     ) -> list[dict[str, object]]:
         """Return deduplicated pending distributions for visible instruments."""
-        report_date = as_of or date.today()
+        report_date = as_of or datetime.now(ZoneInfo("Asia/Shanghai")).date()
         codes = self._codes(stock_data)
         events = self._announcement_events(announcements, report_date)
         events.extend(self._stored_action_events(codes, report_date))
@@ -127,7 +133,9 @@ class DailyDividendEventResolver:
                 event.get("currency"),
             )
             existing = selected.get(key)
-            if existing is None or self._source_rank(event) < self._source_rank(existing):
+            if existing is None or self._source_rank(event) < self._source_rank(
+                existing
+            ):
                 selected[key] = event
 
         return sorted(
@@ -136,6 +144,178 @@ class DailyDividendEventResolver:
                 0 if item["status"] == DIVIDEND_EX_UNPAID else 1,
                 str(item["ex_date"]),
                 str(item["code"]),
+            ),
+        )
+
+    def public_schedule(
+        self,
+        announcements: dict[str, list] | None,
+        stock_data: pd.DataFrame | None,
+        *,
+        as_of: date | None = None,
+        before_read: Callable[[], object] | None = None,
+    ) -> dict:
+        """Read public dates without the pending-report display expiry.
+
+        Coverage describes each source read, not a claim that every distribution
+        has been acquired. Missing rows alone never establish cancellation.
+        """
+        report_date = as_of or datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        observed = datetime.now(timezone.utc).isoformat()
+        codes = self._codes(stock_data)
+        events, coverage = [], []
+        for code in codes:
+            sources = [
+                (
+                    "announcement",
+                    lambda c=code: self._announcement_events(
+                        {c: (announcements or {}).get(c, [])}, report_date, public=True
+                    ),
+                ),
+                (
+                    "stored_corporate_action",
+                    lambda c=code: self._stored_action_events(
+                        [c], report_date, public=True
+                    ),
+                ),
+            ]
+            if self._is_mainland_fund(code):
+                sources.append(
+                    (
+                        "fund_distribution",
+                        lambda c=code: self._mainland_fund_events(
+                            c, report_date, public=True
+                        ),
+                    )
+                )
+            elif self._is_hk_listed(code):
+                sources.append(
+                    (
+                        "hk_dividend_schedule",
+                        lambda c=code: self._hk_dividend_events(
+                            c, report_date, public=True
+                        ),
+                    )
+                )
+            elif self._is_overseas_equity_etf(code):
+                sources.append(
+                    (
+                        "yahoo_calendar",
+                        lambda c=code: self._yahoo_etf_events(
+                            c, report_date, public=True
+                        ),
+                    )
+                )
+            for source, read in sources:
+                try:
+                    if before_read is not None:
+                        before_read()
+                    rows = read()
+                except Exception as exc:  # noqa: BLE001 - expose source failure as coverage
+                    coverage.append(
+                        {
+                            "code": code,
+                            "source": source,
+                            "status": "unavailable",
+                            "error": type(exc).__name__,
+                            "observed_at": observed,
+                        }
+                    )
+                    continue
+                gaps = (
+                    [
+                        "公开派息日缺少除权日，尚无法稳定关联改期；仅可查询，不据此创建到期目标"
+                    ]
+                    if any(not row.get("ex_date") for row in rows)
+                    else []
+                )
+                coverage.append(
+                    {
+                        "code": code,
+                        "source": source,
+                        "status": "partial" if gaps else "available",
+                        "observed_at": observed,
+                        "rows": len(rows),
+                        "gaps": gaps,
+                    }
+                )
+                for row in rows:
+                    urls = {
+                        "fund_distribution": FUND_DISTRIBUTION_URL.format(code=code),
+                        "hk_dividend_schedule": ETNET_HK_DIVIDEND_URL.format(
+                            code=code.lstrip("0") or "0"
+                        ),
+                        "yahoo_calendar": YAHOO_QUOTE_URL.format(ticker=code),
+                    }
+                    events.append(
+                        {
+                            **row,
+                            "observed_at": row.get("observed_at") or observed,
+                            "source_url": row.get("source_url") or urls.get(source, ""),
+                            "trigger_available": bool(row.get("ex_date")),
+                        }
+                    )
+        return {
+            "as_of": report_date.isoformat(),
+            "events": events,
+            "coverage": coverage,
+            "monitored_symbols": codes,
+            "observed_at": observed,
+            "status": "partial"
+            if any(c["status"] != "available" for c in coverage)
+            else "available",
+            "coverage_note": "仅已采集、显式公开的日期；并非全市场完整性证明",
+        }
+
+    @staticmethod
+    def pending_events(schedule: dict) -> list[dict]:
+        """Apply only the existing report display lifetime to public rows."""
+        as_of = (
+            _as_date(schedule.get("as_of"))
+            or datetime.now(ZoneInfo("Asia/Shanghai")).date()
+        )
+        selected = {}
+        for row in schedule.get("events", []):
+            if row.get("cancelled"):
+                continue
+            status = _event_status(
+                _as_date(row.get("ex_date")), _as_date(row.get("payment_date")), as_of
+            )
+            if status is None:
+                continue
+            event = {
+                key: row.get(key)
+                for key in (
+                    "code",
+                    "ex_date",
+                    "payment_date",
+                    "cash_per_share",
+                    "currency",
+                    "source",
+                )
+            }
+            event["status"] = status
+            key = tuple(
+                event[name]
+                for name in (
+                    "code",
+                    "ex_date",
+                    "payment_date",
+                    "cash_per_share",
+                    "currency",
+                )
+            )
+            old = selected.get(key)
+            if old is None or DailyDividendEventResolver._source_rank(
+                event
+            ) < DailyDividendEventResolver._source_rank(old):
+                selected[key] = event
+        return sorted(
+            selected.values(),
+            key=lambda row: (
+                0 if row["status"] == DIVIDEND_EX_UNPAID else 1,
+                str(row["ex_date"]),
+                str(row["code"]),
             ),
         )
 
@@ -166,7 +346,7 @@ class DailyDividendEventResolver:
     def _event(
         *,
         code: str,
-        ex_date: date,
+        ex_date: date | None,
         payment_date: date | None,
         cash_per_share: float | None,
         status: str,
@@ -175,7 +355,7 @@ class DailyDividendEventResolver:
     ) -> dict[str, object]:
         return {
             "code": code,
-            "ex_date": ex_date.isoformat(),
+            "ex_date": ex_date.isoformat() if ex_date else None,
             "payment_date": payment_date.isoformat() if payment_date else None,
             "cash_per_share": cash_per_share,
             "currency": currency,
@@ -184,7 +364,7 @@ class DailyDividendEventResolver:
         }
 
     def _announcement_events(
-        self, announcements: dict[str, list] | None, as_of: date
+        self, announcements: dict[str, list] | None, as_of: date, *, public=False
     ) -> list[dict[str, object]]:
         events: list[dict[str, object]] = []
         for raw_code, items in (announcements or {}).items():
@@ -192,14 +372,39 @@ class DailyDividendEventResolver:
             for item in items or []:
                 if not isinstance(item, dict):
                     continue
+                for raw in item.get("corporate_actions", []):
+                    from .market_history import CorporateAction
+
+                    action = CorporateAction(**raw)
+                    status = _event_status(action.ex_date, action.payable_date, as_of)
+                    if status is not None:
+                        events.append(
+                            {
+                                **self._event(
+                                    code=code,
+                                    ex_date=action.ex_date,
+                                    payment_date=action.payable_date,
+                                    cash_per_share=action.cash_per_share,
+                                    currency=action.currency,
+                                    status=status,
+                                    source=action.source,
+                                ),
+                                "event_id": action.event_id,
+                                "source_url": action.source_url,
+                                "source_documents": action.source_documents,
+                                "distribution_components": action.distribution_components,
+                                "income_per_share": action.income_per_share,
+                                "capital_return_per_share": action.capital_return_per_share,
+                            }
+                        )
                 dividend = item.get("llm_extracted_dividend") or {}
                 if not isinstance(dividend, dict) or not dividend.get("success"):
                     continue
                 cash = _finite_positive(dividend.get("cash_dividend_per_share"))
                 ex_date = _as_date(dividend.get("ex_rights_date"))
                 payment_date = _as_date(dividend.get("payment_date"))
-                status = _event_status(ex_date, payment_date, as_of)
-                if status is None or ex_date is None:
+                status = _event_status(ex_date, payment_date, as_of, public=public)
+                if status is None or (ex_date is None and not public):
                     continue
                 events.append(
                     self._event(
@@ -212,10 +417,20 @@ class DailyDividendEventResolver:
                         source="announcement",
                     )
                 )
+                if public:
+                    events[-1].update(
+                        source_url=str(
+                            item.get("url", item.get("announcement_url", ""))
+                        ),
+                        published_at=str(
+                            item.get("published_at", item.get("date", ""))
+                        ),
+                        cancelled=dividend.get("cancelled") is True,
+                    )
         return events
 
     def _stored_action_events(
-        self, codes: Iterable[str], as_of: date
+        self, codes: Iterable[str], as_of: date, *, public=False
     ) -> list[dict[str, object]]:
         """Use dated local actions when the upstream source supplied payable dates."""
         try:
@@ -226,6 +441,8 @@ class DailyDividendEventResolver:
                 settings.get("output_dir", "data/point_in_time")
             )
         except Exception as exc:  # pragma: no cover - optional report enrichment
+            if public:
+                raise
             logger.debug("日报公司行为存储不可用: %s", exc)
             return []
 
@@ -234,14 +451,18 @@ class DailyDividendEventResolver:
             try:
                 bundle = store.read(code)
             except Exception as exc:
+                if public:
+                    raise
                 logger.debug("读取 %s 的日报公司行为失败: %s", code, exc)
                 continue
             if bundle is None:
                 continue
             for action in bundle.actions:
                 cash = _finite_positive(action.cash_per_share)
-                status = _event_status(action.ex_date, action.payable_date, as_of)
-                if cash is None or status is None:
+                status = _event_status(
+                    action.ex_date, action.payable_date, as_of, public=public
+                )
+                if status is None or (cash is None and not public):
                     continue
                 events.append(
                     self._event(
@@ -286,33 +507,35 @@ class DailyDividendEventResolver:
         return response
 
     def _mainland_fund_events(
-        self, code: str, as_of: date
+        self, code: str, as_of: date, *, public=False
     ) -> list[dict[str, object]]:
         """Read explicit ex-date and payment-date fields from a fund record."""
         try:
             html = self._get(FUND_DISTRIBUTION_URL.format(code=code)).text
             soup = BeautifulSoup(html, "html.parser")
         except Exception as exc:
+            if public:
+                raise
             logger.info("ETF %s 分红表暂不可用: %s", code, exc)
             return []
 
         events = []
+        recognized = False
         for table in soup.find_all("table"):
             headers = [cell.get_text(" ", strip=True) for cell in table.select("th")]
             if not {"除息日", "分红发放日"}.issubset(headers):
                 continue
+            recognized = True
             for row in table.select("tr"):
                 cells = [cell.get_text(" ", strip=True) for cell in row.select("td")]
                 if len(cells) < 5:
                     continue
                 ex_date = _as_date(cells[2])
                 payment_date = _as_date(cells[4])
-                status = _event_status(ex_date, payment_date, as_of)
-                if status is None or ex_date is None:
+                status = _event_status(ex_date, payment_date, as_of, public=public)
+                if status is None or (ex_date is None and not public):
                     continue
-                amount_match = re.search(
-                    r"现金\s*([0-9]+(?:\.[0-9]+)?)", cells[3]
-                )
+                amount_match = re.search(r"现金\s*([0-9]+(?:\.[0-9]+)?)", cells[3])
                 per_ten = _finite_positive(
                     amount_match.group(1) if amount_match else None
                 )
@@ -327,9 +550,13 @@ class DailyDividendEventResolver:
                         source="fund_distribution",
                     )
                 )
+        if public and not recognized:
+            raise ValueError("fund distribution table unavailable")
         return events
 
-    def _hk_dividend_events(self, code: str, as_of: date) -> list[dict[str, object]]:
+    def _hk_dividend_events(
+        self, code: str, as_of: date, *, public=False
+    ) -> list[dict[str, object]]:
         """Read dated HK distribution schedules, independent of LLM extraction."""
         try:
             html = self._get(
@@ -337,10 +564,13 @@ class DailyDividendEventResolver:
             ).text
             soup = BeautifulSoup(html, "html.parser")
         except Exception as exc:
+            if public:
+                raise
             logger.info("港股 %s 分红日历暂不可用: %s", code, exc)
             return []
 
         events = []
+        recognized = False
         for table in soup.find_all("table"):
             rows = table.find_all("tr")
             if not rows:
@@ -350,6 +580,7 @@ class DailyDividendEventResolver:
             ]
             if not {"事項", "除淨日", "派送日"}.issubset(headers):
                 continue
+            recognized = True
             event_index = headers.index("事項")
             ex_index = headers.index("除淨日")
             payment_index = headers.index("派送日")
@@ -359,8 +590,8 @@ class DailyDividendEventResolver:
                     continue
                 ex_date = _as_date(cells[ex_index])
                 payment_date = _as_date(cells[payment_index])
-                status = _event_status(ex_date, payment_date, as_of)
-                if status is None or ex_date is None:
+                status = _event_status(ex_date, payment_date, as_of, public=public)
+                if status is None or (ex_date is None and not public):
                     continue
                 amount_match = re.search(
                     r"(?:港元|HKD)\s*([0-9]+(?:\.[0-9]+)?)",
@@ -380,30 +611,52 @@ class DailyDividendEventResolver:
                         source="hk_dividend_schedule",
                     )
                 )
+                if public:
+                    publication_index = (
+                        headers.index("公布日期") if "公布日期" in headers else None
+                    )
+                    publication = (
+                        _as_date(cells[publication_index])
+                        if publication_index is not None
+                        else None
+                    )
+                    events[-1]["published_at"] = (
+                        publication.isoformat() if publication else ""
+                    )
+        if public and not recognized:
+            raise ValueError("HK dividend table unavailable")
         return events
 
-    def _yahoo_etf_events(self, code: str, as_of: date) -> list[dict[str, object]]:
+    def _yahoo_etf_events(
+        self, code: str, as_of: date, *, public=False
+    ) -> list[dict[str, object]]:
         """Use Yahoo's public ETF calendar only when both dates are explicit."""
         try:
             result = self._yahoo_quote_summary(code)
             calendar = result.get("calendarEvents", {})
             ex_date = self._yahoo_date(calendar.get("exDividendDate"))
             payment_date = self._yahoo_date(calendar.get("dividendDate"))
-            status = _event_status(ex_date, payment_date, as_of)
-            if status is None or ex_date is None:
+            status = _event_status(ex_date, payment_date, as_of, public=public)
+            if status is None or (ex_date is None and not public):
                 return []
             return [
                 self._event(
                     code=code,
                     ex_date=ex_date,
                     payment_date=payment_date,
-                    cash_per_share=self._yahoo_dividend_amount(code, ex_date, as_of),
+                    cash_per_share=(
+                        self._yahoo_dividend_amount(code, ex_date, as_of)
+                        if ex_date
+                        else None
+                    ),
                     currency=None,
                     status=status,
                     source="yahoo_calendar",
                 )
             ]
         except Exception as exc:
+            if public:
+                raise
             logger.info("海外 ETF %s 分红日历暂不可用: %s", code, exc)
             return []
 
@@ -454,11 +707,14 @@ class DailyDividendEventResolver:
         if ex_date > as_of:
             return None
         try:
-            end = int(
-                datetime.combine(as_of, datetime.min.time())
-                .replace(tzinfo=timezone.utc)
-                .timestamp()
-            ) + 86_400
+            end = (
+                int(
+                    datetime.combine(as_of, datetime.min.time())
+                    .replace(tzinfo=timezone.utc)
+                    .timestamp()
+                )
+                + 86_400
+            )
             start = end - int(timedelta(days=367).total_seconds())
             payload = self._get(
                 YAHOO_CHART_URL.format(ticker=code),
@@ -478,6 +734,6 @@ class DailyDividendEventResolver:
             for item in dividends.values():
                 if self._yahoo_date(item.get("date")) == ex_date:
                     return _finite_positive(item.get("amount"))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - optional source enrichment
             logger.debug("Yahoo %s 分红金额暂不可用: %s", code, exc)
         return None
