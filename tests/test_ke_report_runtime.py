@@ -67,25 +67,54 @@ def test_loader_and_session_field_accept_exact_explicit_ke_artifact(tmp_path):
     assert context.strategy_return_curves == original
 
 
+@pytest.mark.parametrize("path", [True, {"unexpected": "path"}])
+def test_invalid_curve_path_config_is_reported_without_raising(path):
+    config = config_for("unused")
+    config["report"]["return_curve_artifact"] = path
+    loaded = load_return_curves(config, today=TODAY)
+    assert_unavailable(loaded)
+    assert loaded["markets"]["a_share"]["coverage"]["message"] == "Ke曲线路径配置无效"
+
+
 @pytest.mark.parametrize(
-    "corrupt",
+    "corrupt, failed_markets",
     [
-        lambda value: value.update(strategy_id="old_technical_strategy"),
-        lambda value: value.update(universe=UNIVERSE[:-1]),
-        lambda value: value.update(generated_at="2026-10-01T00:00:00+00:00"),
-        lambda value: value.update(generated_at="2026-11-02T00:00:00+00:00"),
-        lambda value: value["markets"]["a_share"].update(values=[1000, float("nan")]),
-        lambda value: value["markets"]["hk"].update(initial_capital=0),
-        lambda value: value["markets"]["us"].update(data_as_of="2026-10-01"),
-        lambda value: value["markets"].pop("hk"),
+        (
+            lambda v: v.update(strategy_id="old_technical_strategy"),
+            {"a_share", "hk", "us"},
+        ),
+        (lambda v: v.update(universe=UNIVERSE[:-1]), {"us"}),
+        (lambda v: v.update(universe=["601088", None]), {"a_share", "hk", "us"}),
+        (
+            lambda v: v.update(generated_at="2026-10-01T00:00:00+00:00"),
+            {"a_share", "hk", "us"},
+        ),
+        (
+            lambda v: v.update(generated_at="2026-11-02T00:00:00+00:00"),
+            {"a_share", "hk", "us"},
+        ),
+        (
+            lambda v: v["markets"]["a_share"].update(values=[1000, float("nan")]),
+            {"a_share"},
+        ),
+        (lambda v: v["markets"]["hk"].update(initial_capital=0), {"hk"}),
+        (lambda v: v["markets"]["us"].update(data_as_of="2026-10-01"), {"us"}),
+        (lambda v: v["markets"].pop("hk"), {"hk"}),
     ],
 )
-def test_wrong_universe_stale_foreign_or_fake_curve_fails_closed(tmp_path, corrupt):
+def test_invalid_curves_fail_only_at_their_own_scope(tmp_path, corrupt, failed_markets):
     path = tmp_path / "ke.json"
     original = payload()
     corrupt(original)
     write_payload(path, original)
-    assert_unavailable(load_return_curves(config_for(path), today=TODAY))
+    loaded = load_return_curves(config_for(path), today=TODAY)
+    for group, item in loaded["markets"].items():
+        if group in failed_markets:
+            assert item["coverage"]["status"] == "unavailable"
+            assert item["coverage"]["message"]
+            assert "values" not in item
+        else:
+            assert item == original["markets"][group]
 
 
 @pytest.mark.parametrize("value", [None, [], 1, "synthetic corrupted JSON"])
@@ -106,7 +135,53 @@ def test_malformed_nested_curve_shape_fails_closed(tmp_path, location):
     else:
         original["markets"]["hk"]["coverage"] = []
     write_payload(path, original)
-    assert_unavailable(load_return_curves(config_for(path), today=TODAY))
+    loaded = load_return_curves(config_for(path), today=TODAY)
+    if location == "markets":
+        assert_unavailable(loaded)
+    else:
+        assert loaded["markets"]["hk"]["coverage"]["status"] == "unavailable"
+        assert loaded["markets"]["a_share"] == original["markets"]["a_share"]
+        assert loaded["markets"]["us"] == original["markets"]["us"]
+
+
+@pytest.mark.parametrize("recorded_sgx,current_sgx", [(False, True), (True, False)])
+def test_sgx_universe_changes_keep_original_three_market_curves(
+    tmp_path, recorded_sgx, current_sgx
+):
+    path = tmp_path / "ke.json"
+    original = payload()
+    sgx = ["C38U.SI", "G3B-SI"]
+    original["universe"] = UNIVERSE + (sgx if recorded_sgx else [])
+    write_payload(path, original)
+    config = config_for(path)
+    config["stocks"] = UNIVERSE + (sgx if current_sgx else [])
+    loaded = load_return_curves(config, today=TODAY)
+    assert loaded == original  # Real simulated universe and values remain unchanged.
+
+
+def test_same_market_addition_invalidates_only_that_market_with_clear_reason(tmp_path):
+    path = tmp_path / "ke.json"
+    original = payload()
+    write_payload(path, original)
+    config = config_for(path)
+    config["stocks"] = UNIVERSE + ["01088"]
+    loaded = load_return_curves(config, today=TODAY)
+    assert "监控标的已变更" in loaded["markets"]["hk"]["coverage"]["message"]
+    assert loaded["markets"]["a_share"] == original["markets"]["a_share"]
+    assert loaded["markets"]["us"] == original["markets"]["us"]
+
+
+def test_expired_market_observations_do_not_hide_other_markets(tmp_path):
+    path = tmp_path / "ke.json"
+    original = payload()
+    old = "2026-10-01"
+    original["markets"]["hk"].update(dates=[old, "2026-10-02"], data_as_of="2026-10-02")
+    write_payload(path, original)
+    loaded = load_return_curves(config_for(path), today=TODAY)
+    assert "行情截至2026-10-02" in loaded["markets"]["hk"]["coverage"]["message"]
+    assert "7天有效期" in loaded["markets"]["hk"]["coverage"]["message"]
+    assert loaded["markets"]["a_share"] == original["markets"]["a_share"]
+    assert loaded["markets"]["us"] == original["markets"]["us"]
 
 
 @pytest.fixture
@@ -179,7 +254,9 @@ def offline_report(monkeypatch, tmp_path):
         forbidden[name] = Mock(
             side_effect=AssertionError(f"retired technical path: {name}")
         )
-        module = "src.backtest" if name == "evaluate_all_groups" else "src.search.artifacts"
+        module = (
+            "src.backtest" if name == "evaluate_all_groups" else "src.search.artifacts"
+        )
         monkeypatch.setattr(module + "." + name, forbidden[name])
     execution = SimpleNamespace(
         lot_sizes={"a_share": 100, "hk": 100, "us": 1},
