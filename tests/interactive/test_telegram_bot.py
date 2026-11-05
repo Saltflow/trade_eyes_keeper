@@ -69,7 +69,26 @@ def test_empty_allowlist_does_not_inherit_notification_recipient(monkeypatch):
 
 def test_add_keeps_whole_codes_through_real_dispatch(tmp_path, monkeypatch):
     bot = TelegramBot(_make_bot_config())
-    config_path = tmp_path / "config.yaml"
+    config_path = tmp_path / "config/config.yaml"
+    config_path.parent.mkdir()
+    (config_path.parent / "optimizer_constraints.yaml").write_text(
+        "{}", encoding="utf-8"
+    )
+    from src.instruments.resolver import InstrumentResolver
+
+    monkeypatch.setattr(
+        InstrumentResolver,
+        "_identity",
+        lambda self, code: (
+            {
+                "code": code,
+                "name": "fixture security",
+                "market": "us" if code == "GOOG" else "a_share",
+            }
+            if code in {"600036", "GOOG"}
+            else None
+        ),
+    )
     config_path.write_text(yaml.safe_dump({"stocks": []}), encoding="utf-8")
     monkeypatch.setattr(handlers, "CONFIG_PATH", config_path)
     with patch.object(bot, "_send_message"):
@@ -82,7 +101,11 @@ def test_add_keeps_whole_codes_through_real_dispatch(tmp_path, monkeypatch):
 
 def test_remove_keeps_whole_codes_through_real_dispatch(tmp_path, monkeypatch):
     bot = TelegramBot(_make_bot_config())
-    config_path = tmp_path / "config.yaml"
+    config_path = tmp_path / "config/config.yaml"
+    config_path.parent.mkdir()
+    (config_path.parent / "optimizer_constraints.yaml").write_text(
+        "{}", encoding="utf-8"
+    )
     config_path.write_text(
         yaml.safe_dump({"stocks": ["600036", "GOOG"]}), encoding="utf-8"
     )

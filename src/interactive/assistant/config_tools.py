@@ -25,6 +25,7 @@ from ...notification.settings import env_flag
 
 _APP = "config/config.yaml"
 _MARKETS = ("a_share", "hk", "us")
+_WATCH_MARKETS = (*_MARKETS, "sg")
 _NEXT_TASK = "下次任务生效；已开始的任务继续使用原配置快照"
 _SCHEDULE_EFFECT = "确认保存后刷新运行中的调度器；未运行时在服务启动后生效"
 _SYMBOL = re.compile(r"[A-Za-z0-9^][A-Za-z0-9.^=_-]{0,31}\Z")
@@ -73,7 +74,9 @@ class ConfigProposal:
         if not isinstance(value["diff"], list) or not isinstance(value["effect"], str):
             raise TypeError("配置提案预览无效")
         markets = value["affected_markets"]
-        if not isinstance(markets, list) or any(m not in _MARKETS for m in markets):
+        if not isinstance(markets, list) or any(
+            m not in _WATCH_MARKETS for m in markets
+        ):
             raise ValueError("配置提案市场范围无效")
         dependencies = value.get("dependencies", {})
         if not isinstance(dependencies, dict) or any(
@@ -93,7 +96,7 @@ class _Rule:
     maximum: float | None = None
     choices: tuple[str, ...] = ()
 
-    def validate(self, value: Any) -> None:
+    def validate(self, value: Any, *, existing=()) -> None:
         if self.kind == "boolean":
             valid = type(value) is bool
         elif self.kind == "integer":
@@ -109,7 +112,13 @@ class _Rule:
                 isinstance(value, list)
                 and len(value) <= 5000
                 and all(
-                    isinstance(item, str) and _SYMBOL.fullmatch(item) for item in value
+                    (isinstance(item, str) and _SYMBOL.fullmatch(item))
+                    or (
+                        type(item) is int
+                        and 100000 <= item <= 999999
+                        and any(type(old) is int and old == item for old in existing)
+                    )
+                    for item in value
                 )
                 and len(set(value)) == len(value)
             )
@@ -288,8 +297,9 @@ def _check_changes(changes: Any) -> list[dict[str, Any]]:
 class ConfigurationTools:
     """Prepare safe previews and apply only a confirmed, unchanged preview."""
 
-    def __init__(self, project_root: Path):
+    def __init__(self, project_root: Path, *, symbol_resolver=None):
         self.project_root = Path(project_root).resolve()
+        self.symbol_resolver = symbol_resolver
         self._stores = {
             target: ConfigStore(self.project_root / target) for target in (_APP,)
         }
@@ -349,7 +359,7 @@ class ConfigurationTools:
             )
 
         for key, label in (("stocks", "监控标的"),):
-            add(key, _Rule("symbols"), label, default=[])
+            add(key, _Rule("symbols"), label, default=[], markets=_WATCH_MARKETS)
         announcement_values = _announcement_values(app)
         add(
             "report.events.announcement_lookback_months",
@@ -468,6 +478,7 @@ class ConfigurationTools:
         registry = self._registry(snapshots, changes)
         announcement_values = _announcement_values(snapshots[_APP])
         grouped: dict[str, list[tuple[_Field, Any]]] = {}
+        identities = {}
         for change in changes:
             key, value = change["key"], change["value"]
             spec = registry.get(key)
@@ -476,11 +487,16 @@ class ConfigurationTools:
             if key in announcement_values and not announcement_values[key]["valid"]:
                 raise ValueError(f"{key} 原配置类型异常，未生成变更；原值未展示")
             try:
-                spec.rule.validate(value)
+                spec.rule.validate(
+                    value,
+                    existing=snapshots[_APP].get("stocks", []) if key == "stocks" else (),
+                )
             except OverflowError:
                 raise ValueError(f"{key}: 数值超出有限范围") from None
             except ValueError as exc:
                 raise ValueError(f"{key}: {exc}") from exc
+            if key == "stocks":
+                value, identities = self._watch_symbols(value, snapshots[_APP])
             if spec.value != value:
                 grouped.setdefault(spec.target, []).append((spec, value))
         proposals = []
@@ -510,6 +526,11 @@ class ConfigurationTools:
                             "effect": spec.effect,
                             "affected_markets": list(spec.markets),
                             **(
+                                {"resolved_instruments": list(identities.values())}
+                                if spec.key == "stocks"
+                                else {}
+                            ),
+                            **(
                                 {
                                     "old_configured": announcement_values[spec.key][
                                         "configured"
@@ -530,6 +551,76 @@ class ConfigurationTools:
         if not proposals:
             raise ValueError("所选字段已经是指定值，无需修改")
         return proposals
+
+    def _watch_symbols(self, values, app):
+        from ...instruments.resolver import InstrumentResolver, canonical_symbol
+
+        _Rule("symbols").validate(app.get("stocks", []), existing=app.get("stocks", []))
+        known = {canonical_symbol(x): x for x in app.get("stocks", [])}
+        resolver = self.symbol_resolver or InstrumentResolver(app)
+        codes, identities, seen = [], {}, set()
+        for value in values:
+            code = canonical_symbol(value)
+            if code not in known:
+                identity = resolver.resolve(code)
+                code = identity["code"]
+                if code not in known:
+                    identities[code] = identity
+            if code not in seen:
+                codes.append(known.get(code, code))
+                seen.add(code)
+        return codes, identities
+
+    def propose_watchlist(self, action, codes, market=None):
+        """Build the complete list server-side under the existing preview lock."""
+        from ...instruments.resolver import InstrumentResolver, canonical_symbol
+
+        if action not in {"add", "remove"} or not codes or len(codes) > 50:
+            raise ValueError("监控操作只接受 add/remove 和1至50个代码")
+        if market not in {None, "a_share", "hk", "us", "sg"}:
+            raise ValueError("市场仅支持 a_share、hk、us、sg")
+        with self._transaction._locked(5.0), self._stores[_APP]._locked(5.0):
+            snapshots = self._read()
+            app = snapshots[_APP]
+            _Rule("symbols").validate(app.get("stocks", []), existing=app.get("stocks", []))
+            current = list(app.get("stocks", []))
+            resolver = self.symbol_resolver or InstrumentResolver(app)
+            for query in codes:
+                key = canonical_symbol(query)
+                if market == "sg" and "." not in key:
+                    key += ".SI"
+                elif market == "hk" and key.isdigit():
+                    key = key.zfill(5)
+                if market:
+                    from ...instruments.classifier import detect_market
+
+                    if detect_market(key) != market:
+                        raise ValueError("代码后缀与指定市场不一致")
+                matches = [
+                    x
+                    for x in current
+                    if canonical_symbol(x) == key
+                    or (
+                        market in {None, "sg"}
+                        and "." not in key
+                        and canonical_symbol(x) == key + ".SI"
+                    )
+                ]
+                if len(matches) > 1:
+                    raise ValueError("监控池中有多个同名代码，请明确完整代码")
+                if action == "remove":
+                    if matches:
+                        current.remove(matches[0])
+                elif not matches:
+                    identity = resolver.resolve(query, market)
+                    if identity["code"] not in current:
+                        current.append(identity["code"])
+            if current == app.get("stocks", []):
+                return []
+            return [
+                x.to_dict()
+                for x in self._prepare([{"key": "stocks", "value": current}], snapshots)
+            ]
 
     def propose(self, changes: list[dict]) -> list[dict]:
         """Validate independent changes, returning one preview per YAML file."""

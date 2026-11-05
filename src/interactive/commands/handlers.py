@@ -106,77 +106,34 @@ def handle_list() -> str:
     return "\n".join(lines)
 
 
+def _change_watchlist(action: str, codes: list[str]) -> str:
+    from ..assistant.config_tools import ConfigurationTools
+
+    tools = ConfigurationTools(CONFIG_PATH.parent.parent)
+    proposals = tools.propose_watchlist(action, codes)
+    if not proposals:
+        return "监控列表无变更（标的已存在或无需移除）。"
+    proposal = proposals[0]
+    tools.apply(proposal)
+    change = next(x for x in proposal["diff"] if x["key"] == "stocks")
+    before, after = change["old"], change["new"]
+    changed = (
+        [x for x in after if x not in before]
+        if action == "add"
+        else [x for x in before if x not in after]
+    )
+    label = "添加" if action == "add" else "移除"
+    return (
+        f"✅ 已{label} {len(changed)} 只：{' '.join(map(str, changed))}\n当前共 {len(after)} 只"
+    )
+
+
 def handle_add(codes: list[str]) -> str:
-    added = []
-    skipped = []
-
-    def mutate(config: dict) -> None:
-        stocks: list[str] = config.get("stocks", [])
-        upper_stocks = {str(s).upper() for s in stocks}
-        for code in codes:
-            if code.upper() in upper_stocks:
-                skipped.append(code)
-            else:
-                stocks.append(code)
-                upper_stocks.add(code.upper())
-                added.append(code)
-        if added:
-            config["stocks"] = stocks
-
-    config = _update_config(mutate)
-    stocks = config.get("stocks", [])
-
-    if not added and not skipped:
-        return "没有可添加的标的。"
-
-    lines = []
-    if added:
-        lines.append(
-            f"✅ 已添加 {len(added)} 只：{' '.join(f'<code>{c}</code>' for c in added)}"
-        )
-    if skipped:
-        lines.append(
-            f"⏭ 已存在 {len(skipped)} 只：{' '.join(f'<code>{c}</code>' for c in skipped)}"
-        )
-    lines.append(f"当前共 {len(stocks)} 只")
-    return "\n".join(lines)
+    return _change_watchlist("add", codes)
 
 
 def handle_remove(codes: list[str]) -> str:
-    removed = []
-    not_found = []
-
-    def mutate(config: dict) -> None:
-        stocks: list[str] = config.get("stocks", [])
-        upper_stocks = {str(s).upper(): s for s in stocks}
-        for code in codes:
-            matched = upper_stocks.get(code.upper())
-            if matched is not None:
-                stocks.remove(matched)
-                del upper_stocks[code.upper()]
-                removed.append(code)
-            else:
-                not_found.append(code)
-        if removed:
-            config["stocks"] = stocks
-
-    config = _update_config(mutate)
-    stocks = config.get("stocks", [])
-
-    if not removed and not not_found:
-        return "没有可移除的标的。"
-
-    lines = []
-    if removed:
-        lines.append(
-            f"✅ 已移除 {len(removed)} 只：{' '.join(f'<code>{c}</code>' for c in removed)}"
-        )
-    if not_found:
-        lines.append(
-            f"❌ 未找到 {len(not_found)} 只：{' '.join(f'<code>{c}</code>' for c in not_found)}"
-        )
-    lines.append(f"当前共 {len(stocks)} 只")
-    return "\n".join(lines)
+    return _change_watchlist("remove", codes)
 
 
 def _get_backtest_strategy(config: dict, group: str | None = None):

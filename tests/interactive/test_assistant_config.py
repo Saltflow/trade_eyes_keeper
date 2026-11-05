@@ -40,7 +40,18 @@ def config_tools(tmp_path, monkeypatch):
         ScheduleManager, "_job_runner", staticmethod(lambda *_args: lambda: None)
     )
     set_schedule_manager(None)
-    yield ConfigurationTools(directory.parent)
+    from unittest.mock import Mock
+
+    from src.instruments.classifier import detect_market
+
+    resolver = Mock()
+    resolver.resolve.side_effect = lambda code, market=None: {
+        "code": code,
+        "name": "fixture identity",
+        "market": detect_market(code),
+        "source": "test_quote",
+    }
+    yield ConfigurationTools(directory.parent, symbol_resolver=resolver)
     set_schedule_manager(None)
 
 

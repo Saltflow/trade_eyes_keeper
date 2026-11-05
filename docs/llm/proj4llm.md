@@ -5075,3 +5075,10 @@ User-authorized batch: `data/fundamental_data/terra61_high_batch100_20261102/man
 ### SGX source production release (2026-11-04)
 
 - Source commit `7806225` deployed and verified on production; 25 instruments, three daily collections unchanged. Real quote/disclosure reads and full-pool HTML/PDF rendering accepted without sends or model calls. Annual discovery works; PDF acquisition remains blocked by the existing 10 GiB disk reserve (about 3.9 GiB free). [Release receipt](../development/sgx_source_release_20261104.md).
+
+### Bot 自然语言命令工具（2026-11-05）
+
+- `bot_command` 复用现有命令解析器、共享 CommandExecutor 和配置预览/确认链路，覆盖基本查询、监控增删、调度/频次、日报/简报、参考持仓、回测和保存；不新增调度器或业务执行旁路。
+- “加 D05”由现有真实数据源核实证券名称、市场和币种，唯一候选补为标准代码；多市场候选或查询失败先澄清。没有股票代码映射硬编码，日本来源仍拒绝加入。
+- 监控列表由服务端增量合成；原列表、无关配置和凭证保持；重复添加无操作。自然语言修改只生成简短差异预览，由本人单独确认后保存，预览过期/配置变化/他人确认均不执行。斜杠增删使用同一身份校验与配置服务。
+- 通用配置工具不再允许整池替换 stocks。管理请求使用命令工具的真实结果，不被强制绕进资料研究；普通研究问答继续要求检索证据。报告排队和送达状态分别解释。

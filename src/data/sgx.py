@@ -78,7 +78,7 @@ class SGXSource:
                 if client is not self.http:
                     client.close()
 
-    def _security(self, code: str) -> dict:
+    def _security(self, code: str, *, allow_missing=False) -> dict | None:
         normalized = str(code).upper().replace("-SI", ".SI")
         if not normalized.endswith(".SI"):
             raise ValueError("SGX symbols require the .SI suffix")
@@ -88,6 +88,8 @@ class SGXSource:
             "prices",
         )
         matches = [row for row in rows if row.get("nc") == symbol]
+        if not matches and allow_missing:
+            return None
         if len(matches) != 1:
             raise ValueError(f"sgx_security_not_unique_or_missing: {symbol}")
         return matches[0]
@@ -142,6 +144,20 @@ class SGXSource:
 
     def quote(self, code: str) -> dict:
         return self._row(self._security(code))
+
+    def security_identity(self, code: str) -> dict | None:
+        """Resolve the official directory identity, including suspended shares."""
+        row = self._security(code, allow_missing=True)
+        if row is None:
+            return None
+        return {
+            "code": row["nc"] + ".SI",
+            "name": row["n"],
+            "market": "sg",
+            "exchange": "SGX",
+            "currency": row["cur"],
+            "source": "sgx_public_directory",
+        }
 
     def history(self, code: str, days: int = 120) -> pd.DataFrame:
         current = self._security(code)

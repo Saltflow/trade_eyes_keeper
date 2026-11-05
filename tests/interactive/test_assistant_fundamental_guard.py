@@ -51,7 +51,8 @@ def test_valuation_question_enters_research_instead_of_retired_archive(
 ):
     assistant.handle("chat", "owner", question)
     assistant.harness.run.assert_called_once()
-    assert assistant.harness.run.call_args.kwargs["require_retrieval"] is True
+    policy = assistant.harness.run.call_args.kwargs["require_retrieval"]
+    assert (policy() if callable(policy) else policy) is True
     prompt = str(assistant.harness.run.call_args.args[0])
     assert "不猜测数值" in prompt
     assert "旧价投执行器退役" in prompt
@@ -65,7 +66,8 @@ def test_followup_retains_question_and_owner_scoped_research_context(assistant):
     assistant.handle("chat", "owner", "600036的ROIC如何")
     assistant.handle("chat", "owner", "那继续看看")
     args = assistant.harness.run.call_args
-    assert args.kwargs["require_retrieval"] is True
+    policy = args.kwargs["require_retrieval"]
+    assert (policy() if callable(policy) else policy) is True
     assert any(m.get("content") == "600036的ROIC如何" for m in args.args[0])
     assistant.handle("chat", "other-owner", "那继续看看")
     messages = assistant.harness.run.call_args.args[0]

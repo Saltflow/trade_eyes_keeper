@@ -54,20 +54,25 @@ class CommandExecutor:
 
     def __init__(self, send_message: Callable):
         self._send_message = send_message
+        self.project_root = handlers.CONFIG_PATH.parent.parent.resolve()
         self._stopped = threading.Event()
         self._backtest_slot = threading.BoundedSemaphore(1)
 
-    def execute(self, chat_id: str, command) -> None:
+    def execute(self, chat_id: str, command, *, on_result=None) -> None:
         if self._stopped.is_set():
+            if on_result:
+                on_result("❌ 命令执行器正在停止，未开始执行。")
             return
         if isinstance(command, commands.BacktestCommand):
             if not self._backtest_slot.acquire(blocking=False):
                 self._reply(chat_id, "⏳ 已有回测正在执行，请稍后再试。")
+                if on_result:
+                    on_result("❌ 已有回测正在执行，未提交新任务。")
                 return
             self._reply(chat_id, f"⏳ 正在回测 <code>{command.stock_code}</code>…")
             worker = threading.Thread(
                 target=self._run_backtest,
-                args=(chat_id, command),
+                args=(chat_id, command, on_result),
                 name="bot-backtest",
                 daemon=True,
             )
@@ -77,19 +82,21 @@ class CommandExecutor:
                 self._backtest_slot.release()
                 raise
             return
-        self._run_command(chat_id, command)
+        self._run_command(chat_id, command, on_result)
 
-    def _run_command(self, chat_id: str, command) -> None:
+    def _run_command(self, chat_id: str, command, on_result=None) -> None:
         try:
             response = dispatch_command(command)
         except Exception:
             logger.exception("Bot command failed: %s", type(command).__name__)
             response = "❌ 命令执行失败，请查看服务日志。"
         self._reply(chat_id, response)
+        if on_result:
+            on_result(response)
 
-    def _run_backtest(self, chat_id: str, command) -> None:
+    def _run_backtest(self, chat_id: str, command, on_result=None) -> None:
         try:
-            self._run_command(chat_id, command)
+            self._run_command(chat_id, command, on_result)
         finally:
             self._backtest_slot.release()
 

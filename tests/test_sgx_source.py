@@ -80,6 +80,7 @@ def test_batch_shared_across_symbols_instances_and_slots(source):
     assert http.get.call_count == 1
     assert first["quote_time"] == "2026-11-03T09:58:00+08:00"
     assert first["volume"] == 1234
+
     assert first["delay_seconds"] == 120
     assert first["amount"] is None
     clock.current = clock.current.replace(hour=14, minute=30)
@@ -88,6 +89,15 @@ def test_batch_shared_across_symbols_instances_and_slots(source):
     clock.current = clock.current.replace(hour=19, minute=0)
     client.quote("C38U.SI")
     assert http.get.call_count == 3
+
+
+def test_directory_identity_supports_suspension_and_distinguishes_missing(source):
+    client, http, _ = source
+    http.get.return_value = response("prices", [row("D05", lt=0)])
+    assert client.security_identity("D05.SI")["code"] == "D05.SI"
+    assert client.security_identity("NOTREAL.SI") is None
+    with pytest.raises(ValueError, match="sgx_invalid_ohlc"):
+        client.quote("D05.SI")
 
 
 @pytest.mark.parametrize("status,meta", [(429, "200"), (403, "200"), (200, "SGX_4015")])

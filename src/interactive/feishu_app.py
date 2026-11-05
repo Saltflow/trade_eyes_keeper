@@ -94,6 +94,7 @@ class FeishuApp:
                     personal_route_allowed=self.gate.is_allowed,
                     personal_send=self.send_personal_message,
                     execution_runtime=self.execution_runtime,
+                    command_executor=self.command_executor,
                 )
                 if self._stopped.is_set():
                     assistant.stop()
