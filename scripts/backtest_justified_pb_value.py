@@ -25,9 +25,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from main import (
-    _load_optimizer_benchmark_bundles,
-    _load_optimizer_market_bundles_with_errors,
-    _optimizer_lookback_days,
+    _load_backtest_benchmark_bundles,
+    _load_backtest_market_bundles_with_errors,
+    _backtest_lookback_days,
     _stock_code,
     load_config,
 )
@@ -174,8 +174,8 @@ def main() -> int:
 
     constraints = get_constraints()
     constraints.set_group(MARKET)
-    lookback_days = _optimizer_lookback_days(constraints)
-    bundles, coverage_errors = _load_optimizer_market_bundles_with_errors(
+    lookback_days = _backtest_lookback_days(constraints)
+    bundles, coverage_errors = _load_backtest_market_bundles_with_errors(
         config, universe, lookback_days
     )
     if coverage_errors:
@@ -185,7 +185,7 @@ def main() -> int:
         raise SystemExit("no universe codes survive the 84-month coverage check")
     print("evaluated universe: %s" % ", ".join(universe))
 
-    benchmark_bundles = _load_optimizer_benchmark_bundles(
+    benchmark_bundles = _load_backtest_benchmark_bundles(
         config, constraints, MARKET, lookback_days
     )
     enricher = make_justified_pb_value_context(

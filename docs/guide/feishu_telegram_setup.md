@@ -77,7 +77,7 @@ python main.py --interactive   # 仅 Bot，/schedule 无运行中调度器可修
 python main.py --status        # 本地状态，不向 Bot 发消息
 ```
 
-两端使用同一个命令分发器，例如 `/help`、`/list`、`/add 600036 00883`、`/remove 600036`、`/daily`、`/brief`、`/schedule`、`/optimize`、`/config`。完整参数以 `/help` 为准。耗时回测在后台执行，每个 Bot 同时接受一个回测；接收器保留事件去重和持续限流状态。
+两端使用同一个命令分发器，例如 `/help`、`/list`、`/add 600036 00883`、`/remove 600036`、`/daily`、`/brief`、`/schedule`、`/config`。完整参数以 `/help` 为准。优化器和对应 Bot 命令已整体删除；显式 `/backtest` 保留。耗时回测在后台执行，每个 Bot 同时接受一个回测；接收器保留事件去重和持续限流状态。
 
 启用的 Bot 缺少凭证或合法白名单时会明确报错；停用的 Bot 不启动连接。修改服务开关、凭证或白名单后重启服务。`SKIP_NOTIFICATIONS` 和渠道 `SKIP_*` 会跳过外发及回复，但管理命令仍执行；停用命令接收须关闭对应 `interactive` 开关。
 

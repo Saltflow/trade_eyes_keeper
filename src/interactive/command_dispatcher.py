@@ -28,8 +28,6 @@ def dispatch_command(command) -> str:
         return handlers.handle_save()
     if isinstance(command, commands.BriefCommand):
         return handlers.handle_brief(command.report_id)
-    if isinstance(command, commands.OptimizeCommand):
-        return handlers.handle_optimize(command.group)
     if isinstance(command, commands.DailyCommand):
         return handlers.handle_daily()
     if isinstance(command, commands.DailyReportFrequencyCommand):
@@ -40,12 +38,6 @@ def dispatch_command(command) -> str:
         )
     if isinstance(command, commands.ModeCommand):
         return handlers.handle_mode(command.mode)
-    if isinstance(command, commands.ConfigCommand):
-        return handlers.handle_config(command.action, command.key, command.value)
-    if isinstance(command, commands.SkipCommand):
-        return handlers.handle_skip(command.kind, command.codes, remove=command.remove)
-    if isinstance(command, commands.SwitchOptimizerCommand):
-        return handlers.handle_switch_optimizer(command.kind, command.group)
     if isinstance(command, commands.RefDateCommand):
         return handlers.handle_ref_date(command.date_str)
     if isinstance(command, commands.RefPositionCommand):

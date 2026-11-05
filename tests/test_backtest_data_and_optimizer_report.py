@@ -10,12 +10,14 @@ import requests
 
 from src.data.backtest_data import _issue, prepare_backtest_data
 from src.data.market_history import CorporateAction, PriceHistoryBundle
-from src.search.reporting import render_optimizer_report
 
 
 def test_in_kind_gap_is_classified_as_unsupported_action():
     issue = _issue(
-        "00700", "etnet", date(2018, 4, 6), date(2026, 10, 3),
+        "00700",
+        "etnet",
+        date(2018, 4, 6),
+        date(2026, 10, 3),
         "local=stale; fetch=in-kind distribution is not supported: 00700 2022-01-20",
     )
     assert issue.category == "corporate_action_unsupported"
@@ -123,7 +125,7 @@ def test_prepare_backtest_data_fails_closed_without_legacy_fallback(
     assert not list(tmp_path.rglob("*.csv"))
 
 
-def test_optimizer_backfill_retries_retry_after_and_enables_disclosures(
+def test_manual_backfill_records_retry_after_without_retry_or_source_override(
     tmp_path, monkeypatch
 ):
     _stub_market_calendar(monkeypatch)
@@ -131,9 +133,7 @@ def test_optimizer_backfill_retries_retry_after_and_enables_disclosures(
 
     class FakeProvider:
         def __init__(self, config):
-            assert config["point_in_time_data"]["market_history"][
-                "disclosed_sources"
-            ] is True
+            assert "market_history" not in config["point_in_time_data"]
             self.calls = 0
 
         def fetch(self, _code, _start, _end):
@@ -145,30 +145,26 @@ def test_optimizer_backfill_retries_retry_after_and_enables_disclosures(
                 raise requests.HTTPError("rate limited", response=response)
             return bundle
 
-    sleeps = []
     monkeypatch.setattr("src.data.backtest_data.MarketHistoryProvider", FakeProvider)
-    monkeypatch.setattr("src.data.backtest_data.time.sleep", sleeps.append)
     config = {"point_in_time_data": {"output_dir": str(tmp_path)}}
     result = prepare_backtest_data(
         config,
         ["600000"],
         "2020-01-01",
         "2020-01-03",
-        purpose="optimizer",
+        purpose="interactive_backtest",
         as_of=datetime(2020, 1, 3, tzinfo=timezone.utc),
     )
 
-    assert result.ready
-    assert sleeps == [3.0]
-    assert [attempt.status for attempt in result.fetch_attempts] == [
-        "retryable_failure",
-        "fetched",
-    ]
+    assert not result.ready
+    assert [attempt.status for attempt in result.fetch_attempts] == ["rejected"]
+    assert result.fetch_attempts[-1].attempt == 1
+    assert result.fetch_attempts[-1].retry_after_seconds == 3.0
     # Provider overrides are scoped to the run and do not mutate caller config.
     assert "market_history" not in config["point_in_time_data"]
 
 
-def test_optimizer_backfill_does_not_retry_forbidden_or_invalid_data(
+def test_backtest_backfill_does_not_retry_forbidden_or_invalid_data(
     tmp_path, monkeypatch
 ):
     _stub_market_calendar(monkeypatch)
@@ -185,16 +181,12 @@ def test_optimizer_backfill_does_not_retry_forbidden_or_invalid_data(
             raise requests.HTTPError("forbidden", response=response)
 
     monkeypatch.setattr("src.data.backtest_data.MarketHistoryProvider", FakeProvider)
-    monkeypatch.setattr(
-        "src.data.backtest_data.time.sleep",
-        lambda _delay: pytest.fail("403 must not be retried"),
-    )
     result = prepare_backtest_data(
         {"point_in_time_data": {"output_dir": str(tmp_path)}},
         ["600000"],
         "2020-01-01",
         "2020-01-03",
-        purpose="optimizer",
+        purpose="interactive_backtest",
         as_of=datetime(2020, 1, 3, tzinfo=timezone.utc),
     )
 
@@ -246,7 +238,7 @@ def test_short_history_without_listing_evidence_remains_not_ready():
         )
 
 
-def test_optimizer_reuses_short_cache_after_official_listing_lookup(
+def test_backtest_reuses_short_cache_with_existing_official_listing_evidence(
     tmp_path, monkeypatch
 ):
     _stub_market_calendar(monkeypatch)
@@ -257,16 +249,13 @@ def test_optimizer_reuses_short_cache_after_official_listing_lookup(
     later = cached.prices.iloc[[-1]].copy()
     later["date"] = pd.Timestamp("2020-01-04")
     cached.prices = pd.concat([cached.prices, later], ignore_index=True)
+    cached.listing_evidence = ListingDateEvidence(
+        "600000",
+        date(2020, 1, 1),
+        "https://query.sse.com.cn/sseQuery/commonQuery.do",
+        "2026-10-03T00:00:00+00:00",
+    ).as_dict()
     PointInTimeMarketStore(tmp_path).write(cached)
-    monkeypatch.setattr(
-        "src.data.backtest_data.ListingDateStore.resolve",
-        lambda _self, _code: ListingDateEvidence(
-            "600000",
-            date(2020, 1, 1),
-            "https://query.sse.com.cn/sseQuery/commonQuery.do",
-            "2026-10-03T00:00:00+00:00",
-        ),
-    )
 
     class NeverFetch:
         def __init__(self, _config):
@@ -281,7 +270,7 @@ def test_optimizer_reuses_short_cache_after_official_listing_lookup(
         ["600000"],
         "2018-01-01",
         "2020-01-03",
-        purpose="optimizer",
+        purpose="interactive_backtest",
         as_of=datetime(2020, 1, 3, tzinfo=timezone.utc),
     )
     assert result.ready
@@ -395,78 +384,3 @@ def test_fundamental_backfill_requires_receipt_for_requested_code(
     assert not result.ready
     assert result.issues[-1].code == "600000"
     assert result.issues[-1].source == "fundamental"
-
-
-def test_optimizer_report_exposes_all_roles_and_holdout_aggregate():
-    report = render_optimizer_report(
-        {
-            "group": "a_share",
-            "strategy_id": "percentile",
-            "timestamp": "2026-09-03T19:00:00",
-            "solver_id": "local_genetic",
-            "parameter_schema": "parameter-space/1",
-            "control_benchmarks": ["510880", "510300", "risk_free"],
-            "params": {"buy_cash_tier": 2},
-            "activation": {"eligible": False},
-            "holdout_summary": {
-                "return_pct": 4.0,
-                "excess_return_pct": 1.5,
-                "max_drawdown_pct": -8.0,
-                "sharpe_ratio": 0.7,
-            },
-            "search": {
-                "total_window_count": 22,
-                "ranking_window_count": 16,
-                "purged_overlap_window_count": 2,
-                "validation_window_count": 4,
-                "time_contract": {
-                    "total_months": 84,
-                    "state_lookback_months": 12,
-                    "holdout_window_count": 4,
-                    "holdout_window_months": 36,
-                    "holdout_test_months": 9,
-                    "holdout_calendar_span_months": 18,
-                },
-            },
-            "ranking_windows": [
-                {
-                    "role": "ranking",
-                    "role_index": 1,
-                    "global_index": 1,
-                    "period": {
-                        "train_start": "2019-01-01",
-                        "train_end": "2020-01-01",
-                        "test_start": "2020-01-02",
-                        "test_end": "2020-10-01",
-                    },
-                    "return": 2.0,
-                    "excess_return": 1.0,
-                    "max_drawdown": -3.0,
-                    "sharpe_ratio": 0.4,
-                    "trade_count": 2,
-                    "gross_dividend_cash": 100.0,
-                    "dividend_tax_cost": 20.0,
-                    "net_dividend_cash": 80.0,
-                }
-            ],
-            "purged_windows": [
-                {"role": "purged", "role_index": 1, "global_index": 17}
-            ],
-            "holdout_windows": [
-                {"role": "holdout", "role_index": 1, "global_index": 19}
-            ],
-        }
-    )
-
-    assert "22" in report
-    assert "16" in report
-    assert "Purged" in report
-    assert "Holdout" in report
-    assert "Holdout 4 × 9 个月窗口" in report
-    assert "2019-01-01" in report
-    assert "4.00%" in report
-    assert "1.50%" in report
-    assert "分红税前" in report
-    assert "100.00" in report
-    assert "最低评估期" not in report
-    assert "24 个月" not in report

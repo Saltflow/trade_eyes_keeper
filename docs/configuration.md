@@ -9,9 +9,8 @@
 | `config/config.yaml` | 标的、数据采集、调度、通知、Bot、各市场策略与 profile 选择；本地文件，不进入 Git |
 | `config/config.yaml.example` | 主配置模板 |
 | `config/.env` / `.env.example` | SMTP、LLM、Bot 和部署凭证；只提交模板 |
+| `config/optimizer_constraints.yaml` | 历史路径保留，仅含显式回测的执行、WF、基准和 profiles；无搜索预算、Solver/Gate 或晋升执行 |
 | `config/alerts.yaml` | 共享指标锚点（历史路径保留，旧技术告警规则已删除） |
-| `config/optimizer_constraints.yaml` | Solver 预算、执行费用、窗口、基准、Gate、稳健性和研究 profile |
-| `config/promotion_policy.yaml` | 候选相对活动策略的晋升要求 |
 | `pyproject.toml` / `pytest.ini` | Python 包、Ruff、测试设置，不属于交易运行配置 |
 
 数据源按代码内的 provider 合同降级；旧 `data_source.primary/secondary`、顶层 `baostock`、`historical_cache`、`portfolio_strategy` 已退休。PIT 行情仍使用 `point_in_time_data.market_history`，其中 Baostock 超时配置继续有效。
@@ -22,7 +21,6 @@
 
 ```yaml
 stocks: ["601728", "000001", "00883", "VOO"]
-skip_search: []       # 保留监控，但不参加搜参
 alerts:
   config_path: ./config/alerts.yaml
 ```
@@ -88,7 +86,7 @@ scheduler:
       label: 午后简报
 ```
 
-`daily_enabled` 控制固定日报任务是否注册，`brief_reports[].enabled` 控制各固定简报；`run_on_startup` 保留启动日报。`daily_report_frequency: off` 不能代替关闭任务注册。显式开启后仍支持上述固定时间，不能把示例时间当作生产正在执行的计划。频次只影响固定日报，托管触发器和手动 `/daily` 独立执行。定时搜参及其配置入口已删除，手动 `--optimize`、`/optimize` 保留；旧搜参 cron 和持久任务仅清除，见[部署指南](deployment.md)。
+`daily_enabled` 控制固定日报任务是否注册，`brief_reports[].enabled` 控制各固定简报；`run_on_startup` 保留启动日报。`daily_report_frequency: off` 不能代替关闭任务注册。显式开启后仍支持上述固定时间，不能把示例时间当作生产正在执行的计划。频次只影响固定日报，托管触发器和手动 `/daily` 独立执行。整套搜参及其 CLI/Bot/配置入口已删除；旧搜参 cron 和持久任务仅清除，见[部署指南](deployment.md)。
 
 ### 受管触发器
 
@@ -119,13 +117,11 @@ interactive:
 
 HTTP/HTTPS health server、管理页面、OTP 和报告临时链接已整体下线。使用飞书/TG Bot 更灵活、更安全，无需开放管理端口。配置方法见[Bot 指南](guide/feishu_telegram_setup.md)。
 
-### 策略与执行合同
+### 手动回测与执行合同
 
-每个 `optimizer.markets.<market>` 必须显式声明 `strategy`、`solver_id`、`gate_profile`、`walk_forward_profile`、`execution_profile` 和 `benchmark_profile`。默认值和 profile 定义统一放在 `optimizer_constraints.yaml`，不再支持全局策略兜底。
+策略搜索、Solver、Gate、自动搜索窗口编排、资源进程和候选晋升/激活已下线，不再配置 optimizer/search。`config/optimizer_constraints.yaml` 与相关 loader 保留历史名称，只提供显式执行/WF/基准/profile 合同，不加载或执行 Solver/Gate。显式回测保留策略、成交价格、整手、费用、税和公司行为合同；缺少必要数据时明确失败。参考持仓保留既有绑定、估值与手动管理，不执行旧信号自动调仓。
 
-搜索排名、逆序验证、留一验证均保留 raw OHLC、现金分红（含税前/税额）、拆股和基准执行数据。前复权价格用于信号；缺少执行数据或 Numba 依赖时明确失败，不能生成零资产伪结果。
-
-主搜参资源配置使用 `search.workers`（可由 `SEARCH_WORKERS` 覆盖）和 `search.evaluation_backend`；`genetic_search.evaluation_workers` 保留给研究接口。无消费者的两项旧 mutation 参数和随机敏感性采样参数已删除，敏感性验证枚举确定性邻域。
+受管动作 `optimize` 只是保留的兼容类型，不能执行；报告动作仅 `daily`、`brief`。
 
 ## 环境变量和优先级
 

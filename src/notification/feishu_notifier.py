@@ -258,24 +258,6 @@ class FeishuNotifier(BaseNotifier):
         body = f"**状态**: {status}\n**版本**: {version}\n**概要**: {summary}"
         return self._send(title, body)
 
-    def send_optimizer_notification(
-        self, report, group_name: str = "", full_report: dict | None = None
-    ) -> None:
-        from ..notification.email_notifier import (
-            build_optimizer_summary,
-            optimizer_notification_title,
-        )
-
-        title = optimizer_notification_title(report, group_name)
-        body = build_optimizer_summary(
-            report, group_name, full_report, include_charts=False
-        )
-        ok, detail = self._send(title, body)
-        if ok:
-            logger.info("Feishu optimizer notification delivered")
-        else:
-            logger.error("Feishu optimizer notification failed: %s", detail)
-
     # ── 辅助 ──────────────────────────────────
 
     @staticmethod

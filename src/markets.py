@@ -1,5 +1,7 @@
 """股票市场分组与配置中的跳过设置。"""
 
+from __future__ import annotations
+
 
 def _detect_stock_group(stock_code: str) -> str:
     """A股(6位数字) vs 非A股"""
@@ -17,10 +19,6 @@ def _detect_fine_group(stock_code: str) -> str:
     if code.isdigit() and len(code) == 5:
         return "hk"
     return "us"
-
-
-def get_skip_search(config: dict) -> set[str]:
-    return {str(c).strip() for c in (config.get("skip_search") or [])}
 
 
 def get_skip_signals(config: dict) -> set[str]:

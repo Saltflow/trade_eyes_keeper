@@ -1,8 +1,8 @@
 """Stable contracts for trading-strategy plugins.
 
 Strategies produce a TradePlan and never choose candidate parameters, execute
-trades, calculate returns, or inspect holdout results. Search algorithms live
-under ``src.search.solvers`` and consume only the typed parameter schema.
+trades, calculate returns, or inspect holdout results. Search algorithms
+have been retired; the typed parameter schema remains for explicit backtests.
 """
 
 from __future__ import annotations
@@ -511,82 +511,6 @@ class TradingStrategy(ABC):
 
     # ══════════ 展示 ══════════
 
-    def scan_today(
-        self, params: Params, today: dict, history=None,
-    ) -> list[dict]:
-        """Emit the final row of the exact same plan used for backtests."""
-        if history is None or len(history) < self.warmup_rows:
-            return []
-        try:
-            from src.data.technical_indicators import compute_all
-            from ..backtest.engine import _build_indicator_matrix
-
-            computed = compute_all({"scan": history})
-            indicator, _prices, _dates, _tradable = _build_indicator_matrix(
-                computed, ["scan"]
-            )
-            if len(indicator) == 0:
-                return []
-            market_data = StrategyMarketData(
-                indicator_matrix=indicator,
-                dates=list(_dates),
-                symbols=["scan"],
-                prices=_prices,
-                highs=(
-                    indicator[:, :, 16]
-                    if indicator.shape[2] > 16
-                    else _prices
-                ),
-                lows=(
-                    indicator[:, :, 17]
-                    if indicator.shape[2] > 17
-                    else _prices
-                ),
-                tradable=_tradable,
-            )
-            plan = self.make_signals(params, market_data)
-        except (KeyError, TypeError, ValueError):
-            return []
-
-        row = len(plan.buy_signals) - 1
-        results = []
-        if plan.buy_signals[row, 0]:
-            if plan.execution.get("model") == "target_weight":
-                target_weight = (
-                    float(plan.target_weights[row, 0])
-                    if plan.target_weights is not None
-                    else float(plan.execution.get("per_symbol_cap", 0.0))
-                )
-                detail = (
-                    f"buy conviction {plan.buy_priority[row, 0]:.2f}; "
-                    f"target cap {target_weight:.1%}"
-                )
-            else:
-                detail = (
-                    f"buy score {plan.buy_priority[row, 0]:.2f}; "
-                    f"max cash {plan.buy_cash_limit:.0f}"
-                )
-            results.append(
-                {
-                    "side": "buy",
-                    "label": self.name,
-                    "priority": float(plan.buy_priority[row, 0]),
-                    "detail": detail,
-                }
-            )
-        if plan.sell_signals[row, 0]:
-            results.append(
-                {
-                    "side": "sell",
-                    "label": self.name,
-                    "priority": float(plan.sell_priority[row, 0]),
-                    "detail": (
-                        f"sell score {plan.sell_priority[row, 0]:.2f}; "
-                        f"max cash {plan.sell_cash_limit:.0f}"
-                    ),
-                }
-            )
-        return results
 
     @abstractmethod
     def to_human_readable(self, params: Params) -> str:

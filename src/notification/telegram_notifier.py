@@ -254,28 +254,6 @@ class TelegramNotifier(BaseNotifier):
         body = f"<b>状态</b>: {status}\n<b>版本</b>: {version}\n<b>概要</b>: {summary}"
         return self._send(title, body)
 
-    def send_optimizer_notification(
-        self, report, group_name: str = "", full_report: dict | None = None
-    ) -> None:
-        from ..notification.email_notifier import (
-            build_optimizer_summary,
-            optimizer_notification_title,
-        )
-
-        title = optimizer_notification_title(report, group_name)
-        body = build_optimizer_summary(
-            report, group_name, full_report, include_charts=False
-        )
-        # Optimizer summaries are shared with email/Feishu and use ``<br>``
-        # for visual line breaks. Telegram's HTML subset rejects that tag,
-        # while accepting the remaining ``<b>`` and ``<code>`` markup.
-        body = re.sub(r"<br\s*/?>", "\n", body, flags=re.IGNORECASE)
-        ok, detail = self._send(title, body)
-        if ok:
-            logger.info("Telegram optimizer notification delivered")
-        else:
-            logger.error("Telegram optimizer notification failed: %s", detail)
-
     # ── 构建方法 ─────────────────────────────
 
 

@@ -135,7 +135,7 @@ def test_explicit_receipt_import_survives_full_preparation_without_estimate_repa
         ["00700"],
         date(2022, 1, 3),
         date(2022, 1, 6),
-        purpose="optimizer",
+        purpose="interactive_backtest",
         as_of=datetime(2022, 1, 7, tzinfo=timezone.utc),
     )
     provider.fetch.assert_not_called()
@@ -356,50 +356,6 @@ def test_ledger_report_keeps_escapes_and_non_cash_diagnostics():
     assert "交付前不可交易" in rendered
 
 
-@pytest.mark.parametrize(
-    "execution, expected, absent",
-    [
-        (
-            {
-                "model": "target_weight",
-                "per_symbol_cap": 0.15,
-                "total_exposure_cap": 0.6,
-            },
-            "目标仓位: 单标的上限 15% / 总仓位上限 60%",
-            "单笔现金上限",
-        ),
-        (
-            {"model": "cash_ladder", "buy_cash_limit": 1000, "sell_cash_limit": 2000},
-            "单笔现金上限: 买入 1000 / 卖出 2000 元",
-            "目标仓位",
-        ),
-    ],
-)
-def test_optimizer_notification_uses_actual_execution_model(
-    execution, expected, absent
-):
-    from src.notification.report_builders import build_optimizer_summary
-    from src.search.artifacts import OptimizerGroupSummary, OptimizerRunSummary
-
-    summary = OptimizerRunSummary(
-        "fixture",
-        "fixture",
-        "2026-10-31",
-        1,
-        {
-            "a_share": OptimizerGroupSummary(
-                "a_share",
-                execution=execution,
-                status="completed",
-                wf_score=0.0,
-            )
-        },
-    )
-    body = build_optimizer_summary(summary)
-    assert expected in body
-    assert absent not in body
-
-
 def test_stale_cached_external_quotes_are_refreshed_when_parent_window_grows():
     from unittest.mock import Mock
 
@@ -504,68 +460,3 @@ def test_vendor_qfq_cannot_bypass_raw_factor_identity():
     action.in_kind_terms.source_adjustment_factor = None
     with pytest.raises(ValueError, match="qfq_close"):
         apply_disclosed_adjustments(parent, [action], evidence="fixture")
-
-
-def test_optimizer_validation_snapshot_preserves_ledger_through_notification():
-    from main import _optimizer_validation_snapshot
-    from src.notification.report_builders import build_optimizer_summary
-    from src.search.artifacts import OptimizerGroupSummary, OptimizerRunSummary
-    from src.strategy.api import EvaluationReport
-
-    report = EvaluationReport(
-        group="hk",
-        engine_name="fixture",
-        strategy_label="fixture",
-        timestamp="fixture",
-        total_return=0,
-        excess_return=0,
-        max_drawdown=0,
-        sharpe_ratio=0,
-        trade_count=0,
-        avg_cash_pct=100,
-        in_kind_positions=[
-            {
-                "event_id": "ledger-snapshot",
-                "asset_code": "09618",
-                "quantity": 10,
-                "value": 200,
-            }
-        ],
-    )
-    snapshot = _optimizer_validation_snapshot(report)
-    assert snapshot["in_kind_positions"] == report.in_kind_positions
-    summary = OptimizerRunSummary(
-        "fixture",
-        "fixture",
-        "fixture",
-        0,
-        {
-            "hk": OptimizerGroupSummary(
-                group="hk", status="completed", wf_score=0.0, validation=snapshot
-            )
-        },
-    )
-    body = build_optimizer_summary(summary)
-    assert "ledger-snapshot" in body
-    assert "09618" in body
-
-
-def test_reference_status_renderer_includes_external_entitlement():
-    from src.notification.email_notifier import EmailNotifier
-
-    rendered = EmailNotifier._build_ref_portfolio_status_note(
-        {
-            "in_kind_positions": [
-                {
-                    "event_id": "reference-ledger",
-                    "asset_code": "09618",
-                    "quantity": 10,
-                    "delivered": False,
-                    "value": 200,
-                }
-            ],
-            "in_kind_cashflows": [],
-        }
-    )
-    assert "reference-ledger" in rendered
-    assert "09618" in rendered

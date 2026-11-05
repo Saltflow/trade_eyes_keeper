@@ -390,7 +390,7 @@ def test_optimizer_preflight_excludes_bad_bundle_without_mutating_symbol_pool(
     config = {"point_in_time_data": {"output_dir": str(tmp_path)}}
     codes = ["GOOD", "BAD"]
 
-    bundles, errors = main._load_optimizer_market_bundles_with_errors(
+    bundles, errors = main._load_backtest_market_bundles_with_errors(
         config,
         codes,
         3102,

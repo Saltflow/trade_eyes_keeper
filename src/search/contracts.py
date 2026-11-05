@@ -7,15 +7,12 @@ keeps solvers portable without letting them inspect signal or execution code.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import Enum
 import hashlib
 import json
-import math
 import random
-from typing import Iterable, Mapping
-
-import numpy as np
+from dataclasses import dataclass
+from enum import Enum
+from typing import Mapping
 
 
 def stable_hash(value: object) -> str:
@@ -194,7 +191,7 @@ class ParameterSpec:
 
 @dataclass(frozen=True)
 class ParameterSchema:
-    """A typed parameter space shared by every solver."""
+    """A typed parameter space shared by strategies and explicit evaluation."""
 
     parameters: tuple[ParameterSpec, ...]
     schema_id: str = "parameter-schema/1"
@@ -214,7 +211,7 @@ class ParameterSchema:
             known.add(parameter.name)
 
     @classmethod
-    def from_param_space(cls, param_space: object) -> "ParameterSchema":
+    def from_param_space(cls, param_space: object) -> ParameterSchema:
         """Adapt the historical ``ParamDim`` contract without strategy branches."""
         parameters = []
         for dim in getattr(param_space, "dims", ()):  # pragma: no branch
@@ -343,189 +340,3 @@ class ParameterSchema:
                     seen.add(key)
                     result.append(normalized)
         return result
-
-
-@dataclass(frozen=True)
-class Candidate:
-    candidate_id: str
-    parameters: Mapping[str, object]
-    schema_hash: str
-    source: str
-
-    @classmethod
-    def create(
-        cls,
-        parameters: Mapping[str, object],
-        schema: ParameterSchema,
-        source: str,
-        nonce: str = "",
-    ) -> "Candidate":
-        values = schema.validate(parameters)
-        candidate_id = stable_hash(
-            {"schema": schema.hash, "parameters": values, "nonce": nonce}
-        )[:24]
-        return cls(candidate_id, values, schema.hash, source)
-
-
-@dataclass
-class CandidateBatch:
-    """Columnar candidate transport used by solvers and evaluators."""
-
-    candidate_ids: tuple[str, ...]
-    schema_hash: str
-    columns: dict[str, np.ndarray]
-    sources: tuple[str, ...]
-
-    @classmethod
-    def from_candidates(
-        cls, candidates: Iterable[Candidate], schema: ParameterSchema
-    ) -> "CandidateBatch":
-        rows = list(candidates)
-        for candidate in rows:
-            if candidate.schema_hash != schema.hash:
-                raise ValueError("candidate/schema hash mismatch")
-        columns = {
-            name: np.asarray([candidate.parameters[name] for candidate in rows])
-            for name in schema.names
-        }
-        return cls(
-            tuple(candidate.candidate_id for candidate in rows),
-            schema.hash,
-            columns,
-            tuple(candidate.source for candidate in rows),
-        )
-
-    def __len__(self) -> int:
-        return len(self.candidate_ids)
-
-    def parameters_at(self, index: int) -> dict[str, object]:
-        return {
-            name: (
-                values[index].item()
-                if hasattr(values[index], "item")
-                else values[index]
-            )
-            for name, values in self.columns.items()
-        }
-
-    def sliced(self, start: int, end: int) -> "CandidateBatch":
-        """Return a contiguous, IPC-friendly batch copy."""
-
-        lower = max(0, int(start))
-        upper = min(len(self), max(lower, int(end)))
-        return CandidateBatch(
-            candidate_ids=self.candidate_ids[lower:upper],
-            schema_hash=self.schema_hash,
-            columns={
-                name: np.ascontiguousarray(values[lower:upper])
-                for name, values in self.columns.items()
-            },
-            sources=self.sources[lower:upper],
-        )
-
-    def take(self, indexes: Iterable[int]) -> "CandidateBatch":
-        """Select rows while preserving the caller's deterministic order."""
-
-        selected = tuple(int(index) for index in indexes)
-        positions = list(selected)
-        return CandidateBatch(
-            candidate_ids=tuple(self.candidate_ids[index] for index in selected),
-            schema_hash=self.schema_hash,
-            columns={
-                name: np.ascontiguousarray(values[positions])
-                for name, values in self.columns.items()
-            },
-            sources=tuple(self.sources[index] for index in selected),
-        )
-
-
-@dataclass(frozen=True)
-class GateDecision:
-    feasible: bool
-    penalty: float = 0.0
-    results: tuple[dict[str, object], ...] = ()
-    failure_reasons: tuple[str, ...] = ()
-
-
-@dataclass
-class EvaluationBatch:
-    candidate_ids: tuple[str, ...]
-    raw_metrics: tuple[dict[str, object], ...]
-    objective_scores: np.ndarray
-    gate_decisions: tuple[GateDecision, ...]
-    feasible: np.ndarray
-    failure_reasons: tuple[tuple[str, ...], ...]
-    fidelity: str = "ranking/full"
-
-    def __post_init__(self) -> None:
-        count = len(self.candidate_ids)
-        if any(
-            len(value) != count
-            for value in (
-                self.raw_metrics,
-                self.objective_scores,
-                self.gate_decisions,
-                self.feasible,
-                self.failure_reasons,
-            )
-        ):
-            raise ValueError("evaluation batch columns must have equal length")
-
-
-@dataclass(frozen=True)
-class SolverCapabilities:
-    batched: bool = True
-    asynchronous: bool = False
-    multi_fidelity: bool = False
-    requires_gradients: bool = False
-    conditional_parameters: bool = True
-    checkpoint: bool = True
-
-
-@dataclass(frozen=True)
-class EvaluatorCapabilities:
-    """Execution backends exposed without coupling a Solver to an evaluator."""
-
-    backends: tuple[str, ...] = ("cpu_scalar",)
-    active_backend: str = "cpu_scalar"
-    batched: bool = False
-    gradients: bool = False
-    gpu: bool = False
-
-
-@dataclass(frozen=True)
-class SearchProblem:
-    schema: ParameterSchema
-    objective_id: str
-    gate_profile_id: str
-    budget: int
-    data_hash: str
-    execution_hash: str
-    window_hash: str
-    feature_hash: str
-    requirements: SolverCapabilities = field(default_factory=SolverCapabilities)
-    metadata: Mapping[str, object] = field(default_factory=dict)
-
-    @property
-    def contract_hash(self) -> str:
-        return stable_hash(
-            {
-                "schema": self.schema.hash,
-                "objective": self.objective_id,
-                "gate": self.gate_profile_id,
-                "budget": self.budget,
-                "data": self.data_hash,
-                "execution": self.execution_hash,
-                "window": self.window_hash,
-                "feature": self.feature_hash,
-                "metadata": dict(self.metadata),
-            }
-        )
-
-
-def finite_score(value: object, default: float = -math.inf) -> float:
-    try:
-        score = float(value)
-    except (TypeError, ValueError):
-        return default
-    return score if math.isfinite(score) else default

@@ -2,7 +2,7 @@
 
 历史生产核对日期：2026-11-03。v1.23.2 / `1075195` 的触发器耗尽自动失效补丁已推送并部署，隔离验收通过后更新 6 个公共文件，逐文件核验 870 项公共文件，并确认运行进程版本、心跳和飞书接收入口状态。私有配置、固定调度与策略状态保持原值，触发动作与投递历史保留；允许已耗尽规则正常转为 done。发布回执位于生产 `data/deployments/trigger_lifecycle_v1_23_2_20261103_1075195/`。未新增立即报告入口、真实模型调用或测试消息。历史环境及本机配置快照保留在文末，与当前状态分开。
 
-系统目前是**模块化单体，使用多个工作进程与 SQLite 持久化**。服务宿主负责在线任务，搜参使用独立优化进程，财报研究使用冻结版本的 host/worker。五个可复用包已经存在于源码中；共享实现不等于共享全部队列、业务库或配置。
+系统目前是**模块化单体，使用多个工作进程与 SQLite 持久化**。服务宿主负责在线任务，财报研究使用冻结版本的 host/worker。五个可复用包已经存在于源码中；共享实现不等于共享全部队列、业务库或配置。
 
 当前业务图按2026-11-04本地清理后的源码更新，本轮为本地源码清理，不代表已经部署。Pi会话删减的历史部署证据及文末带日期的环境表保留当时含义，不能当作当前运行配置。
 
@@ -11,7 +11,7 @@
 - [数据与状态归属](#数据与状态归属)
 - [飞书开关与对话路由](#飞书开关与对话路由)
 - [告警链路放大图](#告警链路放大图)
-- [搜参子系统放大图](#搜参子系统放大图)
+- [手动回测与历史产物](#手动回测与历史产物)
 - [财报研究链路放大图](#财报研究链路放大图)
 - [当前配置与实现边界](#当前配置与实现边界)
 - [模块与源码导航](#模块与源码导航)
@@ -40,10 +40,8 @@ flowchart TB
         HOST --> QUEUE --> REPORT
     end
     subgraph QUANT["量化业务"]
-        SEARCH["独立优化进程<br/>Solver → 策略/回测 → Gate → 验证"]
-        ACTIVE["完整候选 → 同市场晋升 / 人工激活<br/>按市场活动指针"]
+        BACKTEST["显式手动回测<br/>TradePlan → Backtester"]
         KE["显式 Ke 曲线批次<br/>时点估值 → 历史仿真产物"]
-        SEARCH --> ACTIVE
     end
     subgraph RESEARCH["财报研究"]
         API["research_pipeline API → 冻结 host/worker<br/>任务 DAG、预算、缓存、故障隔离"]
@@ -58,12 +56,12 @@ flowchart TB
     MAIN -->|服务模式| HOST
     BOT --> HOST
     MAIN -->|--once / --brief| QUEUE
-    MAIN -->|--optimize| SEARCH
     HOST -.->|受控研究工具与确认| API
     FINCLI --> API
     KE -.->|只读合格的已完成曲线| REPORT
     DATA --> REPORT
-    DATA --> SEARCH
+    DATA --> BACKTEST
+    HOST -->|显式 /backtest| BACKTEST
     DATA --> KE
     QUEUE -.->|执行器实现；在线库| PLATFORM
     HOST -.->|助手循环与模型客户端| PLATFORM
@@ -93,7 +91,7 @@ flowchart LR
     FIN --> DOMAIN[("research.sqlite3<br/>研究状态、结果、预算投影")]
 ```
 
-在线实例与研究实例使用同一套持久执行器代码，但没有合并成一个数据库。财报任务及其模型维修在同一 authority 的 `research_llm` 容量中竞争，配置上限 20 不是每批次各 20，也不是实际运行并发的观测值。搜参的 CPU 预算、进程数与批大小另由搜索资源计划管理。
+在线实例与研究实例使用同一套持久执行器代码，但没有合并成一个数据库。财报任务及其模型维修在同一 authority 的 `research_llm` 容量中竞争，配置上限 20 不是每批次各 20，也不是实际运行并发的观测值。策略搜索进程已删除；研究模型容量不用于搜索。
 
 ## 数据与状态归属
 
@@ -107,7 +105,7 @@ flowchart LR
 | 研究业务状态及阶段结果 | 研究 store 的 `research.sqlite3` 与运行目录 | 保存合同、预算、产物、冻结代码及回执 |
 | 个人持仓、账户版本、历史与 outbox | `personal_monitor` 业务 store | 保留独立业务合同，不等同在线执行队列 |
 | 行情/PIT/公司行动与业务缓存 | `data`、`instruments` 及各适配器 | 仍有业务专用缓存，未全部迁入 data_hub |
-| 搜参候选与活动版本 | `search.artifacts` 管理的运行产物与市场指针 | 参考账户绑定既有运行与执行合同 |
+| 历史搜索产物与参考账户绑定 | 现存历史文件与参考账户 store | 历史只读；不再发布、晋升或激活新候选 |
 | Ke 展示输入 | `report.return_curve_artifact` | 只读取完成、类型正确、覆盖与时效合格的曲线 |
 
 `authority_for()` 的选择顺序为显式 root → `storage.authority_root` → `TRADE_EYES_AUTHORITY_ROOT` → `<project>/data/shared_platform`。相对 root 按项目目录解析；`AuthorityRef` 要求绝对路径。scope 隔离资料目录，不自动给共享任务和账本新建一套库。底座不反向导入业务组合层。
@@ -158,55 +156,13 @@ TriggerRuntime 只派发已有日报/简报任务，optimize 仅预留、不执�
 
 日报/简报沿用现有价格与基本面表、合格 Ke 曲线；缺失 ROE 仅渲染有效 PB/PE×100 并标 `(估)`。三市场曲线在邮件/PDF 合成一图，Bot 保留文字替代。事件使用同一共享构建器，类别 → 市场 → 标的 → 发布日期排序，合并例行披露并保留全部原文链接；默认展示两个自然月，Bot 可设 1–24，待派息分红与未解禁事项不受此期限裁剪。
 
-## 搜参子系统放大图
+## 手动回测与历史产物
 
-```mermaid
-flowchart TB
-    START["CLI / Bot 手动优化命令<br/>沿用优化进程合同与互斥"]
-    CONFIG["按市场配置<br/>策略、Solver、参数域、预算、窗口、Gate、执行合同"]
-    PREP["行情与基准预检<br/>日期、公司行动、时点特征与数据合同"]
-    WF["search.workflow.run_optimizer<br/>窗口分工、资源计划、合同哈希"]
-    CTRL["SearchController<br/>预算、候选批次与 checkpoint"]
-    SOLVER["Solver 插件<br/>genetic / local_genetic / random / simulated_annealing"]
-    EVAL["EvaluationService<br/>只开放排名窗口，评价缓存<br/>CPU 标量 / 批量 / 进程后端"]
-    STRATEGY["策略插件 + TradePlan<br/>统一回测和现金 / 成交 / 公司行动合同"]
-    METRICS["排名评价结果<br/>收益、回撤、基准与约束指标"]
-    GATE["CandidateGatePipeline<br/>可行性、惩罚和失败原因"]
-    ARCHIVE["搜索归档与断点<br/>候选参数、评价、门槛、Solver 状态"]
-    VALIDATE["ValidationController<br/>候选后置稳健性检查<br/>局部敏感性 / 可选股票池扰动 / 独立留出评价"]
-    CANDIDATE["版本化候选运行产物<br/>验证、合同、诊断与可激活性"]
-    RELATIVE["与同市场 incumbent 对照<br/>相同评价切片与基准<br/>收益改善与安全约束"]
-    AUTO["相对晋升通过且自动替换开启<br/>publish_complete_run → activate_run"]
-    MANUAL["显式 --activate-run<br/>重新校验完整性与可激活条件"]
-    ACTIVE["按市场活动指针<br/>其他市场保持各自绑定"]
-    CONSUMER["显式回测 / 手工参考持仓管理<br/>估值与公司行动沿用绑定运行及合同"]
+优化器整套功能已删除，包括搜索/Solver、Gate、候选/晋升/激活、资源进程、恢复锁、专属通知及 CLI/Bot 入口。受管动作 `optimize` 仅保留类型兼容，不执行。历史运行文件通过既有数据工具只读查询，不作为新搜索的恢复现场。
 
-    START --> PREP
-    CONFIG --> PREP
-    PREP --> WF --> CTRL
-    CTRL -->|ask| SOLVER
-    SOLVER -->|候选参数| EVAL
-    EVAL --> STRATEGY --> METRICS --> GATE
-    GATE -->|评价反馈经 Controller tell| SOLVER
-    CTRL --> ARCHIVE
-    GATE --> ARCHIVE
-    CTRL -->|搜索结束，保留入围候选| VALIDATE
-    VALIDATE --> CANDIDATE
-    CANDIDATE --> RELATIVE -->|通过且 auto_activate_if_better 开启| AUTO
-    CANDIDATE -->|显式选择| MANUAL
-    AUTO --> ACTIVE
-    MANUAL --> ACTIVE
-    ACTIVE --> CONSUMER
-    RELATIVE -->|未通过或不开启自动替换| KEEP["保留候选与诊断<br/>不自动改变活动指针"]
-```
+保留 `config/optimizer_constraints.yaml` 及 loader 的历史名称，仅提供执行/WF/基准/profile 合同；`search.workflow` 只剩两个 PB 脚本使用的显式手动 WF 适配，不包含搜索驱动器。
 
-- **搜参不是 LLM 调用池。** 并行度、批大小和后端由搜索资源规划与 Solver 能力决定，不能套用财报 API 的 20 路并发或美元预算。
-- **参数搜索、策略、评价解耦。** Solver 用 `ask/tell` 提议参数与接收评价，不直接访问留出窗口、执行成交或决定通知；统一策略和 Backtester 负责候选的交易计划及评价合同。
-- **门槛有不同层次。** 排名阶段的 `CandidateGatePipeline` 会影响可行性及分数；搜索完成后 `ValidationController` 才执行配置要求的后置稳健性和独立窗口评价，不能将这些结果反馈成 Solver 的训练窗口。
-- **候选发布与活动切换分开。** 候选文件可保留而不替换活动参数。自动切换要求同市场相对晋升通过且配置允许；人工切换也调用 `activate_run` 重新检查产物合同和资格。当前实现允许已记录的相对晋升作为激活路径，否则检查绝对留出通过条件，不能画成两条路径都必须再叠加同一绝对收益门槛。
-- **消费者只读取确定版本。** 显式回测和手工初始化按选定或活动产物读取；已初始化参考持仓绑定运行、参数和执行合同，不因活动指针变化自动换策略或技术调仓。日报不消费活动策略扫描；股票池扰动/benchmark 的诊断任务本身不激活结果。
-
-核对入口：[run_optimizer](../src/search/workflow.py)、[SearchController](../src/search/controller.py)、[EvaluationService](../src/search/evaluator.py)、[Gate](../src/search/gates.py)、[ValidationController](../src/search/validation.py)、[相对晋升](../src/search/promotion.py)、[产物与激活](../src/search/artifacts.py)。
+手动 `/backtest`、策略合同、TradePlan、Backtester 和公司行为记账保留。日报/简报继续读取独立完成的 Ke 曲线和原业务数据；完整报告生成器、统一研究与 Pi 对话链路不因此替换。
 
 ## 财报研究链路放大图
 
@@ -246,6 +202,10 @@ flowchart TB
 
 ## 当前配置与实现边界
 
+2026-11-04 本地源码已移除优化器；`optimizer.markets`、Solver/Gate/自动搜索窗口配置和激活入口不再是当前支持项。显式回测执行合同、参考账户估值及历史产物读取保留。以下两张表是带日期的旧环境证据，不能按其中的搜索参数重建当前功能。
+
+### 历史配置与核验快照
+
 | 本机兼容快照 | 2026-11-01 文件配置 / 代码行为（不代表当前生产） |
 |---|---|
 | 报告展示 | 技术信号关闭；`returns_only`；曲线路径 `data/strategy_returns/ke_24m.json`，最大年龄 7 天 |
@@ -265,11 +225,10 @@ flowchart TB
 | 状态保护 | 私有配置、触发历史及策略状态保持原值；数据库不回卷 |
 | 研究边界 | 离线 Docker 协议已验证；未执行新的付费研究；Codex native 未安装/启用 |
 
-- **既有策略版本仍有效。** YAML 的搜索或执行参数变化，不直接使已绑定的旧策略、参数与执行合同失效；配置与冻结产物承担不同职责。
+- **既有持仓和历史产物保留。** 本轮不回卷参考账户，也不删除历史搜索文件；当前代码不再生成或激活候选。
 - **执行器已统一实现，状态尚按域分开。** 不把两个 SQLite 队列画成同一个，不把研究费用投影当成第二份权威账单。
 - **旧研究专用入口已删除。** `src/fundamental_quant` 四个历史适配模块及其CLI/Bot入口、旧周通知和孤立纵向配置已从本地源码删除，不保留占位执行器。历史文件、tokenizer和通用工具可读的公开导出保留；新研究编排及仍有消费者的手工财报/研究交接脚本保留。本轮为本地源码清理，不代表已经部署。
 - **保留的适配器仍有消费者。** `fundamental_embedding` 保留数据、行业及 PB/CAPM 等适配；已退役 MOE、旧评分和旧 Ke 实验不属于现行研究。助手的手工回测沙箱仍在，不能与旧 fundamental_quant 一起视为删除。
-- **仍有量化层依赖债务。** TradePlan、PortfolioTrace、EvaluationReport 位于 `strategy.api`；`backtest.api` 仍转导出，回测 engine 仍使用 `search.config`。目前 `shared_contracts` 提供 authority 合同，并未完成这些量化合同的下沉。
 
 ## 模块与源码导航
 
@@ -285,7 +244,7 @@ flowchart TB
 | 个人监控 | [personal_monitor](../src/personal_monitor) | 持仓、提醒、版本、历史、业务 outbox |
 | 数据接入 | [data](../src/data)、[instruments](../src/instruments) | 行情、PIT、公司行动、财务推导与缓存 |
 | 策略与仿真 | [strategy](../src/strategy)、[backtest](../src/backtest)、[ref_portfolio](../src/core/ref_portfolio.py) | TradePlan、成交、现金流及绑定账户 |
-| 搜参 | [search](../src/search)、[promotion](../src/search/promotion.py)、[artifacts](../src/search/artifacts.py) | Solver、评价、验证、晋升与版本 |
+| 手动回测 | [backtest](../src/backtest)、[strategy](../src/strategy) | 显式策略计划、成交和评价；无搜索与激活 |
 | Ke 展示 | [return_curves](../src/strategy/return_curves.py)、[report_policy](../src/notification/report_policy.py) | 已完成曲线验收与价格/基本面展示合同 |
 | 统一研究 | [research_pipeline](../src/research_pipeline)、[CLI](../scripts/financial_pipeline.py) | DAG、冻结执行、预算、缓存、修复和状态 |
 | 财报阶段合同 | [fundamental_data](../src/fundamental_data)、[财报指南](guide/financial_pipeline.md)、[正式研究](guide/research_report.md) | 提取、对齐、摘要、横评与三轮产物 |

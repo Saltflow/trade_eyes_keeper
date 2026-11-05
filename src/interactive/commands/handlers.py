@@ -60,30 +60,14 @@ def handle_help() -> str:
             ],
         ),
         (
-            "🔬 策略与搜参",
+            "📈 参考持仓与执行合同",
             [
-                ("/optimize 市场", "按指定市场独立搜参，如 <code>/optimize a_share</code>"),
-                (
-                    "/switch_optimizer [市场] 策略",
-                    "查看/切换下次候选策略；可按市场设置",
-                ),
                 ("/mode", "查看当前 TradePlan 执行合同"),
-                ("/config [show|set K V|reset]", "查看/修改优化器配置"),
                 ("/ref_date [YYYY-MM-DD]", "设置参考持仓基期（默认今天）"),
                 (
                     "/ref_position set|buy|sell 市场 代码 股数 价格",
                     "按显式成交价修改参考持仓并记录交易",
                 ),
-            ],
-        ),
-        (
-            "🎯 标的开关",
-            [
-                (
-                    "/skip search 代码",
-                    "关闭标的搜参 例 <code>/skip search 601985</code>",
-                ),
-                ("/unskip search 代码", "恢复标的搜参"),
             ],
         ),
         (
@@ -116,138 +100,10 @@ def handle_list() -> str:
     if not stocks:
         return "监控列表为空。使用 <code>/add 代码</code> 添加。"
 
-    skip_search = {str(c) for c in (config.get("skip_search") or [])}
-
     lines = [f"<b>监控列表</b>（共 {len(stocks)} 只）"]
-    lines.append("标记: 🔍搜参 (划掉=已关闭)\n")
     for code in stocks:
-        c = str(code)
-        s1 = "🔍" if c not in skip_search else "<s>🔍</s>"
-        lines.append(f"<code>{code}</code> {s1}")
-    n_skip_s = len(skip_search)
-    if n_skip_s:
-        lines.append(f"\n不搜参: {n_skip_s} 只")
+        lines.append(f"<code>{code}</code>")
     return "\n".join(lines)
-
-
-def handle_skip(kind: str, codes: list[str], remove: bool = False) -> str:
-    """管理手动搜参排除列表。
-
-    Args:
-        kind: "search"
-        codes: 标的代码列表
-        remove: True=移出skip(恢复), False=加入skip
-    """
-    if kind != "search":
-        return "❌ 仅支持 search；旧技术信号扫描已删除。"
-    key = "skip_search"
-    label = "搜参"
-    changed = []
-
-    def mutate(config: dict) -> None:
-        cur = [str(c) for c in (config.get(key) or [])]
-        cur_set = {c.upper() for c in cur}
-        stocks_upper = {str(s).upper() for s in config.get("stocks", [])}
-        for code in codes:
-            cu = code.upper()
-            if remove:
-                match = next((c for c in cur if c.upper() == cu), None)
-                if match:
-                    cur.remove(match)
-                    cur_set.discard(cu)
-                    changed.append(code)
-            elif cu in stocks_upper and cu not in cur_set:
-                cur.append(code)
-                cur_set.add(cu)
-                changed.append(code)
-        if changed:
-            config[key] = cur
-
-    config = _update_config(mutate)
-
-    if not changed:
-        return f"无变更（{label}）。"
-
-    action = "恢复" if remove else "关闭"
-    codes_str = " ".join(f"<code>{c}</code>" for c in changed)
-    return (
-        f"✅ 已{action}{len(changed)} 只标的的{label}: {codes_str}\n"
-        f"当前不{label}: {len(config.get(key) or [])} 只"
-    )
-
-
-def _engine_brief(engine_key: str) -> str:
-    """获取引擎买卖标准简介。"""
-    from ...strategy import get_strategy
-    s = get_strategy(engine_key)
-    if s:
-        return f"{s.label}\n  原理: {s.description}"
-    return ""
-
-
-def handle_switch_optimizer(
-    kind: str | None = None,
-    group: str | None = None,
-) -> str:
-    """View or change the next-search strategy for one required market."""
-    from ...strategy import get_strategy, list_strategies
-    strategies = list_strategies()
-
-    if kind is None:
-        config = _load_config()
-        optimizer = config.get("optimizer", {}) or {}
-        markets = optimizer.get("markets", {}) or {}
-        lines = [
-            "<b>可用候选策略</b>\n",
-            "下次搜参策略必须按市场设置；不会切换当前生产运行。",
-        ]
-        lines.append(
-            "当前按市场: "
-            + ", ".join(
-                f"{market}={(markets.get(market, {}) or {}).get('strategy', '缺失')}"
-                for market in ("a_share", "hk", "us")
-            )
-            + "\n"
-        )
-        for s in strategies:
-            lines.append(f"<b>{s['key']}</b> — {s['label']}")
-            lines.append(f"  {s['description']}")
-            lines.append(
-                f"  切换: <code>/switch_optimizer a_share {s['key']}</code>"
-            )
-            lines.append("")
-        return "\n".join(lines).rstrip()
-
-    if group not in {"a_share", "hk", "us"}:
-        return "❌ 切换策略时必须指定市场：/switch_optimizer a_share 策略"
-    s = get_strategy(kind)
-    if s is None:
-        valid = [x["key"] for x in strategies]
-        return f"❌ 未知引擎: {kind}。可用: {', '.join(valid)}"
-
-    old = "缺失"
-
-    def mutate(candidate: dict) -> None:
-        nonlocal old
-        optimizer = candidate.get("optimizer", {}) or {}
-        markets = optimizer.get("markets", {}) or {}
-        if not isinstance(markets, dict) or not isinstance(markets.get(group), dict):
-            raise TypeError(f"{group} 市场配置缺失")
-        old = markets[group].get("strategy", "缺失")
-        markets[group]["strategy"] = kind
-        from ...search.config import get_market_optimizer_config
-
-        get_market_optimizer_config(group, application_config=candidate)
-
-    try:
-        _update_config(mutate)
-    except (TypeError, ValueError) as exc:
-        return f"❌ {group} 市场策略配置无效，未修改：{exc}"
-    return (
-        f"✅ {group} 市场下次搜参候选策略: <b>{old} → {kind}</b>\n\n"
-        f"{s.label}: {s.description}\n\n"
-        "当前生产策略不会改变；候选通过 Gate 后仍须显式激活。"
-    )
 
 
 def handle_add(codes: list[str]) -> str:
@@ -338,7 +194,11 @@ def _get_backtest_params(group: str, strategy):
     from ...search.artifacts import load_latest_strategy_run
 
     active = load_latest_strategy_run(groups=(group,))
-    if active is not None and active.strategy_for(group) is not None and active.strategy_for(group).name == strategy.name:
+    if (
+        active is not None
+        and active.strategy_for(group) is not None
+        and active.strategy_for(group).name == strategy.name
+    ):
         params = active.params_by_group.get(group)
         if params is not None:
             return params, False
@@ -363,13 +223,11 @@ def handle_backtest(code: str, start: str, end: str) -> str:
         group = _detect_fine_group(code)
         strategy = _get_backtest_strategy(config, group)
         if strategy is None:
-            return "❌ 该市场没有已激活的回测策略，请先按市场激活搜参候选"
+            return "❌ 该市场没有可用的历史策略快照，无法回测。"
         params, using_fallback_params = _get_backtest_params(group, strategy)
         if params is None:
-            return "❌ 该市场没有已激活的回测参数，请先按市场激活搜参候选"
-        market_config = get_market_optimizer_config(
-            group, application_config=config
-        )
+            return "❌ 该市场没有可用的历史参数快照，无法回测。"
+        market_config = get_market_optimizer_config(group, application_config=config)
 
         market_bundles = None
         benchmark_bundles = None
@@ -382,9 +240,7 @@ def handle_backtest(code: str, start: str, end: str) -> str:
             ]
             warmup_start = (
                 pd.Timestamp(s)
-                - pd.DateOffset(
-                    months=constraints.walk_forward.state_lookback_months
-                )
+                - pd.DateOffset(months=constraints.walk_forward.state_lookback_months)
             ).date()
             prepared = prepare_backtest_data(
                 config,
@@ -397,9 +253,10 @@ def handle_backtest(code: str, start: str, end: str) -> str:
                 require_current=False,
             )
             if prepared.issues or code not in prepared.bundles:
-                details = "; ".join(
-                    f"{item.code}: {item.reason}" for item in prepared.issues
-                ) or "行情包未就绪"
+                details = (
+                    "; ".join(f"{item.code}: {item.reason}" for item in prepared.issues)
+                    or "行情包未就绪"
+                )
                 return f"❌ 回测数据未就绪 <code>{code}</code>：{details}"
             market_bundles = {code: prepared.bundles[code]}
             benchmark_bundles = {
@@ -531,52 +388,29 @@ def handle_save(config_path=None) -> str:
 
 
 def _run_main(command_args: list[str], env_extra: dict | None = None) -> bool:
-    """Reports use the shared queue; non-migrated optimizer keeps its guard."""
+    """Submit only full daily/brief reports to the shared queue."""
     if command_args and command_args[0] in {"--once", "--brief"}:
         from ...core.report_execution import submit_report
 
         brief = command_args[0] == "--brief"
         try:
             submit_report(
-                _load_config(), kind="brief" if brief else "daily",
+                _load_config(),
+                kind="brief" if brief else "daily",
                 report_id=(
                     command_args[1]
-                    if brief and len(command_args) > 1 else "morning_snapshot"
+                    if brief and len(command_args) > 1
+                    else "morning_snapshot"
                 ),
                 force=bool(env_extra and env_extra.get("BOT_FORCE") == "1"),
-                source="bot", config_path=CONFIG_PATH,
+                source="bot",
+                config_path=CONFIG_PATH,
             )
             return True
         except Exception:
             logger.exception("报表入队失败")
             return False
-    import os
-    import subprocess
-    import sys
-    from pathlib import Path
-
-    project_root = Path(__file__).parent.parent.parent.parent
-    main_py = project_root / "main.py"
-    cmd = [sys.executable, str(main_py)] + command_args
-    env = os.environ.copy()
-    if env_extra:
-        env.update(env_extra)
-    try:
-        log_file = project_root / "logs" / "quant_system.log"
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        with log_file.open("a", encoding="utf-8") as log_fh:
-            subprocess.Popen(
-                cmd,
-                cwd=str(project_root),
-                env=env,
-                stdout=log_fh,
-                stderr=log_fh,
-            )
-        logger.info(f"后台进程已启动: {' '.join(cmd)}")
-        return True
-    except Exception:
-        logger.exception(f"后台进程启动失败: {cmd}")
-        return False
+    return False
 
 
 def handle_brief(report_id: str = "morning_snapshot") -> str:
@@ -584,16 +418,6 @@ def handle_brief(report_id: str = "morning_snapshot") -> str:
     if _run_main(["--brief", report_id], env_extra={"BOT_FORCE": "1"}):
         return f"⏳ {label}已触发。稍后飞书会推送简报卡片。"
     return f"❌ {label}触发失败"
-
-
-def handle_optimize(group: str | None = None) -> str:
-    if group not in {"a_share", "hk", "us"}:
-        return "❌ 搜参必须指定市场：/optimize a_share|hk|us"
-    args = ["--optimize"]
-    args.extend(["--group", group])
-    if _run_main(args):
-        return f"⏳ {group} 市场策略优化已在后台启动。完成后自动推送候选简报。"
-    return "❌ 策略优化启动失败"
 
 
 def handle_daily() -> str:
@@ -630,6 +454,7 @@ def handle_daily_report_frequency(frequency: str | None = None) -> str:
     mode = str(frequency).strip().lower()
     if mode not in labels:
         return "❌ 频次只能是 daily、weekly 或 off。"
+
     def mutate(current_config: dict) -> None:
         current_config.setdefault("scheduler", {})["daily_report_frequency"] = mode
 
@@ -651,9 +476,7 @@ def handle_schedule(action: str, task_id: str, time_str: str) -> str:
             return "当前无调度任务"
         lines = ["<b>当前调度</b>\n"]
         for s in items:
-            lines.append(
-                f"<code>{s['name']}</code>: {s['time']} ({s['timezone']})"
-            )
+            lines.append(f"<code>{s['name']}</code>: {s['time']} ({s['timezone']})")
         return "\n".join(lines)
 
     # set
@@ -672,162 +495,12 @@ def handle_schedule(action: str, task_id: str, time_str: str) -> str:
     return f"❌ 修改失败。任务名: {task_id}，时间: {time_str}"
 
 
-# ── /mode 和 /config ────────────────────
-
-OPT_CONSTRAINTS_PATH = (
-    Path(__file__).parent.parent.parent.parent / "config" / "optimizer_constraints.yaml"
-)
-
-
-def _load_opt_config() -> dict:
-    return ConfigStore(OPT_CONSTRAINTS_PATH).load_raw()
-
-
-def _validate_opt_config(path: Path) -> None:
-    """Validate the exact temporary YAML before the store replaces the file."""
-    from ...search.config import load_constraints
-
-    config = ConfigStore(path).load_raw()
-    search = config.get("search", {}) or {}
-    if any(key in search for key in ("solver_id", "gate_profile")):
-        raise ValueError(
-            "search.solver_id/search.gate_profile 已废弃；必须写入 config/config.yaml "
-            "的 optimizer.markets.<market>"
-        )
-    load_constraints(path)
-
-
-def _update_opt_config(mutate: Callable[[dict], None]) -> dict:
-    from ...search.config import reload_constraints
-
-    saved = ConfigStore(OPT_CONSTRAINTS_PATH).update(
-        mutate, validate=_validate_opt_config
-    )
-    reload_constraints(OPT_CONSTRAINTS_PATH)
-    logger.info("优化器配置已保存: %s", OPT_CONSTRAINTS_PATH)
-    return saved
+# ── /mode ────────────────────
 
 
 _MODE_LABELS = {
     "trade_plan": "TradePlan（策略声明、统一执行）",
 }
-
-_CONFIG_HELP = {
-    "solver": {
-        "label": "搜参算法",
-        "kind": "solver",
-    },
-    "budget": {
-        "label": "当前算法评价预算",
-        "kind": "solver_budget",
-        "min": 100,
-        "max": 1000000,
-    },
-    "gate_profile": {
-        "label": "候选 Gate Profile",
-        "kind": "gate_profile",
-    },
-    "positive_windows": {
-        "label": "正收益窗口数",
-        "kind": "gate_rule",
-        "rule": "positive_return_windows",
-        "min": 0,
-        "max": 11,
-    },
-    "majority_windows": {
-        "label": "战胜任意两个基准窗口数",
-        "kind": "gate_rule",
-        "rule": "majority_benchmark_win_windows",
-        "min": 0,
-        "max": 11,
-    },
-    "min_pos": {
-        "label": "最低平均仓位%",
-        "kind": "gate_rule",
-        "rule": "minimum_average_position",
-        "min": 0.0,
-        "max": 100.0,
-    },
-    "max_dd": {
-        "label": "最差窗口最大回撤%",
-        "kind": "gate_rule",
-        "rule": "maximum_drawdown",
-        "min": -100.0,
-        "max": 0.0,
-    },
-    "window_range_penalty": {
-        "label": "最好/最差窗口波动惩罚",
-        "kind": "path",
-        "path": ("walk_forward", "window_range_penalty"),
-        "min": 0.0,
-        "max": 10.0,
-    },
-    "workers": {
-        "label": "并行评估进程数",
-        "kind": "workers",
-        "min": 1,
-        "max": 128,
-    },
-    "batch_size": {
-        "label": "候选批大小",
-        "kind": "path_int",
-        "path": ("search", "batch_size"),
-        "min": 128,
-        "max": 512,
-    },
-    "candidate_retention_ratio": {
-        "label": "\u5019\u9009\u5185\u5b58\u4fdd\u7559\u6bd4\u4f8b",
-        "kind": "path",
-        "path": ("search", "candidate_retention_ratio"),
-        "min": 0.001,
-        "max": 1.0,
-    },
-    "buy_cash_levels": {
-        "label": "买入现金档位",
-        "kind": "levels",
-        "path": ("simplified_search", "buy_limit_levels"),
-    },
-    "sell_cash_levels": {
-        "label": "卖出现金档位",
-        "kind": "levels",
-        "path": ("simplified_search", "sell_limit_levels"),
-    },
-    "commission": {
-        "label": "手续费率",
-        "kind": "path",
-        "path": ("execution_params", "commission_rate"),
-        "min": 0.0,
-        "max": 0.02,
-    },
-    "init_capital": {
-        "label": "初始本金",
-        "kind": "path",
-        "path": ("execution_params", "initial_capital"),
-        "min": 10000.0,
-        "max": 10000000.0,
-    },
-}
-
-
-def _gate_rule(cfg: dict, rule_id: str, profile_id: str | None = None) -> dict:
-    if not profile_id:
-        raise ValueError(
-            "Gate Rule 必须通过具体市场的 optimizer.markets.<market>.gate_profile 解析"
-        )
-    profile = (cfg.get("gate_profiles", {}) or {}).get(profile_id, {})
-    rules = profile.get("rules", []) if isinstance(profile, dict) else []
-    for rule in rules:
-        if isinstance(rule, dict) and rule.get("id") == rule_id:
-            return rule
-    raise ValueError(f"Gate Profile {profile_id} 不包含规则 {rule_id}")
-
-
-def _path_get(cfg: dict, path: tuple[str, str]):
-    return (cfg.get(path[0], {}) or {}).get(path[1])
-
-
-def _path_set(cfg: dict, path: tuple[str, str], value) -> None:
-    cfg.setdefault(path[0], {})[path[1]] = value
 
 
 def handle_mode(mode: str) -> str:
@@ -856,181 +529,6 @@ def handle_mode(mode: str) -> str:
         return "\n".join(lines)
 
     return "⚠️ 执行模式由 TradePlan 声明，不能通过 /mode 修改。"
-
-
-def _config_value(cfg: dict, key: str):
-    spec = _CONFIG_HELP[key]
-    kind = spec["kind"]
-    search = cfg.get("search", {}) or {}
-    if kind == "solver":
-        return "按市场配置"
-    if kind == "solver_budget":
-        return "按市场 Solver 配置"
-    if kind == "gate_profile":
-        return "按市场配置"
-    if kind == "gate_rule":
-        return "按市场 Gate Profile 配置"
-    if kind == "workers":
-        return search.get("workers")
-    return _path_get(cfg, spec["path"])
-
-
-def _set_config_value(cfg: dict, key: str, raw_value: str) -> None:
-    spec = _CONFIG_HELP[key]
-    kind = spec["kind"]
-    if kind == "solver":
-        raise ValueError(
-            "Solver 必须按市场配置；请修改 config/config.yaml 的 "
-            "optimizer.markets.<market>.solver_id"
-        )
-    if kind == "gate_profile":
-        raise ValueError(
-            "Gate Profile 必须按市场配置；请修改 config/config.yaml 的 "
-            "optimizer.markets.<market>.gate_profile"
-        )
-    if kind == "workers":
-        if raw_value.strip().lower() == "auto":
-            cfg.setdefault("search", {})["workers"] = None
-            return
-        parsed = int(raw_value)
-    elif kind == "levels":
-        parsed = sorted(
-            {
-                float(item.strip())
-                for item in raw_value.split(",")
-                if item.strip()
-            }
-        )
-        if not parsed or parsed[0] <= 0:
-            raise ValueError("现金档位必须是逗号分隔的正数")
-        _path_set(cfg, spec["path"], parsed)
-        return
-    elif kind in {"solver_budget", "path_int"} or key in {
-        "positive_windows",
-        "majority_windows",
-    }:
-        parsed = int(raw_value)
-    else:
-        parsed = float(raw_value)
-
-    minimum = spec.get("min")
-    maximum = spec.get("max")
-    if minimum is not None and parsed < minimum:
-        raise ValueError(f"不得小于 {minimum}")
-    if maximum is not None and parsed > maximum:
-        raise ValueError(f"不得大于 {maximum}")
-    if kind == "solver_budget":
-        raise ValueError(
-            "Solver 预算必须跟随具体市场的 Solver 配置，不能写入全局回退"
-        )
-    elif kind == "gate_rule":
-        _gate_rule(cfg, str(spec["rule"]))["value"] = parsed
-    elif kind == "workers":
-        cfg.setdefault("search", {})["workers"] = parsed
-    else:
-        _path_set(cfg, spec["path"], parsed)
-
-
-def handle_config(action: str, key: str, value: str) -> str:
-    """View shared runtime settings without reintroducing market fallbacks."""
-    cfg = _load_opt_config()
-    if action == "reset":
-        return (
-            "❌ 不再支持统一优化器重置；strategy、Solver、Gate、Walk-Forward、"
-            "执行和基准必须在三个市场配置中分别声明。"
-        )
-
-    if action == "set" and key and value:
-        if key not in _CONFIG_HELP:
-            return (
-                f"❌ 未知配置项: <code>{key}</code>\n"
-                f"可用: {', '.join(_CONFIG_HELP)}"
-            )
-        try:
-            cfg = _update_opt_config(
-                lambda current: _set_config_value(current, key, value)
-            )
-        except (TypeError, ValueError) as exc:
-            return f"❌ 配置值无效，未保存: {exc}"
-        # Bot boundary retains old config on failure.
-        except Exception as exc:  # noqa: BLE001
-            return f"❌ 配置校验或保存失败，旧配置已保留: {exc}"
-        actual = _config_value(cfg, key)
-        return f"✅ {_CONFIG_HELP[key]['label']}: {actual}"
-
-    if key:
-        if key not in _CONFIG_HELP:
-            return f"❌ 未知配置项: {key}"
-        try:
-            current = _config_value(cfg, key)
-        except ValueError as exc:
-            return f"❌ 当前配置不完整: {exc}"
-        if key == "workers" and current is None:
-            current = "auto"
-        return f"<b>{_CONFIG_HELP[key]['label']}</b>: {current}"
-
-    configured = _load_config()
-    search = cfg.get("search", {}) or {}
-    workers = search.get("workers")
-    workers_label = "auto（全部物理核）" if workers is None else str(workers)
-    try:
-        from ...search.artifacts import load_latest_strategy_run
-        from ...search.config import get_market_optimizer_configs
-
-        market_configs = get_market_optimizer_configs(configured)
-    # Bot boundary reports invalid market config.
-    except Exception as exc:  # noqa: BLE001
-        return f"❌ 市场配置不完整，无法显示: {exc}"
-
-    lines = [
-        "<b>三市场独立优化配置</b>",
-        "Solver、Gate、Walk-Forward、执行参数和基准均按市场解析；没有默认回退。",
-    ]
-    for group in ("a_share", "hk", "us"):
-        market = market_configs[group]
-        active = load_latest_strategy_run(groups=(group,))
-        if active is None:
-            active_label = "未激活"
-        else:
-            active_label = (
-                f"{active.strategy_by_group.get(group, '')} / "
-                f"{active.run_id_for(group)}"
-            )
-        wf = market.constraints.walk_forward
-        lines.extend(
-            [
-                "",
-                f"<b>{group}</b>",
-                f"  候选 strategy: {market.strategy_name}",
-                (
-                    f"  Solver: {market.solver_id} / 预算: "
-                    f"{market.search.solver_config().get('budget', '未设置')}"
-                ),
-                f"  Gate: {market.gate_profile}",
-                (
-                    f"  WF: {market.walk_forward_profile} / "
-                    f"{wf.total_months_needed}月 / {wf.num_windows}窗"
-                ),
-                (
-                    f"  execution: {market.execution_profile} / benchmark: "
-                    f"{market.benchmark_profile}"
-                ),
-                f"  当前生产: {active_label}",
-                f"  config hash: <code>{market.config_hash}</code>",
-            ]
-        )
-    lines.extend(
-        [
-            "",
-            (
-                f"共享运行调度: workers={workers_label} / "
-                f"batch={search.get('batch_size', '未设置')} / "
-                f"候选保留={search.get('candidate_retention_ratio', '未设置')}"
-            ),
-            "策略切换: <code>/switch_optimizer 市场 策略</code>",
-        ]
-    )
-    return "\n".join(lines)
 
 
 def handle_ref_position(
@@ -1064,10 +562,7 @@ def handle_ref_position(
     mgr = RefPortfolioManager(file_path=files[group])
     pf = mgr.load()
     if not mgr.is_initialized(pf):
-        return (
-            f"❌ {labels[group]}参考持仓尚未初始化；"
-            "请先发送 /ref_date YYYY-MM-DD。"
-        )
+        return f"❌ {labels[group]}参考持仓尚未初始化；请先发送 /ref_date YYYY-MM-DD。"
     if not pf.is_bound:
         return (
             f"❌ {labels[group]}参考持仓未绑定已激活运行，未修改；"
@@ -1204,11 +699,10 @@ def handle_ref_date(date_str: str | None = None) -> str:
     if active_run is None:
         return (
             "❌ 没有可绑定的三市场完整已激活运行；参考持仓未重置。"
-            "请先完成并激活一次有效搜参运行。"
+            "需要已有完整策略与参数快照。"
         )
     active_strategies = {
-        group: active_run.strategy_for(group)
-        for group in ("a_share", "hk", "us")
+        group: active_run.strategy_for(group) for group in ("a_share", "hk", "us")
     }
     if any(
         active_strategies[group] is None
@@ -1217,15 +711,13 @@ def handle_ref_date(date_str: str | None = None) -> str:
     ):
         return (
             "❌ 已激活运行缺少完整的三市场策略或参数；参考持仓未重置。"
-            "请先完成并激活一次完整搜参运行。"
+            "需要已有完整策略与参数快照。"
         )
     try:
         market_configs = get_market_optimizer_configs(config)
     except ValueError as exc:
-        return f"❌ 市场优化配置无效，参考持仓未重置：{exc}"
-    initial_capital = float(
-        market_configs["a_share"].execution.initial_capital
-    )
+        return f"❌ 历史执行合同配置无效，参考持仓未重置：{exc}"
+    initial_capital = float(market_configs["a_share"].execution.initial_capital)
 
     # 防呆：设置新基期前需要确认
     if not pending_date:
@@ -1242,10 +734,11 @@ def handle_ref_date(date_str: str | None = None) -> str:
                 total_holdings += len(pf.holdings)
                 total_cash += pf.cash
         if total_holdings > 0:
+
             def set_pending(current_config: dict) -> None:
-                current_config.setdefault("optimizer", {})[
-                    "_ref_date_pending"
-                ] = date_str
+                current_config.setdefault("optimizer", {})["_ref_date_pending"] = (
+                    date_str
+                )
 
             _update_config(set_pending)
             return (
@@ -1293,6 +786,7 @@ def handle_ref_date(date_str: str | None = None) -> str:
                 )
             ),
         )
+
     def set_base_date(current_config: dict) -> None:
         current_optimizer = current_config.setdefault("optimizer", {})
         current_optimizer["reference_base_date"] = date_str
@@ -1307,5 +801,5 @@ def handle_ref_date(date_str: str | None = None) -> str:
         f"📭 持仓: 已清空\n"
         f"🔒 固定运行: <code>{', '.join(f'{group}:{active_run.run_id_for(group)}' for group in active_strategies)}</code> "
         f"({', '.join(f'{group}:{active_strategies[group].name}' for group in active_strategies)})\n"
-        f"\n新搜参不会静默切换参考持仓；再次手动重置才会绑定新运行。"
+        f"\n参考持仓固定绑定已有运行；再次手动重置才会更换绑定。"
     )

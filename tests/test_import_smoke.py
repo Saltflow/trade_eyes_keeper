@@ -27,13 +27,14 @@ def test_reference_portfolio_keeps_manual_management_without_auto_rebalance():
 
 
 def test_extension_package_imports():
-    """Strategy, search and backtest expose stable package APIs."""
+    """Strategy and explicit backtest APIs remain after search retirement."""
     import src.backtest
     import src.search
     import src.strategy
 
     assert src.strategy.list_strategy_ids()
-    assert src.search.list_solvers()
+    assert not hasattr(src.search, "run_optimizer")
+    assert not hasattr(src.search, "create_solver")
     assert src.backtest.Backtester
 
 
@@ -105,3 +106,20 @@ def test_project_structure():
     ]
     missing = [d for d in required_dirs if not (root / d).is_dir()]
     assert not missing, f"Missing directories: {missing}"
+
+
+def test_retired_optimizer_cli_flags_fail_before_config_or_runtime(monkeypatch):
+    import main
+    import pytest
+
+    def unexpected_config(*args, **kwargs):
+        raise AssertionError("retired CLI must stop before loading runtime config")
+
+    monkeypatch.setattr(main, "load_config", unexpected_config)
+    for arguments in (
+        ["--optimize"], ["--activate-run", "old-run"],
+        ["--group", "a_share"], ["--universe-robustness"],
+    ):
+        with pytest.raises(SystemExit) as error:
+            main.main(arguments)
+        assert error.value.code == 2

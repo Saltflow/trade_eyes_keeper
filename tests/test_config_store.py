@@ -171,11 +171,9 @@ def test_bot_field_updates_preserve_concurrent_changes_and_secrets(
         )
     assert all(response.startswith("✅") for response in responses)
     handlers.handle_daily_report_frequency("weekly")
-    handlers.handle_skip("search", ["GOOG"])
     handlers.handle_remove(["00883"])
 
     raw = ConfigStore(path).load_raw()
     assert set(raw["stocks"]) == {"600036", "GOOG", "601985"}
     assert raw["scheduler"] == {"run_time": "19:00", "daily_report_frequency": "weekly"}
-    assert raw["skip_search"] == ["GOOG"]
     assert "email" not in raw

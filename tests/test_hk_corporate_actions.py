@@ -991,7 +991,7 @@ def test_approximate_notice_requires_record_cash_and_issuer(changed):
 
 
 @pytest.mark.parametrize("notice_url", [OFFICIAL_URL, OFFICIAL_URL + "?file=20240301"])
-def test_long_notice_diagnostic_survives_optimizer_readiness(
+def test_long_notice_diagnostic_survives_backtest_readiness(
     monkeypatch, tmp_path, notice_url
 ):
     import pandas as pd
@@ -1042,7 +1042,7 @@ def test_long_notice_diagnostic_survives_optimizer_readiness(
         ["01339"],
         date(2020, 1, 1),
         date(2020, 11, 3),
-        purpose="optimizer",
+        purpose="interactive_backtest",
     )
     assert not result.ready
     assert result.bundles == {}

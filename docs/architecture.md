@@ -73,32 +73,13 @@ CLI / Bot / 受管触发器发起 daily 或 brief
 
 邮件与 PDF 使用共享三市场单图曲线；Bot 用文字曲线替代。事件由同一构建入口分类、按市场/代码/日期排序并合并例行公告，默认展示最近两个自然月，`report.events.announcement_lookback_months` 可经 Bot 调整为 1–24；待派息分红与未解禁事项保留。详见[公告展示](guide/announcements.md)。
 
-参考持仓的估值、公司行动与手工持仓命令沿用绑定运行及执行合同；活动策略切换不自动改变已有持仓。显式回测与手动搜参仍使用 `TradePlan`、`Backtester` 和 `EvaluationReport`，其评价结果不再接入日报扫描。
+参考持仓的估值、公司行动与手工持仓命令沿用绑定运行及执行合同；活动策略切换不自动改变已有持仓。显式回测仍使用 `TradePlan`、`Backtester` 和 `EvaluationReport`，其评价结果不再接入日报扫描。
 
-### 搜参、相对晋升与激活
+### 手动回测与已下线的搜索
 
-```text
-main.py --optimize
-  -> search.workflow.run_optimizer
-  -> SearchController
-  -> Solver.ask()
-  -> EvaluationService
-  -> Strategy.make_signals()
-  -> Backtester
-  -> CandidateGatePipeline
-  -> Solver.tell()
-  -> ValidationController
-  -> 完整候选运行产物
-  -> 同市场 incumbent 相对晋升比较与记录
-  -> 自动替换配置开启且相对晋升通过时激活；否则保留候选
-  -> 或 main.py --activate-run <run_id> --group <market> 显式校验并激活
-```
+手动回测继续使用 `TradePlan -> Backtester -> EvaluationReport`，显式准备 raw/qfq、公司行为、费用和基准。参考持仓继续估值、公司行为记账和手动管理。日报仅消费独立的 Ke 曲线产物。
 
-Solver 只能看到排名窗口。隔离窗口、最终留出窗口、策略判断和成交细节不得进入
-`ask/tell`。当前 Solver 插件为 `genetic`、`local_genetic`、`random` 和
-`simulated_annealing`。
-
-候选发布不等于活动指针更新；自动相对晋升与人工激活都经过产物合同和可激活性检查，具体相对/绝对留出路径以 `search/artifacts.py` 为准。详细调用和状态见[搜参子系统放大图](architecture_overview.md#搜参子系统放大图)；受管条件与发报关系见[报告与触发器分图](architecture_overview.md#告警链路放大图)。定时搜参已移除，CLI/Bot手动搜参及显式激活仍保留。
+策略搜索、Solver、Gate、候选晋升/激活、优化进程和专属通知已整体删除，CLI/Bot 不再提供对应入口。受管 `optimize` 只保留兼容类型并拒绝执行。历史搜索数据保留，只读工具可继续查询。
 
 ### 已终止的量化实验
 
@@ -109,65 +90,34 @@ MOE/基本面定价训练、旧估值特征/行业评分/消融、Ke 搜参与�
 | 包 | 负责 | 主要扩展位置 |
 |---|---|---|
 | `src/strategy` | 参数到买卖决策和 `TradePlan` | `strategy/plugins/*.py` |
-| `src/search` | Solver、候选评价、Gate、验证与产物 | `search/solvers/*.py` |
+| `src/search/config.py` / `workflow.py` | 历史命名保留的执行/WF/基准配置及两个 PB 脚本的显式手动 WF 适配 | 不含搜索驱动器、Solver、Gate 或产物写入 |
 | `src/backtest` | 成交、资金仿真、基准和统一报告 | 通用执行策略，不允许策略 ID 分支 |
-| `src/experiments` | 离线 benchmark 与搜索深度分析 | 只读生产接口，不激活产物 |
 | `src/data` | 行情、公告、缓存和批量回填 | 新数据源或 store |
 | `src/instruments` | 类型化标的、财务推导、ETF/REIT 穿透 | 新官方 provider |
 | `src/fundamental_embedding` | 保留业务共用的逐时点数据、行业分类和估值合同 | MOE训练及指定评分实验已终止，不再作为扩展方向 |
 | `src/session` / `src/models` | 日报运行态与跨步骤类型模型 | 不放策略判断 |
 | `src/notification` | 同一报告对象的多渠道渲染 | 新通知适配器 |
-| `src/core/runtime_service.py` / `schedule_manager.py` | 宿主、心跳与在线任务调度 | 报表经公共执行器；优化沿用原进程合同 |
+| `src/core/runtime_service.py` / `schedule_manager.py` | 宿主、心跳与在线任务调度 | 报表经公共执行器；无优化任务 |
 | `src/task_runtime/execution.py` / `core/execution_health.py` | 持久队列、claim、恢复和健康事件 | core/execution 仅为兼容别名；可信 Python 模块注册 |
 | `src/personal_monitor` | 个人账户、提醒、版本、行情观察与 outbox | 原业务 store/engine 与任务适配 |
 | `src/research_pipeline` / `src/fundamental_data` / 财报研究脚本 | 统一编排、提取、整合、摘要、横评、调查建模与固定三轮 | 冻结研究与一次模型返工；兼容显式文件交接 |
 | `src/interactive` | 飞书长连接和 Telegram 轮询，共享命令分发 | 调用应用用例，不复制业务算法 |
 
-新增策略只添加注册插件；新增优化算法只添加 Solver。具体步骤见
-[`src/strategy/README.md`](../src/strategy/README.md) 和
-[`src/search/README.md`](../src/search/README.md)。
+保留策略插件供显式回测使用；不再提供搜索算法扩展入口。
 
 ## 架构审计结论
 
-已经形成的稳定边界：
-
-- 策略插件、Solver 插件、候选 Gate 和 Backtester 已分离，新增算法无需修改
-  `SearchController`。
-- 搜参与显式回测共用 `TradePlan + Backtester + EvaluationReport`；日报读取合格的已完成曲线，不再执行扫描或策略回测。
-- benchmark 位于 `src/experiments`，不会发布或激活生产参数。
-- 逐时点基本面研究与活动技术策略隔离，具有明确的防前视合同。
-- HTTP/HTTPS health server、Web 管理、OTP 和临时报告路由已整体下线。
-  飞书/TG Bot 更灵活、更安全，无需开放管理端口。
-- `ConfigStore` 将原始 YAML 与环境覆盖分开；管理命令锁内更新最新字段，避免
-  旧启动快照覆盖并发编辑或写回密钥。`/schedule` 直接访问当前进程调度器注册表。
-- 排名、逆序和留一验证保留同一完整执行合同，包括 raw OHLC、分红、税、拆股和
-  基准行动。缺失必要数据或 Numba 明确报错。
-
-仍存在的结构债务：
-
-1. **共享合同所有权不够中立。** `TradePlan`、`PortfolioTrace` 和
-   `EvaluationReport` 仍位于 `strategy/api.py`；Backtester 必须反向依赖
-   strategy；搜索评价同时使用策略与回测合同。后续应迁到中立的
-   `src/contracts`，使依赖固定为“策略和回测都依赖合同”。
-2. **`main.py` 仍是大型编排文件。** CLI、日报、搜参、审计和激活用例都集中在
-   同一文件中。应逐步迁到 `src/application`，让 `main.py` 只解析
-   参数并分派用例。
-3. **Bot handler 仍直接调用应用编排。** 共用分发器已消除渠道分叉，后续可随着
-   `main.py` 拆分，统一注入应用服务接口。
-4. **数据采集和标的模型存在循环。** `data` 使用 `instruments` 的财务模型，
-   `instruments` 审计又调用部分 data provider。后续应把数据合同放入中立模型包，
-   provider 作为端口实现单向注入。
-5. **搜索窗口/执行配置仍被 Backtester 读取。** `backtest/engine.py` 导入
-   `search.config` 的 `WindowStats` 和约束读取函数。应把执行配置与窗口统计迁到
-   中立合同，避免搜索层成为基础设施依赖。
-
-这些是现有过渡依赖，后续重构需要单独验收；文档清理不改变这些依赖。
+- 报告复用当前模板、共享 Ke 曲线和事件构建入口，触发器只派发完整日报/简报。
+- 手动回测与策略参数合同保留，搜索、候选和激活已从可执行链路退出。
+- Pi 处理会话理解与工具编排；Python 保留授权、校验、幂等和业务持久化。
+- 公共执行器、资料层、模型网关和研究领域仍各自拥有明确状态；本轮不新建运行时。
+- ConfigStore 保留锁内配置更新与环境覆盖边界；通知仍分别记录生成与投递结果。
 
 ## 运行时状态目录
 
 - `config/config.yaml`、`config/.env`：本地/服务器配置，不进入 Git。
 - `cache/`：可再生缓存，但日常运行依赖其提升速度。
-- `data/optimizer/`：搜索运行与活动指针。
+- `data/optimizer/`：历史搜索产物，只读留存，不再生成或激活。
 - `data/point_in_time/`、`data/reference_universe/`：真实逐时点研究数据。
 - `data/analysis/`、`data/instrument_audit/`：可再生研究和审计报告。
 - `data/email_archive/`、`logs/`：运行审计记录。

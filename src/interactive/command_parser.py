@@ -15,14 +15,10 @@ class CommandType(Enum):
     BACKTEST = auto()
     SAVE = auto()
     BRIEF = auto()
-    OPTIMIZE = auto()
     DAILY = auto()
     DAILY_REPORT_FREQUENCY = auto()
     SCHEDULE = auto()
     MODE = auto()
-    CONFIG = auto()
-    SKIP = auto()
-    SWITCH_OPTIMIZER = auto()
     REF_DATE = auto()
     REF_POSITION = auto()
     ERROR = auto()
@@ -85,12 +81,6 @@ class RefDateCommand:
 
 
 @dataclass
-class OptimizeCommand:
-    group: str | None = None
-    cmd_type: CommandType = CommandType.OPTIMIZE
-
-
-@dataclass
 class DailyCommand:
     cmd_type: CommandType = CommandType.DAILY
 
@@ -121,33 +111,6 @@ class ErrorCommand:
 class ModeCommand:
     mode: str = ""  # "frac" / "position" / "" = view
     cmd_type: CommandType = CommandType.MODE
-
-
-@dataclass
-class ConfigCommand:
-    action: str = "show"  # "show" / "set" / "reset"
-    key: str = ""
-    value: str = ""
-    cmd_type: CommandType = CommandType.CONFIG
-
-
-@dataclass
-class SkipCommand:
-    kind: str = "search"
-    codes: list[str] = None  # 标的列表
-    remove: bool = False  # True=恢复(移出skip), False=关闭(加入skip)
-    cmd_type: CommandType = CommandType.SKIP
-
-    def __post_init__(self):
-        if self.codes is None:
-            self.codes = []
-
-
-@dataclass
-class SwitchOptimizerCommand:
-    kind: str | None = None  # None=列出可用策略, str=切换到该策略
-    group: str | None = None  # 设置策略时必须指定市场
-    cmd_type: CommandType = CommandType.SWITCH_OPTIMIZER
 
 
 @dataclass
@@ -264,24 +227,6 @@ def parse_command(text: str):
             return BriefCommand(report_id="afternoon_snapshot")
         return BriefCommand(report_id="morning_snapshot")
 
-    if cmd_name == "optimize":
-        optimize_args = args.strip().split()
-        if not optimize_args:
-            return ErrorCommand(
-                message="搜参必须指定市场。格式: /optimize a_share|hk|us"
-            )
-        if len(optimize_args) > 1:
-            return ErrorCommand(
-                message="/optimize 不接受参数（策略/预设）；可选单市场，如 /optimize a_share"
-            )
-        group = optimize_args[0].lower()
-        group = _MARKET_GROUP_ALIASES.get(group)
-        if group is None:
-            return ErrorCommand(
-                message="市场只能是 a_share、hk 或 us。格式: /optimize a_share"
-            )
-        return OptimizeCommand(group=group)
-
     if cmd_name == "daily":
         return DailyCommand()
 
@@ -362,54 +307,5 @@ def parse_command(text: str):
         if mode in ("position", "position_target", "pt"):
             return ModeCommand(mode="position_target")
         return ModeCommand(mode="")  # view current
-
-    if cmd_name == "config":
-        parts = args.strip().split(None, 2)
-        if not parts or not parts[0]:
-            return ConfigCommand(action="show")
-        if parts[0] == "reset":
-            return ConfigCommand(action="reset")
-        if parts[0] == "set" and len(parts) >= 3:
-            return ConfigCommand(action="set", key=parts[1], value=parts[2])
-        # view specific key
-        if len(parts) == 1 and parts[0] not in ("set", "reset", "show"):
-            return ConfigCommand(action="show", key=parts[0])
-        return ErrorCommand(message="格式: /config [show|set KEY VAL|reset]")
-
-    if cmd_name in ("skip", "unskip"):
-        # /skip search 601985,000958 /unskip search 601985
-        remove = cmd_name == "unskip"
-        sub = args.strip().split(None, 1)
-        if not sub or sub[0].lower() != "search":
-            return ErrorCommand(
-                message="格式: /skip search 代码[,代码]  (/unskip 恢复)"
-            )
-        kind = "search"
-        code_str = sub[1] if len(sub) > 1 else ""
-        codes, err = _validate_codes(code_str)
-        if err:
-            return ErrorCommand(message=err)
-        return SkipCommand(kind=kind, codes=codes, remove=remove)
-
-    if cmd_name == "switch_optimizer":
-        from src.strategy import list_strategies
-
-        sub = args.strip().split()
-        if not sub:
-            return SwitchOptimizerCommand(kind=None)  # 列出可用引擎
-        valid = {item["key"] for item in list_strategies()}
-        if len(sub) != 2:
-            return ErrorCommand(
-                message="设置策略时必须指定市场。格式: /switch_optimizer 市场 策略"
-            )
-        group = _MARKET_GROUP_ALIASES.get(sub[0].lower())
-        if group is None:
-            return ErrorCommand(message="市场只能是 a_share、hk 或 us")
-        kind = sub[1].lower()
-        if kind in valid:
-            return SwitchOptimizerCommand(kind=kind, group=group)
-        return ErrorCommand(
-            message=f"未知引擎: {kind}。可用: {', '.join(sorted(valid))}"
-        )
 
     return ErrorCommand(message=f"未知命令: /{cmd_name}。发送 /help 查看可用命令")

@@ -5,9 +5,8 @@
 import pytest
 
 from src.markets import (
-    _detect_stock_group,
     _detect_fine_group,
-    get_skip_search,
+    _detect_stock_group,
     get_skip_signals,
 )
 from src.strategy import EvaluationReport
@@ -31,12 +30,6 @@ class TestStockGroupDetection:
 
 
 class TestSkipSettings:
-    def test_get_skip_search(self):
-        config = {"skip_search": ["000001", "000002"]}
-        skip = get_skip_search(config)
-        assert "000001" in skip
-        assert "000002" in skip
-
     def test_get_skip_signals(self):
         config = {"skip_signals": ["600000"]}
         skip = get_skip_signals(config)

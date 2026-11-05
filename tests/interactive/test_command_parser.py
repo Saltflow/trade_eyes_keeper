@@ -1,4 +1,6 @@
-"""命令解析器测试 — TDD 第一步：先写会红的测试。"""
+"""Parse supported Bot commands and reject retired write entry points."""
+
+import pytest
 
 from src.interactive.command_parser import (
     AddCommand,
@@ -10,12 +12,27 @@ from src.interactive.command_parser import (
     ErrorCommand,
     HelpCommand,
     ListCommand,
-    OptimizeCommand,
     RefPositionCommand,
     RemoveCommand,
     SaveCommand,
     parse_command,
 )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/optimize a_share",
+        "/switch_optimizer us percentile",
+        "/skip search 600036",
+        "/unskip search 600036",
+        "/config set workers 2",
+    ],
+)
+def test_retired_optimizer_commands_are_unknown(text):
+    result = parse_command(text)
+    assert isinstance(result, ErrorCommand)
+    assert "未知命令" in result.message
 
 
 class TestCommandParser:
@@ -184,28 +201,6 @@ class TestCommandParser:
         cmd = parse_command("/brief afternoon_snapshot")
         assert isinstance(cmd, BriefCommand)
         assert cmd.report_id == "afternoon_snapshot"
-
-    def test_parse_optimize_default(self):
-        cmd = parse_command("/optimize")
-        assert isinstance(cmd, ErrorCommand)
-        assert "必须指定市场" in cmd.message
-
-    def test_parse_optimize_market(self):
-        cmd = parse_command("/optimize a_share")
-        assert isinstance(cmd, OptimizeCommand)
-        assert cmd.group == "a_share"
-
-    def test_parse_optimize_rejects_legacy_version_argument(self):
-        cmd = parse_command("/optimize v1")
-        assert isinstance(cmd, ErrorCommand)
-
-    def test_parse_optimize_fast(self):
-        cmd = parse_command("/optimize fast")
-        assert isinstance(cmd, ErrorCommand)
-
-    def test_parse_optimize_deep(self):
-        cmd = parse_command("/optimize deep")
-        assert isinstance(cmd, ErrorCommand)
 
     def test_parse_ref_position(self):
         cmd = parse_command("/ref_position set a_share 510300 10000 3.85")

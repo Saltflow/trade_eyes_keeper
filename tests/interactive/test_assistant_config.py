@@ -17,7 +17,6 @@ from src.interactive.assistant.config_tools import (
     ConfigurationConflict,
     ConfigurationTools,
 )
-from src.search.config import get_market_optimizer_configs
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -35,10 +34,6 @@ def config_tools(tmp_path, monkeypatch):
     app["interactive"]["feishu"]["allowed_chat_ids"] = ["*"]
     app_path = directory / "config.yaml"
     app_path.write_text(yaml.safe_dump(app, allow_unicode=True), encoding="utf-8")
-    constraints = (PROJECT_ROOT / "config/optimizer_constraints.yaml").read_text(
-        encoding="utf-8"
-    )
-    (directory / "optimizer_constraints.yaml").write_text(constraints, encoding="utf-8")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "runtime-api-secret")
     monkeypatch.setenv("EMAIL_PASSWORD", "runtime-email-secret")
     monkeypatch.setattr(
@@ -57,10 +52,6 @@ def _app_store(tools):
     return ConfigStore(tools.project_root / "config/config.yaml")
 
 
-def _constraints_store(tools):
-    return ConfigStore(tools.project_root / "config/optimizer_constraints.yaml")
-
-
 def test_describe_only_exposes_allowlisted_values(config_tools):
     description = config_tools.describe()
     payload = json.dumps(description)
@@ -71,8 +62,18 @@ def test_describe_only_exposes_allowlisted_values(config_tools):
     assert "stocks" in keys
     assert "skip_signals" not in keys
     assert "notification.feishu.enabled" in keys
-    assert "optimizer.markets.a_share.solver_config.budget" in keys
-    assert "execution_profiles.a_share_cny.commission_rate" in keys
+    assert not any(
+        key.startswith(
+            (
+                "optimizer.",
+                "search.",
+                "gate_profiles.",
+                "walk_forward_profiles.",
+                "execution_profiles.",
+            )
+        )
+        for key in keys
+    )
     assert "execution_params.commission_rate" not in keys
     assert "walk_forward.window_range_penalty" not in keys
     assert "search.solvers.local_genetic.budget" not in keys
@@ -83,7 +84,9 @@ def test_describe_only_exposes_allowlisted_values(config_tools):
     )
     assert trigger["schema"]["mode"] == ["any", "all"]
     assert set(trigger["schema"]["allowed_roots"]) == {
-        "dividend_events", "placements", "announcements"
+        "dividend_events",
+        "placements",
+        "announcements",
     }
 
 
@@ -421,6 +424,14 @@ def test_announcement_credentials_stay_outside_writable_registry(config_tools):
         ("walk_forward.window_range_penalty", 0.8),
         ("search.solvers.local_genetic.budget", 1000),
         ("skip_signals", ["600036"]),
+        ("skip_search", ["600036"]),
+        ("optimizer.markets.a_share.strategy", "percentile"),
+        ("optimizer.markets.a_share.solver_id", "random"),
+        ("optimizer.markets.a_share.solver_config.budget", 1000),
+        ("optimizer.markets.a_share.search.workers", 2),
+        ("execution_profiles.a_share_cny.commission_rate", 0.001),
+        ("walk_forward_profiles.a_share_84m.num_windows", 6),
+        ("gate_profiles.standard.rules.maximum_drawdown.value", -20),
     ],
 )
 def test_rejects_credentials_permissions_paths_and_shadow_fields(
@@ -444,11 +455,17 @@ def test_rejects_credentials_permissions_paths_and_shadow_fields(
         ("scheduler.daily_report_frequency", "monthly"),
         (
             "scheduler.daily_report_triggers",
-            {"mode": "any", "conditions": [{"path": "__class__", "operator": "exists"}]},
+            {
+                "mode": "any",
+                "conditions": [{"path": "__class__", "operator": "exists"}],
+            },
         ),
         (
             "scheduler.brief_reports.morning_snapshot.triggers",
-            {"mode": "xor", "conditions": [{"path": "placements", "operator": "non_empty"}]},
+            {
+                "mode": "xor",
+                "conditions": [{"path": "placements", "operator": "non_empty"}],
+            },
         ),
         ("scheduler.daily_report_weekday", True),
         ("scheduler.daily_report_weekday", 7),
@@ -520,7 +537,7 @@ def test_revision_is_checked_after_store_acquires_lock(config_tools, monkeypatch
 
 
 def test_concurrent_confirmation_writes_once(config_tools):
-    (proposal,) = config_tools.propose([_change("skip_search", ["VOO"])])
+    (proposal,) = config_tools.propose([_change("stocks", ["VOO"])])
 
     def apply():
         try:
@@ -533,313 +550,13 @@ def test_concurrent_confirmation_writes_once(config_tools):
     assert sorted(results) == ["applied", "stale"]
 
 
-def test_multifile_changes_return_independent_proposals(config_tools):
-    proposals = config_tools.propose(
-        [
-            _change("stocks", ["00883"]),
-            _change("execution_profiles.a_share_cny.commission_rate", 0.001),
-        ]
-    )
-    assert len(proposals) == 2
-    assert {item["target"] for item in proposals} == {
-        "config/config.yaml",
-        "config/optimizer_constraints.yaml",
-    }
-    assert all(len(item["diff"]) == 1 for item in proposals)
-
-
-def test_multifile_second_confirmation_requires_fresh_preview(config_tools):
-    proposals = config_tools.propose(
-        [
-            _change("stocks", ["00883"]),
-            _change("execution_profiles.a_share_cny.commission_rate", 0.001),
-        ]
-    )
-    app = next(item for item in proposals if item["target"] == "config/config.yaml")
-    constraints = next(item for item in proposals if item["target"] != app["target"])
-    config_tools.apply(app)
-    with pytest.raises(ConfigurationConflict, match="关联配置"):
-        config_tools.apply(constraints)
-    (refreshed,) = config_tools.propose(constraints["changes"])
-    assert config_tools.apply(refreshed)["status"] == "applied"
-
-
-def test_market_budget_writes_override_and_keeps_other_markets(config_tools):
-    constraints_path = _constraints_store(config_tools).path
-    constraints_before = constraints_path.read_bytes()
-    (proposal,) = config_tools.propose(
-        [_change("optimizer.markets.a_share.solver_config.budget", 900)]
-    )
-    assert proposal["diff"][0]["old"] == 155000
-    assert proposal["affected_markets"] == ["a_share"]
-    config_tools.apply(proposal)
-    app = _app_store(config_tools).load_raw()
-    assert app["optimizer"]["markets"]["a_share"]["solver_config"] == {"budget": 900}
-    assert "solver_config" not in app["optimizer"]["markets"]["hk"]
-    assert constraints_path.read_bytes() == constraints_before
-    resolved = get_market_optimizer_configs(app, constraints_path)
-    assert resolved["a_share"].search.solver_config()["budget"] == 900
-    assert resolved["hk"].search.solver_config()["budget"] == 10000
-
-
-def test_can_select_solver_and_its_parameters_in_one_proposal(config_tools):
-    (proposal,) = config_tools.propose(
-        [
-            _change("optimizer.markets.a_share.solver_id", "simulated_annealing"),
-            _change(
-                "optimizer.markets.a_share.solver_config.initialization_samples", 20
-            ),
-        ]
-    )
-    config_tools.apply(proposal)
-    market = get_market_optimizer_configs(
-        _app_store(config_tools).load_raw(), _constraints_store(config_tools).path
-    )["a_share"]
-    assert market.solver_id == "simulated_annealing"
-    assert market.search.solver_config()["initialization_samples"] == 20
-
-
-def test_profile_updates_expose_every_affected_market(config_tools):
-    _app_store(config_tools).update(
-        lambda raw: raw["optimizer"]["markets"]["hk"].update(
-            execution_profile="a_share_cny"
-        )
-    )
-    (proposal,) = config_tools.propose(
-        [_change("execution_profiles.a_share_cny.commission_rate", 0.001)]
-    )
-    assert proposal["affected_markets"] == ["a_share", "hk"]
-    config_tools.apply(proposal)
-    constraints = _constraints_store(config_tools).load_raw()
-    assert constraints["execution_profiles"]["a_share_cny"]["commission_rate"] == 0.001
-    assert constraints["execution_params"]["commission_rate"] == 0.005
-
-
-def test_gate_threshold_routes_list_id_and_reports_shared_markets(config_tools):
-    (proposal,) = config_tools.propose(
-        [_change("gate_profiles.standard.rules.maximum_drawdown.value", -35)]
-    )
-    assert proposal["affected_markets"] == ["a_share", "hk"]
-    config_tools.apply(proposal)
-    raw = _constraints_store(config_tools).load_raw()
-    rule = next(
-        rule
-        for rule in raw["gate_profiles"]["standard"]["rules"]
-        if rule["id"] == "maximum_drawdown"
-    )
-    assert rule["value"] == -35
-    assert raw["hard_constraints"]["max_drawdown_pct"] == -40
-
-
-def test_dependency_revision_prevents_changed_profile_impact(config_tools):
-    (proposal,) = config_tools.propose(
-        [_change("gate_profiles.standard.rules.maximum_drawdown.value", -35)]
-    )
-    _app_store(config_tools).update(
-        lambda raw: raw["optimizer"]["markets"]["us"].update(gate_profile="standard")
-    )
-    with pytest.raises(ConfigurationConflict, match="关联配置"):
-        config_tools.apply(proposal)
-
-
-def test_actual_market_parser_rejects_incompatible_horizon(config_tools):
-    before = _constraints_store(config_tools).path.read_bytes()
-    with pytest.raises(ValueError, match="Walk-Forward"):
-        config_tools.propose(
-            [_change("walk_forward_profiles.a_share_84m.num_windows", 2)]
-        )
-    assert _constraints_store(config_tools).path.read_bytes() == before
-    assert not list(
-        (_constraints_store(config_tools).path.parent).glob(".assistant-validate-*")
-    )
-
-
-@pytest.fixture
-def legacy_market_parser(monkeypatch):
-    """Model the deployed parser's acceptance of pre-policy window layouts."""
-    calls = []
-
-    def parse(app, constraints_path):
-        calls.append(
-            (
-                deepcopy(app),
-                yaml.safe_load(Path(constraints_path).read_text(encoding="utf-8")),
-            )
-        )
-        return {}
-
-    monkeypatch.setattr("src.search.config.get_market_optimizer_configs", parse)
-    return calls
-
-
-def _strict_horizon(raw):
-    profile = deepcopy(raw["walk_forward_profiles"]["a_share_84m"])
-    profile.update(
-        state_lookback_months=12,
-        test_months=24,
-        step_months=12,
-        num_windows=5,
-        validation_windows=1,
-        purge_overlapping_windows=True,
-        data_years=8,
-    )
-    return profile
-
-
-def _install_legacy_horizons(config_tools, *, policy_present=False):
-    def update(raw):
-        if not policy_present:
-            raw.pop("evaluation_horizon_policy", None)
-        raw["walk_forward_profiles"]["strict_24m"] = _strict_horizon(raw)
-        for name in ("a_share_84m", "hk_84m", "us_84m"):
-            raw["walk_forward_profiles"][name].update(
-                test_months=9,
-                step_months=3,
-                num_windows=22,
-                validation_windows=4,
-                purge_overlapping_windows=True,
-            )
-
-    _constraints_store(config_tools).update(update)
-
-
-@pytest.mark.parametrize("policy_present", [False, True])
-def test_legacy_budget_update_preserves_unchanged_nine_month_profiles(
-    config_tools, legacy_market_parser, policy_present
-):
-    _install_legacy_horizons(config_tools, policy_present=policy_present)
-    before = _constraints_store(config_tools).path.read_bytes()
-    (proposal,) = config_tools.propose(
-        [_change("optimizer.markets.a_share.solver_config.budget", 2345)]
-    )
-    result = config_tools.apply(proposal)
-    assert result["status"] == "applied"
-    assert (
-        _app_store(config_tools).load_raw()["optimizer"]["markets"]["a_share"][
-            "solver_config"
-        ]["budget"]
-        == 2345
-    )
-    assert _constraints_store(config_tools).path.read_bytes() == before
-    assert len(legacy_market_parser) == 2
-
-
-def test_legacy_profile_edit_cannot_keep_a_short_evaluation(
-    config_tools, legacy_market_parser
-):
-    _install_legacy_horizons(config_tools)
-    before = _constraints_store(config_tools).path.read_bytes()
-    with pytest.raises(ValueError, match="at least 24 months"):
-        config_tools.propose(
-            [_change("walk_forward_profiles.a_share_84m.num_windows", 23)]
-        )
-    assert _constraints_store(config_tools).path.read_bytes() == before
-
-
-@pytest.mark.parametrize(
-    "overrides,reason",
-    [
-        ({"test_months": 9, "step_months": 3}, "at least 24 months"),
-        ({"validation_windows": 2}, "one continuous holdout"),
-        ({"purge_overlapping_windows": False}, "require a purge"),
-        ({"num_windows": 2}, "independent ranking window"),
-        ({"test_months": True}, "positive integer"),
-    ],
-)
-def test_legacy_parser_cannot_bypass_horizon_by_switching_profiles(
-    config_tools, legacy_market_parser, overrides, reason
-):
-    def update(raw):
-        raw.pop("evaluation_horizon_policy", None)
-        candidate = _strict_horizon(raw)
-        candidate.update(overrides)
-        raw["walk_forward_profiles"]["candidate"] = candidate
-
-    _constraints_store(config_tools).update(update)
-    before = _app_store(config_tools).path.read_bytes()
-    with pytest.raises(ValueError, match=reason):
-        config_tools.propose(
-            [_change("optimizer.markets.a_share.walk_forward_profile", "candidate")]
-        )
-    assert _app_store(config_tools).path.read_bytes() == before
-
-
-def test_legacy_parser_rejects_purge_without_an_independent_ranking_window(
-    config_tools, legacy_market_parser
-):
-    def update(raw):
-        raw["walk_forward_profiles"]["a_share_84m"] = _strict_horizon(raw)
-
-    _constraints_store(config_tools).update(update)
-    with pytest.raises(ValueError, match="independent ranking window"):
-        config_tools.propose(
-            [_change("walk_forward_profiles.a_share_84m.num_windows", 2)]
-        )
-
-
-def test_legacy_parser_applies_valid_profile_without_migrating_other_markets(
-    config_tools, legacy_market_parser
-):
-    _install_legacy_horizons(config_tools)
-    before = _constraints_store(config_tools).path.read_bytes()
-    (proposal,) = config_tools.propose(
-        [_change("optimizer.markets.a_share.walk_forward_profile", "strict_24m")]
-    )
-    config_tools.apply(proposal)
-    assert proposal["affected_markets"] == ["a_share"]
-    assert _constraints_store(config_tools).path.read_bytes() == before
-    assert len(legacy_market_parser) == 2
-
-
-def test_legacy_profile_edit_obeys_stricter_declared_minimum(
-    config_tools, legacy_market_parser
-):
-    def update(raw):
-        raw.setdefault("evaluation_horizon_policy", {})["minimum_evaluation_months"] = (
-            36
-        )
-
-    _constraints_store(config_tools).update(update)
-    with pytest.raises(ValueError, match="at least 36 months"):
-        config_tools.propose(
-            [_change("walk_forward_profiles.a_share_84m.num_windows", 6)]
-        )
-
-
-@pytest.mark.parametrize(
-    "policy",
-    [
-        None,
-        [],
-        {"unknown": 24},
-        {"minimum_evaluation_months": True},
-        {"minimum_evaluation_months": "24"},
-        {"minimum_evaluation_months": 23},
-        {"minimum_evaluation_months": 36, "default_backtest_months": 24},
-        {"daily_portfolio_history_months": float("inf")},
-        {"contract": ""},
-        {"default_research_horizon_profile": ""},
-    ],
-)
-def test_legacy_profile_edit_rejects_malformed_declared_policy(
-    config_tools, legacy_market_parser, policy
-):
-    def update(raw):
-        raw["evaluation_horizon_policy"] = policy
-
-    _constraints_store(config_tools).update(update)
-    before = _constraints_store(config_tools).path.read_bytes()
-    with pytest.raises(ValueError, match="evaluation_horizon_policy"):
-        config_tools.propose(
-            [_change("walk_forward_profiles.a_share_84m.num_windows", 6)]
-        )
-    assert _constraints_store(config_tools).path.read_bytes() == before
-
-
 def test_forged_proposal_path_or_diff_is_rejected(config_tools):
     (proposal,) = config_tools.propose([_change("stocks", ["00883"])])
     forged = deepcopy(proposal)
     forged["target"] = "../../other/config.yaml"
+    with pytest.raises(ValueError, match="目标"):
+        config_tools.apply(forged)
+    forged["target"] = "config/optimizer_constraints.yaml"
     with pytest.raises(ValueError, match="目标"):
         config_tools.apply(forged)
     forged = deepcopy(proposal)
@@ -1015,20 +732,6 @@ def test_schedule_collision_rejected_before_config_write(config_tools):
     with pytest.raises(ValueError, match="id 重复"):
         config_tools.propose([_change("scheduler.run_time", "20:30")])
     assert store.path.read_bytes() == before
-
-
-def test_environment_override_is_disclosed_without_being_saved(
-    config_tools, monkeypatch
-):
-    monkeypatch.setenv("SEARCH_WORKERS", "2")
-    (proposal,) = config_tools.propose(
-        [_change("optimizer.markets.a_share.search.workers", 3)]
-    )
-    assert "SEARCH_WORKERS" in proposal["effect"]
-    result = config_tools.apply(proposal)
-    assert "SEARCH_WORKERS" in result["effect"]
-    raw = _app_store(config_tools).load_raw()
-    assert raw["optimizer"]["markets"]["a_share"]["search"]["workers"] == 3
 
 
 def test_malformed_yaml_error_never_echoes_secret_line(config_tools):

@@ -462,7 +462,7 @@ def _pre_deploy_checks(dry_run):
         sys.executable, "-c",
         "import importlib,sys; "
         "[importlib.import_module(m) for m in "
-        "['src.search.workflow','src.search.artifacts',"
+        "['src.search.config','src.search.artifacts',"
         "'src.backtest.engine','src.strategy.api',"
         "'src.notification.manager','src.core.runtime_service']]; "
         "print('OK')",
@@ -503,16 +503,12 @@ def _pre_deploy_checks(dry_run):
         "tests/test_import_smoke.py",
         "tests/test_cash_tier_trade_plan.py",
         "tests/test_backtest_recovery.py",
-        "tests/test_optimizer_validation_isolation.py",
         "tests/test_make_signals.py",
         "tests/test_score_engine.py",
-        "tests/test_notify_align.py",
         "tests/test_email_daily_mode.py",
         "tests/test_telegram_notifier.py",
         "tests/test_vanguard_identity_cache.py",
-        "tests/test_optimizer_shared_recovery.py",
         "tests/test_us_market_history.py",
-        "tests/test_optimizer_data_notifications.py",
         "-p", "no:capture", "-q",
         timeout=120,
     )
@@ -552,25 +548,23 @@ def _pre_deploy_checks(dry_run):
     return True
 
 
-def _build_optimizer_config_validation_command() -> str:
-    """Read the effective server config through the strict runtime validator."""
+def _build_execution_config_validation_command() -> str:
+    """Validate the remaining runtime and execution configuration, read-only."""
     script = """import sys
+from pathlib import Path
 try:
-    from src.search.config import get_market_optimizer_configs
-    get_market_optimizer_configs(
-        application_config="config/config.yaml",
-        constraints_path="config/optimizer_constraints.yaml",
-    )
+    from src.core.config_store import load_config
+    from src.search.config import get_execution_config
+    for filename in ("config/config.yaml", "config/optimizer_constraints.yaml"):
+        if not Path(filename).is_file():
+            raise ValueError("configuration file not found: " + filename)
+    load_config("config/config.yaml")
+    get_execution_config("config/optimizer_constraints.yaml")
 except Exception as exc:
-    print(
-        "[OPTIMIZER_CONFIG_ERROR] config/config.yaml / "
-        f"config/optimizer_constraints.yaml: {exc}",
-        file=sys.stderr,
-    )
+    print("[EXECUTION_CONFIG_ERROR] " + str(exc), file=sys.stderr)
     sys.exit(1)
-print("[OPTIMIZER_CONFIG_OK]")
+print("[EXECUTION_CONFIG_OK]")
 """
-    # -B avoids bytecode writes; no main.py, data fetch, search or activation.
     return (
         f"cd {shlex.quote(REMOTE_DIR)} && timeout 30 python3 -B -c "
         f"{shlex.quote(script)}"
@@ -777,12 +771,12 @@ def deploy():
         # Validate the final config against the deployed code and profiles before
         # running business logic, updating cron, restarting services or notifying.
         ok, out, err = _ssh_cmd(
-            _build_optimizer_config_validation_command(),
-            "Validate remote optimizer configuration",
+            _build_execution_config_validation_command(),
+            "Validate remote execution configuration",
             timeout=45,
         )
         config_ok = ok and (
-            dry_run or "[OPTIMIZER_CONFIG_OK]" in (out or "").splitlines()
+            dry_run or "[EXECUTION_CONFIG_OK]" in (out or "").splitlines()
         )
         config_message = (
             "dry run; remote config not validated" if dry_run else "all markets valid"
@@ -791,12 +785,12 @@ def deploy():
             config_message = (
                 (err or out or "remote validator failed without output").strip()
                 if not ok
-                else "missing [OPTIMIZER_CONFIG_OK] validation success marker"
+                else "missing [EXECUTION_CONFIG_OK] validation success marker"
             )
-        _step("optimizer_config", config_ok, config_message)
+        _step("execution_config", config_ok, config_message)
         if not config_ok:
             _info(
-                "ERROR: Remote optimizer configuration validation failed; "
+                "ERROR: Remote execution configuration validation failed; "
                 f"aborting deployment: {config_message}"
             )
             return _print_summary(steps, cleaning_performed)
@@ -847,38 +841,6 @@ def deploy():
         else:
             _step("system_test", True, "exit=0 errors=0")
 
-        # ── 9c. 检查统一优化器数据；候选搜索和激活必须显式执行 ──
-        _info("Checking optimizer data...")
-        opt_check = (
-            f"find {REMOTE_DIR}/data/optimizer/runs -name manifest.yaml "
-            "-type f 2>/dev/null | wc -l"
-        )
-        if dry_run:
-            _ssh_cmd(opt_check, "Count optimizer run manifests")
-            _step("optimizer_data", None, "dry run; optimizer data not inspected")
-        else:
-            _, opt_count_out, _ = _ssh_cmd(
-                opt_check, "Count optimizer run manifests"
-            )
-            try:
-                opt_count = int(opt_count_out.strip() or "0")
-            except ValueError:
-                _info("Optimizer manifest count was not numeric; reporting warning")
-                _step("optimizer_data", None, "unreadable manifest count")
-            else:
-                if opt_count == 0:
-                    _info(
-                        "No unified optimizer run found; leaving the current strategy "
-                        "unchanged until an explicit --optimize and --activate-run"
-                    )
-                    _step(
-                        "optimizer_data",
-                        None,
-                        "no unified run; explicit search required",
-                    )
-                else:
-                    _info(f"Optimizer data exists ({opt_count} run manifests)")
-                    _step("optimizer_data", True, f"{opt_count} unified runs")
         check_archive = f"""timeout 10 bash -c '
 latest=$(ls -t {REMOTE_DIR}/data/email_archive/*.html 2>/dev/null | head -1)
 if [ -n "$latest" ]; then

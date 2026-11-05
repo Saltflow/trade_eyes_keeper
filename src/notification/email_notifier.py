@@ -24,19 +24,13 @@ from ..markets import _detect_fine_group
 from .base import BaseNotifier
 from .receipts import combine_receipts, legacy_tuple, normalize_receipt
 from .report_builders import (  # noqa: F401
-    _benchmark_label,
-    _build_optimizer_run_summary,
     _fmt,
-    _format_benchmark_comparison,
     _html_escape,
     _safe_html_url,
-    _signed_text_metric,
     build_brief_entries,
     build_daily_event_rows,
-    build_optimizer_summary,
     build_strategy_text_summary,
     group_daily_event_rows,
-    optimizer_notification_title,
 )
 from .report_policy import (
     PRICE_COLORS,
@@ -632,7 +626,6 @@ class EmailNotifier(BaseNotifier):
         chart_png_bytes=None,
         portfolio_chart_dict=None,
         pdf_bytes=None,
-        candlestick_png=None,
         attachments=None,
     ):
         """
@@ -644,7 +637,6 @@ class EmailNotifier(BaseNotifier):
             chart_png_bytes: 告警走势图 PNG 字节（可选），CID=chart001
             portfolio_chart_dict: 投资组合走势图 {"a_share": bytes, "non_a_share": bytes}
             pdf_bytes: 日报 PDF 附件 bytes（可选）
-            candlestick_png: 周K蜡烛图 bytes（可选），CID=candlestick
         """
 
         guard = self._delivery_guard()
@@ -670,7 +662,7 @@ class EmailNotifier(BaseNotifier):
             # MIMEText encodes the payload and sets its matching transfer header.
             html_part = MIMEText(body, "html", "utf-8")
 
-            has_any_chart = chart_png_bytes or portfolio_chart_dict or candlestick_png
+            has_any_chart = chart_png_bytes or portfolio_chart_dict
 
             if has_any_chart:
                 # 有任意图表：MIMEMultipart("related") 容器，HTML + 内嵌图片
@@ -691,16 +683,6 @@ class EmailNotifier(BaseNotifier):
                     )
                     inner.attach(image)
                     logger.info("告警走势图以 CID chart001 嵌入邮件")
-
-                # 添加周K蜡烛图（CID: candlestick）
-                if candlestick_png:
-                    cs_img = MIMEImage(candlestick_png, "png")
-                    cs_img.add_header("Content-ID", "<candlestick>")
-                    cs_img.add_header(
-                        "Content-Disposition", "inline", filename="candlestick.png"
-                    )
-                    inner.attach(cs_img)
-                    logger.info("周K蜡烛图以 CID candlestick 嵌入邮件")
 
                 # 日报优先使用单张归一化三市场总览；兼容旧调用方的分市场图。
                 if portfolio_chart_dict:
@@ -982,15 +964,6 @@ class EmailNotifier(BaseNotifier):
             msg = str(e)
             logger.error(f"发送部署通知邮件失败: {msg}")
             return False, msg
-
-    def send_optimizer_notification(
-        self, report, group_name: str = "", full_report: dict | None = None
-    ) -> None:
-        """发送优化结果邮件。含完整回测报告（日回报测+敏感性+波动率）。"""
-        body = build_optimizer_summary(report, group_name, full_report)
-        subject = optimizer_notification_title(report, group_name)
-        candlestick_png = (full_report or {}).get("candlestick_png")
-        self._send_email(subject, body, candlestick_png=candlestick_png)
 
     def _save_email_copy(self, subject, body):
         """

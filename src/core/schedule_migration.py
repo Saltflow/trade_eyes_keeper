@@ -172,8 +172,8 @@ def migrate_legacy_cron(config_path: Path | str, project_root: Path | str) -> di
     """Adopt missing schedule fields and remove only this project's old jobs.
 
     Explicit report settings win. Retired optimizer cron jobs are removed,
-    never imported into the service scheduler. Manual optimization remains
-    available. The returned summary contains no credentials.
+    never imported into the service scheduler. Optimizer execution has been
+    removed. The returned summary contains no credentials.
     """
     root = posixpath.normpath(str(project_root).replace("\\", "/"))
     if not posixpath.isabs(root):

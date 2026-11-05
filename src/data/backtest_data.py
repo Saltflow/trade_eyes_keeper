@@ -10,8 +10,6 @@ from __future__ import annotations
 import email.utils
 import json
 import logging
-import time
-from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -20,11 +18,9 @@ from typing import Iterable
 import pandas as pd
 import requests
 
-from src.instruments.classifier import detect_market
-
 from ..backtest.execution import build_corporate_action_schedule
 from .baostock_access import BaostockAccessBlocked, BaostockTransientError
-from .listing_dates import ListingDateEvidence, ListingDateStore
+from .listing_dates import ListingDateEvidence
 from .market_calendar import resolve_market_data_cutoff
 from .market_history import (
     MarketHistoryProvider,
@@ -120,7 +116,7 @@ class BacktestDataResult:
         }
 
     def write_report(self, path: Path | str) -> Path:
-        """Persist readiness evidence without changing optimizer pointers."""
+        """Persist readiness evidence without changing strategy or account state."""
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_suffix(destination.suffix + ".tmp")
@@ -280,17 +276,6 @@ def _fundamental_dependencies(strategy) -> tuple[str, ...]:
     )
 
 
-def _planned_source(code: str, purpose: str) -> str:
-    if purpose != "optimizer":
-        return "market_provider"
-    market = detect_market(code)
-    if market == "us":
-        return "nasdaq_disclosed"
-    if market == "a_share" and code.startswith(("0", "3", "6")):
-        return "baostock_disclosed_actions"
-    return "tencent_disclosed_actions"
-
-
 def _retry_delay(exc: Exception, attempt: int, now: datetime) -> float | None:
     """Return a safe delay only for transient transport/service failures."""
     from .us_market_history import USIssuerMetadataTransientError
@@ -364,20 +349,7 @@ def prepare_backtest_data(
     settings = config.get("point_in_time_data", {}) or {}
     root = Path(settings.get("output_dir", "data/point_in_time"))
     store = PointInTimeMarketStore(root)
-    listing_store = ListingDateStore(root)
-    # Optimization uses the independently disclosed price/action routes where
-    # available. Ordinary interactive/backtest callers retain their configured
-    # source routing. Never let a provider silently turn an adjusted-only feed
-    # into a raw/qfq research input.
-    provider_config = config
-    if purpose == "optimizer":
-        provider_config = deepcopy(config)
-        market_settings = provider_config.setdefault(
-            "point_in_time_data", {}
-        ).setdefault("market_history", {})
-        market_settings.setdefault("optimizer_auto_backfill", {})
-        market_settings["disclosed_sources"] = True
-    provider = MarketHistoryProvider(provider_config)
+    provider = MarketHistoryProvider(config)
     tolerance = _coverage_tolerance(config)
     observed = as_of or datetime.now(timezone.utc)
     result = BacktestDataResult(str(purpose), start, end)
@@ -388,18 +360,6 @@ def prepare_backtest_data(
         if _code(item) and _code(item) != "risk_free"
     ]
     all_codes = list(dict.fromkeys([*requested_codes, *requested_benchmarks]))
-    market_settings = (provider_config.get("point_in_time_data", {}) or {}).get(
-        "market_history", {}
-    ) or {}
-    backfill_settings = market_settings.get("optimizer_auto_backfill", {}) or {}
-    max_attempts = 2 if purpose == "optimizer" else 1
-    if purpose == "optimizer":
-        max_attempts = max(1, min(2, int(backfill_settings.get("max_attempts", 2))))
-    market_budget_seconds = max(
-        1, min(3600, int(backfill_settings.get("market_budget_seconds", 3600)))
-    )
-    market_deadlines: dict[str, float] = {}
-
     for code in all_codes:
         try:
             cutoff = resolve_market_data_cutoff(code, end, as_of=observed)
@@ -452,25 +412,8 @@ def prepare_backtest_data(
                 from .in_kind_market_inputs import attach_in_kind_market_inputs
 
                 loaded = attach_in_kind_market_inputs(
-                    loaded, provider_config, store, provider, effective_end
+                    loaded, config, store, provider, effective_end
                 )
-                cached_bundle = loaded
-                listing_added = False
-                first_loaded = pd.Timestamp(loaded.prices["date"].min()).date()
-                if (
-                    purpose == "optimizer"
-                    and first_loaded > start + timedelta(days=tolerance)
-                    and loaded.listing_evidence is None
-                ):
-                    loaded.listing_evidence = listing_store.resolve(
-                        code,
-                        **(
-                            {"listing_year": first_loaded.year}
-                            if detect_market(code) == "hk"
-                            else {}
-                        ),
-                    ).as_dict()
-                    listing_added = True
                 loaded = validate_market_bundle(
                     loaded,
                     code,
@@ -480,10 +423,6 @@ def prepare_backtest_data(
                     now=observed.date(),
                     tolerance_days=tolerance,
                 )
-                if listing_added:
-                    # Validation exposes only the requested window. Persist the
-                    # original complete cache with its new evidence instead.
-                    store.write(cached_bundle)
                 result.bundles[code] = loaded
                 if loaded.listing_evidence:
                     result.listing_dates[code] = dict(loaded.listing_evidence)
@@ -517,96 +456,51 @@ def prepare_backtest_data(
                 )
 
         last_error = None
-        market = detect_market(code)
-        market_deadline = market_deadlines.setdefault(
-            market, time.monotonic() + market_budget_seconds
-        )
-        for attempt in range(1, max_attempts + 1):
-            if time.monotonic() >= market_deadline:
-                last_error = TimeoutError(
-                    "optimizer market backfill exceeded "
-                    f"{market_budget_seconds}s budget"
-                )
-                result.fetch_attempts.append(
-                    DataFetchAttempt(
-                        code, "market_budget", attempt, "stopped", str(last_error)
-                    )
-                )
-                break
-            try:
-                fetched = None
-                fetched = provider.fetch(code, start, effective_end)
-                from .in_kind_market_inputs import attach_in_kind_market_inputs
+        try:
+            fetched = None
+            fetched = provider.fetch(code, start, effective_end)
+            from .in_kind_market_inputs import attach_in_kind_market_inputs
 
-                fetched = attach_in_kind_market_inputs(
-                    fetched, provider_config, store, provider, effective_end
-                )
-                first_fetched = pd.Timestamp(fetched.prices["date"].min()).date()
-                if (
-                    purpose == "optimizer"
-                    and first_fetched > start + timedelta(days=tolerance)
-                    and fetched.listing_evidence is None
-                ):
-                    fetched.listing_evidence = listing_store.resolve(
-                        code,
-                        **(
-                            {"listing_year": first_fetched.year}
-                            if detect_market(code) == "hk"
-                            else {}
-                        ),
-                    ).as_dict()
-                fetched = validate_market_bundle(
-                    fetched,
+            fetched = attach_in_kind_market_inputs(
+                fetched, config, store, provider, effective_end
+            )
+            fetched = validate_market_bundle(
+                fetched,
+                code,
+                start,
+                effective_end,
+                require_current=require_current,
+                now=observed.date(),
+                tolerance_days=tolerance,
+            )
+            # Persist only after every raw/qfq/action/currentness check passes.
+            store.write(fetched)
+            result.bundles[code] = fetched
+            if fetched.listing_evidence:
+                result.listing_dates[code] = dict(fetched.listing_evidence)
+            result.fetched_codes.append(code)
+            result.fetch_attempts.append(
+                DataFetchAttempt(
                     code,
-                    start,
-                    effective_end,
-                    require_current=require_current,
-                    now=observed.date(),
-                    tolerance_days=tolerance,
+                    fetched.source or "market_provider",
+                    1,
+                    "fetched",
                 )
-                # Persist only after every raw/qfq/action/currentness check passes.
-                store.write(fetched)
-                result.bundles[code] = fetched
-                if fetched.listing_evidence:
-                    result.listing_dates[code] = dict(fetched.listing_evidence)
-                result.fetched_codes.append(code)
-                result.fetch_attempts.append(
-                    DataFetchAttempt(
-                        code,
-                        fetched.source or "market_provider",
-                        attempt,
-                        "fetched",
-                    )
+            )
+            last_error = None
+        except Exception as exc:  # noqa: BLE001 - provider failure is audited
+            last_error = exc
+            delay = _retry_delay(exc, 1, datetime.now(timezone.utc))
+            result.fetch_attempts.append(
+                DataFetchAttempt(
+                    code,
+                    getattr(fetched, "source", "") or "market_provider",
+                    1,
+                    "rejected",
+                    str(exc),
+                    delay,
                 )
-                last_error = None
-                break
-            except Exception as exc:  # noqa: BLE001 - provider failure is audited
-                last_error = exc
-                delay = _retry_delay(exc, attempt, datetime.now(timezone.utc))
-                result.fetch_attempts.append(
-                    DataFetchAttempt(
-                        code,
-                        getattr(fetched, "source", "")
-                        or _planned_source(code, purpose),
-                        attempt,
-                        (
-                            "retryable_failure"
-                            if delay is not None and attempt < max_attempts
-                            else "rejected"
-                        ),
-                        str(exc),
-                        delay,
-                    )
-                )
-                if delay is None or attempt >= max_attempts:
-                    break
-                remaining = market_deadline - time.monotonic()
-                if delay > remaining:
-                    last_error = TimeoutError(
-                        f"retry delay {delay:.1f}s exceeds optimizer market budget"
-                    )
-                    break
-                time.sleep(delay)
+            )
         if last_error is not None:
             exc = last_error
             reason = f"local={load_reason}; fetch={exc}"

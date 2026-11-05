@@ -39,7 +39,6 @@ from src.instruments.point_in_time import (
     adjust_statement_shares,
 )
 from src.search.config import get_constraints
-from src.search.workflow import _prepare_wf_evaluation_contexts
 from src.strategy.api import StrategyMarketData, TradePlan
 
 REFERENCE = ROOT / 'data' / 'reference_universe'

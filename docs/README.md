@@ -1,12 +1,12 @@
 # 文档索引
 
-整理日期：2026-11-01。当前使用方式以入口指南和源码合同为准；带日期的开发、审计与报告记录只说明当时的结果。
+整理日期：2026-11-04。当前使用方式以入口指南和源码合同为准；带日期的开发、审计与报告记录只说明当时的结果。
 
 ## 架构与运行
 
 | 文档 | 内容 |
 |---|---|
-| [架构图独立页](architecture_overview.md) | 当前源码总图与五张分图；五个可复用包、队列/账本归属、触发器、Ke 展示、统一研究及历史环境证据 |
+| [架构图独立页](architecture_overview.md) | 当前源码总图与业务分图；五个可复用包、队列/账本归属、触发器、Ke 展示、统一研究及历史环境证据 |
 | [架构与模块职责](architecture.md) | 当前执行机制、业务合同、发布边界与依赖债务 |
 | [数据/Pi/执行底座新旧对比](design/reusable_data_research_runtime.md) | 迁移前重复归属、目标边界与本地实现映射；生产尚未发布 |
 | [共享资料与可复用平台使用](guide/reusable_platform.md) | 本地统一authority、资料引用、全局容量、模型网关、Pi注入和跨命名空间源包导出；生产尚未发布 |
@@ -20,7 +20,7 @@
 
 | 文档 | 内容 |
 |---|---|
-| [策略搜索与回测](llm/mainline_strategy_search_backtest.md) / [相对晋升](llm/relative_strategy_promotion.md) | 统一策略、回测、搜索窗口与激活合同 |
+| [当前报告与手动回测](llm/mainline_strategy_search_backtest.md) | 优化器已删除；保留报告、显式回测和历史产物只读边界 |
 | [财报流程](guide/financial_pipeline.md) | 提取、跨年整合、摘要、第三阶段文件交接 |
 | [一键年报研究](guide/research_pipeline.md) / [统一编排设计](design/research_pipeline_orchestration.md) | A/HK/US年报、跨批缓存、共享预算、Pi候选维修、进度和故障隔离 |
 | [调查建模](design/research_investigation.md) / [正式研究](guide/research_report.md) | Agent 自主调查与公司模型、v7 通用约束、固定三轮与一次模型返工；业务验收案例与实机边界 |
@@ -28,7 +28,7 @@
 | [财报数据 V2](design/fundamental_data_contract_v2.md) | 提取结构与边界 |
 | [公告](guide/announcements.md) / [A 股源资料采集](guide/ashare_source_backfill.md) | 数据抓取、归档、缺口与回填 |
 | [数据集目录](guide/dataset_catalog.md) / [逐时点数据](llm/point_in_time_data.md) | 数据发现及防前视合同 |
-| [策略插件](../src/strategy/README.md) / [Solver 插件](../src/search/README.md) | 扩展实现说明 |
+| [策略插件](../src/strategy/README.md) | 显式回测使用的策略合同 |
 | [跨股票分派账本](development/in_kind_ledger_20261031.md) | 统一权益与结算、港股通估算政策、真实三事件及完整搜参验收边界 |
 
 ## 变更、验收与退役
@@ -48,4 +48,4 @@
 - `development/` 中其他带日期记录、`reports/`、`archive/`：历史审计、验收与产物说明；旧命令和状态不代表当前能力。
 - `design/` 及 `llm/` 中研究性合同：设计或实验边界，是否接入生产以架构页和具体发布证据为准。
 
-HTTP 管理/OTP 已下线；旧基本面研究、PDF 会话、Pi 专用研究包装及自动引用复核执行器已退役。指定旧量化评分、MOE训练和Ke实验已终止。通用助手/Pi桥、财报数据流程、技术策略及保留诊断仍有各自现行入口。
+HTTP 管理/OTP 已下线；旧基本面研究、PDF 会话、Pi 专用研究包装及自动引用复核执行器已退役。指定旧量化评分、MOE训练和Ke实验已终止。策略优化、Solver、候选晋升/激活及优化通知已整体删除；历史优化产物保留只读。通用助手/Pi桥、财报数据流程、手动回测及 Ke 展示仍沿用现行入口。

@@ -25,10 +25,10 @@ cp config/.env.example config/.env
 
 # 复制主配置模板，再填写完整监控列表和各市场设置
 cp config/config.yaml.example config/config.yaml
-# config/config.yaml -> stocks / optimizer.markets
+# config/config.yaml -> stocks / reports / notifications
 ```
 
-主配置请以 `config/config.yaml.example` 为模板，字段含义见[配置参考](../configuration.md)。股票代码写成字符串以保留前导零；执行日报、信号扫描或优化验收时使用配置的完整标的，不用局部示例替代。
+主配置请以 `config/config.yaml.example` 为模板，字段含义见[配置参考](../configuration.md)。股票代码写成字符串以保留前导零；日报与简报验收使用配置的完整标的，不用局部示例替代；优化器已下线。
 
 ```bash
 # config/.env
@@ -47,8 +47,6 @@ python main.py --once
 python main.py --brief
 python main.py --brief afternoon_snapshot  # 收盘简报
 
-# 策略搜索优化（完整配置；耗时由预算、数据和机器决定）
-python main.py --optimize
 
 # 运行验证测试
 pytest tests/validation/ -v

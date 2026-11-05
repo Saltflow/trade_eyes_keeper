@@ -1,6 +1,5 @@
 """Synthetic mechanism/causality tests, never a real-market search or trial."""
 
-import json
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -10,8 +9,6 @@ import pytest
 
 from src.backtest.engine import FastEvaluator, simulate_portfolio
 from src.backtest.execution import DEFAULT_FILL_PRICE_POLICY, CorporateActionSlice
-from src.search import create_solver
-from src.search.contracts import EvaluationBatch, GateDecision, SearchProblem
 from src.strategy import Params, StrategyMarketData, get_strategy, list_strategy_ids
 
 
@@ -165,7 +162,7 @@ def test_column_permutation_and_equal_score_tie_break_are_identity_based():
     assert plan.entry_events[:, 0].any() and not plan.entry_events[:, 1:].any()
 
 
-def test_single_batch_and_scan_use_the_same_calendar_plan():
+def test_single_and_batch_use_the_same_calendar_plan():
     strategy, market = get_strategy("causal_trend_allocation"), _market(columns=1)
     selected = _params()
     one = strategy.make_signals(selected, market)
@@ -173,23 +170,6 @@ def test_single_batch_and_scan_use_the_same_calendar_plan():
     batch = prepared.evaluate_batch([selected, _params(momentum_lookback=3)])
     _assert_same(batch[0], one)
     _assert_same(strategy.evaluate_one(selected, market), one)
-    month = np.asarray(market.dates, dtype="datetime64[M]")
-    index = next(
-        index for index in range(275, len(month)) if month[index] != month[index - 1]
-    )
-    prefix = _slice(market, 0, index + 1)
-    history = pd.DataFrame(
-        {
-            "date": prefix.dates,
-            "close": prefix.prices[:, 0],
-            "open": prefix.prices[:, 0],
-            "high": prefix.highs[:, 0],
-            "low": prefix.lows[:, 0],
-            "volume": np.full(len(prefix.dates), 1000.0),
-        }
-    )
-    assert one.entry_events[index, 0]
-    assert strategy.scan_today(selected, {}, history)[0]["side"] == "buy"
 
 
 @pytest.mark.parametrize("missing", ["nan", "halt", "zero_raw"])
@@ -411,59 +391,3 @@ def test_single_and_batch_execution_consume_identical_declared_targets(group):
         assert left.total_trades == right.total_trades
         assert left.signal_event_count == right.signal_event_count
         assert left.net_dividend_cash == right.net_dividend_cash
-
-
-def test_local_genetic_safely_stops_with_real_schema_and_large_budget_using_fake_receipts():
-    strategy = get_strategy("causal_trend_allocation")
-    problem = SearchProblem(
-        strategy.parameter_schema,
-        "synthetic-only",
-        "synthetic-only",
-        155000,
-        "synthetic-data",
-        "synthetic-execution",
-        "synthetic-window",
-        "close",
-    )
-    solver = create_solver("local_genetic")
-    solver.initialize(
-        problem,
-        {
-            "random_seed": 20260726,
-            "phase1_random_samples": 30000,
-            "duplicate_retry_limit": 64,
-        },
-    )
-    seen = set()
-    for _iteration in range(100):
-        if solver.should_stop():
-            break
-        batch = solver.ask(128)
-        for index in range(len(batch)):
-            key = tuple(sorted(batch.parameters_at(index).items()))
-            assert key not in seen
-            seen.add(key)
-        solver.tell(
-            EvaluationBatch(
-                candidate_ids=batch.candidate_ids,
-                raw_metrics=tuple({} for _ in range(len(batch))),
-                objective_scores=np.zeros(len(batch)),
-                gate_decisions=tuple(GateDecision(True) for _ in range(len(batch))),
-                feasible=np.ones(len(batch), dtype=bool),
-                failure_reasons=tuple(() for _ in range(len(batch))),
-            )
-        )
-    assert solver.should_stop()
-    assert solver.stop_reason == "search_stalled"
-    assert solver.total_issued == len(seen) <= 3600 < problem.budget
-    print(
-        json.dumps(
-            {
-                "synthetic_solver_probe": True,
-                "budget": problem.budget,
-                "issued": solver.total_issued,
-                "space": 3600,
-                "stop_reason": solver.stop_reason,
-            }
-        )
-    )

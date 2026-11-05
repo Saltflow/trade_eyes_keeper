@@ -3,7 +3,7 @@
 import hashlib
 import json
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,8 +11,8 @@ import pandas as pd
 import pytest
 
 from src.data import listing_dates as ld
-from src.data.backtest_data import prepare_backtest_data, validate_market_bundle
-from src.data.market_history import PointInTimeMarketStore, PriceHistoryBundle
+from src.data.backtest_data import validate_market_bundle
+from src.data.market_history import PriceHistoryBundle
 
 FIXTURE = Path(__file__).parent / "fixtures/listing_dates/hkex_2020_page61.txt"
 META = json.loads(FIXTURE.with_suffix(".source.json").read_text(encoding="utf8"))
@@ -126,52 +126,6 @@ def test_hk_history_still_requires_exact_verified_listing_day():
     source.prices = source.prices.iloc[1:]
     with pytest.raises(ValueError, match="official listing date"):
         validate_market_bundle(source, "09999", date(2018, 1, 1), date(2020, 6, 12))
-
-
-@pytest.mark.parametrize("cached", [False, True])
-def test_backtest_hk_short_history_uses_year_as_lookup_hint_then_persists_evidence(
-    tmp_path, monkeypatch, cached
-):
-    source = bundle()
-    if cached:
-        PointInTimeMarketStore(tmp_path).write(source)
-    monkeypatch.setattr(
-        "src.data.backtest_data.resolve_market_data_cutoff",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            effective_end=date(2020, 6, 12), as_dict=dict
-        ),
-    )
-
-    class Provider:
-        def __init__(self, _config):
-            pass
-
-        def fetch(self, *_args):
-            assert not cached
-            return source
-
-    monkeypatch.setattr("src.data.backtest_data.MarketHistoryProvider", Provider)
-    calls = []
-
-    def resolve(_self, code, *, listing_year):
-        calls.append((code, listing_year))
-        return evidence()
-
-    monkeypatch.setattr(ld.ListingDateStore, "resolve", resolve)
-    result = prepare_backtest_data(
-        {"point_in_time_data": {"output_dir": str(tmp_path)}},
-        ["09999"],
-        "2018-04-13",
-        "2020-06-12",
-        purpose="optimizer",
-        as_of=datetime(2020, 6, 12, tzinfo=timezone.utc),
-    )
-    assert result.ready, result.issues
-    assert calls == [("09999", 2020)]
-    assert (
-        PointInTimeMarketStore(tmp_path).read("09999").listing_evidence
-        == evidence().as_dict()
-    )
 
 
 def test_original_hkex_pdf_replay_if_available(tmp_path):

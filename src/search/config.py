@@ -2,13 +2,13 @@
 
 读取 config/optimizer_constraints.yaml，提供：
   - ExecutionConfig：执行参数（资金、费率、持仓日）
-  - WalkForwardConfig / GeneticSearchConfig / DiscreteSearchConfig：搜索配置
+  - WalkForwardConfig / DiscreteSearchConfig：手动回测窗口与策略执行档位
   - StrategyConstraints：硬性/软性约束检查
-  - WindowStats / BacktestConfig：回测结果载体 + 时间线配置
+  - WindowStats：统一回测结果载体
   - get_market_optimizer_config()：严格的单市场独立配置
 
-生产搜参必须使用 ``get_market_optimizer_config``；旧的
-``get_constraints`` 仅保留给低层兼容测试，不参与市场策略选择。
+保留既有配置文件路径与读取函数名，供手动回测、策略、参考持仓和研究使用。
+历史 solver/gate 字段仅作元数据，不加载或运行优化器。
 
 用法:
     from src.search.config import get_constraints
@@ -19,16 +19,12 @@
 from __future__ import annotations
 
 import logging
-import os
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional as _Optional
 
 import numpy as np
-import pandas as _pd
 import yaml
-from pydantic import BaseModel as _BaseModel, Field as _Field
 
 from .contracts import stable_hash
 
@@ -43,8 +39,6 @@ DEFAULT_APPLICATION_PATH = (
 MARKET_GROUPS = ("a_share", "hk", "us")
 MARKET_CONFIG_FIELDS = (
     "strategy",
-    "solver_id",
-    "gate_profile",
     "walk_forward_profile",
     "execution_profile",
     "benchmark_profile",
@@ -57,7 +51,7 @@ MARKET_CONFIG_FIELDS = (
 
 @dataclass
 class ExecutionConfig:
-    """搜参/日回报测通用执行参数。"""
+    """手动回测、参考持仓与策略使用的执行参数。"""
 
     # Compatibility field for old callers.  The unified cash-cap simulator
     # deliberately ignores it; per-trade tiers are now the only amount cap.
@@ -207,192 +201,6 @@ class WalkForwardConfig:
 # ═══════════════════════════════════════════════════════════════
 
 
-class GeneticSearchConfig:
-    def __init__(self, data: dict):
-        self.phase1_random_samples: int = data.get("phase1_random_samples", 10000)
-        self.phase1_top_keep: int = data.get("phase1_top_keep", 1000)
-        self.num_generations: int = data.get("num_generations", 3)
-        self.population_size: int = data.get("population_size", 1000)
-        self.offspring_size: int = data.get("offspring_size", 5000)
-        self.crossover_rate: float = data.get("crossover_rate", 0.70)
-        self.mutation_rate: float = data.get("mutation_rate", 0.30)
-        self.mutation_builder_rate: float = data.get("mutation_builder_rate", 0.20)
-        self.mutation_threshold_step: int = data.get("mutation_threshold_step", 2)
-        self.random_seed: int | None = (
-            int(data["random_seed"]) if data.get("random_seed") is not None else None
-        )
-        self.sensitivity_top_candidates: int = max(
-            1, int(data.get("sensitivity_top_candidates", 500))
-        )
-        self.sensitivity_samples: int = max(1, int(data.get("sensitivity_samples", 10)))
-        self.sensitivity_penalty_weight: float = max(
-            0.0, float(data.get("sensitivity_penalty_weight", 1.0))
-        )
-        self.evaluation_workers: int = max(1, int(data.get("evaluation_workers", 4)))
-        self.min_weighted_strategy_return: float = float(
-            data.get("min_weighted_strategy_return", 0.0)
-        )
-        self.min_positive_return_windows: int = max(
-            0, int(data.get("min_positive_return_windows", 0))
-        )
-        self.min_winning_benchmark_windows: int = max(
-            0, int(data.get("min_winning_benchmark_windows", 0))
-        )
-
-
-class LocalSensitivityConfig:
-    """Configurable one-level parameter-neighbour validation.
-
-    Objective scores may legitimately be negative because the primary score
-    subtracts a cross-window range penalty. Local robustness therefore
-    measures neighbour feasibility and relative score deterioration; it must
-    never require an absolute score greater than zero.
-    """
-
-    def __init__(self, data: dict | None = None):
-        raw = data or {}
-        self.enabled: bool = bool(raw.get("enabled", True))
-        self.minimum_feasible_ratio: float = float(
-            raw.get("minimum_feasible_ratio", 0.80)
-        )
-        if not 0.0 <= self.minimum_feasible_ratio <= 1.0:
-            raise ValueError(
-                "validation.local_sensitivity.minimum_feasible_ratio "
-                "must be between 0 and 1"
-            )
-        self.activation_required: bool = bool(
-            raw.get("activation_required", True)
-        )
-
-    def to_contract(self) -> dict[str, object]:
-        return {
-            "enabled": self.enabled,
-            "minimum_feasible_ratio": self.minimum_feasible_ratio,
-            "activation_required": self.activation_required,
-        }
-
-
-class UniverseRobustnessConfig:
-    """Configurable leave-one-instrument-out finalist validation."""
-
-    def __init__(self, data: dict | None = None):
-        raw = data or {}
-        self.enabled: bool = bool(raw.get("enabled", True))
-        self.finalist_count: int = max(1, int(raw.get("finalist_count", 20)))
-        self.minimum_passing_ratio: float = float(
-            raw.get("minimum_passing_ratio", 0.80)
-        )
-        if not 0.0 <= self.minimum_passing_ratio <= 1.0:
-            raise ValueError(
-                "validation.universe_robustness.minimum_passing_ratio "
-                "must be between 0 and 1"
-            )
-        self.small_universe_threshold: int = max(
-            1, int(raw.get("small_universe_threshold", 5))
-        )
-        self.small_universe_allowed_failures: int = max(
-            0, int(raw.get("small_universe_allowed_failures", 0))
-        )
-        self.minimum_mean_majority_excess: float = float(
-            raw.get("minimum_mean_majority_excess", 0.0)
-        )
-        self.penalty_weight: float = max(
-            0.0, float(raw.get("penalty_weight", 2.0))
-        )
-        self.activation_required: bool = bool(
-            raw.get("activation_required", True)
-        )
-        self.require_order_invariance: bool = bool(
-            raw.get("require_order_invariance", True)
-        )
-
-    def required_positive_variants(self, symbol_count: int) -> int:
-        """Resolve ratio rounding while allowing explicit small-pool tolerance."""
-        count = max(0, int(symbol_count))
-        if count == 0:
-            return 0
-        ratio_required = max(
-            1,
-            int(np.ceil(count * self.minimum_passing_ratio)),
-        )
-        if count <= self.small_universe_threshold:
-            allowed = min(self.small_universe_allowed_failures, count - 1)
-            return min(ratio_required, max(1, count - allowed))
-        return ratio_required
-
-    def to_contract(self) -> dict[str, object]:
-        return {
-            "enabled": self.enabled,
-            "finalist_count": self.finalist_count,
-            "minimum_passing_ratio": self.minimum_passing_ratio,
-            "small_universe_threshold": self.small_universe_threshold,
-            "small_universe_allowed_failures": (
-                self.small_universe_allowed_failures
-            ),
-            "minimum_mean_majority_excess": self.minimum_mean_majority_excess,
-            "penalty_weight": self.penalty_weight,
-            "activation_required": self.activation_required,
-            "require_order_invariance": self.require_order_invariance,
-        }
-
-
-class SearchRuntimeConfig:
-    """Solver-neutral orchestration and CPU scheduling configuration."""
-
-    def __init__(self, data: dict, genetic: dict):
-        self.solver_id: str = str(data.get("solver_id", "genetic"))
-        self.gate_profile: str = str(data.get("gate_profile", "standard"))
-        self.batch_size: int = int(data.get("batch_size", 256))
-        if not 128 <= self.batch_size <= 512:
-            raise ValueError("search.batch_size must be between 128 and 512")
-        self.parallel_axis: str = str(data.get("parallel_axis", "candidate_window"))
-        self.evaluation_backend: str = str(
-            data.get("evaluation_backend", "process")
-        )
-        if self.evaluation_backend not in {"process", "scalar"}:
-            raise ValueError(
-                "search.evaluation_backend must be 'process' or 'scalar'"
-            )
-        configured_workers = os.environ.get("SEARCH_WORKERS", data.get("workers"))
-        self.workers: int | None = (
-            int(configured_workers) if configured_workers is not None else None
-        )
-        if self.workers is not None and self.workers < 1:
-            raise ValueError("search.workers/SEARCH_WORKERS must be at least 1")
-        self.checkpoint: bool = bool(data.get("checkpoint", True))
-        self.candidate_retention_ratio: float = float(
-            data.get("candidate_retention_ratio", 0.05)
-        )
-        if not 0.0 < self.candidate_retention_ratio <= 1.0:
-            raise ValueError(
-                "search.candidate_retention_ratio must be greater than 0 and at most 1"
-            )
-        self.run_retention_count: int = int(data.get("run_retention_count", 3))
-        if not 1 <= self.run_retention_count <= 100:
-            raise ValueError(
-                "search.run_retention_count must be between 1 and 100"
-            )
-        configured = data.get("solvers", {}) or {}
-        if not isinstance(configured, dict):
-            raise ValueError("search.solvers must be a mapping")
-        self._solver_configs = {
-            str(key): dict(value or {}) for key, value in configured.items()
-        }
-        # Preserve every historical GA setting through the generic solver
-        # configuration boundary.  Explicit ``search.solvers.genetic`` values
-        # take precedence.
-        self._genetic_defaults = dict(genetic)
-
-    def solver_config(self, solver_id: str | None = None) -> dict:
-        selected = str(solver_id or self.solver_id)
-        if selected == "genetic":
-            return {
-                **self._genetic_defaults,
-                **self._solver_configs.get(selected, {}),
-            }
-        return dict(self._solver_configs.get(selected, {}))
-
-
 # ═══════════════════════════════════════════════════════════════
 # 离散搜索空间配置
 # ═══════════════════════════════════════════════════════════════
@@ -434,18 +242,6 @@ class DiscreteSearchConfig:
             "sell_limit_levels", [5000.0, 10000.0, 20000.0, 30000.0, 50000.0]
         )
 
-    @property
-    def search_space_size(self) -> int:
-        buy_singles = (
-            len(self.buy_builders) * self.threshold_levels * len(self.buy_limit_levels)
-        )
-        sell_singles = (
-            len(self.sell_builders)
-            * self.threshold_levels
-            * len(self.sell_limit_levels)
-        )
-        return (buy_singles**self.num_buy_rules) * (sell_singles**self.num_sell_rules)
-
 
 # ═══════════════════════════════════════════════════════════════
 # 策略约束检查器
@@ -457,25 +253,7 @@ class StrategyConstraints:
         if raw_config is None:
             raw_config = {}
         self._raw_config = raw_config
-        hc = raw_config.get("hard_constraints", {})
-        self.min_avg_position_pct: float = hc.get("min_avg_position_pct", 20.0)
-        self.max_drawdown_pct: float = hc.get("max_drawdown_pct", -25.0)
-        self.max_return_std_pct: float = hc.get("max_return_std_pct", 15.0)
-        sc = raw_config.get("soft_constraints", {})
-        self.min_sharpe: float = sc.get("min_sharpe", 0.5)
-        self.sharpe_penalty_weight: float = sc.get("sharpe_penalty_weight", 0.3)
         self.walk_forward = WalkForwardConfig(raw_config.get("walk_forward", {}))
-        self.search = SearchRuntimeConfig(
-            raw_config.get("search", {}), raw_config.get("genetic_search", {})
-        )
-        self.genetic_search = GeneticSearchConfig(raw_config.get("genetic_search", {}))
-        validation = raw_config.get("validation", {}) or {}
-        self.local_sensitivity = LocalSensitivityConfig(
-            validation.get("local_sensitivity", {})
-        )
-        self.universe_robustness = UniverseRobustnessConfig(
-            validation.get("universe_robustness", {})
-        )
         self.discrete_search = DiscreteSearchConfig(
             raw_config.get("discrete_search", {}),
             raw_config.get("simplified_search", {}),
@@ -519,37 +297,6 @@ class StrategyConstraints:
             withholding_rates=dict(ep.get("withholding_rates", {}) or {}),
         )
 
-    def check_hard_constraints(
-        self,
-        window_stats,
-        walk_forward_score,
-    ) -> tuple[bool, list[str]]:
-        violations: list[str] = []
-        avg_position = np.mean([ws.avg_position_pct for ws in window_stats])
-        if avg_position < self.min_avg_position_pct:
-            violations.append(
-                f"avg position {avg_position:.1f}% < {self.min_avg_position_pct:.0f}%"
-            )
-        for i, ws in enumerate(window_stats):
-            if ws.max_drawdown_pct < self.max_drawdown_pct:
-                violations.append(
-                    f"W{i+1} max dd {ws.max_drawdown_pct:.1f}% "
-                    f"< {self.max_drawdown_pct:.1f}%"
-                )
-        test_returns = [ws.test_excess_return for ws in window_stats]
-        if len(test_returns) >= 2:
-            ret_std = float(np.std(test_returns))
-            if ret_std > self.max_return_std_pct:
-                violations.append(
-                    f"test return std {ret_std:.1f}% > {self.max_return_std_pct:.1f}%"
-                )
-        return len(violations) == 0, violations
-
-    def compute_soft_penalty(self, sharpe_ratio: float) -> float:
-        if sharpe_ratio < self.min_sharpe:
-            return (self.min_sharpe - sharpe_ratio) * self.sharpe_penalty_weight
-        return 0.0
-
 
 @dataclass
 class MarketOptimizerConfig:
@@ -576,9 +323,6 @@ class MarketOptimizerConfig:
 
         return get_strategy(self.strategy_name)
 
-    @property
-    def search(self) -> SearchRuntimeConfig:
-        return self.constraints.search
 
     @property
     def execution(self) -> ExecutionConfig:
@@ -694,78 +438,6 @@ class WindowStats:
 # ═══════════════════════════════════════════════════════════════
 
 
-class BacktestConfig(_BaseModel):
-    observe_end_month: int = 6
-    trade_end_month: int = 18
-    rf_rate: float = 2.0
-    capital_injections: dict[int, float] = _Field(default_factory=dict)
-    initial_capital: float = 100000.0
-    monthly_buy_limit: float = float("inf")
-    monthly_sell_limit: float = float("inf")
-    commission_rate: float = 0.005
-    lot_size_override: _Optional[dict[str, int]] = None
-
-    def get_phase(self, elapsed_months):
-        if elapsed_months < self.observe_end_month:
-            return "observe"
-        if elapsed_months >= self.trade_end_month:
-            return "hold"
-        return "trade"
-
-    def can_trade(self, elapsed_months):
-        return self.get_phase(elapsed_months) == "trade"
-
-    def get_injection(self, month):
-        return self.capital_injections.get(month, 0.0)
-
-    def get_lot_size(self, stock_code, default):
-        if self.lot_size_override and stock_code in self.lot_size_override:
-            return self.lot_size_override[stock_code]
-        return default
-
-
-def elapsed_months(date_str, ref_date_str):
-    d = _pd.Timestamp(date_str)
-    ref = _pd.Timestamp(ref_date_str)
-    months = (d.year - ref.year) * 12 + (d.month - ref.month)
-    months += (d.day - ref.day) / 30.0
-    return round(months, 2)
-
-
-def make_training_config():
-    from collections import OrderedDict
-
-    injections = OrderedDict()
-    for m in range(6, 13):
-        injections[m] = 20000.0
-    return BacktestConfig(
-        observe_end_month=6,
-        trade_end_month=12,
-        capital_injections=injections,
-        initial_capital=100000.0,
-        monthly_buy_limit=float("inf"),
-        monthly_sell_limit=float("inf"),
-        commission_rate=0.002,
-    )
-
-
-def make_default_optimizer_config():
-    from collections import OrderedDict
-
-    injections = OrderedDict()
-    for m in range(6, 13):
-        injections[m] = 20000.0
-    return BacktestConfig(
-        observe_end_month=6,
-        trade_end_month=18,
-        capital_injections=injections,
-        initial_capital=100000.0,
-        monthly_buy_limit=float("inf"),
-        monthly_sell_limit=float("inf"),
-        commission_rate=0.002,
-    )
-
-
 # ═══════════════════════════════════════════════════════════════
 # 单例加载
 # ═══════════════════════════════════════════════════════════════
@@ -867,20 +539,18 @@ def _resolved_market_raw(
         )
 
     strategy_name = str(spec["strategy"]).strip().lower()
-    solver_id = str(spec["solver_id"]).strip().lower()
-    gate_profile = str(spec["gate_profile"]).strip()
+    solver_id = str(spec.get("solver_id", "")).strip().lower()
+    gate_profile = str(spec.get("gate_profile", "")).strip()
     walk_forward_profile = str(spec["walk_forward_profile"]).strip()
     execution_profile = str(spec["execution_profile"]).strip()
     benchmark_profile = str(spec["benchmark_profile"]).strip()
     if not all(
-        (strategy_name, solver_id, gate_profile, walk_forward_profile,
+        (strategy_name, walk_forward_profile,
          execution_profile, benchmark_profile)
     ):
         raise ValueError(f"{group}: optimizer fields cannot be empty")
 
     from ..strategy import get_strategy
-    from .gates import CandidateGatePipeline
-    from .registry import create_solver
     strategy = get_strategy(strategy_name)
     if strategy is None:
         raise ValueError(f"{group}: unknown strategy {strategy_name!r}")
@@ -888,10 +558,6 @@ def _resolved_market_raw(
         raise ValueError(
             f"{group}: strategy {strategy_name!r} does not support this market"
         )
-    try:
-        solver = create_solver(solver_id)
-    except ValueError as exc:
-        raise ValueError(f"{group}: {exc}") from exc
 
     raw = deepcopy(constraints_raw)
     raw["walk_forward"] = _profile_mapping(
@@ -1001,59 +667,6 @@ def _resolved_market_raw(
     benchmarks["risk_free_rates"] = rates
     raw["benchmarks"] = benchmarks
 
-    search = raw.get("search", {})
-    if not isinstance(search, dict):
-        raise ValueError("search must be a mapping")
-    if "solver_id" in search or "gate_profile" in search:
-        raise ValueError(
-            "global search.solver_id/search.gate_profile are forbidden; "
-            "declare them under every optimizer.markets entry"
-        )
-    search = deepcopy(search)
-    search["solver_id"] = solver_id
-    search["gate_profile"] = gate_profile
-    solver_configs = search.get("solvers", {})
-    if not isinstance(solver_configs, dict) or solver_id not in solver_configs:
-        raise ValueError(f"{group}: no search configuration for Solver {solver_id!r}")
-    market_search = spec.get("search", {})
-    if market_search is not None and not isinstance(market_search, dict):
-        raise ValueError(f"{group}: optimizer market search must be a mapping")
-    if isinstance(market_search, dict):
-        conflicting_search_keys = sorted(
-            key for key in ("solver_id", "gate_profile") if key in market_search
-        )
-        if conflicting_search_keys:
-            raise ValueError(
-                f"{group}: search selection must use the market fields; "
-                f"do not duplicate {conflicting_search_keys} under search"
-            )
-        search.update(deepcopy(market_search))
-        search["solver_id"] = solver_id
-        search["gate_profile"] = gate_profile
-    solver_overrides = spec.get("solver_config", {}) or {}
-    if not isinstance(solver_overrides, dict):
-        raise ValueError(f"{group}: solver_config must be a mapping")
-    solver_configs = deepcopy(solver_configs)
-    solver_configs[solver_id] = {
-        **dict(solver_configs[solver_id] or {}),
-        **deepcopy(solver_overrides),
-    }
-    search["solvers"] = solver_configs
-    raw["search"] = search
-
-    CandidateGatePipeline.from_config(raw, gate_profile)
-    schema = strategy.parameter_schema
-    if any(item.active_if for item in schema.parameters) and not solver.capabilities.conditional_parameters:
-        raise ValueError(
-            f"{group}: Solver {solver_id!r} cannot handle conditional parameters"
-        )
-    # The actual SearchController performs the complete capability assertion;
-    # this lightweight call catches the common incompatible contract here.
-    if solver.capabilities.requires_gradients:
-        raise ValueError(
-            f"{group}: Solver {solver_id!r} requires unavailable gradients"
-        )
-
     contract = {
         "group": group,
         "strategy": strategy_name,
@@ -1073,7 +686,7 @@ def load_market_optimizer_config(
     application_config: dict | Path | str | None = None,
     constraints_path: Path | str | None = None,
 ) -> MarketOptimizerConfig:
-    """Resolve one strict, independent optimizer contract for ``group``."""
+    """Read one independent historical strategy/execution profile for ``group``."""
     if group not in MARKET_GROUPS:
         raise ValueError(f"unknown optimizer market group: {group}")
     app = _application_config(application_config)

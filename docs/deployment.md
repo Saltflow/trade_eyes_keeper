@@ -14,7 +14,7 @@ cp config/config.yaml.example config/config.yaml
 cp config/.env.example config/.env
 ```
 
-填写完整监控列表和各市场策略合同，启用需要的通知与管理渠道。Numba 是回测执行的必要依赖；启用飞书交互需安装清单中的 `lark-oapi`。PDF 日报另需 `xelatex`、CJK 字体和相应 TeX 包。内存与磁盘按全量标的、历史范围和搜索 worker 数量配置。
+填写完整监控列表和保留业务的执行合同，启用需要的通知与管理渠道。Numba 是回测执行的必要依赖；启用飞书交互需安装清单中的 `lark-oapi`。PDF 日报另需 `xelatex`、CJK 字体和相应 TeX 包。内存与磁盘按全量标的、历史范围和已启用任务并发配置。
 
 ```bash
 python main.py --service       # 调度 + 已启用的管理 Bot
@@ -22,7 +22,7 @@ python main.py --interactive   # 仅运行已启用的 Bot
 python main.py --status        # JSON 状态；运行且心跳新鲜返回 0，否则返回 1
 ```
 
-单次日报和简报仍使用 `--once` / `--brief [id]`。验证业务数据时可设置 `SKIP_NOTIFICATIONS=true`，这样仍生成报告但不外发。策略绩效验收必须使用主配置全部标的，运行完整 `--optimize`，不能用少量标的代替。
+单次日报和简报仍使用 `--once` / `--brief [id]`。验证业务数据时可设置 `SKIP_NOTIFICATIONS=true`，这样仍生成报告但不外发。日报与简报预览须使用主配置完整监控池。优化器已整体删除，不再部署搜索进程、Solver、候选激活或优化通知；历史产物和现有参考持仓保留。
 
 ## Linux 常驻服务
 
@@ -64,7 +64,7 @@ sudo journalctl -u trade-eyes.service -f
 
 旧 cron 只处理属于当前项目的 `main.py --once`、`--brief`、`--optimize` 行，保留其他项目任务。日报和简报以 YAML 为准。定时搜参已删除：旧优化 cron 直接移除，不导入其时间或启用状态；服务启动/刷新时也移除残留的 `optimize`、`brief_optimize` 持久任务。
 
-旧 YAML 中的 `optimize_enabled`、`optimize_time`、`optimize_misfire_grace_seconds` 不再生效，也不提供 Bot 配置入口。需要搜参时显式执行 `python main.py --optimize` 或 `/optimize 市场`。
+旧 YAML 中的 `optimize_enabled`、`optimize_time`、`optimize_misfire_grace_seconds` 不再生效，也不提供 Bot 配置入口。手动 `--optimize`、`/optimize`、候选激活和优化通知也已移除。保留的 `config/optimizer_constraints.yaml` 仅提供显式回测执行/WF/基准合同，历史文件名不代表可启动优化器。
 
 ## CI/CD
 
@@ -76,7 +76,7 @@ python ci_cd_deploy.py
 python ci_cd_deploy.py --mode investigate
 ```
 
-实际部署会推送代码、保留远端私有配置、安装依赖、校验完整优化配置、运行禁止外发的系统检查、迁移调度并启动服务。验收使用 systemd 状态及当前 PID 的新鲜本地心跳，成功后按统一通知开关发送部署通知。
+实际部署会推送代码、保留远端私有配置、安装依赖、校验运行与共享执行配置、运行禁止外发的系统检查、迁移调度并启动服务。验收使用 systemd 状态及当前 PID 的新鲜本地心跳，成功后按统一通知开关发送部署通知。
 
 `--sync-config` 明确用本地主配置替换远端配置；`--sync-env` 明确同步凭证文件。默认两项均关闭。`--dry-run` 只预览，不构成远端验收。
 
@@ -86,7 +86,7 @@ python ci_cd_deploy.py --mode investigate
 | --- | --- |
 | 服务进程及退出原因 | `systemctl status trade-eyes.service` / `journalctl -u trade-eyes.service` |
 | 本地运行证据 | `python main.py --status`、`data/runtime/service_status.json`（随 `storage.data_dir` 改变） |
-| 日报与搜索日志 | `logs/quant_system.log` |
+| 日报与服务日志 | `logs/quant_system.log` |
 | 已生成邮件 | `data/email_archive/` |
 | 标的与调度管理 | Bot `/help`、`/list`、`/add`、`/remove`、`/schedule` |
 

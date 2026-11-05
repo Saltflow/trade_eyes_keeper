@@ -10,9 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-import os
 import re
-import tempfile
 from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
@@ -26,14 +24,7 @@ from ...core.schedule_manager import ScheduleManager, get_schedule_manager
 from ...notification.settings import env_flag
 
 _APP = "config/config.yaml"
-_CONSTRAINTS = "config/optimizer_constraints.yaml"
 _MARKETS = ("a_share", "hk", "us")
-_PROFILES = {
-    "gate_profile": "gate_profiles",
-    "walk_forward_profile": "walk_forward_profiles",
-    "execution_profile": "execution_profiles",
-    "benchmark_profile": "benchmark_profiles",
-}
 _NEXT_TASK = "下次任务生效；已开始的任务继续使用原配置快照"
 _SCHEDULE_EFFECT = "确认保存后刷新运行中的调度器；未运行时在服务启动后生效"
 _SYMBOL = re.compile(r"[A-Za-z0-9^][A-Za-z0-9.^=_-]{0,31}\Z")
@@ -73,7 +64,7 @@ class ConfigProposal:
         }
         if not required <= value.keys() or set(value) - required - {"dependencies"}:
             raise ValueError("配置提案字段不完整或包含未知字段")
-        if value["target"] not in {_APP, _CONSTRAINTS}:
+        if value["target"] != _APP:
             raise ValueError("配置提案目标不在可写范围")
         if not isinstance(value["revision"], str) or not re.fullmatch(
             r"[a-f0-9]{64}", value["revision"]
@@ -86,7 +77,7 @@ class ConfigProposal:
             raise ValueError("配置提案市场范围无效")
         dependencies = value.get("dependencies", {})
         if not isinstance(dependencies, dict) or any(
-            key not in {_APP, _CONSTRAINTS}
+            key != _APP
             or not isinstance(revision, str)
             or not re.fullmatch(r"[a-f0-9]{64}", revision)
             for key, revision in dependencies.items()
@@ -107,8 +98,6 @@ class _Rule:
             valid = type(value) is bool
         elif self.kind == "integer":
             valid = type(value) is int
-        elif self.kind == "nullable_integer":
-            valid = value is None or type(value) is int
         elif self.kind == "number":
             valid = type(value) in {int, float} and math.isfinite(value)
         elif self.kind == "time":
@@ -129,21 +118,12 @@ class _Rule:
 
             validate_report_trigger(value)
             valid = True
-        elif self.kind == "positive_numbers":
-            valid = (
-                isinstance(value, list)
-                and 0 < len(value) <= 500
-                and all(
-                    type(item) in {int, float} and math.isfinite(item) and item > 0
-                    for item in value
-                )
-            )
         else:
             valid = False
         if not valid:
             suffix = f"，可选值：{', '.join(self.choices)}" if self.choices else ""
             raise ValueError(f"要求 {self.kind}{suffix}")
-        if value is not None and self.kind in {"number", "integer", "nullable_integer"}:
+        if value is not None and self.kind in {"number", "integer"}:
             if self.minimum is not None and value < self.minimum:
                 raise ValueError(f"不得小于 {self.minimum}")
             if self.maximum is not None and value > self.maximum:
@@ -163,12 +143,20 @@ class _Rule:
                 "condition_keys": ["path", "operator", "value"],
                 "path_syntax": "dot-separated fields with optional * wildcard segments",
                 "operators": [
-                    "exists", "non_empty", "contains", "equals",
-                    "gt", "gte", "lt", "lte",
+                    "exists",
+                    "non_empty",
+                    "contains",
+                    "equals",
+                    "gt",
+                    "gte",
+                    "lt",
+                    "lte",
                 ],
                 "max_conditions": 20,
                 "allowed_roots": [
-                    "dividend_events", "placements", "announcements",
+                    "dividend_events",
+                    "placements",
+                    "announcements",
                 ],
             }
         return result
@@ -253,67 +241,6 @@ class _Field:
     markets: tuple[str, ...]
 
 
-_SOLVER_RULES = {
-    "budget": _Rule("integer", 100, 1_000_000),
-    "random_seed": _Rule("nullable_integer", 0, 2**32 - 1),
-    "phase1_random_samples": _Rule("integer", 1, 1_000_000),
-    "phase1_top_keep": _Rule("integer", 1, 1_000_000),
-    "num_generations": _Rule("integer", 0, 10_000),
-    "population_size": _Rule("integer", 2, 1_000_000),
-    "offspring_size": _Rule("integer", 1, 1_000_000),
-    "crossover_rate": _Rule("number", 0, 1),
-    "mutation_rate": _Rule("number", 0, 1),
-    "gene_mutation_rate": _Rule("number", 0, 1),
-    "max_local_step": _Rule("integer", 1, 1000),
-    "step_schedule": _Rule("enum", choices=("linear_to_one",)),
-    "random_immigrant_rate": _Rule("number", 0, 0.999999),
-    "duplicate_retry_limit": _Rule("integer", 1, 100_000),
-    "initialization_samples": _Rule("integer", 1, 1_000_000),
-}
-_COMMON_SOLVER = {"budget", "random_seed"}
-_GENETIC_SOLVER = _COMMON_SOLVER | {
-    "phase1_random_samples",
-    "phase1_top_keep",
-    "num_generations",
-    "population_size",
-    "offspring_size",
-    "crossover_rate",
-    "gene_mutation_rate",
-}
-_SOLVER_FIELDS = {
-    "random": _COMMON_SOLVER,
-    "simulated_annealing": _COMMON_SOLVER | {"initialization_samples"},
-    "genetic": _GENETIC_SOLVER | {"mutation_rate"},
-    "local_genetic": _GENETIC_SOLVER
-    | {
-        "max_local_step",
-        "step_schedule",
-        "random_immigrant_rate",
-        "duplicate_retry_limit",
-    },
-}
-_SEARCH_RULES = {
-    "workers": _Rule("nullable_integer", 1, 128),
-    "batch_size": _Rule("integer", 128, 512),
-    "candidate_retention_ratio": _Rule("number", 0.001, 1),
-    "run_retention_count": _Rule("integer", 1, 100),
-}
-_EXECUTION_RULES = {
-    "initial_capital": _Rule("number", 10_000, 10_000_000),
-    "commission_rate": _Rule("number", 0, 0.02),
-    "min_holding_days": _Rule("integer", 0, 3650),
-}
-_WALK_FORWARD_RULES = {
-    "state_lookback_months": _Rule("integer", 1, 120),
-    "test_months": _Rule("integer", 24, 120),
-    "step_months": _Rule("integer", 1, 120),
-    "num_windows": _Rule("integer", 2, 100),
-    "data_years": _Rule("number", 1, 100),
-    "window_weights": _Rule("positive_numbers"),
-    "window_range_penalty": _Rule("number", 0, 10),
-}
-
-
 def _revision(raw: dict) -> str:
     # Hash raw values, including uneditable fields, but never disclose them.
     serialized = yaml.safe_dump(raw, allow_unicode=True, sort_keys=True)
@@ -358,122 +285,20 @@ def _check_changes(changes: Any) -> list[dict[str, Any]]:
     return deepcopy(changes)
 
 
-def _minimum_evaluation_months(raw: dict) -> int:
-    """Preserve the research policy even when the installed core predates it."""
-    defaults = {
-        "contract": "minimum-two-year-evaluation/1",
-        "minimum_evaluation_months": 24,
-        "daily_portfolio_history_months": 36,
-        "default_backtest_months": 36,
-        "default_research_horizon_profile": "existing_data_66m_24m",
-    }
-    if "evaluation_horizon_policy" not in raw:
-        return 24
-    declared = raw["evaluation_horizon_policy"]
-    if not isinstance(declared, dict) or set(declared) - set(defaults):
-        raise ValueError("invalid evaluation_horizon_policy declaration")
-    policy = {**defaults, **declared}
-    for name in ("contract", "default_research_horizon_profile"):
-        if not isinstance(policy[name], str) or not policy[name].strip():
-            raise ValueError(f"evaluation_horizon_policy.{name} is invalid")
-    minimum = policy["minimum_evaluation_months"]
-    if type(minimum) is not int or minimum < 24:
-        raise ValueError(
-            "evaluation_horizon_policy.minimum_evaluation_months must be "
-            "an integer >= 24"
-        )
-    for name in ("daily_portfolio_history_months", "default_backtest_months"):
-        if type(policy[name]) is not int or policy[name] < minimum:
-            raise ValueError(f"evaluation_horizon_policy.{name} must be >= {minimum}")
-    return minimum
-
-
-def _validate_market_horizons(
-    app: dict, raw: dict, before_app: dict, before_raw: dict
-) -> None:
-    """Check changed selections without silently migrating deployed profiles.
-
-    The core parser remains authoritative for strategy, Solver and execution
-    settings. Older versions did not reject short tests or a purge that leaves
-    no independent ranking window, so the assistant enforces those boundaries
-    when a selected Walk-Forward profile changes. Unchanged legacy profiles
-    remain usable for independent budget/Solver updates. The same comparison
-    runs inside the confirmed ConfigStore transaction.
-    """
-    markets = _get(app, ("optimizer", "markets"))
-    profiles = raw.get("walk_forward_profiles")
-    if not isinstance(markets, dict) or not markets or not isinstance(profiles, dict):
-        raise ValueError("optimizer markets and Walk-Forward profiles are required")
-    changed = []
-    for group, market in markets.items():
-        profile_id = (
-            market.get("walk_forward_profile") if isinstance(market, dict) else None
-        )
-        profile = profiles.get(profile_id) if isinstance(profile_id, str) else None
-        previous_id = _get(
-            before_app, ("optimizer", "markets", group, "walk_forward_profile")
-        )
-        previous = _get(before_raw, ("walk_forward_profiles", previous_id))
-        if profile_id != previous_id or profile != previous:
-            changed.append((group, profile_id, profile))
-    if not changed:
-        return
-    minimum = _minimum_evaluation_months(raw)
-    for group, profile_id, profile in changed:
-        prefix = f"{group}: invalid Walk-Forward profile {profile_id}"
-        if not isinstance(profile, dict):
-            raise ValueError(prefix)  # noqa: TRY004 - invalid profile reference
-        for name in (
-            "state_lookback_months",
-            "test_months",
-            "step_months",
-            "num_windows",
-            "validation_windows",
-        ):
-            value = profile.get(name)
-            if type(value) is not int or value < 1:
-                raise ValueError(f"{prefix}: {name} must be a positive integer")
-        data_years = profile.get("data_years")
-        if (
-            type(data_years) not in {int, float}
-            or not math.isfinite(data_years)
-            or data_years <= 0
-        ):
-            raise ValueError(f"{prefix}: data_years must be positive")
-        test_months, step_months = profile["test_months"], profile["step_months"]
-        if test_months < minimum:
-            raise ValueError(
-                f"{prefix}: test_months must cover at least {minimum} months"
-            )
-        if profile["validation_windows"] != 1:
-            raise ValueError(f"{prefix}: exactly one continuous holdout is required")
-        purge = profile.get("purge_overlapping_windows", True)
-        if type(purge) is not bool or (step_months < test_months and not purge):
-            raise ValueError(f"{prefix}: overlapping windows require a purge")
-        overlapping = max(0, (test_months + step_months - 1) // step_months - 1)
-        independent = profile["num_windows"] - 1 - (overlapping if purge else 0)
-        if independent < 1:
-            raise ValueError(
-                f"{prefix}: at least one independent ranking window is required"
-            )
-
-
 class ConfigurationTools:
     """Prepare safe previews and apply only a confirmed, unchanged preview."""
 
     def __init__(self, project_root: Path):
         self.project_root = Path(project_root).resolve()
         self._stores = {
-            target: ConfigStore(self.project_root / target)
-            for target in (_APP, _CONSTRAINTS)
+            target: ConfigStore(self.project_root / target) for target in (_APP,)
         }
         if any(
             not store.path.is_relative_to(self.project_root)
             for store in self._stores.values()
         ):
             raise ValueError("配置文件不能通过链接指向项目目录之外")
-        # Serializes assistant multi-file lock acquisition across processes.
-        # Legacy writers acquire one ConfigStore lock and cannot deadlock it.
+        # Serialize previews and confirmations across assistant processes.
         self._transaction = ConfigStore(
             self.project_root / "config" / "assistant_transactions"
         )
@@ -488,10 +313,7 @@ class ConfigurationTools:
     def _registry(
         self, snapshots: dict[str, dict], changes: list[dict] | None = None
     ) -> dict[str, _Field]:
-        from ...search.registry import list_solvers
-        from ...strategy import get_strategy, list_strategy_ids
-
-        app, constraints = snapshots[_APP], snapshots[_CONSTRAINTS]
+        app = snapshots[_APP]
         fields: dict[str, _Field] = {}
 
         def add(
@@ -506,11 +328,6 @@ class ConfigurationTools:
             markets: tuple[str, ...] = _MARKETS,
         ) -> None:
             field_path = path if path is not None else tuple(key.split("."))
-            if key.endswith("search.workers") and "SEARCH_WORKERS" in os.environ:
-                effect = (
-                    "保存后仍由 SEARCH_WORKERS 环境变量决定进程数；"
-                    "移除该覆盖后下次任务读取"
-                )
             if key.startswith("notification.") and key.endswith(".enabled"):
                 channel = key.split(".")[1]
                 if env_flag("SKIP_NOTIFICATIONS") or env_flag(
@@ -531,10 +348,7 @@ class ConfigurationTools:
                 markets,
             )
 
-        for key, label in (
-            ("stocks", "监控标的"),
-            ("skip_search", "跳过策略搜索的标的"),
-        ):
+        for key, label in (("stocks", "监控标的"),):
             add(key, _Rule("symbols"), label, default=[])
         announcement_values = _announcement_values(app)
         add(
@@ -625,167 +439,6 @@ class ConfigurationTools:
                 default=default,
             )
 
-        markets = _get(app, ("optimizer", "markets"), {}) or {}
-        selected = deepcopy(markets)
-        for change in changes or []:
-            parts = change["key"].split(".")
-            if (
-                len(parts) == 4
-                and parts[:2] == ["optimizer", "markets"]
-                and parts[2] in selected
-                and parts[3] == "solver_id"
-            ):
-                if not isinstance(change["value"], str):
-                    raise ValueError("solver_id 必须是已注册的 Solver 名称")
-                selected[parts[2]]["solver_id"] = change["value"]
-        for group in _MARKETS:
-            spec = markets.get(group)
-            if not isinstance(spec, dict):
-                continue
-            prefix = f"optimizer.markets.{group}"
-            strategies = tuple(
-                key
-                for key in list_strategy_ids()
-                if get_strategy(key).supports_market(group)
-            )
-            add(
-                f"{prefix}.strategy",
-                _Rule("enum", choices=strategies),
-                "此市场下次搜索使用的策略；不修改已激活策略产物",
-                markets=(group,),
-            )
-            solver_choices = tuple(
-                solver
-                for solver in list_solvers()
-                if solver in _get(constraints, ("search", "solvers"), {})
-            )
-            add(
-                f"{prefix}.solver_id",
-                _Rule("enum", choices=solver_choices),
-                "此市场的 Solver",
-                markets=(group,),
-            )
-            for selector, registry in _PROFILES.items():
-                add(
-                    f"{prefix}.{selector}",
-                    _Rule("enum", choices=tuple(sorted(constraints.get(registry, {})))),
-                    f"此市场使用的 {registry} 配置方案",
-                    markets=(group,),
-                )
-            old_solver = spec.get("solver_id")
-            inherited = deepcopy(
-                _get(constraints, ("search", "solvers", old_solver), {}) or {}
-            )
-            if old_solver == "genetic":
-                inherited = {**constraints.get("genetic_search", {}), **inherited}
-            solver_id = selected[group].get("solver_id")
-            for name in sorted(_SOLVER_FIELDS.get(solver_id, set())):
-                add(
-                    f"{prefix}.solver_config.{name}",
-                    _SOLVER_RULES[name],
-                    f"此市场 {solver_id} 参数，覆盖同名共享默认值",
-                    default=inherited.get(name),
-                    markets=(group,),
-                )
-            for name, rule in _SEARCH_RULES.items():
-                add(
-                    f"{prefix}.search.{name}",
-                    rule,
-                    "此市场搜索资源配置",
-                    default=_get(constraints, ("search", name)),
-                    markets=(group,),
-                )
-
-        def affected(selector: str, profile: str) -> tuple[str, ...]:
-            return tuple(
-                group
-                for group in _MARKETS
-                if markets.get(group, {}).get(selector) == profile
-            )
-
-        for name, rule in _SEARCH_RULES.items():
-            users = tuple(
-                group
-                for group in _MARKETS
-                if name not in (markets.get(group, {}).get("search") or {})
-            )
-            if users:
-                add(
-                    f"search.{name}",
-                    rule,
-                    "所有未单独覆盖此字段的市场使用的搜索设置",
-                    target=_CONSTRAINTS,
-                    markets=users,
-                )
-        for name in ("buy_limit_levels", "sell_limit_levels"):
-            add(
-                f"simplified_search.{name}",
-                _Rule("positive_numbers"),
-                "所有策略使用的单次交易现金档位",
-                target=_CONSTRAINTS,
-            )
-        for selector, registry, rules in (
-            ("execution_profile", "execution_profiles", _EXECUTION_RULES),
-            ("walk_forward_profile", "walk_forward_profiles", _WALK_FORWARD_RULES),
-        ):
-            for profile, values in constraints.get(registry, {}).items():
-                users = affected(selector, profile)
-                if not users or not isinstance(values, dict):
-                    continue
-                for name, rule in rules.items():
-                    if name in values:
-                        add(
-                            f"{registry}.{profile}.{name}",
-                            rule,
-                            f"共享配置方案 {profile} 的 {name}",
-                            target=_CONSTRAINTS,
-                            markets=users,
-                        )
-                if registry == "execution_profiles":
-                    for section, rule in (
-                        ("lot_sizes", _Rule("integer", 1, 100_000)),
-                        ("fx_rates", _Rule("number", 0.000001, 1_000_000)),
-                        ("withholding_rates", _Rule("number", 0, 0.999999)),
-                    ):
-                        for group in users:
-                            add(
-                                f"{registry}.{profile}.{section}.{group}",
-                                rule,
-                                f"{profile} 的 {group} 执行参数",
-                                target=_CONSTRAINTS,
-                                markets=(group,),
-                            )
-        for profile, values in constraints.get("gate_profiles", {}).items():
-            users = affected("gate_profile", profile)
-            if not users or not isinstance(values, dict):
-                continue
-            for index, gate in enumerate(values.get("rules", [])):
-                if not isinstance(gate, dict) or "value" not in gate:
-                    continue
-                gate_id, metric = gate.get("id"), str(gate.get("metric", ""))
-                if not isinstance(gate_id, str) or not re.fullmatch(
-                    r"[a-zA-Z0-9_-]+", gate_id
-                ):
-                    continue
-                rule = _gate_value_rule(metric)
-                add(
-                    f"gate_profiles.{profile}.rules.{gate_id}.value",
-                    rule,
-                    f"{profile} / {metric} 阈值（{gate.get('operator')}）",
-                    target=_CONSTRAINTS,
-                    path=("gate_profiles", profile, "rules", index, "value"),
-                    markets=users,
-                )
-                if gate.get("mode") == "penalty":
-                    add(
-                        f"gate_profiles.{profile}.rules.{gate_id}.penalty",
-                        _Rule("number", 0, 1000),
-                        f"{profile} / {gate_id} 惩罚权重",
-                        target=_CONSTRAINTS,
-                        path=("gate_profiles", profile, "rules", index, "penalty"),
-                        default=0,
-                        markets=users,
-                    )
         return fields
 
     def describe(self) -> dict[str, Any]:
@@ -838,15 +491,7 @@ class ConfigurationTools:
             keys = [spec.key for spec, _ in items]
             if target == _APP and any(key.startswith("scheduler.") for key in keys):
                 ScheduleManager._scheduled_specs(proposed[_APP])
-            optimizer = target == _CONSTRAINTS or any(
-                key.startswith("optimizer.") for key in keys
-            )
-            self._validate(proposed, optimizer=optimizer, before=snapshots)
-            dependencies = {
-                other: _revision(snapshots[other])
-                for other in (_APP, _CONSTRAINTS)
-                if other != target and optimizer
-            }
+            dependencies = {}
             markets = sorted({group for spec, _ in items for group in spec.markets})
             effects = list(dict.fromkeys(spec.effect for spec, _ in items))
             proposals.append(
@@ -896,34 +541,6 @@ class ConfigurationTools:
                 proposal.to_dict()
                 for proposal in self._prepare(normalized, self._read())
             ]
-
-    def _validate(
-        self, snapshots: dict[str, dict], *, optimizer: bool, before: dict[str, dict]
-    ) -> None:
-        if not optimizer:
-            return
-        from ...search.config import get_market_optimizer_configs
-
-        _validate_market_horizons(
-            snapshots[_APP], snapshots[_CONSTRAINTS], before[_APP], before[_CONSTRAINTS]
-        )
-        path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                suffix=".yaml",
-                prefix=".assistant-validate-",
-                dir=self.project_root / "config",
-                delete=False,
-            ) as output:
-                path = Path(output.name)
-                yaml.safe_dump(snapshots[_CONSTRAINTS], output, allow_unicode=True)
-            # Use the same strict parser as real optimization and backtesting.
-            get_market_optimizer_configs(snapshots[_APP], constraints_path=path)
-        finally:
-            if path is not None:
-                path.unlink(missing_ok=True)
 
     def apply(self, proposal: dict) -> dict:
         """Persist a confirmed preview, checking versions inside locked mutate."""
@@ -985,20 +602,3 @@ class ConfigurationTools:
             "effect": effect,
             "runtime_refresh_error": refresh_error,
         }
-
-
-def _gate_value_rule(metric: str) -> _Rule:
-    if metric.endswith("_windows") or metric in {
-        "ranking_window_count",
-        "minimum_trade_count",
-    }:
-        return _Rule("integer", 0, 100_000)
-    if metric.endswith("_ratio") and metric != "mean_sharpe_ratio":
-        return _Rule("number", 0, 1)
-    if metric == "average_position_pct":
-        return _Rule("number", 0, 100)
-    if metric == "minimum_drawdown_pct":
-        return _Rule("number", -100, 0)
-    if metric.endswith("range_pct") or metric == "excess_return_std_pct":
-        return _Rule("number", 0, 1000)
-    return _Rule("number", -10_000, 10_000)

@@ -1,3 +1,5 @@
+> 2026-11-04：此合同已退役。策略搜索、候选晋升和激活入口已从源码删除；下文仅保留此前合同与来源记录，不可作为当前运行指南。当前边界见 [报告与显式回测](mainline_strategy_search_backtest.md)。
+
 # Relative strategy promotion contract
 
 Reviewed against local source on 2026-10-29. The production optimizer compares,

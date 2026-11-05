@@ -1,16 +1,11 @@
-"""Regression coverage for restored optimizer and interactive backtest paths."""
+"""Regression coverage for retained explicit and interactive backtests."""
 
-from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
-import pytest
 
-import main
 from src.backtest.engine import evaluate_all_groups
-from src.interactive.command_parser import ErrorCommand, parse_command
 from src.interactive.commands import handlers
-from src.search.artifacts import OptimizerGroupSummary
 from src.search.config import get_execution_config
 from src.strategy import Params, get_strategy
 
@@ -28,130 +23,6 @@ def _price_history(periods: int = 2_000) -> pd.DataFrame:
             "volume": 100_000 + (np.arange(periods) % 11) * 1_000,
         }
     )
-
-
-def test_optimizer_runs_each_market_group(monkeypatch, tmp_path):
-    config = main.load_config()
-    config["stocks"] = ["600000", "00700", "AAPL", "600001"]
-    config["skip_search"] = ["600001"]
-    config.pop("point_in_time_data", None)
-    monkeypatch.chdir(tmp_path)
-    history = _price_history()
-    calls = []
-    prune_calls = []
-
-    class FakeDataSource:
-        def __init__(self, config):
-            self.config = config
-
-        def fetch_stock_data(self, code, days):
-            assert days >= 1_900
-            return history.copy()
-
-    def fake_run_optimizer(
-        strategy, stocks_data, stock_codes, group, _constraints, output_dir, **_kwargs
-    ):
-        calls.append((strategy.name, group, sorted(stock_codes)))
-        return [
-            SimpleNamespace(
-                parameters={"signal": 1},
-                objective_score=1.25,
-                ranking_stats=[],
-                validation_stats=[],
-                purged_window_count=0,
-                ranking_metrics={},
-                sensitivity={},
-            )
-        ], _constraints
-
-    monkeypatch.setattr("src.data.data_source.DataSource", FakeDataSource)
-    monkeypatch.setattr(main, "run_optimizer", fake_run_optimizer)
-    monkeypatch.setattr(main, "publish_complete_run", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(
-        main,
-        "prune_optimizer_runs",
-        lambda **kwargs: prune_calls.append(kwargs),
-    )
-    monkeypatch.setattr(main, "_notify_optimizer_run", lambda *_args, **_kwargs: None)
-
-    completed = main.run_optimization(config, target_groups=main.OPTIMIZER_GROUPS)
-
-    assert completed == {"a_share": 1, "hk": 1, "us": 1}
-    assert calls == [
-        ("technical_ensemble", "a_share", ["600000"]),
-        ("regime_pullback", "hk", ["00700"]),
-        ("percentile", "us", ["AAPL"]),
-    ]
-    assert len(prune_calls) == 6
-    assert all(call["keep_completed"] == 3 for call in prune_calls)
-
-
-def test_optimizer_excludes_short_history_before_date_alignment(monkeypatch, tmp_path):
-    config = main.load_config()
-    config["stocks"] = ["600000", "600001"]
-    config["skip_search"] = []
-    config.pop("point_in_time_data", None)
-    monkeypatch.chdir(tmp_path)
-    history = _price_history()
-    short_history = _price_history(120)
-    calls = []
-
-    class FakeDataSource:
-        def __init__(self, config):
-            self.config = config
-
-        def fetch_stock_data(self, code, days):
-            return short_history.copy() if code == "600001" else history.copy()
-
-    def fake_run_optimizer(
-        strategy, stocks_data, stock_codes, group, _constraints, output_dir, **_kwargs
-    ):
-        calls.append((group, sorted(stock_codes)))
-        return [
-            SimpleNamespace(
-                parameters={"signal": 1},
-                objective_score=1.25,
-                ranking_stats=[],
-                validation_stats=[],
-                purged_window_count=0,
-                ranking_metrics={},
-                sensitivity={},
-            )
-        ], _constraints
-
-    monkeypatch.setattr("src.data.data_source.DataSource", FakeDataSource)
-    monkeypatch.setattr(main, "run_optimizer", fake_run_optimizer)
-    monkeypatch.setattr(main, "publish_complete_run", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(main, "prune_optimizer_runs", lambda **_kwargs: None)
-    monkeypatch.setattr(main, "_notify_optimizer_run", lambda *_args, **_kwargs: None)
-
-    completed = main.run_optimization(config, target_groups=("a_share",))
-
-    assert completed == {"a_share": 1}
-    assert calls == [("a_share", ["600000"])]
-
-
-def test_optimize_cli_runs_configured_strategy_for_all_markets(monkeypatch):
-    calls = []
-
-    monkeypatch.setattr(main, "load_config", dict)
-    monkeypatch.setattr(
-        main, "setup_logging", lambda _config: SimpleNamespace(info=lambda *_args: None)
-    )
-    monkeypatch.setattr(
-        main,
-        "run_optimization",
-        lambda _config, target_groups=(): calls.append(target_groups) or {"a_share": 1},
-    )
-
-    main.main(["--optimize"])
-    assert calls == [("a_share", "hk", "us")]
-    with pytest.raises(SystemExit):
-        main.main(["--optimize-v2"])
-    with pytest.raises(SystemExit):
-        main.main(["--optimize", "--all-markets"])
-
-
 
 
 def test_evaluation_honors_requested_backtest_dates():
@@ -207,55 +78,6 @@ def test_evaluation_honors_requested_backtest_dates():
     )
 
 
-def test_optimizer_command_rejects_strategy_and_preset_arguments():
-    command = parse_command("/optimize percentile fast")
-
-    assert isinstance(command, ErrorCommand)
-    assert "不接受参数" in command.message
-
-
-def test_configured_optimizer_groups_only_include_eligible_markets(monkeypatch):
-    monkeypatch.setattr(main, "get_skip_search", lambda config: {"VOO"})
-    config = {
-        "stocks": [
-            {"code": "510880"},
-            {"code": "00700"},
-            {"code": "VOO"},
-        ]
-    }
-
-    assert main._configured_optimizer_groups(config) == ("a_share", "hk")
-
-
-def test_optimizer_notification_uses_one_three_market_payload(monkeypatch):
-    sent = []
-
-    class FakeNotifierManager:
-        def __init__(self, config):
-            assert config == {"notification": {}}
-
-        def send_optimizer_notification(self, report, group_name=""):
-            sent.append((report, group_name))
-
-    monkeypatch.setattr(main, "NotifierManager", FakeNotifierManager)
-    report = main.OptimizerRunSummary(
-        "percentile",
-        "Percentile",
-        "2026-07-26T03:00:00",
-        3.0,
-        {
-            group: OptimizerGroupSummary(group=group, status="no_data")
-            for group in ("a_share", "hk", "us")
-        },
-    )
-
-    main._notify_optimizer_run({"notification": {}}, report)
-
-    assert len(sent) == 1
-    assert sent[0][0].groups.keys() == {"a_share", "hk", "us"}
-    assert sent[0][1] == "Percentile"
-
-
 def test_interactive_backtest_uses_unified_evaluator(monkeypatch):
     monkeypatch.setattr(
         handlers,
@@ -270,4 +92,4 @@ def test_interactive_backtest_uses_unified_evaluator(monkeypatch):
     )
     result = handlers.handle_backtest("600000", "2024-01-01", "2024-04-30")
     assert result.startswith("❌")
-    assert "没有已激活的回测策略" in result
+    assert "没有可用的历史策略快照" in result

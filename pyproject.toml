@@ -1,7 +1,7 @@
 [project]
 name = "stock-quant-system"
 version = "1.23.3"
-description = "A股/美股/港股量化监控系统: 策略搜索优化器 + 日报/简报 + 飞书/Telegram Bot"
+description = "A股/美股/港股量化监控系统: 日报/简报 + 显式回测 + 飞书/Telegram Bot"
 readme = "README.md"
 license = {text = "BSD-3-Clause"}
 requires-python = ">=3.10"
@@ -41,8 +41,6 @@ dependencies = [
     "jsonschema>=4.18,<5",
     "pydantic>=1.10.0,<2.0.0",
     "numba>=0.57.0",
-    "scikit-optimize>=0.9.0",
-    "joblib>=1.3.0",
     "scipy>=1.10.0",
 ]
 classifiers = [

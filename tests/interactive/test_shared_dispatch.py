@@ -57,7 +57,6 @@ def event(text, message_id="message-1", chat_id="allowed"):
         ("/add 600036,GOOG", "handle_add", (["600036", "GOOG"],)),
         ("/remove 600036,GOOG", "handle_remove", (["600036", "GOOG"],)),
         ("/list", "handle_list", ()),
-        ("/optimize a_share", "handle_optimize", ("a_share",)),
     ],
 )
 def test_both_transports_dispatch_same_commands(text, handler, args):
@@ -92,19 +91,6 @@ def test_both_transports_dispatch_same_commands(text, handler, args):
             {},
         ),
         (commands.ModeCommand("frac"), "handle_mode", ("frac",), {}),
-        (commands.ConfigCommand("show", "", ""), "handle_config", ("show", "", ""), {}),
-        (
-            commands.SkipCommand("search", ["600036"], True),
-            "handle_skip",
-            ("search", ["600036"]),
-            {"remove": True},
-        ),
-        (
-            commands.SwitchOptimizerCommand("percentile", "us"),
-            "handle_switch_optimizer",
-            ("percentile", "us"),
-            {},
-        ),
         (commands.RefDateCommand("2025-01-01"), "handle_ref_date", ("2025-01-01",), {}),
         (
             commands.RefPositionCommand("set", "a_share", "600036", 100, 10),

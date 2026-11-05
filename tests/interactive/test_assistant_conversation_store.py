@@ -80,21 +80,6 @@ def test_delivery_failure_preserves_generated_answer_and_prior_error(store):
     assert row["status"] == "delivery_failed"
 
 
-def test_restart_only_interrupts_unfinished_work_and_does_not_replay(store):
-    for status in ("queued", "running", "completed", "failed", "delivery_failed"):
-        turn = store.begin_turn("chat", "alice", status, status)
-        store.finish_turn(turn, status, answer="saved partial or final answer")
-    restarted = ProposalStore(store.path)
-    assert restarted.recover_turns() == 2
-    assert restarted.recover_turns() == 0
-    rows = {row["message_id"]: row for row in restarted.recent_turns("chat", "alice")}
-    for status in ("queued", "running"):
-        assert rows[status]["status"] == "interrupted"
-        assert "不会自动重放" in rows[status]["error"]
-        assert rows[status]["answer"] == "saved partial or final answer"
-    for status in ("completed", "failed", "delivery_failed"):
-        assert rows[status]["status"] == status
-
 
 def test_large_text_and_json_are_bounded_with_explicit_truncation(store):
     turn = store.begin_turn("chat", "alice", "message", "问" * 20000)

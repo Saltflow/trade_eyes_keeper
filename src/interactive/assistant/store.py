@@ -363,16 +363,6 @@ class ProposalStore:
                 result.append(item)
         return result
 
-    def recover_turns(self) -> int:
-        """Mark abandoned startup work interrupted; never replay a question."""
-        with self.connection() as db:
-            return db.execute(
-                "UPDATE conversation_turns SET status='interrupted',updated=?,"
-                "error=CASE WHEN error='' THEN ? ELSE error END "
-                "WHERE status IN ('queued','running')",
-                (time.time(), "服务重启；本次问答已中断，不会自动重放。"),
-            ).rowcount
-
     def prune_conversations(self, retention_days: int = 30) -> int:
         """Expire terminal conversation bodies; keep dedup and execution summaries."""
         if (

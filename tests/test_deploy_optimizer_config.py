@@ -12,11 +12,10 @@ import pytest
 import yaml
 
 import ci_cd_deploy
-from src.search.config import get_market_optimizer_configs
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_PATH = PROJECT_ROOT / "config" / "config.yaml.example"
-VALIDATION_STEP = "Validate remote optimizer configuration"
+VALIDATION_STEP = "Validate remote execution configuration"
 PROGRESSION_STEPS = (
     "System test",
     "Send deployment notification",
@@ -181,46 +180,6 @@ def _assert_progression_blocked(deployment, capsys):
     return output
 
 
-def test_example_declares_the_approved_complete_market_contracts():
-    config = yaml.safe_load(EXAMPLE_PATH.read_text(encoding="utf-8"))
-    resolved = get_market_optimizer_configs(config)
-    actual = {
-        group: (
-            market.strategy_name,
-            market.solver_id,
-            market.gate_profile,
-            market.walk_forward_profile,
-            market.execution_profile,
-            market.benchmark_profile,
-        )
-        for group, market in resolved.items()
-    }
-    assert actual == {
-        "a_share": (
-            "technical_ensemble",
-            "local_genetic",
-            "standard",
-            "a_share_84m",
-            "a_share_cny",
-            "a_share",
-        ),
-        "hk": (
-            "regime_pullback",
-            "simulated_annealing",
-            "standard",
-            "hk_84m",
-            "hk_hkd",
-            "hk",
-        ),
-        "us": (
-            "percentile",
-            "random",
-            "exploratory",
-            "us_84m",
-            "us_usd",
-            "us",
-        ),
-    }
 
 
 @pytest.mark.parametrize(
@@ -245,58 +204,11 @@ def test_deploy_pushes_selected_release_ref_without_force(
     assert calls == [["git", "push", "deploy.invalid:/repo", expected_ref]]
 
 
-@pytest.mark.parametrize(
-    ("case", "error"),
-    [
-        ("legacy_engine", "global optimizer fallback fields are forbidden: engine"),
-        ("no_markets", "optimizer.markets must be a mapping"),
-        ("missing_hk", "optimizer.markets is missing groups: ['hk']"),
-        ("us_solver", "us: unknown solver"),
-        ("us_profile", "us: unknown or invalid execution_profiles profile"),
-        ("malformed_yaml", "unable to load configuration config/config.yaml"),
-        ("missing_file", "configuration file not found: config/config.yaml"),
-        (
-            "missing_constraints",
-            "configuration file not found: config/optimizer_constraints.yaml",
-        ),
-    ],
-)
-def test_invalid_effective_server_config_blocks_deployment(
-    deployment, capsys, case, error
-):
-    config = yaml.safe_load(deployment.server.app.read_text(encoding="utf-8"))
-    if case == "legacy_engine":
-        config["optimizer"] = {"engine": "technical_ensemble"}
-    elif case == "no_markets":
-        config["optimizer"].pop("markets")
-    elif case == "missing_hk":
-        config["optimizer"]["markets"].pop("hk")
-    elif case == "us_solver":
-        config["optimizer"]["markets"]["us"]["solver_id"] = "invalid-solver"
-    elif case == "us_profile":
-        config["optimizer"]["markets"]["us"]["execution_profile"] = "invalid-profile"
-    _write_config(deployment.server.app, config)
-    if case == "malformed_yaml":
-        deployment.server.app.write_text("optimizer: [\n", encoding="utf-8")
-    elif case == "missing_file":
-        deployment.server.app.unlink()
-    elif case == "missing_constraints":
-        deployment.server.constraints.unlink()
-
-    assert ci_cd_deploy.deploy() is False
-
-    assert VALIDATION_STEP in deployment.events
-    assert "Sync config.yaml" not in deployment.events
-    output = _assert_progression_blocked(deployment, capsys)
-    assert "[FAIL] optimizer_config" in output
-    assert "[OPTIMIZER_CONFIG_ERROR]" in output
-    assert error in output.replace("\\", "/")
 
 
 def test_code_only_deploy_validates_restored_server_config(deployment):
     config = yaml.safe_load(deployment.server.app.read_text(encoding="utf-8"))
     config["scheduler"]["timezone"] = "UTC"
-    config["optimizer"]["markets"]["hk"]["solver_id"] = "random"
     _write_config(deployment.server.app, config)
     original = deployment.server.app.read_bytes()
     deployment.post_push_config = {"optimizer": {"engine": "percentile"}}
@@ -333,14 +245,14 @@ def test_invalid_explicit_sync_is_rejected_without_restoring_valid_backup(
     deployment, monkeypatch, capsys
 ):
     monkeypatch.setenv("SYNC_CONFIG", "true")
-    _write_config(deployment.local_config, {"optimizer": {"engine": "percentile"}})
+    _write_config(deployment.local_config, ["invalid runtime root"])
     expected = deployment.local_config.read_bytes()
 
     assert ci_cd_deploy.deploy() is False
 
     assert deployment.server.app.read_bytes() == expected
     output = _assert_progression_blocked(deployment, capsys)
-    assert "global optimizer fallback fields are forbidden: engine" in output
+    assert "configuration root must be a mapping" in output
 
 
 @pytest.mark.parametrize("failure", ["missing", "scp_error", "timeout", "os_error"])
@@ -379,10 +291,10 @@ def test_restore_failure_stops_deployment(deployment, capsys):
 @pytest.mark.parametrize(
     "result",
     [
-        (False, "[OPTIMIZER_CONFIG_OK]\n", "remote process failed"),
+        (False, "[EXECUTION_CONFIG_OK]\n", "remote process failed"),
         (True, "", ""),
         (True, "unrelated output\n", ""),
-        (True, "echo '[OPTIMIZER_CONFIG_OK]'\n", ""),
+        (True, "echo '[EXECUTION_CONFIG_OK]'\n", ""),
         (False, "", "Timeout"),
     ],
 )
@@ -393,7 +305,7 @@ def test_validator_requires_successful_exit_and_explicit_confirmation(
 
     assert ci_cd_deploy.deploy() is False
 
-    assert "[FAIL] optimizer_config" in _assert_progression_blocked(deployment, capsys)
+    assert "[FAIL] execution_config" in _assert_progression_blocked(deployment, capsys)
 
 
 def test_dry_run_config_sync_does_not_upload(deployment, monkeypatch):
@@ -433,3 +345,16 @@ def test_service_migration_failure_stops_acceptance_and_notification(deployment)
     assert ci_cd_deploy.deploy() is False
     assert "Verify local service readiness" not in deployment.events
     assert "Send deployment notification" not in deployment.events
+
+
+@pytest.mark.parametrize("failure", ["missing_app", "missing_execution", "malformed_app"])
+def test_invalid_remaining_config_blocks_deployment(deployment, capsys, failure):
+    if failure == "missing_app":
+        deployment.server.app.unlink()
+    elif failure == "missing_execution":
+        deployment.server.constraints.unlink()
+    else:
+        deployment.server.app.write_text("stocks: [\n", encoding="utf8")
+    assert ci_cd_deploy.deploy() is False
+    assert VALIDATION_STEP in deployment.events
+    assert "[FAIL] execution_config" in _assert_progression_blocked(deployment, capsys)

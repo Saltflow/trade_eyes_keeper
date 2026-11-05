@@ -179,7 +179,8 @@ def offline_report(monkeypatch, tmp_path):
         forbidden[name] = Mock(
             side_effect=AssertionError(f"retired technical path: {name}")
         )
-        monkeypatch.setattr(main, name, forbidden[name])
+        module = "src.backtest" if name == "evaluate_all_groups" else "src.search.artifacts"
+        monkeypatch.setattr(module + "." + name, forbidden[name])
     execution = SimpleNamespace(
         lot_sizes={"a_share": 100, "hk": 100, "us": 1},
         fx_rates={"a_share": 1, "hk": 0.9, "us": 7},

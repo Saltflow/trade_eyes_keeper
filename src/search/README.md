@@ -1,35 +1,11 @@
-# Adding an optimization algorithm
+# 保留的回测与历史读取合同
 
-Search algorithms are called `Solver` plugins. Genetic search, random search,
-simulated annealing, Bayesian optimization, and parameter-proposal networks all
-belong here when they output parameter candidates.
+搜参执行、Solver、Gate、验证/晋升、候选发布和激活入口已删除。
+现有目录名与配置读取函数名暂保留，避免改变手动回测、策略、参考持仓及研究的调用路径。
 
-1. Add one module under `src/search/solvers/`, for example `bayesian.py`.
-2. Decorate the class with `@register_solver("bayesian")`.
-3. Implement the seven-method ask/tell contract below.
-4. Add the Solver configuration to `search.solvers`, then select it explicitly
-   as `optimizer.markets.<market>.solver_id` for every market that should use it.
+- `config.py`：执行、窗口、基准与市场配置；历史solver/gate字段只读，不加载执行器。
+- `contracts.py`：共享参数schema和稳定哈希。
+- `artifacts.py`：只读加载已绑定的历史策略运行，保留版本及执行币种兼容判断。
+- `workflow.py`：显式手动参数的Walk-Forward评价适配，不搜索、不发布、不激活。
 
-```python
-from src.search import CandidateBatch, EvaluationBatch, SearchProblem, Solver
-from src.search import register_solver
-
-
-@register_solver("bayesian")
-class BayesianSolver(Solver):
-    solver_id = "bayesian"
-
-    def initialize(self, problem: SearchProblem, config=None) -> None: ...
-    def ask(self, batch_size: int) -> CandidateBatch: ...
-    def tell(self, evaluations: EvaluationBatch) -> None: ...
-    def should_stop(self) -> bool: ...
-    def finalists(self, limit=None) -> tuple[str, ...]: ...
-    def state_dict(self) -> dict[str, object]: ...
-    def load_state_dict(self, state: dict[str, object]) -> None: ...
-```
-
-Discovery scans every non-private module in `solvers/`. Do not edit
-SearchController, the registry, strategy code, Backtester, or `main.py`.
-
-A neural component that proposes parameter candidates is a Solver. A neural
-component that directly emits daily buy/sell decisions is a trading strategy.
+历史文件保留原处。旧的搜参写入API不提供占位实现。
