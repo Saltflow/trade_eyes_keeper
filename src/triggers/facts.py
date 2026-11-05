@@ -266,7 +266,7 @@ def _get_provider(providers, name):
     )
 
 
-def _quote_facts(code, quote, *, now, observed, session_provider, max_age):
+def _quote_facts(code, quote, *, now, observed, session_provider, max_age, sampled=False):
     from ..data.quote_time import parse_quote_time
     from ..instruments.classifier import detect_market
 
@@ -295,8 +295,22 @@ def _quote_facts(code, quote, *, now, observed, session_provider, max_age):
         and market_session.is_open(source_time)
         and 0 <= (now - source_time).total_seconds() <= max_age
     )
+    # Three daily samples accept delayed trades and today's closing auction.
+    # Source time stays intact; an old trading day's quote never qualifies.
+    sampled = bool(
+        sampled
+        and market_session is not None
+        and now >= market_session.open
+        and source_time <= now
+        and (
+            market_session.is_open(source_time)
+            or market_session.close <= source_time <= market_session.close
+            + timedelta(minutes=10 if detect_market(code) == "hk" else 0)
+        )
+        and (min(now, market_session.close) - source_time).total_seconds() <= 1200
+    )
     reason = (
-        None if fresh else "quote is stale, future, or outside the open market session"
+        None if fresh or sampled else "quote is stale, future, or outside the open market session"
     )
     result = {}
     for name in ("last", "open", "high", "low", "prev_close", "change_pct", "fresh"):
@@ -311,7 +325,8 @@ def _quote_facts(code, quote, *, now, observed, session_provider, max_age):
         path = f"quotes.{code}.{name}"
         result[path] = FactValue(
             value=value if valid else None,
-            status=("available" if fresh or name == "fresh" else "stale")
+            status=("sampled" if sampled and name != "fresh" else
+                    "available" if fresh or name == "fresh" else "stale")
             if valid
             else "unknown",
             as_of=source_time,
@@ -824,6 +839,8 @@ def load_trigger_facts(
                     observed=finished if clock else observed,
                     session_provider=session_provider,
                     max_age=max_quote_age_seconds,
+                    sampled=(config.get("scheduler") or {}).get("data_collection_mode")
+                    == "three_daily",
                 )
             )
         except Exception as exc:  # noqa: BLE001 - isolate unavailable source facts

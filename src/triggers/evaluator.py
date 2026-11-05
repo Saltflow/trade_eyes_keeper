@@ -8,11 +8,12 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from fnmatch import fnmatchcase
 from numbers import Real
 
 from zoneinfo import ZoneInfo
 
-from .models import now_utc, safe_path, timestamp
+from .models import collect_dependencies, now_utc, safe_path, timestamp
 from .schedule import due_times, next_due
 
 TRUE, FALSE, UNKNOWN = "true", "false", "unknown"
@@ -135,7 +136,7 @@ def evaluate_condition(condition, snapshot, now: datetime) -> ConditionResult:
 
     def check(fact):
         status = _get(fact, "status", "unknown")
-        if status not in {"available", "observed", "known_zero", "derived"}:
+        if status not in {"available", "observed", "known_zero", "derived", "sampled"}:
             return ConditionResult(UNKNOWN, (field + ":" + str(status),))
         for name in ("observed_at", "as_of"):
             has_metadata = (
@@ -152,7 +153,9 @@ def evaluate_condition(condition, snapshot, now: datetime) -> ConditionResult:
                 return ConditionResult(UNKNOWN, (field + ":invalid_timestamp",))
             if age < (-5 if name == "observed_at" else 0):
                 return ConditionResult(UNKNOWN, (field + ":future_observation",))
-            if "max_age_seconds" in condition and age > condition["max_age_seconds"]:
+            if ("max_age_seconds" in condition and age > condition["max_age_seconds"]
+                    and not (status == "sampled" and field.startswith("quotes.")
+                             and name == "as_of")):
                 return ConditionResult(UNKNOWN, (field + ":stale",))
         try:
             matched = _compare(
@@ -432,9 +435,20 @@ class TriggerEvaluator:
                     )
                     continue
                 result = evaluate_condition(spec.get("condition"), snapshot, now)
+                samples = {
+                    path: {"value": _get(fact, "value"),
+                           "source_time": _get(fact, "as_of").isoformat(),
+                           "collected_at": _get(fact, "observed_at").isoformat()}
+                    for path, fact in getattr(snapshot, "facts", {}).items()
+                    if _get(fact, "status") == "sampled" and any(
+                        fnmatchcase(path, dependency)
+                        for dependency in collect_dependencies(spec)
+                    )
+                }
                 updates = {
                     "diagnostic": json.dumps(
-                        {"truth": result.truth, "reasons": result.reasons}
+                        {"truth": result.truth, "reasons": result.reasons,
+                         **({"quote_samples": samples} if samples else {})}
                     ),
                 }
                 if result.truth != UNKNOWN:
@@ -496,7 +510,8 @@ class TriggerEvaluator:
                             candidates = [
                                 {
                                     "key": f"edge:{episode}",
-                                    "context": {"matched_at": now.isoformat()},
+                                    "context": {"matched_at": now.isoformat(),
+                                                **({"quote_samples": samples} if samples else {})},
                                 }
                             ]
                 created = []

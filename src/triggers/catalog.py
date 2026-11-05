@@ -311,7 +311,7 @@ def build_report_field_catalog(session=None) -> FieldCatalog:
             FieldDefinition(
                 f"quotes.*.{name}",
                 "number",
-                "实时最新成交价（last）/行情；要求开市且源时间新鲜，low仅为日内最低价",
+                "最新成交价（last）；三次采样模式使用当日最新延迟报价，保留源时间；low为日内最低价",
                 "quote",
                 "on_demand",
                 "QQ实时行情，源quote_time与交易所session校验",

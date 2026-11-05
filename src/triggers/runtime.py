@@ -465,6 +465,11 @@ class TriggerRuntime:
     def _binding(self, action, label, grouped=None):
         context = action.get("context", {})
         details = []
+        details.extend(
+            f"采样报价 {path}={sample['value']}；源时间 {sample['source_time']}；"
+            f"采集时间 {sample['collected_at']}（延迟报价，非实时）"
+            for path, sample in context.get("quote_samples", {}).items()
+        )
         if context.get("kind") == "dividend.next_payment":
             details.append("公开派息日 " + str(context.get("payment_date", "")))
             details.append(

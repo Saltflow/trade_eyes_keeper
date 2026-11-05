@@ -12,6 +12,48 @@ from src.triggers.facts import FactSnapshot
 from src.triggers.runtime import TriggerRuntime
 
 
+def test_delayed_sample_evaluates_with_original_clock_and_report_provenance(tmp_path):
+    from src.data.market_calendar import MarketSession
+    from src.triggers import TriggerEvaluator, TriggerStore
+    from src.triggers.facts import load_trigger_facts
+
+    now = datetime(2026, 11, 5, 9, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
+    source = now.replace(minute=34, second=56)
+    config = {"stocks": ["00883"], "scheduler": {"data_collection_mode": "three_daily"}}
+    session = MarketSession(now.replace(hour=9, minute=30), now.replace(hour=16, minute=0))
+    providers = {"quote": lambda code: {"close": 22.8, "quote_time": source.isoformat()},
+                 "market_session": lambda code, **kw: session}
+    snapshot = load_trigger_facts({"quotes.00883.last"}, config, as_of=now, clock=lambda: now, providers=providers)
+    fact = snapshot.resolve("quotes.00883.last")
+    assert fact.status == "sampled" and fact.as_of == source
+    assert snapshot.resolve("quotes.00883.fresh").value is False
+    store = TriggerStore(tmp_path / "sample.sqlite3")
+    store.create("sample", {"condition": {"field": "quotes.00883.last", "op": "lt",
+                        "value": 23.28, "max_age_seconds": 300},
+                        "actions": [{"kind": "daily"}]}, "sample", now=now)
+    evaluator = TriggerEvaluator(store)
+    actions = evaluator.evaluate(snapshot, now=now)
+    assert len(actions) == 1
+    sample = actions[0]["context"]["quote_samples"]["quotes.00883.last"]
+    assert sample["source_time"] == source.isoformat() and sample["value"] == 22.8
+    runtime = object.__new__(TriggerRuntime);runtime.config_path = tmp_path / "config.yaml"
+    assert source.isoformat() in runtime._binding(actions[0], "sample")["reason"]
+    assert "非实时" in runtime._binding(actions[0], "sample")["reason"]
+    evaluator.evaluate(snapshot, now=now + timedelta(minutes=6))
+    assert evaluator.last_outcomes[0]["truth"] == "unknown"
+    # End-of-day collection accepts today's latest closing auction, never yesterday.
+    for clock, quote_clock, expected in [
+        (now.replace(hour=19, minute=0), now.replace(hour=16, minute=8), "sampled"),
+        (now, source - timedelta(days=1), "stale"),
+        (now, now + timedelta(seconds=1), "stale"),
+        (now, now - timedelta(minutes=21), "stale"),
+        (now, source.replace(hour=8), "stale"),
+    ]:
+        providers["quote"] = lambda code, stamp=quote_clock: {"close": 22.8, "quote_time": stamp.isoformat()}
+        sample_snapshot = load_trigger_facts({"quotes.00883.last"}, config, as_of=clock, providers=providers)
+        assert sample_snapshot.resolve("quotes.00883.last").status == expected
+
+
 def test_three_collection_slots_survive_restart_and_disabled_reports(tmp_path):
     current = [datetime(2026, 11, 3, 9, 50, tzinfo=ZoneInfo("Asia/Shanghai"))]
     config = {

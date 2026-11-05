@@ -925,7 +925,12 @@ class TriggerTools:
             "truth": truth,
             "last_evaluated_at": evaluation.get("last_evaluated_at"),
             "last_fired_at": evaluation.get("last_fired_at"),
+            "quote_samples": diagnostic.get("quote_samples", {}),
         }
+        for path, sample in diagnostic.get("quote_samples", {}).items():
+            message += (f"\n采样报价：{path}={sample['value']}；"
+                        f"源时间 {sample['source_time']}；采集时间 {sample['collected_at']}"
+                        "（延迟报价，非实时）")
         if detail:
             notes = []
             labels = {
