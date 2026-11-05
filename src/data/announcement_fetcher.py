@@ -791,46 +791,6 @@ class AnnouncementFetcher:
         logger.info(f"未获取到{stock_code}的公告")
         return []
 
-    def _fetch_from_sse(self, stock_code, days):
-        """
-        从上海证券交易所获取公告
-
-        Args:
-            stock_code: 股票代码
-            days: 最近天数
-
-        Returns:
-            list: 公告列表
-        """
-        logger.warning("SSE主接口已弃用，直接返回空列表")
-        return []
-
-    def _parse_sse_api_response(self, data, stock_code):
-        """
-        解析上交所API响应
-
-        Args:
-            data: API返回的JSON数据
-            stock_code: 股票代码
-
-        Returns:
-            list: 公告列表
-        """
-        return []
-
-    def _parse_sse_html(self, html, stock_code):
-        """
-        解析上交所HTML页面
-
-        Args:
-            html: HTML内容
-            stock_code: 股票代码
-
-        Returns:
-            list: 公告列表
-        """
-        return []
-
     def _fetch_from_sse_backup(self, stock_code, days):
         """
         上交所备用获取方法（使用第三方数据源）
@@ -858,46 +818,6 @@ class AnnouncementFetcher:
             return []
 
         return self._parse_sina_announcements(response.text, stock_code, "sse")
-
-    def _fetch_from_szse(self, stock_code, days):
-        """
-        从深圳证券交易所获取公告
-
-        Args:
-            stock_code: 股票代码
-            days: 最近天数
-
-        Returns:
-            list: 公告列表
-        """
-        logger.warning("SZSE主接口已弃用，直接返回空列表")
-        return []
-
-    def _parse_szse_api_response(self, data, stock_code):
-        """
-        解析深交所API响应
-
-        Args:
-            data: API返回的JSON数据
-            stock_code: 股票代码
-
-        Returns:
-            list: 公告列表
-        """
-        return []
-
-    def _parse_szse_html(self, html, stock_code):
-        """
-        解析深交所HTML页面
-
-        Args:
-            html: HTML内容
-            stock_code: 股票代码
-
-        Returns:
-            list: 公告列表
-        """
-        return []
 
     def _fetch_from_szse_backup(self, stock_code, days):
         """

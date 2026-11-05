@@ -1270,12 +1270,6 @@ class StockWebCrawler:
             logger.warning(f"从腾讯财经历史数据API获取股票 {stock_code} 数据失败: {e}")
             return pd.DataFrame()
 
-    def _fetch_realtime_from_qq(self, stock_code, days):
-        """
-        从腾讯财经获取实时数据 — 已弃用，请使用 fetch_realtime_quote
-        """
-        return pd.DataFrame()
-
     def _sgx_source(self):
         from ..platform_composition import collection_expiry
         from .sgx import SGXSource
