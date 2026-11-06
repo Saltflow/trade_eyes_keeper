@@ -41,6 +41,7 @@ from src.core.ref_portfolio import (
     RefPortfolioManager,
     reference_valuation_price,
 )
+from src.core.report_quotes import prepare_report_quotes
 from src.data.announcement_fetcher import AnnouncementFetcher
 from src.instruments import InstrumentAuditService
 from src.instruments.audit import load_latest_audit
@@ -377,9 +378,12 @@ def _report_delivery_result(delivery, session, skip_reason: str = ""):
     if not isinstance(delivery, dict):
         return _report_result("unknown", "notification_receipt_missing", session)
     status, reason = delivery.get("status", "unknown"), delivery.get("reason", "")
-    if _report_data_readiness(session)["status"] == "not_ready":
+    readiness = _report_data_readiness(session)
+    if readiness["status"] == "not_ready":
         if status == "succeeded":
-            status = "partial"
+            counts = readiness.get("quote_counts", {})
+            usable = sum(counts.get(key, 0) for key in ("realtime", "delayed", "last_close"))
+            status = "failed" if counts and not usable else "partial"
         reason = "data_not_ready" + (":" + reason if reason else "")
     return _report_result(
         status,
@@ -523,9 +527,6 @@ def run_daily_task(
         logger.info("开始获取股票数据")
         fetcher = StockDataFetcher(config)
         fetcher.fetch_to_session(session, session_manager)
-        if not session.stocks_data:
-            logger.warning("Session中无股票数据")
-            return _report_result("failed", "stock_data_unavailable", session)
         logger.info(f"股票数据获取完成: {len(session.stocks_data)}只股票")
 
         # 日报事件层只读取明确的除权/派息日期，不改变回测或交易数据合同。
@@ -561,6 +562,13 @@ def run_daily_task(
         if progress:
             progress("daily_evaluation")
         _attach_return_curves(session, config)
+
+        # Freeze raw source-timed report prices after slow history/event preparation.
+        if progress:
+            progress("daily_report_quotes")
+        valuation_quote = prepare_report_quotes(
+            session, fetcher.web_crawler.fetch_realtime_quote
+        )
 
         # 4. 创建通知管理器（统一入口）
         notifier = NotifierManager(config)
@@ -611,7 +619,7 @@ def run_daily_task(
                 market_config.execution.fx_rates.get(group_key, 1.0)
             )
             prices = _reference_portfolio_prices(
-                pf, stock_data_df, fx, fetcher.web_crawler.fetch_realtime_quote,
+                pf, stock_data_df, fx, valuation_quote,
                 external_fx_rates=market_config.execution.fx_rates,
             )
             status = mgr.get_status(pf, prices)
@@ -702,10 +710,7 @@ def run_brief_report(
 
     from zoneinfo import ZoneInfo
 
-    from src.notification.brief_market import (
-        active_brief_codes,
-        has_open_brief_market,
-    )
+    from src.notification.brief_market import has_open_brief_market
 
     observed = datetime.now(timezone.utc)
     if observed.tzinfo is None:
@@ -738,20 +743,7 @@ def run_brief_report(
         if progress:
             progress("brief_stock_data")
         fetcher = StockDataFetcher(config)
-        fetcher.fetch_to_session(session, session_manager, realtime_mode=True)
-
-        if not session.stocks_data:
-            logger.warning("简报：Session 中无股票数据")
-            return _report_result("failed", "stock_data_unavailable", session)
-
-        if not force:
-            eligible = active_brief_codes(
-                session.get_all_dataframe(), datetime.now(timezone.utc)
-            )
-            if not eligible:
-                logger.info("无本次开市时段的有效报价，跳过简报")
-                return _report_result("skipped", "no_active_quotes", session)
-            object.__setattr__(session, "brief_active_codes", eligible)
+        fetcher.fetch_to_session(session, session_manager)
 
         logger.info(f"简报：获取到 {len(session.stocks_data)} 只股票数据")
 
@@ -770,6 +762,12 @@ def run_brief_report(
                 )
             except Exception as exc:  # noqa: BLE001 - Trigger preparation fails closed.
                 logger.warning("简报事件触发数据准备失败，按未满足处理: %s", exc)
+
+        if progress:
+            progress("brief_report_quotes")
+        valuation_quote = prepare_report_quotes(
+            session, fetcher.web_crawler.fetch_realtime_quote
+        )
 
         # ── 参考持仓估值与公司行为（不自动调仓）──
         if progress:
@@ -839,7 +837,7 @@ def run_brief_report(
                 new_pf,
                 stock_data_df,
                 pool["fx"],
-                fetcher.web_crawler.fetch_realtime_quote,
+                valuation_quote,
                 external_fx_rates=pool["execution"].fx_rates,
             )
             status = mgr.get_status(new_pf, cny_prices)
@@ -875,25 +873,15 @@ def run_brief_report(
                 ", ".join(map(str, evaluation.matched_conditions)),
             )
 
-        if not force:
-            eligible = active_brief_codes(
-                session.get_all_dataframe(), datetime.now(timezone.utc)
-            )
-            if not eligible:
-                logger.info("无本次开市时段的有效报价，跳过简报")
-                return _report_result("skipped", "no_active_quotes", session)
-            object.__setattr__(session, "brief_active_codes", eligible)
-
-        # 休市检测：数据指纹比较（仅定时，按简报类型区分文件）
+        # 定时简报按报价快照防重，开市门禁已在入口检查。
         if progress:
             progress("brief_notifications")
         if not force:
-            from src.notification.report_builders import get_brief_dataframe
-            from src.utils.market_status import is_market_closed, mark_pushed
-            stock_data_df = get_brief_dataframe(session)
+            from src.utils.market_status import is_unchanged_report, mark_pushed
+            stock_data_df = session.get_all_dataframe()
             last_pushed_file = Path(f"cache/last_pushed_{report_id}.txt")
-            if is_market_closed(stock_data_df, last_pushed_file):
-                logger.info("数据未更新（疑似休市），跳过简报推送")
+            if is_unchanged_report(stock_data_df, last_pushed_file):
+                logger.info("报价快照未变化，跳过重复简报推送")
                 return _report_result("skipped", "quote_fingerprint_unchanged", session)
 
             # 发送简报（统一入口）

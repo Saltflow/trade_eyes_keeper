@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import html as html_lib
-import logging
 from datetime import date, datetime
 from itertools import groupby
 
@@ -12,8 +11,6 @@ import pandas as pd
 from zoneinfo import ZoneInfo
 
 from ..markets import _detect_fine_group
-
-logger = logging.getLogger(__name__)
 
 
 def _fmt(v, unit="", fmt_spec=".2f"):
@@ -55,70 +52,11 @@ def _safe_html_url(value) -> str:
     return ""
 
 
-def build_brief_entries(stock_data, today) -> list[dict]:
-    """Extract recent price rows without technical-strategy fields."""
-    from datetime import datetime as dt_mod
-
-    import pandas as pd
-
-    today_date = today.date() if hasattr(today, "date") else today
-    entries = []
-
-    for _, row in stock_data.iterrows():
-        code = str(row.get("stock_code", ""))
-        name = str(row.get("stock_name") or code)
-        close_price = row.get("close")
-        open_price = row.get("open")
-        prev_close = row.get("prev_close")
-        try:
-            prev_close = float(prev_close)
-            if not np.isfinite(prev_close) or prev_close <= 0:
-                prev_close = None
-        except (TypeError, ValueError):
-            prev_close = None
-
-        # 3 天日期过滤
-        data_date = row.get("date")
-        in_trading = False
-        if data_date is not None and not pd.isna(data_date):
-            try:
-                date_str = str(data_date)[:10]
-                data_dt = dt_mod.strptime(date_str, "%Y-%m-%d").date()  # noqa: DTZ007 -- calendar only
-                days_since = (today_date - data_dt).days
-                in_trading = 0 <= days_since <= 3
-            except (TypeError, ValueError, OverflowError) as exc:
-                logger.debug("Report row omitted: %s", type(exc).__name__)
-                continue
-        if not in_trading:
-            continue
-
-        entries.append(
-            {
-                "code": code,
-                "name": name,
-                "close": close_price,
-                "open": open_price,
-                "prev_close": prev_close,
-            }
-        )
-
-    return entries
-
-
 def build_strategy_text_summary(session, markdown: bool = False) -> str:
     """Validated Ke curves as the text-channel substitute for the shared chart."""
     from .report_policy import build_return_curves_text
 
     return build_return_curves_text(getattr(session, "strategy_return_curves", None))
-
-
-def get_brief_dataframe(session):
-    """Use the same eligible quote rows on every scheduled delivery channel."""
-    frame = session.get_all_dataframe()
-    codes = getattr(session, "brief_active_codes", None)
-    if isinstance(codes, (tuple, list, set, frozenset)):
-        return frame.loc[frame["stock_code"].astype(str).isin(codes)].copy()
-    return frame
 
 
 def _event_number(value):
@@ -527,11 +465,22 @@ def report_data_readiness(session) -> dict:
     missing = sorted(expected - available)
     errors = getattr(session, "errors", []) or []
     analysis_issues = {}
+    quality = getattr(session, "report_quote_quality", None)
+    quotes = quality.get("quotes", {}) if isinstance(quality, dict) else {}
+    quote_issues = {
+        code: quotes.get(code, {}).get("quote_reason") or "缺少报价质量判定"
+        for code in expected
+        if quotes.get(code, {}).get("quote_status", "unavailable") == "unavailable"
+        or quotes.get(code, {}).get("quote_missing_fields")
+    }
     return {
-        "status": "not_ready" if missing or errors or analysis_issues else "ready",
+        "status": "not_ready" if missing or errors or quote_issues else "ready",
         "expected_codes": sorted(expected),
         "available_codes": sorted(available),
         "missing_codes": missing,
         "error_count": len(errors),
         "analysis_issues": analysis_issues,
+        "quote_issues": quote_issues,
+        "quote_as_of": quality.get("as_of") if isinstance(quality, dict) else None,
+        "quote_counts": quality.get("counts", {}) if isinstance(quality, dict) else {},
     }

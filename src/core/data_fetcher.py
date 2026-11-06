@@ -314,16 +314,15 @@ class StockDataFetcher:
         self,
         session,
         session_manager=None,
-        realtime_mode=False,
+        *,
         history_days: int | None = None,
     ):
         """
-        获取股票数据并存入Session（新数据流）
+        获取历史日线和基本面并存入Session；报告报价由统一入口单独获取。
 
         Args:
             session: SessionContext对象
             session_manager: SessionManager对象（可选）
-            realtime_mode: True=简报/盘中模式，用实时行情补充当日缺失数据
             history_days: 完整历史数据的日历日窗口；日报组合图传入 36 个月
                 加缓冲的窗口，简报和旧调用维持 730 天。
         """
@@ -371,47 +370,18 @@ class StockDataFetcher:
 
                     # 只保留最新一天的数据
                     latest_data = stock_data.iloc[-1:].copy()
-                    if realtime_mode:
-                        latest_data["quote_time"] = None
-                        latest_data["prev_close"] = None
-                    else:
-                        latest_data["prev_close"] = self._previous_close(stock_data)
+                    latest_data["prev_close"] = self._previous_close(stock_data)
 
                     # 检查数据日期
                     if not latest_data.empty:
                         latest_date = latest_data.iloc[0].get("date")
                         if latest_date:
                             today = datetime.now(self.timezone).date()
-                            if realtime_mode or latest_date.date() != today:
+                            if latest_date.date() != today:
                                 logger.warning(
                                     f"股票 {stock_code} 最新数据日期为 "
                                     f"{latest_date.date()}，不是今天 {today}"
                                 )
-                                # 简报/盘中模式：用 QQ 实时行情补充当日数据
-                                if realtime_mode:
-                                    rt = self.web_crawler.fetch_realtime_quote(
-                                        stock_code
-                                    )
-                                    if rt:
-                                        logger.info(
-                                            f"股票 {stock_code} 用QQ实时行情补充: "
-                                            f"close={rt['close']:.2f} open={rt['open']:.2f}"
-                                        )
-                                        # 更新 latest_data 的价格字段
-                                        for field in (
-                                            "prev_close",
-                                            "quote_time",
-                                            "open",
-                                            "close",
-                                            "high",
-                                            "low",
-                                            "volume",
-                                            "amount",
-                                        ):
-                                            if rt.get(field) is not None:
-                                                latest_data[field] = rt[field]
-                                        # 更新日期为今天
-                                        latest_data["date"] = pd.Timestamp(rt["date"])
 
                     # 获取基本面数据
                     fundamental_data = self._fetch_fundamental_data(stock_code)

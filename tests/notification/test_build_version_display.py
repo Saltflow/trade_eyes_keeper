@@ -5,7 +5,6 @@ from types import SimpleNamespace
 import pandas as pd
 
 from src.core import build_info
-from src.notification import report_builders
 from src.notification.email_notifier import EmailNotifier
 
 
@@ -30,11 +29,9 @@ def test_daily_html_keeps_visible_and_escaped_build_label(monkeypatch):
 def test_brief_renders_same_shared_version_without_os_or_provider_probes(monkeypatch):
     label = "v1.18.0 · aaaaaaa · 构建 12345678"
     monkeypatch.setattr(build_info, "build_label", lambda: label)
-    monkeypatch.setattr(
-        report_builders, "get_brief_dataframe", lambda _: pd.DataFrame()
-    )
     notifier = EmailNotifier({})
-    _, body = notifier._prepare_brief_report(SimpleNamespace(), {"label": "简报"})
+    session = SimpleNamespace(get_all_dataframe=pd.DataFrame)
+    _, body = notifier._prepare_brief_report(session, {"label": "简报"})
     assert "版本 " + label in body
     assert "{release_label}" not in body
 

@@ -17,6 +17,7 @@ from .report_policy import (
     FUNDAMENTAL_COLUMNS,
     build_return_curves_text,
     fundamental_rows,
+    quote_status_summary,
 )
 from .settings import channel_enabled
 
@@ -84,7 +85,7 @@ class FeishuNotifier(BaseNotifier):
             sections = [
                 (
                     "价格与基本面",
-                    "**完整监控股票池**",
+                    "**完整监控股票池**\n" + quote_status_summary(stock_data),
                     [self._fundamental_table(stock_data)],
                 )
             ]
@@ -163,8 +164,9 @@ class FeishuNotifier(BaseNotifier):
         return combine_receipts([{**receipt, "ordinal": 0, "label": "brief"}])
 
     def _prepare_brief_report(self, session, report_config: dict) -> dict:
-        table = self._fundamental_table(session.get_all_dataframe())
-        body = build_return_curves_text(
+        stock_data = session.get_all_dataframe()
+        table = self._fundamental_table(stock_data)
+        body = quote_status_summary(stock_data) + "\n\n" + build_return_curves_text(
             getattr(session, "strategy_return_curves", None)
         )
         card = _build_interactive_card(

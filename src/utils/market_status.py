@@ -1,45 +1,65 @@
-"""休市检测 — 基于数据指纹比较。
+"""Deduplicate prepared report quote snapshots."""
 
-不需要交易日历。拉完数据后和上次推送日期比一下，
-如果最新数据日期和上次一样，说明今天没开盘（休市），跳过推送。
-"""
-
+import hashlib
+import json
+import math
 from pathlib import Path
 
 import pandas as pd
 
 
-def _extract_date_str(value) -> str:
-    """从 date 列的 max() 值提取 YYYY-MM-DD 字符串。
+def _fingerprint(stock_data) -> str:
+    if "quote_status" not in stock_data.columns:
+        raise ValueError("report fingerprint requires assessed quotes")
 
-    兼容 Timestamp、datetime、str 等类型。
-    """
-    if hasattr(value, "date"):
-        return str(value.date())[:10]
-    return str(value)[:10]
+    def text(value):
+        return None if value is None or pd.isna(value) else str(value)
+
+    def price(value):
+        if isinstance(value, bool):
+            return None
+        try:
+            number = float(value)
+            return number if math.isfinite(number) and number > 0 else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    rows = []
+    for _, row in stock_data.iterrows():
+        record = {
+            key: text(row.get(key))
+            for key in (
+                "stock_code",
+                "quote_status",
+                "quote_as_of",
+                "quote_reason",
+            )
+        }
+        record.update(
+            {
+                key: price(row.get(key))
+                for key in ("open", "close", "high", "low", "prev_close")
+            }
+        )
+        rows.append(record)
+    # Capture/report wall clocks are intentionally absent: an uncertain send
+    # cannot become eligible for replay merely because it was observed again.
+    rows.sort(
+        key=lambda row: (row["stock_code"] or "", json.dumps(row, sort_keys=True))
+    )
+    encoded = json.dumps(
+        rows, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return "quote-v1:" + hashlib.sha256(encoded).hexdigest()
 
 
-def is_market_closed(stock_data, last_pushed_file) -> bool:
-    """判断是否休市：最新数据日期 == 上次推送日期。
-
-    Args:
-        stock_data: 包含 date 列的 DataFrame，或 None
-        last_pushed_file: 上次推送日期记录文件路径
-
-    Returns:
-        True = 休市/无数据（跳过推送）
-        False = 有新数据（应该推送）
-    """
+def is_unchanged_report(stock_data, last_pushed_file) -> bool:
+    """Skip an empty or previously attempted quote snapshot."""
     if stock_data is None:
         return True
     if isinstance(stock_data, pd.DataFrame) and stock_data.empty:
         return True
-    if "date" not in stock_data.columns:
-        return True
-
-    # 统一转成字符串再取 max，避免 Timestamp/str 混合比较报错
-    date_series = stock_data["date"].astype(str)
-    latest = _extract_date_str(date_series.max())
+    latest = _fingerprint(stock_data)
     try:
         last = Path(last_pushed_file).read_text(encoding="utf-8").strip()
     except (FileNotFoundError, OSError):
@@ -49,7 +69,7 @@ def is_market_closed(stock_data, last_pushed_file) -> bool:
 
 
 def mark_pushed(last_pushed_file, stock_data) -> None:
-    """推送成功后记录最新数据日期。
+    """Record the caller's submitted snapshot, including uncertain delivery.
 
     Args:
         last_pushed_file: 记录文件路径
@@ -57,7 +77,5 @@ def mark_pushed(last_pushed_file, stock_data) -> None:
     """
     if stock_data is None or stock_data.empty:
         return
-    # 统一转成字符串再取 max，避免 Timestamp/str 混合比较报错
-    date_series = stock_data["date"].astype(str)
-    latest = _extract_date_str(date_series.max())
+    latest = _fingerprint(stock_data)
     Path(last_pushed_file).write_text(latest, encoding="utf-8")

@@ -120,6 +120,99 @@ def test_explicit_zero_false_and_empty_collections_remain_known(config):
     assert snap.resolve("dividend_events").status == "available"
 
 
+@pytest.mark.parametrize("older_kind,newer_kind", [("daily", "brief"), ("brief", "daily")])
+def test_unavailable_quote_clears_previous_prices_without_losing_fundamentals(
+    config, older_kind, newer_kind,
+):
+    financial_time = "2026-09-30T00:00:00+08:00"
+    capture_report_snapshot(
+        config,
+        {
+            "created_at": NOW,
+            "stocks_data": {"601088": {
+                "date": "2026-10-30", "close": 51.0, "open": 50.0,
+                "high": 52.0, "low": 49.0, "prev_close": 50.5,
+                "change_pct": 1.0, "dividend_yield": 5.0,
+                "roe": 9.0, "roe_as_of": financial_time,
+                "dividend_per_share": 2.0,
+            }},
+        },
+        older_kind,
+    )
+    capture_report_snapshot(
+        config,
+        {
+            "created_at": NOW,
+            "stocks_data": {"601088": {
+                "quote_status": "unavailable", "quote_as_of": None,
+                "quote_time": None, "quote_observed_at": NOW.isoformat(),
+                "quote_reason": "source_unavailable", "close": None, "roe": None,
+            }},
+        },
+        newer_kind,
+    )
+    loaded = load_report_snapshot(config)
+    row = loaded["stocks_data"]["601088"]
+    assert row["quote_status"] == "unavailable"
+    for field in (
+        "date", "open", "close", "high", "low", "prev_close",
+        "change_pct", "dividend_yield", "quote_time",
+    ):
+        assert row[field] is None, field
+    assert row["roe"] == 9.0 and row["dividend_per_share"] == 2.0
+    metadata = loaded["_fact_metadata"]
+    assert metadata["stocks_data.601088.roe"]["as_of"] == financial_time
+    assert metadata["stocks_data.601088.close"]["as_of"] is None
+    assert metadata["stocks_data.601088.close"]["source"] == f"{newer_kind}_report_snapshot"
+    assert "stocks_data.601088.prev_close" not in metadata
+
+
+@pytest.mark.parametrize("status", ["realtime", "delayed", "last_close"])
+def test_quote_replacement_keeps_one_source_clock_and_does_not_mix_ohlc(config, status):
+    capture_report_snapshot(
+        config,
+        {"created_at": NOW, "stocks_data": {"601088": {
+            "close": 51.0, "low": 48.0, "open": 49.0, "prev_close": 50.0,
+        }}},
+        "daily",
+    )
+    source_time = "2026-10-30T15:00:00+08:00"
+    observed_time = "2026-10-31T09:59:00+08:00"
+    capture_report_snapshot(
+        config,
+        {"created_at": NOW, "stocks_data": {"601088": {
+            "quote_status": status, "close": 52.0,
+            "quote_as_of": source_time, "quote_time": NOW.isoformat(),
+            "quote_observed_at": observed_time,
+        }}},
+        "brief",
+    )
+    loaded = load_report_snapshot(config)
+    row = loaded["stocks_data"]["601088"]
+    assert row["close"] == 52.0
+    assert row["low"] is None and row["open"] is None and row["prev_close"] is None
+    metadata = loaded["_fact_metadata"]["stocks_data.601088.close"]
+    assert metadata["as_of"] == source_time
+    assert metadata["observed_at"] == observed_time
+
+
+@pytest.mark.parametrize("source_time", [None, "2026-10-31T10:00:00", "bad-clock"])
+def test_quote_metadata_never_borrows_capture_or_naive_clock(config, source_time):
+    capture_report_snapshot(
+        config,
+        {"created_at": NOW, "stocks_data": {"601088": {
+            "quote_status": "unavailable", "close": None,
+            "quote_as_of": source_time, "quote_time": NOW.isoformat(),
+            "quote_observed_at": "2026-10-31T10:00:00",
+        }}},
+        "brief",
+    )
+    loaded = load_report_snapshot(config)
+    metadata = loaded["_fact_metadata"]["stocks_data.601088.close"]
+    assert metadata["as_of"] is None
+    assert metadata["observed_at"] is None
+
+
 def test_retired_report_roots_are_not_captured_or_restored_from_old_snapshots(config):
     roots = {
         "alerts", "signal_scan", "portfolio_results", "backtest", "evaluation_reports",

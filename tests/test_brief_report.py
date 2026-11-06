@@ -66,8 +66,8 @@ class TestSendBriefReport:
         )
         return session
 
-    def test_active_count_displayed(self, mock_session):
-        """活跃标的数量正确（3天内=活跃）"""
+    def test_undated_source_is_not_counted_as_ready(self, mock_session):
+        """A recent bar date cannot substitute for validated quote timing."""
         notifier = EmailNotifier({"email": {}})
         with patch.object(notifier, "_send_email") as mock_send:
             notifier.send_brief_report(
@@ -75,7 +75,8 @@ class TestSendBriefReport:
                 {"id": "test", "label": "测试简报"},
             )
             body = mock_send.call_args[0][1]
-            assert "3/3" in body  # 3只都在3天窗口内
+            assert "0/3" in body
+            assert "时效未确认" in body
 
     def test_subject_uses_label_and_date(self, mock_session):
         """主题包含标签和日期"""

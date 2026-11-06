@@ -148,6 +148,8 @@ def generate_daily_pdf(
         generate_return_curve_png,
         implied_ke,
         price_movement,
+        quote_presentation,
+        quote_status_summary,
         return_curve_markets,
         return_curve_notes,
     )
@@ -208,7 +210,7 @@ def generate_daily_pdf(
         kpi_buy = str(len(stock_data))
         kpi_s, kpi_color_s = "历史模拟", "navy"
         readiness = report_data_readiness(session)
-        readiness_section = ""
+        readiness_section = r"{\small " + _esc(quote_status_summary(stock_data)) + "}"
         if readiness["status"] == "not_ready":
             kpi_s, kpi_color_s = "数据未就绪", "red"
             labels = {"a_share": "A股", "hk": "港股", "us": "美股"}
@@ -220,8 +222,15 @@ def generate_daily_pdf(
                 issues.append("缺少标的：" + "、".join(readiness["missing_codes"]))
             if readiness["error_count"]:
                 issues.append(f"采集错误：{readiness['error_count']}项")
-            readiness_section = (
-                r"{\color{red}\small 数据未就绪：" + _esc("；".join(issues)) + "}"
+            if readiness.get("quote_issues"):
+                issues.append(
+                    f"报价缺口或字段不完整：{len(readiness['quote_issues'])}只"
+                    "（逐项原因见行情表）"
+                )
+            readiness_section += (
+                r"\par {\color{red}\small 数据未就绪："
+                + _esc("；".join(issues))
+                + "}"
             )
             for group, key in (("a_share", "kpi_a"), ("hk", "kpi_h"), ("us", "kpi_u")):
                 if group in readiness["analysis_issues"]:
@@ -295,9 +304,9 @@ def generate_daily_pdf(
 
         header_cols = [
             "标的",
-            "今开",
-            "昨收",
-            "现价",
+            "开盘",
+            "前收",
+            "报价",
             "PE",
             "PB",
             "隐含 Ke",
@@ -325,8 +334,11 @@ def generate_daily_pdf(
             )
             for code in codes:
                 row, display = by_code[code], fundamental[code]
+                quote = quote_presentation(row)
+                usable = row.get("quote_status") != "unavailable"
                 direction, change = price_movement(
-                    row.get("close"), row.get("prev_close")
+                    row.get("close") if usable else None,
+                    row.get("prev_close") if usable else None,
                 )
                 color = PRICE_COLORS[direction].lstrip("#")
                 current = (
@@ -344,6 +356,12 @@ def generate_daily_pdf(
                     + _esc(code)
                     + r"}\newline "
                     + _esc(display["stock_name"])
+                    + r"\newline {\tiny "
+                    + _esc(quote["label"])
+                    + r"\newline "
+                    + _esc(quote["as_of"] or "源时间未知")
+                    + (r"\newline " + _esc(quote["reason"]) if quote["reason"] else "")
+                    + "}"
                 )
                 cells = [
                     instrument,
@@ -372,7 +390,8 @@ def generate_daily_pdf(
 
         bt_text = (
             _esc(ROE_ESTIMATE_NOTE)
-            + r"\par 价格对应各市场最近行情交易日；红涨绿跌，以现价相比昨收计算。"
+            + r"\par 每行标明行情状态与源时间；延迟采样不代表实时，最近收盘不代表盘中报价。"
+            + r"缺口价格显示为 —，已有基本面独立保留。红涨绿跌，以报价相比前收计算。"
         )
 
         # 7. 渲染模板

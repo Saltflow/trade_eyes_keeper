@@ -1,6 +1,5 @@
 """QQ 实时行情 + 数据源可用性测试"""
 
-from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -123,140 +122,6 @@ def test_dotted_us_quote_checks_provider_identity(monkeypatch, returned, accepte
         assert result["stock_code"] == "BRK.B" and result["close"] == 490
 
 
-class TestRealtimeModeInSession:
-    """realtime_mode=True 时价格被补充进 Session"""
-
-    @staticmethod
-    def _make_fetcher(stocks=None):
-        """构造 mock 好的 StockDataFetcher，DataSource + 指标计算均已 stub"""
-        from src.core.data_fetcher import StockDataFetcher
-        from src.data.data_source import DataSource
-
-        config = {
-            "stocks": stocks or ["601088"],
-            "data_source": {"type": "web_crawler"},
-        }
-        fetcher = StockDataFetcher(config)
-        fetcher._data_source = MagicMock(spec=DataSource)
-        fetcher.technical_indicators.calculate_indicators = lambda df, **kw: df
-        return fetcher
-
-    @patch("src.data.web_crawler.StockWebCrawler.fetch_realtime_quote")
-    def test_stale_data_gets_price_update(self, mock_qq):
-        """历史数据日期为昨天 → realtime_mode 补充当天价格"""
-        mock_qq.return_value = {
-            "date": "2026-05-29",
-            "close": 6.15,
-            "open": 6.00,
-            "high": 6.20,
-            "low": 5.95,
-            "volume": 10000,
-            "amount": 61500,
-            "name": "中国电信",
-            "prev_close": 5.97,
-            "quote_time": "2026-05-29T09:50:00+08:00",
-        }
-        fetcher = self._make_fetcher(stocks=["601728"])
-
-        # Mock DataSource returns YESTERDAY
-        yesterday = pd.Timestamp("2026-05-28")
-        fetcher._data_source.fetch_stock_data.return_value = pd.DataFrame(
-            [
-                {
-                    "date": yesterday,
-                    "open": 5.96,
-                    "close": 5.97,
-                    "high": 6.07,
-                    "low": 5.94,
-                    "volume": 10000,
-                    "amount": 59700,
-                }
-            ]
-        )
-
-        session = MagicMock()
-        session._historical = {}
-        session_manager = MagicMock()
-
-        fetcher.fetch_to_session(session, session_manager, realtime_mode=True)
-
-        mock_qq.assert_called_once_with("601728")
-        assert session_manager.update_stock_from_dataframe.called
-        latest = session_manager.update_stock_from_dataframe.call_args.args[2]
-        assert latest.iloc[0]["prev_close"] == 5.97
-        assert latest.iloc[0]["quote_time"] == "2026-05-29T09:50:00+08:00"
-
-    @patch("src.core.data_fetcher.datetime")
-    @patch("src.data.web_crawler.StockWebCrawler.fetch_realtime_quote")
-    def test_same_day_cache_still_fetches_qq_realtime(self, mock_qq, mock_dt):
-        """缓存已有今天（早盘旧价）→ realtime_mode 仍需拉 QQ 实时（修复午盘 stale bug）"""
-        mock_dt.now.return_value = datetime(
-            2026, 6, 29, 14, 30, 0
-        )  # 强制 today = 2026-06-29
-        mock_qq.return_value = {
-            "date": "2026-06-29",
-            "close": 39.98,
-            "open": 39.59,
-            "high": 40.30,
-            "low": 38.85,
-            "volume": 41868426,
-            "amount": 1673899671,
-            "name": "中国神华",
-        }
-        fetcher = self._make_fetcher(stocks=["601088"])
-
-        # 关键：DataSource 返回 date=今天 但价格是早盘旧价
-        today = pd.Timestamp("2026-06-29")
-        fetcher._data_source.fetch_stock_data.return_value = pd.DataFrame(
-            [
-                {
-                    "date": today,
-                    "open": 39.59,
-                    "close": 38.98,  # 早上 9:50 的价格，下午应该被 QQ 覆盖
-                    "high": 39.75,
-                    "low": 38.86,
-                    "volume": 40000000,
-                    "amount": 1560000000,
-                }
-            ]
-        )
-
-        session = MagicMock()
-        session._historical = {}
-        session_manager = MagicMock()
-
-        fetcher.fetch_to_session(session, session_manager, realtime_mode=True)
-
-        mock_qq.assert_called_once_with("601088")
-
-    @patch("src.data.web_crawler.StockWebCrawler.fetch_realtime_quote")
-    def test_non_realtime_skips_when_cache_has_today(self, mock_qq):
-        """非简报模式 + 缓存已有今天 → 不拉 QQ（避免不必要的网络请求）"""
-        fetcher = self._make_fetcher(stocks=["601088"])
-
-        today = pd.Timestamp("2026-06-29")
-        fetcher._data_source.fetch_stock_data.return_value = pd.DataFrame(
-            [
-                {
-                    "date": today,
-                    "open": 39.59,
-                    "close": 39.98,
-                    "high": 40.30,
-                    "low": 38.85,
-                    "volume": 41868426,
-                    "amount": 1673899671,
-                }
-            ]
-        )
-
-        session = MagicMock()
-        session._historical = {}
-        session_manager = MagicMock()
-
-        fetcher.fetch_to_session(session, session_manager, realtime_mode=False)
-        mock_qq.assert_not_called()
-
-
 @pytest.mark.parametrize(
     "rows,expected",
     [
@@ -292,7 +157,12 @@ def test_previous_close_uses_prior_trading_bar_without_guessing(rows, expected):
 
 
 def test_daily_fetch_keeps_previous_close_from_existing_history(monkeypatch):
-    fetcher = TestRealtimeModeInSession._make_fetcher()
+    from src.core.data_fetcher import StockDataFetcher
+    from src.data.data_source import DataSource
+
+    fetcher = StockDataFetcher({"stocks": ["601088"]})
+    fetcher._data_source = MagicMock(spec=DataSource)
+    fetcher.technical_indicators.calculate_indicators = lambda frame, **kwargs: frame
     fetcher._data_source.fetch_stock_data.return_value = pd.DataFrame(
         [
             {"date": pd.Timestamp("2026-06-26"), "close": 9.7},
@@ -308,11 +178,13 @@ def test_daily_fetch_keeps_previous_close_from_existing_history(monkeypatch):
         ),
     )
     monkeypatch.setattr(fetcher, "_save_to_csv", lambda *args: None)
-    quote = MagicMock(side_effect=AssertionError("daily must reuse loaded history"))
+    quote = MagicMock(
+        side_effect=AssertionError("history acquisition must not fetch report quotes")
+    )
     monkeypatch.setattr(fetcher.web_crawler, "fetch_realtime_quote", quote)
     manager, session = MagicMock(), MagicMock()
     session._historical = {}
-    fetcher.fetch_to_session(session, manager, realtime_mode=False)
+    fetcher.fetch_to_session(session, manager)
     frame = manager.update_stock_from_dataframe.call_args.args[2]
     assert frame.iloc[-1]["prev_close"] == 9.7
     assert frame.iloc[-1]["open"] == 9.8
@@ -351,3 +223,7 @@ class TestEastmoneyRemoved:
 def isolated_source_authority(tmp_path, monkeypatch):
     """Each simulated provider gets durable shared state isolated from other tests."""
     monkeypatch.setenv("TRADE_EYES_AUTHORITY_ROOT", str(tmp_path / "authority"))
+    monkeypatch.setattr(
+        "requests.sessions.Session.request",
+        lambda *args, **kwargs: pytest.fail("test attempted live HTTP"),
+    )

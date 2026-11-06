@@ -95,12 +95,9 @@ class StockPriceData(BaseModel):
     class Config:
         extra = "allow"  # 允许配置的自定义技术指标字段
 
-    # ── 统一 Validator：所有浮点字段保留3位小数 ──
+    # Preserve source price precision; rounding belongs to report formatting.
+    # Derived and fundamental fields retain their existing three-decimal policy.
     _float_fields = [
-        "open",
-        "close",
-        "high",
-        "low",
         "amount",
         "amplitude",
         "change_pct",
@@ -130,8 +127,8 @@ class StockPriceData(BaseModel):
     # ── 价格有效性校验 ──
     @validator("low", "open", "close", "high")
     def validate_price_validity(cls, v, field):
-        """低于0.1元的价格视为无效，自动设为None"""
-        if v is not None and v < 0.1:
+        """Positive finite prices are valid across currencies and low-price assets."""
+        if v is not None and (not math.isfinite(v) or v <= 0):
             logger.warning(f"价格有效性校验：{field.name}={v:.2f}无效，已设为None")
             return None
         return v
@@ -256,6 +253,7 @@ class SessionContext(BaseModel):
     config: dict = Field(default_factory=dict)
     stocks_data: dict[str, StockPriceData] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)
+    report_quote_quality: Optional[dict] = None
     # 扩展字段
     announcements: dict[str, list] = Field(default_factory=dict)
     strategy_return_curves: Optional[dict] = None  # 明确标识来源的 Ke 模拟收益曲线

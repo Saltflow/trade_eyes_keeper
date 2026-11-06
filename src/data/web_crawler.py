@@ -1355,6 +1355,8 @@ class StockWebCrawler:
             result = {
                 "date": quote_time.date().isoformat(),
                 "quote_time": quote_time.isoformat(),
+                "source": "tencent",
+                "stock_code": str(stock_code),
                 "prev_close": _safe_float(items[4]),
                 "open": _safe_float(items[5]),
                 "close": _safe_float(items[3]),

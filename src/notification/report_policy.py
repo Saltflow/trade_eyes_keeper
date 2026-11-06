@@ -15,10 +15,10 @@ DISPLAY_MARKETS = {**MARKETS, "sg": "新加坡"}
 FUNDAMENTAL_COLUMNS = (
     ("stock_code", "代码"),
     ("stock_name", "名称"),
-    ("date", "行情日期"),
-    ("open", "今开"),
-    ("prev_close", "昨收"),
-    ("close", "现价"),
+    ("quote_display", "行情状态 / 截至"),
+    ("open", "开盘"),
+    ("prev_close", "前收"),
+    ("close", "报价"),
     ("pe_ratio", "PE"),
     ("pb_ratio", "PB"),
     ("roe", "ROE%"),
@@ -32,6 +32,72 @@ PRICE_COLORS = {
     "flat": "#63758a",
     "unknown": "#8995a3",
 }
+QUOTE_STATUS_LABELS = {
+    "realtime": "实时",
+    "delayed": "延迟采样",
+    "last_close": "最近收盘",
+    "unavailable": "缺口",
+}
+
+
+def quote_presentation(row) -> dict[str, str]:
+    """Display the frozen quote assessment without applying another clock policy."""
+    status = row.get("quote_status")
+    if not isinstance(status, str) or status not in QUOTE_STATUS_LABELS:
+        status, label = "unavailable", "时效未确认"
+    else:
+        label = QUOTE_STATUS_LABELS[status]
+    value = row.get("quote_as_of")
+    source_time = str(value) if value is not None and not pd.isna(value) else ""
+    reason = row.get("quote_reason")
+    reason = str(reason) if reason is not None and not pd.isna(reason) else ""
+    if status != "unavailable":
+        try:
+            source = pd.Timestamp(value)
+            if pd.isna(source) or source.tzinfo is None:
+                raise ValueError("source clock must include timezone")
+        except (TypeError, ValueError, OverflowError):
+            status, label = "unavailable", "时效未确认"
+            reason = reason or "缺少可核验的行情源时间"
+            source_time = ""
+    # Keep the source timezone visible. Neither the report date nor the fetch
+    # time can stand in for an unavailable source timestamp.
+    source_time = source_time.replace("T", " ")
+    parts = [label, "截至 " + source_time if source_time else "源时间未知"]
+    if reason:
+        parts.append(reason)
+    return {
+        "status": status,
+        "label": label,
+        "as_of": source_time,
+        "reason": reason,
+        "text": " · ".join(parts),
+    }
+
+
+def quote_status_summary(stock_data) -> str:
+    """Count the same frozen states that each rendered instrument displays."""
+    counts = dict.fromkeys(QUOTE_STATUS_LABELS, 0)
+    if stock_data is not None and hasattr(stock_data, "iterrows"):
+        for _, row in stock_data.iterrows():
+            counts[quote_presentation(row)["status"]] += 1
+    return " · ".join(
+        f"{QUOTE_STATUS_LABELS[status]} {count}" for status, count in counts.items()
+    )
+
+
+def format_price(value) -> str:
+    """Keep meaningful quote precision, with two to eight decimal places."""
+    try:
+        price = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return "—"
+    if not np.isfinite(price) or price <= 0:
+        return "—"
+    if price < 0.00000001:
+        return "<0.00000001"
+    whole, fractional = f"{price:.8f}".split(".")
+    return whole + "." + fractional.rstrip("0").ljust(2, "0")
 
 
 def price_movement(close, prev_close) -> tuple[str, str]:
@@ -233,7 +299,15 @@ def fundamental_rows(stock_data) -> list[list[str]]:
         values = []
         for key, _ in FUNDAMENTAL_COLUMNS:
             value = row.get(key)
-            if key == "roe":
+            if key == "quote_display":
+                values.append(quote_presentation(row)["text"])
+            elif key in {"open", "prev_close", "close"} and row.get(
+                "quote_status"
+            ) == "unavailable":
+                values.append("—")
+            elif key in {"open", "prev_close", "close"}:
+                values.append(format_price(value))
+            elif key == "roe":
                 values.append(format_roe(row))
             elif value is None or (np.isscalar(value) and pd.isna(value)):
                 values.append("—")
@@ -249,7 +323,8 @@ def fundamental_rows(stock_data) -> list[list[str]]:
 
 
 def fundamental_text(stock_data) -> str:
-    lines = [" / ".join(label for _, label in FUNDAMENTAL_COLUMNS)]
+    lines = [quote_status_summary(stock_data)]
+    lines.append(" / ".join(label for _, label in FUNDAMENTAL_COLUMNS))
     lines.extend(" / ".join(row) for row in fundamental_rows(stock_data))
     lines.append(ROE_ESTIMATE_NOTE)
     return "\n".join(lines)

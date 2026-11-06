@@ -1,143 +1,111 @@
-"""休市跳过逻辑测试 — 数据指纹比较。"""
+"""Prepared quote snapshot deduplication."""
+
+from datetime import datetime
 
 import pandas as pd
+import pytest
 
-from src.utils.market_status import is_market_closed, mark_pushed
+from src.core.report_quotes import prepare_report_quotes
+from src.models.schemas import SessionContext
+from src.utils.market_status import is_unchanged_report, mark_pushed
 
 
-def _make_df(latest_date: str) -> pd.DataFrame:
-    """构造最新日期为 latest_date 的 DataFrame。"""
-    return pd.DataFrame(
-        [
-            {"stock_code": "601728", "date": pd.Timestamp(latest_date), "close": 5.76},
-            {"stock_code": "GOOG", "date": pd.Timestamp(latest_date), "close": 370.0},
-        ]
+def _prepared_quotes(day="2026-11-06", *, recover=False, observed="09:55:00", price=10):
+    """Use the real quality assessment and Session dataframe, including gaps."""
+    session = SessionContext(
+        session_id="offline-fingerprint", config={"stocks": ["601088", "00883"]}
     )
-
-
-def _make_df_str_date(latest_date: str) -> pd.DataFrame:
-    """构造 date 列为字符串类型的 DataFrame（模拟 session.get_all_dataframe 的实际行为）。"""
-    return pd.DataFrame(
-        [
-            {"stock_code": "601728", "date": latest_date, "close": 5.76},
-            {"stock_code": "GOOG", "date": latest_date, "close": 370.0},
-        ]
+    quote = {
+        "quote_time": day + "T09:54:00+08:00",
+        "open": 10,
+        "close": price,
+        "high": 12,
+        "low": 9,
+        "prev_close": 10,
+    }
+    prepare_report_quotes(
+        session,
+        lambda code: quote if code == "601088" or recover else None,
+        clock=lambda: datetime.fromisoformat(day + "T" + observed + "+08:00"),
     )
+    return session.get_all_dataframe()
 
 
-class TestIsMarketClosed:
-    def test_normal_trading_day_pushes(self, tmp_path):
-        """交易日：数据日期 != 上次推送 → 不跳过。"""
-        f = tmp_path / "last_pushed.txt"
-        f.write_text("2026-06-16")
-        df = _make_df("2026-06-17")
-        assert is_market_closed(df, f) is False
-
-    def test_weekend_skip(self, tmp_path):
-        """周末：数据日期 == 上次推送 → 跳过。"""
-        f = tmp_path / "last_pushed.txt"
-        f.write_text("2026-06-12")  # 上周五
-        df = _make_df("2026-06-12")  # 还是周五的数据
-        assert is_market_closed(df, f) is True
-
-    def test_holiday_skip(self, tmp_path):
-        """节假日：数据日期 == 上次推送 → 跳过。"""
-        f = tmp_path / "last_pushed.txt"
-        f.write_text("2026-02-06")  # 节前最后一个交易日
-        df = _make_df("2026-02-06")  # 假期间数据没更新
-        assert is_market_closed(df, f) is True
-
-    def test_first_run_no_file(self, tmp_path):
-        """首次运行：文件不存在 → 不跳过（推送）。"""
-        f = tmp_path / "last_pushed.txt"
-        df = _make_df("2026-06-17")
-        assert is_market_closed(df, f) is False
-
-    def test_empty_data_skip(self, tmp_path):
-        """数据为空 → 跳过。"""
-        f = tmp_path / "last_pushed.txt"
-        f.write_text("2026-06-16")
-        assert is_market_closed(pd.DataFrame(), f) is True
-
-    def test_none_data_skip(self, tmp_path):
-        """数据为 None → 跳过。"""
-        f = tmp_path / "last_pushed.txt"
-        f.write_text("2026-06-16")
-        assert is_market_closed(None, f) is True
+def test_quote_gap_cannot_hide_the_next_trading_days_changed_snapshot(tmp_path):
+    path = tmp_path / "last_pushed.txt"
+    first = _prepared_quotes()
+    mark_pushed(path, first)
+    assert path.read_text().startswith("quote-v1:")
+    assert path.read_text() not in {"None", "NaT", "nan"}
+    assert is_unchanged_report(first, path)
+    next_day = _prepared_quotes("2026-11-09", price=11)
+    assert next_day.loc[next_day.stock_code == "00883", "date"].isna().all()
+    assert not is_unchanged_report(next_day, path)
 
 
-class TestMarkPushed:
-    def test_writes_latest_date(self, tmp_path):
-        """推送后写入最新数据日期。"""
-        f = tmp_path / "last_pushed.txt"
-        df = _make_df("2026-06-17")
-        mark_pushed(f, df)
-        assert f.read_text().strip() == "2026-06-17"
-
-    def test_overwrites_previous(self, tmp_path):
-        """覆盖上次记录。"""
-        f = tmp_path / "last_pushed.txt"
-        f.write_text("2026-06-16")
-        df = _make_df("2026-06-17")
-        mark_pushed(f, df)
-        assert f.read_text().strip() == "2026-06-17"
-
-    def test_creates_file_if_not_exists(self, tmp_path):
-        """文件不存在时创建。"""
-        f = tmp_path / "last_pushed.txt"
-        df = _make_df("2026-06-17")
-        mark_pushed(f, df)
-        assert f.exists()
+def test_same_day_quote_recovery_is_not_hidden_by_date_fingerprint(tmp_path):
+    path = tmp_path / "last_pushed.txt"
+    mark_pushed(path, _prepared_quotes())
+    recovered = _prepared_quotes(recover=True)
+    assert not is_unchanged_report(recovered, path)
+    mark_pushed(path, recovered)
+    assert is_unchanged_report(recovered, path)
 
 
-class TestStringDateColumn:
-    """date 列为字符串类型时的兼容性测试。
+def test_new_source_time_price_quality_or_gap_reason_all_change_fingerprint(tmp_path):
+    path = tmp_path / "last_pushed.txt"
+    first = _prepared_quotes()
+    mark_pushed(path, first)
+    assert not is_unchanged_report(_prepared_quotes(price=11), path)
+    delayed = _prepared_quotes(observed="10:00:00")
+    assert (
+        delayed.loc[delayed.stock_code == "601088", "quote_status"].iloc[0] == "delayed"
+    )
+    assert not is_unchanged_report(delayed, path)
+    for field, value in (
+        ("quote_as_of", "2026-11-06T01:54:30+00:00"),
+        ("quote_reason", "报价源时间未知"),
+    ):
+        changed = first.copy()
+        changed.loc[changed.stock_code == "00883", field] = value
+        assert not is_unchanged_report(changed, path)
 
-    session.get_all_dataframe() 可能返回 date 列为字符串而非 Timestamp，
-    is_market_closed / mark_pushed 必须兼容这种情况。
-    """
 
-    def test_str_date_normal_trading_day(self, tmp_path):
-        """字符串日期：交易日 → 不跳过。"""
-        f = tmp_path / "last_pushed.txt"
-        f.write_text("2026-06-16")
-        df = _make_df_str_date("2026-06-17")
-        assert is_market_closed(df, f) is False
+def test_recorded_attempt_is_not_replayed_for_new_observation_clock(tmp_path):
+    # The caller records sent/unknown/partial attempts; fingerprinting must not
+    # turn another collection clock into permission to resend that observation.
+    path = tmp_path / "last_attempt.txt"
+    mark_pushed(path, _prepared_quotes())
+    observed_again = _prepared_quotes(observed="09:55:10").iloc[::-1].copy()
+    observed_again["created_at"] = "2026-11-06T09:55:11+08:00"
+    assert is_unchanged_report(observed_again, path)
 
-    def test_str_date_weekend_skip(self, tmp_path):
-        """字符串日期：休市 → 跳过。"""
-        f = tmp_path / "last_pushed.txt"
-        f.write_text("2026-06-12")
-        df = _make_df_str_date("2026-06-12")
-        assert is_market_closed(df, f) is True
 
-    def test_str_date_first_run(self, tmp_path):
-        """字符串日期：首次运行 → 不跳过。"""
-        f = tmp_path / "last_pushed.txt"
-        df = _make_df_str_date("2026-06-17")
-        assert is_market_closed(df, f) is False
+def test_quote_fingerprint_replaces_legacy_marker_and_normalizes_missing(tmp_path):
+    path = tmp_path / "last_pushed.txt"
+    path.write_text("2026-11-06")
+    frame = _prepared_quotes()
+    assert not is_unchanged_report(frame, path)
+    mark_pushed(path, frame)
+    absent = frame.loc[frame.stock_code == "00883"].index
+    frame.loc[absent, "close"] = float("nan")
+    assert is_unchanged_report(frame, path)
 
-    def test_str_date_mark_pushed(self, tmp_path):
-        """字符串日期：mark_pushed 正确写入。"""
-        f = tmp_path / "last_pushed.txt"
-        df = _make_df_str_date("2026-06-17")
-        mark_pushed(f, df)
-        assert f.read_text().strip() == "2026-06-17"
 
-    def test_mixed_date_types(self, tmp_path):
-        """混合类型：一行 Timestamp 一行字符串。"""
-        f = tmp_path / "last_pushed.txt"
-        f.write_text("2026-06-16")
-        df = pd.DataFrame(
-            [
-                {
-                    "stock_code": "601728",
-                    "date": pd.Timestamp("2026-06-17"),
-                    "close": 5.76,
-                },
-                {"stock_code": "GOOG", "date": "2026-06-15", "close": 370.0},
-            ]
-        )
-        # max() 会取较大的值，Timestamp > str 在 pandas 里可能出问题
-        # is_market_closed 应该兼容处理
-        assert is_market_closed(df, f) is False
+@pytest.mark.parametrize("frame", [None, pd.DataFrame()])
+def test_empty_snapshot_does_not_send_or_overwrite_attempt(tmp_path, frame):
+    path = tmp_path / "last_attempt.txt"
+    path.write_text("existing-receipt")
+    assert is_unchanged_report(frame, path)
+    mark_pushed(path, frame)
+    assert path.read_text() == "existing-receipt"
+
+
+def test_first_snapshot_records_attempt_and_rejects_unassessed_bars(tmp_path):
+    path = tmp_path / "last_attempt.txt"
+    snapshot = _prepared_quotes()
+    assert not is_unchanged_report(snapshot, path)
+    mark_pushed(path, snapshot)
+    assert is_unchanged_report(snapshot, path)
+    with pytest.raises(ValueError, match="assessed quotes"):
+        is_unchanged_report(snapshot.drop(columns="quote_status"), path)

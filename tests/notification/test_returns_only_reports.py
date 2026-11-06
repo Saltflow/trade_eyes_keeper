@@ -317,6 +317,13 @@ def test_pdf_uses_original_template_and_keeps_escaped_fundamentals_and_events(
 def test_disabled_scan_does_not_make_fundamental_data_readiness_blocked():
     source = session()
     source.config["stocks"] = [{"code": "601088"}, {"code": "00700"}]
+    source.report_quote_quality = {
+        "quotes": {
+            code: {"quote_status": "last_close", "quote_reason": ""}
+            for code in ("601088", "00700")
+        },
+        "counts": {"last_close": 2},
+    }
     assert report_data_readiness(source)["status"] == "ready"
 
 

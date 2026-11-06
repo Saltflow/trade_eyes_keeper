@@ -23,6 +23,12 @@ from .catalog import (
 MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
 _KINDS = {"daily", "brief"}
 _MISSING = object()
+_QUOTE_STATUSES = {"realtime", "delayed", "last_close", "unavailable"}
+_QUOTE_FIELDS = frozenset({
+    "date", "open", "close", "high", "low", "prev_close", "volume", "amount",
+    "change", "change_pct", "amplitude", "turnover", "dividend_yield",
+    "quote_status", "quote_as_of", "quote_time", "quote_observed_at", "quote_reason",
+})
 
 
 def _safe_data(value, depth=0):
@@ -55,7 +61,7 @@ def _safe_data(value, depth=0):
     return _MISSING
 
 
-def _aware(value, zone):
+def _aware(value, zone, *, require_timezone=False):
     if isinstance(value, datetime):
         parsed = value
     elif isinstance(value, str):
@@ -64,6 +70,8 @@ def _aware(value, zone):
         except ValueError:
             return None
     else:
+        return None
+    if require_timezone and parsed.tzinfo is None:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=zone)
 
@@ -110,9 +118,21 @@ def capture_report_snapshot(config: dict, session, kind: str) -> Path:
     for path, value in iter_safe_leaves(public):
         parts = path.split(".")
         source_time = created
+        observed_time = now
         if parts[0] == "stocks_data" and len(parts) > 2:
             row = public.get("stocks_data", {}).get(parts[1], {})
             source_time = _aware(row.get("quote_time", row.get("date")), zone)
+            if (
+                isinstance(row.get("quote_status"), str)
+                and row["quote_status"] in _QUOTE_STATUSES
+                and parts[-1] in _QUOTE_FIELDS
+            ):
+                source_time = _aware(
+                    row.get("quote_as_of"), zone, require_timezone=True
+                )
+                observed_time = _aware(
+                    row.get("quote_observed_at"), zone, require_timezone=True
+                )
             # A current quote clock does not date a financial statement or dividend.
             if parts[-1] in {
                 "roe",
@@ -125,7 +145,7 @@ def capture_report_snapshot(config: dict, session, kind: str) -> Path:
                 source_time = _aware(row.get(parts[-1] + "_as_of"), zone)
         metadata[path] = {
             "as_of": source_time.isoformat() if source_time else None,
-            "observed_at": now.isoformat(),
+            "observed_at": observed_time.isoformat() if observed_time else None,
             "source": f"{kind}_report_snapshot",
         }
     payload = {
@@ -157,8 +177,25 @@ def capture_report_snapshot(config: dict, session, kind: str) -> Path:
 
 
 def _merge(target, incoming, prefix, metadata, incoming_metadata):
+    # A validated quote is one observation. In particular, an unavailable or
+    # partial new quote must not resurrect prices from an older report. Keep
+    # the legacy field-wise merge for financial values and pre-contract rows.
+    quote_fields = (
+        _QUOTE_FIELDS
+        if len(prefix.split(".")) == 2
+        and prefix.startswith("stocks_data.")
+        and isinstance(incoming.get("quote_status"), str)
+        and incoming["quote_status"] in _QUOTE_STATUSES
+        else frozenset()
+    )
+    for key in quote_fields:
+        path = f"{prefix}.{key}"
+        target[key] = incoming.get(key)
+        metadata.pop(path, None)
+        if path in incoming_metadata:
+            metadata[path] = incoming_metadata[path]
     for key, value in incoming.items():
-        if not safe_segment(key) or value is None:
+        if key in quote_fields or not safe_segment(key) or value is None:
             continue
         path = f"{prefix}.{key}".strip(".")
         if not safe_path(path) or path.split(".")[0] in _RETIRED_REPORT_ROOTS:
@@ -170,8 +207,8 @@ def _merge(target, incoming, prefix, metadata, incoming_metadata):
         for previous in list(metadata):
             if previous == path or previous.startswith(path + "."):
                 del metadata[previous]
-        for leaf_path, leaf in iter_safe_leaves(value, path):
-            if leaf is not None and leaf_path in incoming_metadata:
+        for leaf_path, _ in iter_safe_leaves(value, path):
+            if leaf_path in incoming_metadata:
                 metadata[leaf_path] = incoming_metadata[leaf_path]
         if path in incoming_metadata:
             metadata[path] = incoming_metadata[path]
@@ -180,8 +217,9 @@ def _merge(target, incoming, prefix, metadata, incoming_metadata):
 def load_report_snapshot(config: dict) -> dict:
     """Merge last completed daily/brief, preserving each field's original clock.
 
-    New brief fields supplement the daily record. None and absent fields cannot
-    erase earlier values. Real-time trigger prices always use the live producer.
+    New brief fields supplement the daily record. Validated quotes replace the
+    previous quote atomically, including unavailable fields; other None/absent
+    fields preserve earlier values. Live trigger prices use the live producer.
     Corrupt, oversized or unsupported snapshots are ignored independently.
     """
     records = []

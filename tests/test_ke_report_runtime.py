@@ -223,6 +223,33 @@ def offline_report(monkeypatch, tmp_path):
     manager.create_session.return_value = session
     monkeypatch.setattr(main, "SessionManager", Mock(return_value=manager))
     fetcher = Mock()
+    # Exercise the real report quote contract; the Ke fixture supplies only
+    # external quote data, with a valid source time for the actual market state.
+    def provider_quote(code):
+        from src.data.market_calendar import (
+            resolve_market_data_cutoff,
+            resolve_market_session,
+        )
+
+        observed = datetime.now(timezone.utc)
+        market_session = resolve_market_session(code, as_of=observed)
+        if market_session and market_session.is_open(observed):
+            source_time = observed
+        elif (
+            market_session and market_session.break_start
+            and market_session.break_start <= observed < market_session.break_end
+        ):
+            source_time = market_session.break_start
+        else:
+            source_time = resolve_market_data_cutoff(
+                code, observed.date() + timedelta(days=1), as_of=observed
+            ).session_close
+        return {
+            "quote_time": source_time.isoformat(), "close": 10,
+            "open": 10, "prev_close": 10, "high": 10, "low": 10,
+        }
+
+    fetcher.web_crawler.fetch_realtime_quote.side_effect = provider_quote
     monkeypatch.setattr(main, "StockDataFetcher", Mock(return_value=fetcher))
     announcement = {
         "title": "Synthetic official report",

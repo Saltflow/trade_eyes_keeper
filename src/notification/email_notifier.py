@@ -27,7 +27,6 @@ from .report_builders import (  # noqa: F401
     _fmt,
     _html_escape,
     _safe_html_url,
-    build_brief_entries,
     build_daily_event_rows,
     build_strategy_text_summary,
     group_daily_event_rows,
@@ -35,11 +34,14 @@ from .report_builders import (  # noqa: F401
 from .report_policy import (
     PRICE_COLORS,
     ROE_ESTIMATE_NOTE,
+    format_price,
     format_roe,
     fundamental_rows,
     generate_return_curve_png,
     implied_ke,
     price_movement,
+    quote_presentation,
+    quote_status_summary,
     return_curves_html,
 )
 from .settings import channel_enabled
@@ -196,21 +198,17 @@ class EmailNotifier(BaseNotifier):
         symbols = configured_symbols or [(code, "") for code in source_rows]
         if not symbols:
             return []
-        fresh_entries = (
-            {
-                str(entry["code"]): entry
-                for entry in build_brief_entries(
-                    stock_data, datetime.now().astimezone()
-                )
-            }
-            if stock_data is not None and hasattr(stock_data, "iterrows")
-            else {}
-        )
         group_order = {"a_share": 0, "hk": 1, "us": 2, "sg": 3}
         rows = []
         for code, configured_name in symbols:
             source_row = source_rows.get(code)
-            entry = fresh_entries.get(code)
+            source = source_row if source_row is not None else {}
+            quote = quote_presentation(source)
+            entry = (
+                None
+                if source_row is None or source.get("quote_status") == "unavailable"
+                else {key: source.get(key) for key in ("open", "close", "prev_close")}
+            )
             raw_name = (
                 source_row.get("stock_name", configured_name or code)
                 if source_row is not None
@@ -224,6 +222,7 @@ class EmailNotifier(BaseNotifier):
                     "name": name,
                     "group": group,
                     "entry": entry,
+                    "quote": quote,
                     "pe_ratio": source_row.get("pe_ratio")
                     if source_row is not None
                     else None,
@@ -242,9 +241,14 @@ class EmailNotifier(BaseNotifier):
         )
 
     def _build_daily_summary_section(self, rows):
-        active_count = sum(1 for item in rows if item["entry"] is not None)
+        counts = {key: 0 for key in ("realtime", "delayed", "last_close", "unavailable")}
+        for item in rows:
+            counts[(item.get("quote") or quote_presentation({}))["status"]] += 1
         cells = [
-            ("行情就绪", f"{active_count}/{len(rows)}"),
+            ("实时报价", counts["realtime"]),
+            ("延迟采样", counts["delayed"]),
+            ("最近收盘", counts["last_close"]),
+            ("行情缺口", counts["unavailable"]),
             ("监控标的", len(rows)),
             ("策略展示", "Ke收益曲线"),
             ("覆盖市场", len({item["group"] for item in rows})),
@@ -289,29 +293,30 @@ class EmailNotifier(BaseNotifier):
             sections.append(
                 f'<div class="group-heading">{_html_escape(labels[group])} · {len(rows)}只</div>'
                 '<table role="presentation" class="watchlist-table">'
-                "<thead><tr><th>标的</th><th>今开</th><th>昨收</th><th>现价</th>"
+                "<thead><tr><th>标的</th><th>开盘</th><th>前收</th><th>报价</th>"
                 '<th>PE</th><th class="mobile-hide">PB</th><th>隐含 Ke</th>'
                 '<th class="mobile-hide">ROE%</th></tr></thead><tbody>'
             )
             for index, row in enumerate(rows):
                 entry = row["entry"]
                 if entry is None:
-                    open_text = prev_close_text = close_text = pe_text = pb_text = (
-                        implied_ke_text
-                    ) = "—"
+                    open_text = prev_close_text = close_text = "—"
                     row_class = " watch-row-stale"
-                    status = '<span class="status-badge status-stale">未就绪</span>'
                 else:
-                    open_text = self._daily_metric(entry.get("open"), "", 2)
-                    prev_close_text = self._daily_metric(entry.get("prev_close"), "", 2)
-                    close_text = self._daily_metric(entry.get("close"), "", 2)
-                    pe_text = self._daily_metric(row.get("pe_ratio"), "", 1)
-                    pb_text = self._daily_metric(row.get("pb_ratio"), "", 2)
-                    implied_ke_text = self._daily_metric(
-                        implied_ke(row.get("pe_ratio")), "%", 1
-                    )
+                    open_text = format_price(entry.get("open"))
+                    prev_close_text = format_price(entry.get("prev_close"))
+                    close_text = format_price(entry.get("close"))
                     row_class = ""
-                    status = ""
+                pe_text = self._daily_metric(row.get("pe_ratio"), "", 1)
+                pb_text = self._daily_metric(row.get("pb_ratio"), "", 2)
+                implied_ke_text = self._daily_metric(
+                    implied_ke(row.get("pe_ratio")), "%", 1
+                )
+                status = (
+                    '<span class="status-badge">'
+                    + _html_escape((row.get("quote") or quote_presentation({}))["text"])
+                    + "</span>"
+                )
                 direction, change = price_movement(
                     entry.get("close") if entry else None,
                     entry.get("prev_close") if entry else None,
@@ -333,8 +338,9 @@ class EmailNotifier(BaseNotifier):
                 )
             sections.append("</tbody></table>")
         sections.append(
-            '<div class="muted-note">价格对应各市场最近行情交易日。昨收优先使用行情源前收盘价，'
-            "缺失时取同口径前一交易日收盘。隐含 Ke = TTM 每股收益 ÷ 收盘价 + 2% "
+            '<div class="muted-note">每行注明行情状态与源时间；延迟采样不代表实时，最近收盘不代表盘中报价。'
+            '缺口价格显示为 —，已有基本面独立保留。前收使用行情源前收盘价，'
+            "缺失时显示为 —。隐含 Ke = TTM 每股收益 ÷ 收盘价 + 2% "
             "（即 1 ÷ PE + 2%；PE≤0 或缺失时不显示）。ETF 的 PE/PB 按跟踪指数或"
             "公开成分股权重聚合；黄金、REIT 等非企业资产不展示企业 PE/PB。"
             + _html_escape(ROE_ESTIMATE_NOTE)
@@ -582,11 +588,10 @@ class EmailNotifier(BaseNotifier):
     def _prepare_brief_report(self, session, report_config: dict):
         """Render current price/fundamentals and validated Ke curves."""
         from ..core.build_info import build_label
-        from .report_builders import get_brief_dataframe
         from .report_policy import FUNDAMENTAL_COLUMNS
 
         label = report_config.get("label", "简报")
-        stock_data = get_brief_dataframe(session)
+        stock_data = session.get_all_dataframe()
         today = datetime.now().astimezone()
         entries = fundamental_rows(stock_data)
         rows = "".join(
@@ -600,13 +605,18 @@ class EmailNotifier(BaseNotifier):
             label=label,
             report_date=today.strftime("%Y-%m-%d"),
             current_time=today.strftime("%H:%M"),
-            active_count=len(entries),
+            active_count=sum(
+                quote_presentation(row)["status"] != "unavailable"
+                for _, row in stock_data.iterrows()
+            ),
             total_count=len(entries),
             brief_rows=rows,
             brief_columns="".join(
                 f"<th>{column}</th>" for _, column in FUNDAMENTAL_COLUMNS
             ),
-            brief_note="缺失指标显示为 —，行情日期按各市场实际交易日展示。"
+            brief_note=quote_status_summary(stock_data)
+            + "。每行按源时间展示行情状态；延迟采样不代表实时，最近收盘不代表盘中报价。"
+            + "缺口价格与缺失指标显示为 —。"
             + ROE_ESTIMATE_NOTE,
             strategy_suggestions=return_curves_html(
                 getattr(session, "strategy_return_curves", None)
