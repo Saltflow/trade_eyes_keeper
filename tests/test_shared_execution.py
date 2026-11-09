@@ -484,7 +484,7 @@ def test_exception_after_effect_is_unknown(runtime):
     assert runtime.wait(run_id, 3)["status"] == "unknown"
 
 
-def test_saturated_conversation_lane_does_not_block_delivery(runtime):
+def test_saturated_conversation_lane_does_not_block_reports(runtime):
     started = threading.Barrier(3)
     release = threading.Event()
 
@@ -496,8 +496,8 @@ def test_saturated_conversation_lane_does_not_block_delivery(runtime):
     runtime.register(ModuleSpec("chat", (JobSpec("chat", blocked, "conversation"),)))
     runtime.register(
         ModuleSpec(
-            "personal",
-            (JobSpec("send", lambda p, c: RunResult(), "personal_delivery"),),
+            "reports",
+            (JobSpec("reports.daily", lambda p, c: RunResult(), "report"),),
         )
     )
     runtime.submit("chat", {}, session_key="A")
@@ -505,7 +505,7 @@ def test_saturated_conversation_lane_does_not_block_delivery(runtime):
     runtime.start()
     try:
         started.wait(timeout=3)
-        delivery = runtime.submit("send", {})
+        delivery = runtime.submit("reports.daily", {})
         assert runtime.wait(delivery, 1)["status"] == "succeeded"
     finally:
         release.set()
@@ -1125,30 +1125,6 @@ def test_business_read_nested_in_same_database_admission_never_commits_outer(tmp
         outer.rollback()
     assert facts.allowed_routes("owner") == []
     assert len(execution._connections) <= 4
-
-
-def test_profile_injection_does_not_bind_an_unrelated_store(tmp_path):
-    from src.personal_monitor import MonitorStore
-    from src.personal_monitor_runtime import PersonalMonitorRuntime
-
-    profile = tmp_path / "current"
-    host = ExecutionRuntime(ExecutionStore(profile / "execution.sqlite3"))
-    current = MonitorStore(profile / "facts.sqlite3")
-    other = MonitorStore(tmp_path / "other" / "facts.sqlite3")
-    monitor = PersonalMonitorRuntime(
-        current, {}, lambda *_: None, execution_runtime=host
-    )
-    monitor._registered_tasks()
-    current.register_route("owner", "current")
-    other.register_route("owner", "other")
-    assert other._connection_provider is None
-    assert current.allowed_routes("owner") == ["current"]
-    assert other.allowed_routes("owner") == ["other"]
-    paths = {key[1] for key in host.store._connections}
-    assert os.path.normcase(str((profile / "facts.sqlite3").resolve())) in paths
-    assert (
-        os.path.normcase(str((tmp_path / "other/facts.sqlite3").resolve())) not in paths
-    )
 
 
 def test_filtered_business_cache_cleanup_never_closes_active_borrow(tmp_path):

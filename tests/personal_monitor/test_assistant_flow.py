@@ -13,13 +13,10 @@ from zoneinfo import ZoneInfo
 
 from src.interactive.assistant.personal_tools import (
     PersonalTools,
-    message_datetime,
-    reminder_due,
-    screenshot_time,
 )
 from src.interactive.assistant.service import FeishuAssistant
 from src.interactive.feishu_handler import handle_feishu_message
-from src.personal_monitor import MonitorEngine, MonitorStore
+from src.personal_monitor import MonitorStore
 
 TZ = ZoneInfo("Asia/Shanghai")
 
@@ -79,68 +76,6 @@ def service(tmp_path):
     assistant.stop()
 
 
-def test_image_event_reaches_assistant_then_atomic_personal_snapshot(service):
-    now = datetime.now(TZ).isoformat()
-    service.client.read_position_images.return_value = {
-        "account_hint": "isolated",
-        "as_of": now,
-        "positions": [
-            {
-                "code": "601088",
-                "quantity": 1000,
-                "price": 40,
-                "market_value": 40000,
-                "currency": "CNY",
-            }
-        ],
-    }
-
-    def complete(messages, tools, **kwargs):
-        results = [
-            json.loads(item["content"]) for item in messages if item["role"] == "tool"
-        ]
-        evidence = next(item for item in results if item.get("untrusted_image_facts"))
-        if not any(item.get("operation") == "import_image" for item in results):
-            return model_call(
-                "import_image",
-                {
-                    "account": "isolated",
-                    "batch_id": evidence["batch_id"],
-                },
-            )
-        return {"role": "assistant", "content": "已更新截图中明确的持仓。"}
-
-    service.client.complete.side_effect = complete
-    service.personal_store.ensure_account("owner", "isolated")
-    app = Mock(enabled=True, assistant_enabled=True)
-    app.gate.is_allowed.return_value = True
-    app.access.accept.return_value = "accepted"
-    app.get_assistant.return_value = service
-    body = {
-        "header": {"event_type": "im.message.receive_v1"},
-        "event": {
-            "sender": {"sender_type": "user", "sender_id": {"open_id": "owner"}},
-            "message": {
-                "message_id": "image-message-1",
-                "chat_id": "chat",
-                "chat_type": "p2p",
-                "message_type": "image",
-                "create_time": str(int(datetime.now(TZ).timestamp() * 1000)),
-                "content": json.dumps({"image_key": "img_fixture"}),
-            },
-        },
-    }
-    assert handle_feishu_message(app, body) == "accepted"
-    queued = service.execution_runtime.store.list_runs(job_id="conversation.turn")
-    assert len(queued) == 1
-    service.execution_runtime.start()
-    assert service.execution_runtime.wait(queued[0]["id"], 15)["status"] == "succeeded"
-    state = service.personal_store.status("owner", "isolated")
-    assert state["accounts"][0]["positions"][0]["quantity"] == 1000
-    assert state["outbox"] == []
-    assert state["reminders"] == []
-    assert "实际操作回执" in service.send_message.call_args.args[1]
-    assert not service.submit("chat", "owner", "", "image-message-1")
 
 
 def test_image_import_can_retry_after_account_creation_and_refresh_status(service):
@@ -279,60 +214,10 @@ def test_bad_image_row_preserves_old_position_and_needs_correction(service):
     )
 
 
-def test_text_reminder_model_tool_receipt_and_restart_delivery(service):
-    service.client.complete.side_effect = [
-        model_call("create_reminder", {"after_days": 28, "text": "决定是否滚存"}),
-        {"role": "assistant", "content": "已创建提醒，将于1900-01-01提醒。"},
-    ]
-    base = datetime(2026, 12, 20, 14, 12, tzinfo=TZ)
-    service.handle(
-        "chat",
-        "owner",
-        "28天后提醒我决定是否滚存",
-        "text-1",
-        message_time={"create_time": str(int(base.timestamp() * 1000))},
-    )
-    saved = service.personal_store.status("owner")["reminders"][0]
-    assert datetime.fromisoformat(saved["due_at"]).astimezone(TZ) == base + timedelta(
-        days=28
-    )
-    assert saved["route"] == "chat"
-    assert "实际操作回执" in service.send_message.call_args.args[1]
-    assert "1900-01-01" not in service.send_message.call_args.args[1]
-    reopened = MonitorEngine(MonitorStore(service.personal_store.path))
-    reopened.enqueue_due(base + timedelta(days=29))
-    assert len(service.personal_store.status("owner")["outbox"]) == 1
-    reopened.enqueue_due(base + timedelta(days=30))
-    assert len(service.personal_store.status("owner")["outbox"]) == 1
 
 
-def test_same_create_call_repeated_in_turn_is_idempotent(service):
-    context = {"id": "turn", "message_id": "msg", "effective_time": datetime.now(TZ)}
-    args = {"after_days": 28, "text": "到期决定是否滚存"}
-    first = service.personal.invoke("owner", "chat", "create_reminder", args, context)
-    second = service.personal.invoke("owner", "chat", "create_reminder", args, context)
-    assert first["result"]["reminder_id"] == second["result"]["reminder_id"]
-    assert len(service.personal_store.status("owner")["reminders"]) == 1
 
 
-def test_changed_model_generated_id_cannot_duplicate_same_message_action(service):
-    context = {"id": "turn", "message_id": "msg", "effective_time": datetime.now(TZ)}
-    args = {"after_days": 28, "text": "到期决定是否滚存"}
-    first = service.personal.invoke(
-        "owner",
-        "chat",
-        "create_reminder",
-        dict(args, reminder_id="model-choice-1"),
-        context,
-    )
-    second = service.personal.invoke(
-        "owner",
-        "chat",
-        "create_reminder",
-        dict(args, reminder_id="model-choice-2"),
-        context,
-    )
-    assert first["result"]["reminder_id"] == second["result"]["reminder_id"]
 
 
 def test_transport_receipt_expiry_does_not_reenable_same_platform_message(service):
@@ -516,277 +401,26 @@ def test_manual_date_timezone_and_future_watermark_guard(service):
     assert store.status("owner")["accounts"][0]["revision"] == 1
 
 
-@pytest.mark.parametrize(
-    "outcome,reminder_state,outbox_state",
-    [
-        ("sent", "completed", None),
-        ("failed", "queued", "failed"),
-        ("unknown", "unknown", "unknown"),
-    ],
-)
-def test_past_due_reply_delivery_is_part_of_durable_reminder_state(
-    service,
-    outcome,
-    reminder_state,
-    outbox_state,
-):
-    service._personal_send = Mock(
-        return_value={"outcome": outcome, "detail": "controlled result"}
-    )
-    service.client.complete.side_effect = [
-        model_call(
-            "create_reminder",
-            {"due_at": "2020-01-01T09:00:00+08:00", "text": "复核到期"},
-        ),
-        {"role": "assistant", "content": "已到期，请复核。"},
-    ]
-    service.handle("chat", "owner", "这个日期已经过去，现在提醒我一次", "past-due-msg")
-    state = service.personal_store.status("owner")
-    assert state["reminders"][0]["state"] == reminder_state
-    assert service._personal_send.call_count == 1
-    if outbox_state:
-        assert len(state["outbox"]) == 1
-        assert state["outbox"][0]["state"] == outbox_state
-        assert "已到期提醒" in state["outbox"][0]["text"]
-    else:
-        assert len(state["outbox"]) == 1
-        assert state["outbox"][0]["state"] == "sent"
 
 
-def test_unknown_past_due_reply_requires_explicit_resend(service):
-    context = {"id": "turn", "effective_time": datetime.now(TZ)}
-    service.personal.invoke(
-        "owner",
-        "chat",
-        "create_reminder",
-        {"due_at": "2020-01-01T09:00:00+08:00", "text": "复核到期"},
-        context,
-    )
-    service.personal.record_immediate_delivery(context, "unknown", "timeout")
-    engine = MonitorEngine(service.personal_store)
-    assert engine.claim_delivery("worker") is None
-    entry = service.personal_store.status("owner")["outbox"][0]
-    receipt = service.personal.invoke(
-        "owner", "chat", "resend", {"outbox_id": entry["id"]}, context
-    )
-    assert receipt["result"]["duplicate_possible"] is True
-    assert engine.claim_delivery("worker") is not None
 
 
-def test_crash_before_immediate_reply_never_claims_delivery_completed(service):
-    store = service.personal_store
-    store.register_route("owner", "chat")
-    # Simulate death after the durable mutation and before the assistant stages
-    # or sends its normal reply. Reopening must retain uncertainty, not success.
-    created = store.create_reminder(
-        "owner",
-        "crash",
-        "2020-01-01T09:00:00+08:00",
-        "到期核查",
-        "chat",
-        reply_delivery=True,
-    )
-    assert created["state"] == "receipt_pending"
-    reopened = PersonalTools(MonitorStore(store.path))
-    state = reopened.store.status("owner")
-    assert state["reminders"][0]["state"] == "unknown"
-    assert state["outbox"][0]["state"] == "unknown"
-    assert MonitorEngine(reopened.store).claim_delivery("worker") is None
 
 
-def test_committed_operation_gets_factual_receipt_even_if_model_fails_afterward(
-    service,
-):
-    from src.interactive.assistant.client import AssistantAPIError
-
-    service.client.complete.side_effect = [
-        model_call("create_reminder", {"after_days": 28, "text": "到期决定"}),
-        AssistantAPIError("controlled provider outage"),
-    ]
-    service.handle("chat", "owner", "28天后提醒我到期决定", "model-outage")
-    state = service.personal_store.status("owner")
-    assert len(state["reminders"]) == 1
-    reply = service.send_message.call_args.args[1]
-    assert "实际操作回执" in reply
-    assert state["reminders"][0]["reminder_id"] in reply
 
 
-def test_model_cannot_choose_unverified_destination_or_other_owner(service):
-    context = {"id": "turn", "effective_time": datetime.now(TZ)}
-    with pytest.raises(ValueError, match="目标会话"):
-        service.personal.invoke(
-            "owner",
-            "chat",
-            "create_reminder",
-            {
-                "after_days": 1,
-                "text": "提醒",
-                "route": "other-private-chat",
-            },
-            context,
-        )
-    service.personal.invoke(
-        "owner",
-        "chat",
-        "create_reminder",
-        {
-            "after_days": 1,
-            "text": "提醒",
-            "reminder_id": "mine",
-        },
-        context,
-    )
-    assert (
-        service.personal.invoke("other", "other-chat", "status", {}, {})["reminders"]
-        == []
-    )
-    with pytest.raises((ValueError, KeyError)):
-        service.personal.invoke(
-            "other",
-            "other-chat",
-            "cancel_reminder",
-            {"reminder_id": "mine", "expected_revision": 0},
-            context,
-        )
 
 
-@pytest.mark.parametrize(
-    "base,days,expected",
-    [
-        ("2026-12-20T14:00:00+08:00", 28, "2027-01-17T14:00:00+08:00"),
-        ("2028-02-01T14:00:00+08:00", 28, "2028-02-29T14:00:00+08:00"),
-    ],
-)
-def test_calendar_days(base, days, expected):
-    assert reminder_due({"after_days": days}, datetime.fromisoformat(base)) == expected
 
 
-def test_date_only_default_and_override_and_server_timezone():
-    base = datetime.fromisoformat("2026-10-21T00:00:00+00:00")
-    assert (
-        reminder_due({"date_only": "2026-11-18"}, base) == "2026-11-18T09:50:00+08:00"
-    )
-    assert (
-        reminder_due({"date_only": "2026-11-18", "default_time": "14:30"}, base)
-        == "2026-11-18T14:30:00+08:00"
-    )
-    assert message_datetime({"create_time": "1792540800000"}).tzinfo == TZ
-    assert screenshot_time("2026-10-21T14:30:00") == "2026-10-21T14:30:00+08:00"
-    assert screenshot_time("2026-10-21") == "2026-10-21"
 
 
-@pytest.mark.parametrize(
-    "arguments",
-    [
-        {},
-        {"after_days": 1, "due_at": "2027-01-01T00:00:00+08:00"},
-        {"after_days": float("nan")},
-        {"after_days": True},
-        {"after_days": -1},
-    ],
-)
-def test_ambiguous_or_invalid_due_is_not_silently_interpreted(arguments):
-    with pytest.raises(ValueError):
-        reminder_due(arguments, datetime.now(TZ))
 
 
-@pytest.mark.parametrize("operation", ["cancel_reminder", "edit_reminder"])
-def test_same_turn_mutation_suppresses_old_immediate_notice(service, operation):
-    context = {"id": "mutation-turn", "effective_time": datetime.now(TZ), "answers": []}
-    service.personal.invoke(
-        "owner",
-        "chat",
-        "create_reminder",
-        {
-            "reminder_id": "immediate-old",
-            "due_at": "2020-01-01T09:00:00+08:00",
-            "text": "旧提醒",
-        },
-        context,
-    )
-    args = {"reminder_id": "immediate-old", "expected_revision": 1}
-    if operation == "edit_reminder":
-        args["after_days"] = 2
-    receipt = service.personal.invoke("owner", "chat", operation, args, context)
-    assert not receipt["result"].get("possibly_sent")
-    assert service.personal.immediate_results(context) == []
-    rendered = service.personal.render_receipts(context)
-    assert "本次回复即为到期提醒" not in rendered
-    service._audit = Mock()
-    service._turn_context.current = context
-    assert service._reply("chat", rendered)
-    assert "已到期提醒：旧提醒" not in service.send_message.call_args.args[1]
-    state = service.personal_store.status("owner")
-    assert all(row["state"] == "cancelled" for row in state["outbox"])
 
 
-def test_past_due_other_route_only_queues_actual_destination(service):
-    store = service.personal_store
-    store.register_route("owner", "other")
-    context = {"id": "other-route", "effective_time": datetime.now(TZ), "answers": []}
-    service.personal.invoke(
-        "owner",
-        "chat",
-        "create_reminder",
-        {
-            "reminder_id": "routed",
-            "due_at": "2020-01-01T09:00:00+08:00",
-            "text": "目标提醒",
-            "route": "other",
-        },
-        context,
-    )
-    assert service.personal.immediate_results(context) == []
-    service._audit = Mock()
-    service._turn_context.current = context
-    service._reply("chat", service.personal.render_receipts(context))
-    assert "本次回复即为到期提醒" not in service.send_message.call_args.args[1]
-    assert "已到期提醒：" not in service.send_message.call_args.args[1]
-    engine = MonitorEngine(store)
-    entry = engine.claim_delivery("test-worker")
-    assert entry["route"] == "other"
-    assert engine.mark_submitted(entry["id"], entry["token"])
-    assert engine.finish_delivery(entry["id"], entry["token"], "sent")
-    state = store.status("owner")
-    assert state["reminders"][0]["state"] == "completed"
-    assert len(state["outbox"]) == 1
-    assert engine.claim_delivery("test-worker") is None
 
 
-@pytest.mark.parametrize("operation", ["cancel_reminder", "edit_reminder"])
-def test_long_reply_keeps_immediate_cancelable_until_its_message(service, operation):
-    context = {"id": "long-reply", "effective_time": datetime.now(TZ), "answers": []}
-    service.personal.invoke(
-        "owner",
-        "chat",
-        "create_reminder",
-        {
-            "reminder_id": "later-payload",
-            "due_at": "2020-01-01T09:00:00+08:00",
-            "text": "必须过滤的旧提醒",
-        },
-        context,
-    )
-    service._personal_send = Mock(return_value={"outcome": "sent"})
-    service._audit = Mock()
-    service._turn_context.current = context
-    delivered = []
-
-    def send(chat, payload):
-        delivered.append(payload)
-        if len(delivered) == 1:
-            args = {"reminder_id": "later-payload", "expected_revision": 1}
-            if operation == "edit_reminder":
-                args["after_days"] = 3
-            result = service.personal.invoke("owner", "chat", operation, args, context)
-            assert not result["result"]["possibly_sent"]
-        return True, "controlled"
-
-    service.send_message.side_effect = send
-    assert service._reply("chat", "管理回执" * 1500)
-    assert not service._personal_send.called
-    assert all("必须过滤的旧提醒" not in payload for payload in delivered)
-    assert service.personal_store.status("owner")["outbox"][0]["state"] == "cancelled"
 
 
 def test_image_account_declaration_survives_next_message_and_restart(service):
@@ -1289,3 +923,67 @@ def test_partial_image_keeps_unresolved_facts_discoverable_after_restart(service
         )
         is None
     )
+
+
+def test_image_event_reaches_assistant_then_atomic_personal_snapshot(service):
+    now = datetime.now(TZ).isoformat()
+    service.client.read_position_images.return_value = {
+        "account_hint": "isolated",
+        "as_of": now,
+        "positions": [
+            {
+                "code": "601088",
+                "quantity": 1000,
+                "price": 40,
+                "market_value": 40000,
+                "currency": "CNY",
+            }
+        ],
+    }
+
+    def complete(messages, tools, **kwargs):
+        results = [
+            json.loads(item["content"]) for item in messages if item["role"] == "tool"
+        ]
+        evidence = next(item for item in results if item.get("untrusted_image_facts"))
+        if not any(item.get("operation") == "import_image" for item in results):
+            return model_call(
+                "import_image",
+                {
+                    "account": "isolated",
+                    "batch_id": evidence["batch_id"],
+                },
+            )
+        return {"role": "assistant", "content": "已更新截图中明确的持仓。"}
+
+    service.client.complete.side_effect = complete
+    service.personal_store.ensure_account("owner", "isolated")
+    app = Mock(enabled=True, assistant_enabled=True)
+    app.gate.is_allowed.return_value = True
+    app.access.accept.return_value = "accepted"
+    app.get_assistant.return_value = service
+    body = {
+        "header": {"event_type": "im.message.receive_v1"},
+        "event": {
+            "sender": {"sender_type": "user", "sender_id": {"open_id": "owner"}},
+            "message": {
+                "message_id": "image-message-1",
+                "chat_id": "chat",
+                "chat_type": "p2p",
+                "message_type": "image",
+                "create_time": str(int(datetime.now(TZ).timestamp() * 1000)),
+                "content": json.dumps({"image_key": "img_fixture"}),
+            },
+        },
+    }
+    assert handle_feishu_message(app, body) == "accepted"
+    queued = service.execution_runtime.store.list_runs(job_id="conversation.turn")
+    assert len(queued) == 1
+    service.execution_runtime.start()
+    assert service.execution_runtime.wait(queued[0]["id"], 15)["status"] == "succeeded"
+    state = service.personal_store.status("owner", "isolated")
+    assert state["accounts"][0]["positions"][0]["quantity"] == 1000
+    assert state["outbox"] == []
+    assert state["reminders"] == []
+    assert "实际操作回执" in service.send_message.call_args.args[1]
+    assert not service.submit("chat", "owner", "", "image-message-1")

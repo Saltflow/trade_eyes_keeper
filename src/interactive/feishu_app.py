@@ -92,7 +92,6 @@ class FeishuApp:
                     self.send_file,
                     image_loader=self.download_message_image,
                     personal_route_allowed=self.gate.is_allowed,
-                    personal_send=self.send_personal_message,
                     execution_runtime=self.execution_runtime,
                     command_executor=self.command_executor,
                 )

@@ -56,7 +56,14 @@ class TelegramNotifier(BaseNotifier):
         receipt = self._send_classified(title, body)
         return receipt if classified else legacy_tuple(receipt)
 
+    def _delivery_guard(self) -> dict | None:
+        """Specialized report contexts may revoke an unsubmitted message."""
+        return None
+
     def _send_classified(self, title: str, body: str) -> dict:
+        guard = self._delivery_guard()
+        if guard:
+            return guard
         if not channel_enabled(self.config, "telegram"):
             return {
                 "status": "skipped",
@@ -89,6 +96,11 @@ class TelegramNotifier(BaseNotifier):
                 )
                 continue
             prefix = f"({i + 1}/{len(chunks)}) " if len(chunks) > 1 else ""
+            guard = self._delivery_guard()
+            if guard:
+                pieces.append({**guard, "ordinal": i, "attempted": False})
+                halted = True
+                continue
             try:
                 resp = requests.post(
                     url,

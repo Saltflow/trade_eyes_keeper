@@ -281,26 +281,6 @@ class RuntimeService:
                         "reason": "assistant_unavailable",
                     }
                 )
-            if assistant is not None:
-                try:
-                    module_health["personal_monitor"] = (
-                        assistant.personal_runtime.health()
-                    )
-                except Exception as exc:
-                    if state == "running":
-                        raise
-                    self._diagnostic("personal_monitor_health_status", exc)
-                    self.failure = self.failure or "personal monitor health unavailable"
-                    module_health["personal_monitor"] = {"error": type(exc).__name__}
-                error = module_health["personal_monitor"].get("error")
-                if error:
-                    issues.append(
-                        {
-                            "id": "personal_monitor",
-                            "module_id": "personal_monitor",
-                            "reason": error,
-                        }
-                    )
         for name, receiver in self.bots.items():
             health = getattr(receiver, "health", None)
             if callable(health):

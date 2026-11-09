@@ -200,10 +200,8 @@ class FeishuAssistant:
         start_workers=True,
         image_loader=None,
         personal_store=None,
-        personal_runtime=None,
         personal_quote_loader=None,
         personal_route_allowed=None,
-        personal_send=None,
         execution_runtime=None,
         capabilities=None,
         trigger_store=None,
@@ -252,22 +250,14 @@ class FeishuAssistant:
         self._owns_execution = execution_runtime is None
         self.send_message = send_message
         self.send_file = send_file
-        self._personal_send = personal_send or self._send_personal_notification
         from ...personal_monitor import MonitorStore
-        from ...personal_monitor_runtime import PersonalMonitorRuntime
+        from ...personal_monitor_runtime import SourcedObservationProvider
         from .personal_tools import PersonalTools
 
         self.personal_store = personal_store or MonitorStore(
             data_directory / "runtime" / "personal_monitor.sqlite3"
         )
-        self.personal_runtime = personal_runtime or PersonalMonitorRuntime(
-            self.personal_store,
-            config,
-            self._personal_send,
-            config_provider=self._personal_runtime_config,
-            execution_runtime=self.execution_runtime,
-        )
-        provider = self.personal_runtime.observation_provider
+        provider = SourcedObservationProvider(config)
         self.personal = PersonalTools(
             self.personal_store,
             image_loader=image_loader,
@@ -341,7 +331,6 @@ class FeishuAssistant:
             "conversation", self._conversation_lifecycle
         )
         if start_workers:
-            self.personal_runtime.start()
             if self._owns_execution:
                 self.execution_runtime.start()
             self._conversation_lifecycle(True)
@@ -435,17 +424,7 @@ class FeishuAssistant:
             return False
         text = self.redact(str(text))
         context = getattr(self._turn_context, "current", None)
-        candidates = (
-            self.personal.immediate_results(context)
-            if context is not None and not context.get("immediate_delivery_recorded")
-            else []
-        )
-
-        def notice(item):
-            return f"已到期提醒：{item['text']}。原定时间 {item['due_at']}。"
-
-        def emit(payload, claims=None):
-            claims = claims or []
+        def emit(payload):
             piece = str((context or {}).get("reply_piece", 0))
             if context is not None:
                 context["reply_piece"] = int(piece) + 1
@@ -462,25 +441,14 @@ class FeishuAssistant:
             self._audit("reply", {"text": payload})
             classified = {"outcome": "unknown"}
             try:
-                if claims:
-                    classified = self._personal_send(chat, payload)
-                    delivered = classified.get("outcome") == "sent"
-                    self.personal.immediate_delivery.finish(
-                        claims, classified.get("outcome", "unknown"), classified
-                    )
-                else:
-                    result = self.send_message(chat, payload)
-                    delivered = bool(result and result[0])
-                    classified = {
-                        "outcome": "sent" if delivered else "unknown",
-                        "detail": str(result[1]) if result and len(result) > 1 else "",
-                    }
+                result = self.send_message(chat, payload)
+                delivered = bool(result and result[0])
+                classified = {
+                    "outcome": "sent" if delivered else "unknown",
+                    "detail": str(result[1]) if result and len(result) > 1 else "",
+                }
                 self._audit("delivery", {"ok": delivered})
             except Exception as exc:  # noqa: BLE001 - never rerun operations
-                if claims:
-                    self.personal.immediate_delivery.finish(
-                        claims, "unknown", {"error": type(exc).__name__}
-                    )
                 self._audit("delivery", {"ok": False, "error": type(exc).__name__})
                 delivered = False
                 logger.warning("Assistant delivery failed: %s", type(exc).__name__)
@@ -493,31 +461,12 @@ class FeishuAssistant:
                 context["delivery_failed"] = True
             return delivered
 
-        # A claim covers exactly one platform message containing that reminder.
-        # Longer management replies are sent before any reminder is submitted,
-        # so another conversation can still cancel the unsent reminder.
-        combined = text + "\n" + "\n".join(notice(item) for item in candidates)
-        if candidates and len(combined) <= 2800:
-            claims = self.personal.immediate_delivery.claim(candidates, chat)
-            payload = text
-            if claims:
-                payload += "\n" + "\n".join(notice(claim["item"]) for claim in claims)
-            delivered = emit(payload, claims)
-            if context is not None and delivered:
-                context["immediate_delivery_recorded"] = True
-            return delivered
         for offset in range(0, max(1, len(text)), 2800):
             if not emit(text[offset : offset + 2800]):
                 return False
-        for candidate in candidates:
-            claims = self.personal.immediate_delivery.claim([candidate], chat)
-            if claims and not emit(notice(claims[0]["item"]), claims):
-                return False
-        if candidates and context is not None:
-            context["immediate_delivery_recorded"] = True
         return True
 
-    def _personal_runtime_config(self):
+    def _runtime_config(self):
         if self.capabilities is not None:
             return copy.deepcopy(self._fundamental_config)
         from ...core.config_store import ConfigStore
@@ -527,15 +476,6 @@ class FeishuAssistant:
             return ConfigStore(path).load_runtime()
         return self._fundamental_config
 
-    def _send_personal_notification(self, route, text):
-        """Legacy send adapters cannot prove a timeout was safely rejected."""
-        try:
-            result = self.send_message(route, text)
-        except Exception as exc:  # noqa: BLE001 - ambiguous delivery must not retry
-            return {"outcome": "unknown", "error": type(exc).__name__}
-        if isinstance(result, tuple) and result and result[0] is True:
-            return {"outcome": "sent"}
-        return {"outcome": "unknown", "error": str(result)}
 
     def submit(
         self,
@@ -776,12 +716,6 @@ class FeishuAssistant:
             )
             self._reply(chat, answer + f"\n排查编号：{turn_id}")
         finally:
-            if self.personal.immediate_results(context) and not context.get(
-                "immediate_delivery_recorded"
-            ):
-                self.personal.record_immediate_delivery(
-                    context, "failed", "reply_not_submitted"
-                )
             status = (
                 "delivery_failed"
                 if context["delivery_failed"]
@@ -831,6 +765,12 @@ class FeishuAssistant:
     @staticmethod
     def _trigger_meta_text(text: str) -> bool:
         """Examples, quotations and explanations never authorize a mutation."""
+        # Interrogatives in the reminder's subject do not turn the preceding
+        # imperative into a question ("提醒我核对是否到账"). Quotation, negation,
+        # explanation and an actual question mark still apply to the whole text.
+        request_text = re.sub(
+            r"(提醒我(?:决定|核对|检查|确认))(?:是否|要不要)", r"\1", text
+        )
         return bool(
             re.match(r"\s*(?:[>\"'“「『]|```)", text)
             or re.match(
@@ -841,11 +781,12 @@ class FeishuAssistant:
                 r"说过|提到|原话|写道|文中说|网页(?:说|要求|指示)|新闻说|工具(?:说|要求)|机器人(?:说|回复)|助手(?:说|回复)|"
                 r"怎么(?:创建|删除|修改|设置)|如何(?:创建|删除|修改|设置)|"
                 r"不要(?:创建|删除|修改|执行|暂停|恢复)|不(?:创建|删除|修改|执行)|"
-                r"先别|别(?:创建|删除|修改|执行|暂停|恢复)|不要执行|不执行|是否|要不要|"
+                r"先别|别(?:创建|删除|修改|执行|暂停|恢复)|不要执行|不执行|"
                 r"\b(?:do\s+not|don't|never|explain|example|quoted?|translate|hypothetical)\b",
                 text,
                 re.IGNORECASE,
             )
+            or re.search(r"是否|要不要", request_text)
             or text.rstrip().endswith(("?", "？"))
         )
 
@@ -859,7 +800,7 @@ class FeishuAssistant:
             raise ValueError("触发器只能使用本条认证消息的用户和会话")
         catalog = getattr(self, "trigger_catalog", None)
         if catalog is None:
-            config = copy.deepcopy(self._personal_runtime_config())
+            config = copy.deepcopy(self._runtime_config())
             storage = config.setdefault("storage", {})
             directory = Path(storage.get("data_dir", "data"))
             storage["data_dir"] = str(
@@ -931,7 +872,7 @@ class FeishuAssistant:
                     {
                         "data_id": "personal:status",
                         "domain": "personal",
-                        "title": "本人账户、持仓、提醒及事实记录",
+                        "title": "本人账户、持仓及历史事实记录",
                         "format": "json",
                         "source": "personal_monitor_status",
                         "readable": True,
@@ -1046,7 +987,7 @@ class FeishuAssistant:
             if data_id in {"snapshot:daily", "snapshot:brief"}:
                 from .data_tools import MAX_BYTES
 
-                config = self._personal_runtime_config()
+                config = self._runtime_config()
                 directory = Path(config.get("storage", {}).get("data_dir", "data"))
                 path = (
                     self.root
@@ -1073,7 +1014,7 @@ class FeishuAssistant:
                     "notice": "逐字段时点见fact_metadata；当前快照不等于历史正文或投递成功。",
                 }
             if data_id == "dividend:public":
-                config = copy.deepcopy(self._personal_runtime_config())
+                config = copy.deepcopy(self._runtime_config())
                 storage = config.setdefault("storage", {})
                 directory = Path(storage.get("data_dir", "data"))
                 storage["data_dir"] = str(self.root / directory)
@@ -1139,7 +1080,7 @@ class FeishuAssistant:
                 return read_path(path, **options)
             return None
 
-        config = self._personal_runtime_config()
+        config = self._runtime_config()
         return BusinessDataTools(
             self.root,
             material_authority=authority_for(self.root, config),
@@ -1981,6 +1922,13 @@ class FeishuAssistant:
             if self.capabilities is not None and name not in {
                 item["function"]["name"] for item in self.tool_schema()
             }:
+                if name in {
+                    "personal_monitor_create_reminder", "personal_monitor_edit_reminder",
+                    "personal_monitor_cancel_reminder", "personal_monitor_rule",
+                    "personal_monitor_exception", "personal_monitor_reset",
+                    "personal_monitor_resend",
+                }:
+                    raise ValueError("独立提醒通知已移除；请使用 trigger_manage 创建完整报告的全渠道触发器。")
                 raise ValueError("当前会话未开放此工具。")
             result = self._call_tool(chat, sender, name, arguments)
         except Exception as exc:
@@ -2110,17 +2058,9 @@ class FeishuAssistant:
                     "id": uuid.uuid4().hex,
                     "effective_time": message_datetime(None),
                 }
-            try:
-                return self.personal.invoke(
-                    sender,
-                    chat,
-                    name.removeprefix("personal_monitor_"),
-                    arguments,
-                    context,
-                )
-            finally:
-                if hasattr(self.personal_runtime, "wake"):
-                    self.personal_runtime.wake()
+            return self.personal.invoke(
+                sender, chat, name.removeprefix("personal_monitor_"), arguments, context
+            )
         catalog_tools = {
             "list_datasets": ("list_datasets", {"limit", "offset"}, set()),
             "get_dataset_details": ("details", {"dataset_id"}, {"dataset_id"}),
@@ -2788,12 +2728,6 @@ class FeishuAssistant:
     def stop(self) -> None:
         if self._owns_execution:
             self.execution_runtime.stop(drain=True, timeout=3)
-        from ...personal_monitor_runtime import PersonalMonitorRuntime
-
-        if isinstance(self.personal_runtime, PersonalMonitorRuntime):
-            self.personal_runtime.stop(disable=False)
-        else:
-            self.personal_runtime.stop()
         with self._active_turns_lock:
             for context in self._active_turns.values():
                 context["harness"].stop()

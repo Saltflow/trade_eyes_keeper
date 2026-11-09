@@ -21,7 +21,7 @@ from ..core.report_execution import runtime_path
 from ..interactive.security import BotAccess
 from ..notification.feishu_notifier import FeishuNotifier
 from ..notification.receipts import legacy_tuple
-from ..notification.settings import env_flag
+from ..notification.settings import channel_enabled
 
 FEISHU_API = "https://open.feishu.cn/open-apis"
 
@@ -134,12 +134,14 @@ class TriggerChatNotifier(FeishuNotifier):
                 if state == "revoked"
                 else "trigger_binding_invalid",
             }
-        if env_flag("SKIP_NOTIFICATIONS") or env_flag("SKIP_FEISHU"):
+        if not channel_enabled(self.config, "feishu"):
             return {"status": "skipped", "reason": "channel_disabled"}
         try:
             from ..core.config_store import ConfigStore
 
             current = ConfigStore(Path(self.binding["config_path"])).load_runtime()
+            if not channel_enabled(current, "feishu"):
+                return {"status": "skipped", "reason": "channel_disabled"}
             if runtime_path(current).resolve() != runtime_path(self.config).resolve():
                 return {"status": "failed", "reason": "trigger_profile_changed"}
             access = BotAccess(current, "feishu", allow_wildcard=True)

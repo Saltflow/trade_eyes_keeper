@@ -104,7 +104,6 @@ class SharedPersonalTestBridge:
             capabilities={"personal"},
             image_loader=self.transport.download_message_image,
             personal_route_allowed=self.transport.gate.is_allowed,
-            personal_send=self.transport.send_personal_message,
         )
         self.health_reporter = None
 

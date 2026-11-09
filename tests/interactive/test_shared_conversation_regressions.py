@@ -166,7 +166,7 @@ def test_parallel_turns_keep_account_writes_and_tool_traces_with_the_owner(servi
         assert assistant.store.recent_turns(owner, "b" if owner == "a" else "a") == []
 
 
-def test_process_exit_after_business_commit_keeps_one_reminder_without_replay(tmp_path):
+def test_process_exit_after_business_commit_keeps_one_trigger_without_replay(tmp_path):
     from src.core.execution import ExecutionStore
 
     child = r"""
@@ -181,8 +181,9 @@ assistant=FeishuAssistant(
     capabilities={"personal"}, start_workers=False,
 )
 def commit_then_exit(chat, owner, text):
-    assistant.call_tool(chat,owner,"personal_monitor_create_reminder",
-                        {"after_days":28,"text":"到期决定是否滚存"})
+    assistant.call_tool(chat,owner,"trigger_manage", {"action":"create", "spec": {
+        "label":"到期决定是否滚存", "schedule":{"at":"2099-11-09T09:50:00+08:00"},
+        "actions":[{"kind":"daily"}], "match_policy":"once"}})
     os._exit(23)
 assistant._handle=commit_then_exit
 assistant.submit("chat","owner","28天后提醒我决定是否滚存","commit-then-exit")
@@ -220,9 +221,11 @@ assistant.execution_runtime.wait(assistant.execution_runtime.store.list_runs()[0
             "chat", "owner", "28天后提醒我决定是否滚存", "commit-then-exit"
         )
         assert store.count_pending("conversation.turn") == 0
-        reminders = restarted.personal_store.status("owner")["reminders"]
-        assert len(reminders) == 1
-        assert reminders[0]["state"] == "pending"
+        triggers = restarted.trigger_store.list("owner")
+        assert len(triggers) == 1
+        assert triggers[0]["state"] == "active"
+        assert triggers[0]["spec"]["actions"][0]["kind"] == "daily"
+        assert restarted.personal_store.status("owner")["reminders"] == []
         turn = restarted.store.recent_turns("chat", "owner")[0]
         assert turn["status"] == "interrupted"
         assert turn["error"] == "execution_result_unknown"

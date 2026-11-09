@@ -577,7 +577,8 @@ def test_history_turn_cannot_create_new_import_or_unrelated_write(
     personal, text, action, args
 ):
     before = personal.store.status("owner")
-    with pytest.raises(ValueError, match="仅授权持仓历史操作"):
+    error = "trigger_manage" if action == "create_reminder" else "仅授权持仓历史操作"
+    with pytest.raises(ValueError, match=error):
         personal.invoke("owner", "chat", action, args, context("history", text))
     assert personal.store.status("owner") == before
 
@@ -620,7 +621,10 @@ def test_correction_context_reaches_model_and_history_tools_are_restricted(tmp_p
     try:
         assistant.handle("chat", "owner", "重做", "history-only")
         assert observed == [
-            {"personal_monitor_status", "personal_monitor_redo_positions"}
+            {
+                "personal_monitor_status", "personal_monitor_redo_positions",
+                "data_find", "data_read",
+            }
         ]
         assert assistant.personal.store.status("owner")["accounts"][0]["revision"] == 1
     finally:

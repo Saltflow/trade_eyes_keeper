@@ -1,12 +1,11 @@
 """Deterministic runtime acceptance: no network, model call or real delivery."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from unittest.mock import Mock
 
 import pytest
 
 from src.personal_monitor_runtime import (
-    PersonalMonitorRuntime,
     SourcedObservationProvider,
     bound_cashflow_return,
     exchange_state,
@@ -134,157 +133,6 @@ def test_real_exchange_calendar_weekend_holiday_and_new_session():
     assert holiday["latest_completed_session"] == "2026-12-24"
 
 
-def runtime(engine=None, store=None, send=None, **kwargs):
-    engine = engine or Mock()
-    engine.claim_delivery.return_value = None
-    return PersonalMonitorRuntime(
-        store or Mock(),
-        {
-            "scheduler": {
-                "run_time": "19:00",
-                "daily_enabled": False,
-                "brief_reports": [
-                    {
-                        "id": "afternoon",
-                        "run_time": "14:30",
-                        "enabled": False,
-                        "skip_weekends": True,
-                    }
-                ],
-            }
-        },
-        send or Mock(),
-        engine=engine,
-        observation_provider=Mock(),
-        **kwargs,
-    )
-
-
-def test_market_times_ignore_report_switches_and_apply_weekend_rule():
-    monitor = runtime()
-    assert monitor.market_slot(monitor.config, instant())
-    assert (
-        monitor.market_slot(monitor.config, instant("2026-10-24T14:30:00+08:00"))
-        is None
-    )
-    assert monitor.market_slot(monitor.config, instant("2026-10-24T19:00:00+08:00"))
-    assert (
-        monitor.market_slot(monitor.config, instant("2026-10-21T14:31:00+08:00"))
-        is None
-    )
-
-
-def test_deadline_poll_is_independent_of_market_schedule_and_starts_with_catchup():
-    monitor = runtime()
-    now = instant("2026-10-24T02:00:00+08:00")
-    monitor.tick(now)
-    monitor.engine.enqueue_due.assert_called_once_with(now)
-    monitor.store.list_accounts.assert_not_called()
-
-
-def test_market_per_rule_binding_and_account_isolation_once_per_slot():
-    store = Mock()
-    store.list_accounts.return_value = [
-        {"owner": "u1", "account": "a"},
-        {"owner": "u2", "account": "a"},
-    ]
-    definitions = [
-        {"rule_id": "r1", "definition": {"bindings": {"601088": binding()}}},
-        {
-            "rule_id": "r2",
-            "definition": {
-                "bindings": {"601088": {**binding(), "version": "research-2"}}
-            },
-        },
-    ]
-    store.status.return_value = {
-        "accounts": [
-            {
-                "positions": [
-                    {"instrument": "601088", "quantity": 100},
-                    {"instrument": "00700", "quantity": 100},
-                    {"instrument": "AAPL", "quantity": 0},
-                ],
-                "rules": definitions,
-                "exceptions": ["00700"],
-            }
-        ]
-    }
-    monitor = runtime(store=store)
-    monitor.observation_provider.side_effect = lambda position, bound, now: {
-        "research": bound
-    }
-    monitor.check_market(instant())
-    monitor.check_market(instant() + timedelta(seconds=20))
-    assert monitor.engine.evaluate.call_count == 2
-    owner, account, observations, _now = monitor.engine.evaluate.call_args_list[0].args
-    assert (owner, account) == ("u1", "a")
-    assert (
-        observations["__rules__"]["r1"]["601088"]["research"]["version"] == "research-1"
-    )
-    assert (
-        observations["__rules__"]["r2"]["601088"]["research"]["version"] == "research-2"
-    )
-    assert "00700" not in observations["__rules__"]["r1"]
-    assert monitor.observation_provider.call_count == 4
-
-
-@pytest.mark.parametrize(
-    "response, expected",
-    [
-        ({"outcome": "sent"}, "sent"),
-        ({"outcome": "failed", "error": "rejected"}, "failed"),
-        ({"outcome": "unknown"}, "unknown"),
-        ((False, "Timeout"), "unknown"),
-        ((True, "ok"), "unknown"),
-        (None, "unknown"),
-    ],
-)
-def test_delivery_requires_explicit_result_and_persists_before_http(response, expected):
-    monitor = runtime(send=Mock(return_value=response))
-    item = {"id": "d1", "token": "lease", "route": "chat1", "text": "due"}
-    monitor.engine.claim_delivery.return_value = item
-    monitor.engine.mark_submitted.return_value = True
-    order = []
-    monitor.engine.mark_submitted.side_effect = lambda *_, **__: (
-        order.append("submitted") or True
-    )
-    monitor.send_callback.side_effect = lambda *_: order.append("http") or response
-    monitor.tick(instant(), check_market=False)
-    assert order == ["submitted", "http"]
-    assert monitor.engine.finish_delivery.call_args.args == ("d1", "lease", expected)
-    monitor.send_callback.assert_called_once_with("chat1", "due")
-
-
-def test_cancel_after_claim_prevents_submission_and_network():
-    monitor = runtime()
-    monitor.engine.claim_delivery.return_value = {"id": "d", "token": "t"}
-    monitor.engine.mark_submitted.return_value = False
-    monitor.tick(instant(), check_market=False)
-    monitor.send_callback.assert_not_called()
-    monitor.engine.finish_delivery.assert_not_called()
-
-
-def test_exception_after_submission_is_unknown_not_retryable_failure():
-    monitor = runtime(send=Mock(side_effect=TimeoutError("timeout")))
-    monitor.engine.claim_delivery.return_value = {
-        "id": "d",
-        "token": "t",
-        "route": "c",
-        "text": "t",
-    }
-    monitor.engine.mark_submitted.return_value = True
-    monitor.tick(instant(), check_market=False)
-    assert monitor.engine.finish_delivery.call_args.args[-1] == "unknown"
-
-
-def test_naive_datetime_is_rejected_before_any_mutation():
-    monitor = runtime()
-    with pytest.raises(ValueError):
-        monitor.tick(datetime(2026, 10, 21, 14, 30))  # noqa: DTZ001 -- reject naive caller input
-    monitor.engine.enqueue_due.assert_not_called()
-
-
 def test_historical_screenshot_uses_that_sessions_raw_close_not_todays_quote():
     fetch = Mock(
         side_effect=AssertionError("current quote must not verify an old image")
@@ -372,64 +220,6 @@ def test_raw_history_qq_boundary_requests_unadjusted_day(monkeypatch):
     )
 
 
-def test_actual_engine_runtime_thresholds_restart_and_due_catchup(tmp_path):
-    from src.personal_monitor import MonitorStore
-
-    store = MonitorStore(tmp_path / "monitor.sqlite3")
-    store.register_route("u", "chat")
-    store.ensure_account("u", "actual")
-    store.import_snapshot(
-        "u",
-        "actual",
-        [{"instrument": "601088", "quantity": 100, "currency": "CNY"}],
-        instant(),
-        0,
-        source="manual",
-    )
-    store.set_rule(
-        "u",
-        "actual",
-        "return",
-        {
-            "metric": "expected_return",
-            "route": "chat",
-            "bindings": {"601088": binding()},
-            "tiers": [
-                {"id": "first", "operator": "lt", "value": 0.055},
-                {"id": "second", "operator": "lt", "value": 0.05},
-            ],
-        },
-    )
-    quotes = SourcedObservationProvider(
-        {}, quote_fetcher=lambda _: {"time": "20261021143000", "close": 200}
-    )
-    delivered = []
-    send = lambda route, text: delivered.append((route, text)) or {"outcome": "sent"}
-    config = {"scheduler": {"run_time": "14:30", "daily_enabled": False}}
-    monitor = PersonalMonitorRuntime(store, config, send, observation_provider=quotes)
-    monitor.tick(instant())
-    assert len(delivered) == 1
-    assert "first" in delivered[0][1] and "second" in delivered[0][1]
-    restored = PersonalMonitorRuntime(
-        MonitorStore(store.path), config, send, observation_provider=quotes
-    )
-    restored.tick(instant() + timedelta(seconds=1))
-    assert len(delivered) == 1
-    store.create_reminder(
-        "u",
-        "repo",
-        instant() + timedelta(days=1),
-        "资金预计到期，决定是否滚存",
-        "chat",
-        now=instant(),
-    )
-    restored.tick(instant() + timedelta(days=3, hours=1), check_market=False)
-    restored.tick(instant() + timedelta(days=3, hours=1, seconds=1), check_market=False)
-    assert len(delivered) == 2
-    assert "原定时间" in delivered[-1][1]
-    assert store.status("u")["reminders"][0]["state"] == "completed"
-
-
 def test_closed_market_requires_closing_observation_not_an_old_intraday_tick():
     provider = SourcedObservationProvider(
         {},
@@ -443,166 +233,6 @@ def test_closed_market_requires_closing_observation_not_an_old_intraday_tick():
     )
     assert not result["ready"]
     assert "closing observation" in result["reason"]
-
-
-def test_actual_engine_does_not_retry_uncertain_http_delivery(tmp_path):
-    from src.personal_monitor import MonitorStore
-
-    store = MonitorStore(tmp_path / "unknown.sqlite3")
-    store.register_route("u", "chat")
-    store.create_reminder(
-        "u", "repo", instant(), "到期", "chat", now=instant() - timedelta(days=1)
-    )
-    send = Mock(side_effect=TimeoutError("response lost after HTTP submission"))
-    monitor = PersonalMonitorRuntime(store, {}, send, observation_provider=Mock())
-    monitor.tick(instant(), check_market=False)
-    monitor.tick(instant() + timedelta(seconds=1), check_market=False)
-    restored = PersonalMonitorRuntime(
-        MonitorStore(store.path), {}, send, observation_provider=Mock()
-    )
-    restored.tick(instant() + timedelta(hours=1), check_market=False)
-    send.assert_called_once()
-    assert store.status("u")["reminders"][0]["state"] == "unknown"
-
-
-def test_background_deadline_runs_while_market_provider_is_blocked(tmp_path):
-    import threading
-
-    from src.personal_monitor import MonitorStore
-
-    now = datetime.now(timezone.utc)
-    store = MonitorStore(tmp_path / "independent.sqlite3")
-    store.register_route("u", "chat")
-    store.ensure_account("u", "a")
-    store.import_snapshot(
-        "u", "a", [{"instrument": "601088", "quantity": 100}], now, 0, source="manual"
-    )
-    store.set_rule(
-        "u",
-        "a",
-        "return",
-        {
-            "route": "chat",
-            "metric": "expected_return",
-            "bindings": {"601088": binding()},
-            "tiers": [{"id": "first", "operator": "lt", "value": 0.055}],
-        },
-    )
-    store.create_reminder(
-        "u", "repo", now + timedelta(seconds=0.3), "到期", "chat", now=now
-    )
-    entered, release, delivered = (
-        threading.Event(),
-        threading.Event(),
-        threading.Event(),
-    )
-
-    def blocked(*_):
-        entered.set()
-        release.wait(5)
-        return {"ready": False}
-
-    monitor = PersonalMonitorRuntime(
-        store,
-        {
-            "scheduler": {
-                "run_time": now.astimezone(
-                    __import__("pytz").timezone("Asia/Shanghai")
-                ).strftime("%H:%M"),
-            }
-        },
-        lambda *_: delivered.set() or {"outcome": "sent"},
-        observation_provider=blocked,
-        poll_seconds=0.1,
-        config_provider=lambda: {
-            "scheduler": {
-                "run_time": datetime.now(timezone.utc)
-                .astimezone(__import__("pytz").timezone("Asia/Shanghai"))
-                .strftime("%H:%M")
-            }
-        },
-    )
-    try:
-        monitor.start()
-        assert entered.wait(3), "market work did not start"
-        assert delivered.wait(3), "deadline was blocked behind market work"
-        assert not release.is_set()
-    finally:
-        release.set()
-        monitor.stop()
-
-
-def test_generic_price_rule_works_without_research_but_return_rule_does_not(tmp_path):
-    from src.personal_monitor import MonitorEngine, MonitorStore
-
-    store = MonitorStore(tmp_path / "generic.sqlite3")
-    store.register_route("u", "chat")
-    store.ensure_account("u", "a")
-    store.import_snapshot(
-        "u",
-        "a",
-        [{"instrument": "601088", "quantity": 100}],
-        instant(),
-        0,
-        source="manual",
-    )
-    for rule_id, metric, threshold in (
-        ("price", "price", 200),
-        ("return", "expected_return", 0.055),
-    ):
-        store.set_rule(
-            "u",
-            "a",
-            rule_id,
-            {
-                "route": "chat",
-                "metric": metric,
-                "tiers": [{"id": "a", "operator": "lt", "value": threshold}],
-            },
-        )
-    provider = SourcedObservationProvider(
-        {}, quote_fetcher=lambda _: {"time": "20261021143000", "close": 100}
-    )
-    observation = provider({"instrument": "601088"}, {}, instant())
-    assert observation["metrics"] == {"price": 100}
-    result = MonitorEngine(store).evaluate("u", "a", {"601088": observation}, instant())
-    assert result["checked"] == 1
-    assert len(result["enqueued"]) == 1
-    assert result["not_ready"][0]["rule_id"] == "return"
-
-
-def test_us_completed_close_valid_across_beijing_midnight(tmp_path):
-    from src.personal_monitor import MonitorEngine, MonitorStore
-
-    now = instant("2026-10-21T09:50:00+08:00")
-    store = MonitorStore(tmp_path / "us.sqlite3")
-    store.register_route("u", "chat")
-    store.ensure_account("u", "a")
-    store.import_snapshot(
-        "u", "a", [{"instrument": "AAPL", "quantity": 3}], now, 0, source="manual"
-    )
-    research = {**binding(), "currency": "USD"}
-    store.set_rule(
-        "u",
-        "a",
-        "r",
-        {
-            "route": "chat",
-            "metric": "expected_return",
-            "bindings": {"AAPL": research},
-            "tiers": [{"id": "a", "operator": "lt", "value": 0.055}],
-        },
-    )
-    provider = SourcedObservationProvider(
-        {}, quote_fetcher=lambda _: {"time": "2026-10-20 16:00:00", "close": 100}
-    )
-    observation = provider({"instrument": "AAPL"}, research, now)
-    assert observation["ready"]
-    assert observation["quote"]["latest_completed_session"] == "2026-10-20"
-    assert observation["quote"]["market_timezone"] == "America/New_York"
-    result = MonitorEngine(store).evaluate("u", "a", {"AAPL": observation}, now)
-    assert not result["not_ready"]
-    assert len(result["enqueued"]) == 1
 
 
 def test_closed_quote_expires_at_real_next_exchange_opening():
@@ -629,3 +259,16 @@ def test_unsupported_exchange_or_share_currency_is_explicitly_not_ready(code):
     assert result["ready"] is False
     assert "unsupported" in result["reason"]
     provider.quote_fetcher.assert_not_called()
+
+
+def test_personal_notification_runtime_and_engine_are_retired():
+    import importlib.util
+
+    import src.personal_monitor as personal
+    import src.personal_monitor.tasks as clocks
+    import src.personal_monitor_runtime as quotes
+
+    assert not hasattr(personal, "MonitorEngine")
+    assert not hasattr(quotes, "PersonalMonitorRuntime")
+    assert not hasattr(clocks, "PersonalMonitorTasks")
+    assert importlib.util.find_spec("src.personal_monitor.engine") is None

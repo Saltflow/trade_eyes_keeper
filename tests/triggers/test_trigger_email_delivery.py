@@ -15,10 +15,8 @@ from src.core.report_execution import build_report_payload, runtime_path
 from src.notification.email_notifier import EmailNotifier
 from src.notification.manager import NotifierManager
 from src.triggers import TriggerEvaluator, TriggerStore
-from src.triggers.email_delivery import (
-    TriggerEmailNotifier,
-    trigger_email_route_allowed,
-)
+from src.triggers.email_delivery import TriggerEmailNotifier
+from src.triggers.telegram_delivery import TriggerTelegramNotifier
 
 NOW = datetime(2026, 11, 1, 2, 0, tzinfo=timezone.utc)
 
@@ -29,7 +27,17 @@ def no_network(monkeypatch):
     monkeypatch.setattr(requests, "post", blocked)
     monkeypatch.setattr(smtplib, "SMTP", blocked)
     monkeypatch.setattr(smtplib, "SMTP_SSL", blocked)
-    for name in ("EMAIL_SENDER", "EMAIL_PASSWORD", "EMAIL_RECEIVER"):
+    for name in (
+        "EMAIL_SENDER",
+        "EMAIL_PASSWORD",
+        "EMAIL_RECEIVER",
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_CHAT_ID",
+        "SKIP_NOTIFICATIONS",
+        "SKIP_EMAIL",
+        "SKIP_FEISHU",
+        "SKIP_TELEGRAM",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -51,7 +59,11 @@ def route(tmp_path, monkeypatch, request):
                 "trigger_report_routes": [{"owner": "alice", "chat_id": "chat-a"}],
             },
             "feishu": {"enabled": True, "webhook_url": "https://broadcast.invalid"},
-            "telegram": {"enabled": True},
+            "telegram": {
+                "enabled": True,
+                "bot_token": "synthetic-telegram-token",
+                "chat_id": "configured-telegram-chat",
+            },
         },
         "interactive": {
             "feishu": {
@@ -143,22 +155,23 @@ def route(tmp_path, monkeypatch, request):
         [{"owner": "alice", "chat_id": "chat-a", "receiver": "other@example.invalid"}],
     ],
 )
-def test_only_exact_trusted_owner_chat_pair_can_enable_mail(route, routes):
+def test_retired_route_setting_cannot_suppress_configured_mail(route, routes):
     config = deepcopy(route.routed)
     config["notification"]["email"]["trigger_report_routes"] = routes
-    assert not trigger_email_route_allowed(config)
     manager = NotifierManager(config)
-    assert manager.email is None and manager.telegram is None
+    assert isinstance(manager.email, TriggerEmailNotifier)
+    assert isinstance(manager.telegram, TriggerTelegramNotifier)
+    assert manager.email._delivery_guard() is None
     assert manager.feishu is not None
     route.factory.assert_not_called()
 
 
 @pytest.mark.parametrize("route", ["brief", "daily"], indirect=True)
-def test_authorized_manager_keeps_personal_chat_and_configured_email_only(route):
+def test_authorized_manager_uses_all_configured_channels(route):
     manager = NotifierManager(route.routed)
     assert isinstance(manager.email, TriggerEmailNotifier)
     assert manager.feishu.binding["chat_id"] == "chat-a"
-    assert manager.telegram is None
+    assert isinstance(manager.telegram, TriggerTelegramNotifier)
     assert manager.email.receiver_email == "configured@example.invalid"
     assert manager.email._delivery_guard() is None
 
@@ -223,7 +236,7 @@ def test_revocation_during_preparation_prevents_smtp_connection(route, monkeypat
 
 
 @pytest.mark.parametrize(
-    "change", ["delete", "route", "allowlist", "recipient", "smtp", "disabled"]
+    "change", ["delete", "allowlist", "recipient", "smtp", "disabled"]
 )
 def test_changes_during_smtp_login_revoke_only_email_before_submission(route, change):
     notifier = TriggerEmailNotifier(route.routed)
@@ -231,8 +244,6 @@ def test_changes_during_smtp_login_revoke_only_email_before_submission(route, ch
     def revoke(*_):
         if change == "delete":
             route.store.remove("alice", [1])
-        elif change == "route":
-            route.config["notification"]["email"]["trigger_report_routes"] = []
         elif change == "allowlist":
             route.config["interactive"]["feishu"]["allowed_chat_ids"] = ["chat-b"]
         elif change == "recipient":
@@ -298,6 +309,9 @@ def test_channel_results_remain_independent_and_never_repeat_smtp(
     manager.feishu.send_daily_report_from_session = Mock(
         return_value={"status": "sent"}
     )
+    manager.telegram.send_daily_report_from_session = Mock(
+        return_value={"status": "sent"}
+    )
     receipt = manager.send_daily_report_from_session(object())
     assert receipt["status"] == "partial"
     assert receipt["deliveries"]["email"]["status"] == outcome
@@ -319,7 +333,6 @@ def test_default_trigger_delivery_inherits_configured_email(route, monkeypatch):
     for config in (route.config, route.routed):
         config["notification"]["email"].pop("trigger_report_routes")
     route.write()
-    assert trigger_email_route_allowed(route.routed)
     manager = NotifierManager(route.routed)
     assert isinstance(manager.email, TriggerEmailNotifier)
     assert manager.email._delivery_guard() is None
@@ -330,6 +343,8 @@ def test_default_trigger_delivery_inherits_configured_email(route, monkeypatch):
     }[kind]
     chat = Mock(return_value={"status": "sent"})
     monkeypatch.setattr(manager.feishu, method, chat)
+    telegram = Mock(return_value={"status": "sent"})
+    monkeypatch.setattr(manager.telegram, method, telegram)
     monkeypatch.setattr(
         manager.email,
         method,
@@ -344,9 +359,11 @@ def test_default_trigger_delivery_inherits_configured_email(route, monkeypatch):
     assert {name: item["status"] for name, item in receipt["deliveries"].items()} == {
         "email": "sent",
         "feishu": "sent",
+        "telegram": "sent",
     }
-    assert manager.telegram is None
+    assert isinstance(manager.telegram, TriggerTelegramNotifier)
     chat.assert_called_once()
+    telegram.assert_called_once()
     route.server.send_message.assert_called_once()
     message = route.server.send_message.call_args.args[0]
     assert message["To"] == "configured@example.invalid"
@@ -365,7 +382,157 @@ def test_default_email_still_rejects_forged_trigger_binding(route):
 
 
 @pytest.mark.parametrize("route", ["brief", "daily"], indirect=True)
-def test_explicit_empty_routes_keep_email_off(route):
+def test_explicit_empty_legacy_routes_cannot_disable_email(route):
     route.routed["notification"]["email"]["trigger_report_routes"] = []
-    assert NotifierManager(route.routed).email is None
+    assert isinstance(NotifierManager(route.routed).email, TriggerEmailNotifier)
     route.factory.assert_not_called()
+
+
+@pytest.mark.parametrize("route", ["daily", "brief"], indirect=True)
+def test_committed_report_dispatches_smtp_feishu_and_telegram(route, monkeypatch):
+    """Real SQLite binding and all transport adapters; only rendering/I/O mocked."""
+    from src.notification.feishu_notifier import _build_interactive_card
+
+    manager = NotifierManager(route.routed)
+    method = (
+        "send_brief_report"
+        if route.routed["_trigger_context"]["kind"] == "brief"
+        else "send_daily_report_from_session"
+    )
+    monkeypatch.setattr(
+        manager.email,
+        method,
+        lambda *args: manager.email._send_email("synthetic report", "body"),
+    )
+    monkeypatch.setattr(
+        manager.feishu,
+        method,
+        lambda *args: manager.feishu._send_card(
+            {"card": _build_interactive_card("synthetic report", "body")},
+            classified=True,
+        ),
+    )
+    monkeypatch.setattr(
+        manager.telegram,
+        method,
+        lambda *args: manager.telegram._send(
+            "synthetic report", "body", classified=True
+        ),
+    )
+
+    def http(url, **kwargs):
+        if "tenant_access_token" in url:
+            body = {"code": 0, "tenant_access_token": "synthetic-access-token"}
+        elif "open.feishu.cn" in url:
+            assert kwargs["json"]["receive_id"] == "chat-a"
+            body = {"code": 0, "data": {"message_id": "synthetic-feishu-id"}}
+        else:
+            assert url.endswith("/botsynthetic-telegram-token/sendMessage")
+            assert kwargs["data"]["chat_id"] == "configured-telegram-chat"
+            assert "&lt;script&gt;" in kwargs["data"]["text"]
+            body = {"ok": True, "result": {"message_id": 123}}
+        return SimpleNamespace(status_code=200, json=lambda: body)
+
+    post = Mock(side_effect=http)
+    monkeypatch.setattr(requests, "post", post)
+    args = (object(), {}) if method == "send_brief_report" else (object(),)
+    receipt = getattr(manager, method)(*args)
+    assert receipt["status"] == "succeeded"
+    assert {key: value["status"] for key, value in receipt["deliveries"].items()} == {
+        "email": "sent",
+        "feishu": "sent",
+        "telegram": "sent",
+    }
+    route.server.send_message.assert_called_once()
+    assert post.call_count == 3  # Feishu token, Feishu card, Telegram message.
+
+
+@pytest.mark.parametrize("channel", ["email", "feishu", "telegram"])
+def test_trigger_channels_follow_the_same_enabled_switch(route, channel):
+    route.routed["notification"][channel]["enabled"] = False
+    manager = NotifierManager(route.routed)
+    assert getattr(manager, channel) is None
+    assert all(
+        getattr(manager, other) is not None
+        for other in {"email", "feishu", "telegram"} - {channel}
+    )
+
+
+@pytest.mark.parametrize("channel", ["email", "feishu", "telegram"])
+def test_channel_disabled_after_dispatch_creation_has_visible_receipt(route, channel):
+    manager = NotifierManager(route.routed)
+    route.config["notification"][channel]["enabled"] = False
+    route.write()
+    for other in {"email", "feishu", "telegram"} - {channel}:
+        getattr(manager, other).send_daily_report_from_session = Mock(
+            return_value={"status": "sent"}
+        )
+    adapter = getattr(manager, channel)
+    guard = adapter._guard if channel == "feishu" else adapter._delivery_guard
+    adapter.send_daily_report_from_session = lambda session: guard()
+    receipt = manager.send_daily_report_from_session(object())
+    assert receipt["status"] == "partial"
+    assert receipt["deliveries"][channel]["status"] == "skipped"
+
+
+@pytest.mark.parametrize(
+    "change", ["delete", "allowlist", "chat_id", "bot_token", "disabled", "forged"]
+)
+def test_telegram_revalidates_binding_and_trusted_destination(
+    route, monkeypatch, change
+):
+    notifier = TriggerTelegramNotifier(route.routed)
+    if change == "delete":
+        route.store.remove("alice", [1])
+    elif change == "allowlist":
+        route.config["interactive"]["feishu"]["allowed_chat_ids"] = ["chat-b"]
+    elif change == "disabled":
+        route.config["notification"]["telegram"]["enabled"] = False
+    elif change == "forged":
+        notifier.binding["owner"] = "forged-owner"
+    else:
+        route.config["notification"]["telegram"][change] = "replacement"
+    route.write()
+    post = Mock(side_effect=AssertionError("transport must not start"))
+    monkeypatch.setattr(requests, "post", post)
+    session = Mock()
+    receipt = notifier.send_daily_report_from_session(session)
+    assert receipt["status"] in {"failed", "skipped"}
+    session.get_all_dataframe.assert_not_called()
+    post.assert_not_called()
+
+
+def test_telegram_rechecks_revocation_between_http_fragments(route, monkeypatch):
+    notifier = TriggerTelegramNotifier(route.routed)
+
+    def first_fragment(*args, **kwargs):
+        route.store.remove("alice", [1])
+        return SimpleNamespace(status_code=200, json=lambda: {"ok": True})
+
+    post = Mock(side_effect=first_fragment)
+    monkeypatch.setattr(requests, "post", post)
+    receipt = notifier._send("synthetic report", "a\n" * 5000, classified=True)
+    assert receipt["status"] == "partial"
+    assert receipt["pieces"][1]["reason"] == "trigger_revoked"
+    assert receipt["pieces"][1]["attempted"] is False
+    post.assert_called_once()
+
+
+def test_enabled_missing_telegram_configuration_cannot_be_omitted(route, monkeypatch):
+    for config in (route.config, route.routed):
+        config["notification"]["telegram"].pop("bot_token")
+    route.write()
+    manager = NotifierManager(route.routed)
+    manager.email.send_daily_report_from_session = Mock(return_value={"status": "sent"})
+    manager.feishu.send_daily_report_from_session = Mock(
+        return_value={"status": "sent"}
+    )
+    monkeypatch.setattr(
+        manager.telegram,
+        "send_daily_report_from_session",
+        lambda *args: manager.telegram._send("synthetic", "body", classified=True),
+    )
+    receipt = manager.send_daily_report_from_session(object())
+    assert receipt["status"] == "partial"
+    assert receipt["deliveries"]["telegram"]["status"] == "failed"
+    assert receipt["deliveries"]["telegram"]["reason"] == "configuration_missing"

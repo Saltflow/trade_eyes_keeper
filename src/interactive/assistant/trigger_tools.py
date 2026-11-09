@@ -57,15 +57,16 @@ _PUBLIC_FAILURE_REASONS = {
     "smtp_pre_submit_failed",
     "email_preparation_failed",
     "email_channel_disabled",
-    "trigger_email_unauthorized",
     "trigger_email_profile_changed",
+    "trigger_telegram_profile_changed",
     "trigger_profile_changed",
     "trigger_chat_unauthorized",
 }
 
 TRIGGER_PROMPT = """
 持久触发器使用trigger_manage；明确创建、暂停、恢复、删除直接执行，不要求多轮确认。
-personal_monitor保留持仓及既有账户规则；投资条件和到期事件使用trigger_manage触发已有报告链路。
+personal_monitor仅保留持仓事实及历史记录；所有提醒、投资条件和到期事件只使用trigger_manage触发已有报告链路。
+触发通知只有这一种设计：完整报告按notification配置向全部启用渠道投递，不能创建仅会话消息的提醒，也不能让用户二选一。
 报表类型只有daily、brief、optimize三种；daily/brief生效，optimize仅预留且禁止创建执行任务。
 未明确报告类型的资金到期、条件或定时事件默认daily，明确要求简报时用brief；不得创建独立提醒动作。
 先用catalog查询真实字段。条件支持递归all/any及field/op/value/max_age_seconds，禁止代码表达式。

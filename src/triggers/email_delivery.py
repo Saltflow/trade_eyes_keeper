@@ -28,43 +28,6 @@ _PROFILE_DEFAULTS = {
 }
 
 
-def trigger_email_route_allowed(config: dict) -> bool:
-    """Inherit configured email unless trusted routes explicitly restrict it."""
-    binding = config.get("_trigger_context")
-    notification = config.get("notification") or {}
-    settings = notification.get("email", {}) if isinstance(notification, dict) else None
-    if (
-        not isinstance(binding, dict)
-        or binding.get("kind") not in ("brief", "daily")
-        or any(
-            not isinstance(binding.get(key), str) or not binding[key].strip()
-            for key in ("owner", "chat_id")
-        )
-        or not isinstance(settings, dict)
-    ):
-        return False
-    if "trigger_report_routes" not in settings:
-        return True
-    routes = settings["trigger_report_routes"]
-    if not isinstance(routes, list) or not routes:
-        return False
-    for route in routes:
-        if (
-            not isinstance(route, dict)
-            or set(route) != {"owner", "chat_id"}
-            or any(
-                not isinstance(value, str) or not value.strip() or "*" in value
-                for value in route.values()
-            )
-        ):
-            return False
-    return any(
-        route["owner"] == binding.get("owner")
-        and route["chat_id"] == binding.get("chat_id")
-        for route in routes
-    )
-
-
 def _profile(config):
     settings = config.get("email") or {}
     if not isinstance(settings, dict):
@@ -142,11 +105,6 @@ class TriggerEmailNotifier(EmailNotifier):
             current = ConfigStore(Path(self.binding["config_path"])).load_runtime()
             if runtime_path(current).resolve() != runtime_path(self.config).resolve():
                 return {"status": "failed", "reason": "trigger_profile_changed"}
-            routed = {**current, "_trigger_context": self.binding}
-            if not trigger_email_route_allowed(
-                self.config
-            ) or not trigger_email_route_allowed(routed):
-                return {"status": "skipped", "reason": "trigger_email_unauthorized"}
             if not channel_enabled(current, "email"):
                 return {"status": "skipped", "reason": "email_channel_disabled"}
             access = BotAccess(current, "feishu", allow_wildcard=True)

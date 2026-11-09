@@ -83,30 +83,16 @@ def main():
         host_module = load_source(
             "src.core._benchmark_host", before / "src/core/runtime_service.py"
         )
-        personal_module = load_source(
-            "src._benchmark_personal", before / "src/personal_monitor_runtime.py"
-        )
     else:
         import src.core.runtime_service as host_module
-        import src.personal_monitor_runtime as personal_module
 
-    store = CountingStore(folder / "personal.sqlite3")
+    CountingStore(folder / "personal.sqlite3")
     host = host_module.RuntimeService(config)
-
-    def forbidden_send(*_args):
-        raise AssertionError("benchmark outbound is forbidden")
-
-    kwargs = {}
-    if args.mode == "candidate":
-        kwargs["execution_runtime"] = host.execution_runtime
-    personal = personal_module.PersonalMonitorRuntime(
-        store, config, forbidden_send, observation_provider=forbidden_send, **kwargs
-    )
     errors = []
 
     def run_host():
         try:
-            host.run(on_started=personal.start)
+            host.run()
         except Exception as exc:  # noqa: BLE001 - surface any host failure in the benchmark result
             errors.append(type(exc).__name__)
 
@@ -168,7 +154,7 @@ def main():
             )
             result = {
                 "mode": args.mode,
-                "profile": "offline-empty-registered-host-and-personal",
+                "profile": "offline-empty-registered-host",
                 "outbound": False,
                 "rounds": measurements,
                 "errors": errors,
@@ -187,7 +173,6 @@ def main():
             )
             print(json.dumps(measurements[-1]), flush=True)
     finally:
-        personal.stop()
         host.stop()
         worker.join(timeout=30)
         if worker.is_alive():

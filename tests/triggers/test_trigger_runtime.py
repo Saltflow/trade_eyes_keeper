@@ -128,25 +128,22 @@ def test_report_actions_reuse_report_lane_full_pool_and_private_route(
     assert all(a["state"] == "completed" for a in trigger.store.actions("alice"))
 
 
-def test_current_chat_notifier_never_constructs_broadcast_channels(
-    profile, monkeypatch
-):
-    from src.notification import email_notifier, feishu_notifier
+def test_trigger_notifiers_use_guarded_configured_channels(profile):
+    from src.triggers.email_delivery import TriggerEmailNotifier
+    from src.triggers.telegram_delivery import TriggerTelegramNotifier
 
-    monkeypatch.setattr(
-        email_notifier,
-        "EmailNotifier",
-        Mock(side_effect=AssertionError("broadcast email")),
-    )
-    monkeypatch.setattr(
-        feishu_notifier,
-        "FeishuNotifier",
-        Mock(side_effect=AssertionError("broadcast webhook")),
-    )
+    profile["notification"]["telegram"] = {"enabled": True}
     routed = {**profile, "_trigger_context": {"chat_id": "chat-a"}}
     notifier = NotifierManager(routed)
-    assert notifier.email is None and notifier.telegram is None
+    assert isinstance(notifier.email, TriggerEmailNotifier)
+    assert isinstance(notifier.telegram, TriggerTelegramNotifier)
     assert isinstance(notifier.feishu, TriggerChatNotifier)
+    for guard in (
+        notifier.email._delivery_guard,
+        notifier.telegram._delivery_guard,
+        notifier.feishu._guard,
+    ):
+        assert guard() == {"status": "failed", "reason": "trigger_binding_invalid"}
 
 
 def test_forged_route_cannot_borrow_someone_elses_action(profile):

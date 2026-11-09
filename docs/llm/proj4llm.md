@@ -5107,3 +5107,7 @@ User-authorized batch: `data/fundamental_data/terra61_high_batch100_20261102/man
 - 用户要求清理后：删除`realtime_mode`报价拼接、`active_brief_codes`筛选、`build_brief_entries`三天过滤、`get_brief_dataframe`新旧分流包装，以及旧日线日期指纹。历史获取与报告报价职责分开，通知直接读取完整Session；防重函数命名为`is_unchanged_report`，避免将相同快照误称为休市。同步删除“前收缺失时补旧日线”的过时展示说明。
 - 清理增量为业务代码净删150行、测试净删308行；有效覆盖迁至统一报价入口，三个迁移测试文件禁止真实HTTP。清理后相关回归608项通过（含validation及25/26池的8个daily/brief入口用例），Ruff及diff检查通过。原验收回执另存为`pre-cleanup-final_acceptance.json`。
 - 清理后的服务器隔离复验复用20:13的26只真实报价原件与原时刻，26只价格和就绪结论不变；两份重新编译PDF的全部10页与清理前视觉验收版本逐像素一致。14个候选源码哈希与本地一致，生产4个参考源码哈希及服务PID不变；未部署、未发送通知，`final_acceptance.json`已更新为本次清理结果。
+
+## 2026-11-09：通知统一到管理触发器
+
+修复01339到期只发飞书：移除个人提醒/条件通知工具与独立运行时，保留持仓及历史记录。所有通知由trigger_manage进入既有完整daily/brief流程，并按notification配置向全部启用渠道投递。删除触发邮件专用route开关，补齐Telegram与逐渠道回执；保留持久绑定和发送前撤销检查。新增请求到报告队列、三渠道适配器及旧入口拒绝验收，详见[事故与验收边界](../development/unified_trigger_notifications_20261109.md)。

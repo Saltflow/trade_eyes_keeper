@@ -23,18 +23,24 @@ class NotifierManager:
             return
         if "_trigger_context" in config:
             from ..triggers.delivery import TriggerChatNotifier
+            from ..triggers.email_delivery import TriggerEmailNotifier
+            from ..triggers.telegram_delivery import TriggerTelegramNotifier
 
-            self.email = None
-            self.telegram = None
-            self.feishu = TriggerChatNotifier(config)
-            if channel_enabled(config, "email"):
-                from ..triggers.email_delivery import (
-                    TriggerEmailNotifier,
-                    trigger_email_route_allowed,
-                )
-
-                if trigger_email_route_allowed(config):
-                    self.email = TriggerEmailNotifier(config)
+            self.email = (
+                TriggerEmailNotifier(config)
+                if channel_enabled(config, "email")
+                else None
+            )
+            self.feishu = (
+                TriggerChatNotifier(config)
+                if channel_enabled(config, "feishu")
+                else None
+            )
+            self.telegram = (
+                TriggerTelegramNotifier(config)
+                if channel_enabled(config, "telegram")
+                else None
+            )
             return
         if channel_enabled(config, "email"):
             from .email_notifier import EmailNotifier

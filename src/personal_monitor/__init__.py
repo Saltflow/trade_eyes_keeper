@@ -1,6 +1,5 @@
-"""Personal holdings and durable user-created reminders, separate from strategies."""
+"""Personal holdings and retained historical notification records."""
 
-from .engine import MonitorEngine
 from .store import (
     MonitorStore,
     RevisionConflict,
@@ -10,7 +9,6 @@ from .store import (
 )
 
 __all__ = [
-    "MonitorEngine",
     "MonitorStore",
     "RevisionConflict",
     "canonical_instrument",

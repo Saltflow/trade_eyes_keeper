@@ -103,9 +103,6 @@ notification:
   email:
     enabled: true
     # 触发日报、简报默认联发到 email.receiver_email，沿用邮件总开关。
-    # 如需限制触发邮件，可显式设置下列路由；省略表示继承，[] 表示关闭触发邮件。
-    # 每项必须精确匹配 owner/chat_id，不接受新收件人或通配符。
-    # trigger_report_routes: [{owner: "认证用户标识", chat_id: "原认证会话标识"}]
   feishu:
     enabled: false
     msg_type: interactive
