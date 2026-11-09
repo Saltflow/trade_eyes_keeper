@@ -18,6 +18,13 @@ RETRIEVAL_TOOLS = frozenset(
     {
         "data_find",
         "data_read",
+        "data_search",
+        "fetch_web_source",
+        "fetch_stock_fundamentals",
+        "report_find",
+        "report_get",
+        "project_capabilities",
+        "project_status",
         "get_dataset_details",
         "query_dataset_documents",
         "fetch_a_share_report",

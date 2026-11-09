@@ -218,26 +218,27 @@ def test_generic_tool_cannot_accidentally_replace_the_whole_watchlist(bot):
         )
 
 
-def test_reports_use_the_injected_shared_executor_after_confirmation(bot):
-    result = bot.call_tool("chat", "owner", "bot_command", {"command": "/brief"})
-    bot.command_executor.execute.assert_not_called()
-
-    def execute(chat, command, *, on_result):
-        assert isinstance(command, BriefCommand)
-        on_result("报告已排队，任务 run-1")
-
-    bot.command_executor.execute.side_effect = execute
+def test_reports_use_real_queue_and_keep_run_id_after_confirmation(bot, monkeypatch):
+    monkeypatch.setattr(bot.execution_runtime, "start_if_unowned", lambda: False)
+    result = bot.call_tool("chat", "owner", "report_request", {"kind": "brief"})
+    assert not bot.execution_runtime.store.list_runs(job_id="reports.brief")
     action_id = result["proposal_ids"][0]
+    assert bot.store.get(action_id, "chat", "owner")["kind"] == "report"
     bot._control("chat", "owner", "确认", action_id)
     item = bot.store.get(action_id, "chat", "owner")
     assert item["status"] == "succeeded"
-    assert "排队" in item["result"]["response"]
-    assert "送达" not in item["result"]["response"]
-    bot.command_executor.execute.assert_called_once()
+    run = bot.execution_runtime.store.get(item["result"]["run_id"])
+    assert run["status"] == "queued"
+    assert run["request_id"] == "proposal:" + action_id
+    assert run["payload"]["kind"] == "brief"
+    bot.command_executor.execute.assert_not_called()
+    with pytest.raises(ValueError):
+        bot._control("chat", "owner", "确认", action_id)
+    assert len(bot.execution_runtime.store.list_runs(job_id="reports.brief")) == 1
 
 
 def test_changed_config_or_cancelled_preview_prevents_dispatch(bot, tools):
-    result = bot.call_tool("chat", "owner", "bot_command", {"command": "/daily"})
+    result = bot.call_tool("chat", "owner", "report_request", {"kind": "daily"})
     ConfigStore(tools.project_root / "config/config.yaml").update(
         lambda c: c.update(extra=True)
     )
@@ -322,3 +323,78 @@ def test_command_executor_keeps_callback_receipt_and_stopped_state():
     executor.stop()
     executor.execute("chat", BriefCommand(), on_result=done)
     assert done.call_args.args[0].startswith("❌")
+
+
+@pytest.mark.parametrize("command", ["/daily", "/brief"])
+def test_old_report_tool_branch_is_retired(bot, command):
+    with pytest.raises(ValueError, match="report_request"):
+        bot.call_tool("chat", "owner", "bot_command", {"command": command})
+    bot.command_executor.execute.assert_not_called()
+
+
+@pytest.mark.parametrize("unreadable", [False, True])
+def test_report_submission_receipt_loss_never_causes_replay(bot, monkeypatch, unreadable):
+    from src.interactive.assistant.report_tools import ReportTools
+
+    monkeypatch.setattr(bot.execution_runtime, "start_if_unowned", lambda: False)
+    action = bot.call_tool("chat", "owner", "report_request", {"kind": "daily"})["proposal_ids"][0]
+    monkeypatch.setattr(ReportTools, "get", Mock(side_effect=OSError("receipt read failed")))
+    if unreadable:
+        monkeypatch.setattr(ReportTools, "for_request", Mock(side_effect=OSError("store unavailable")))
+    bot._control("chat", "owner", "确认", action)
+    item = bot.store.get(action, "chat", "owner")
+    runs = bot.execution_runtime.store.list_runs(job_id="reports.daily")
+    assert len(runs) == 1
+    if unreadable:
+        assert item["status"] == "interrupted"
+        assert item["result"]["submission_status"] == "unknown"
+    else:
+        assert item["status"] == "succeeded"
+        assert item["result"]["run_id"] == runs[0]["id"]
+    with pytest.raises(ValueError):
+        bot._control("chat", "owner", "确认", action)
+    assert len(bot.execution_runtime.store.list_runs(job_id="reports.daily")) == 1
+
+
+def test_restart_query_finds_committed_report_without_replaying_submission(bot, monkeypatch):
+    monkeypatch.setattr(bot.execution_runtime, "start_if_unowned", lambda: False)
+    action = bot.call_tool("chat", "owner", "report_request", {"kind": "daily"})["proposal_ids"][0]
+    bot.store.claim(action, "chat", "owner")
+    bot.store.transition(action, "applying", ("queued",))
+    run = bot._report_tools_for("chat", "owner").submit(kind="daily", force=True, request_id="proposal:" + action)
+    bot.store.recover()
+    assert bot.store.get(action, "chat", "owner")["result"] is None
+    detail = bot.call_tool("chat", "owner", "query_tasks", {"action_id": action})
+    assert detail["status"] == "interrupted"
+    assert detail["execution"]["run_id"] == run["run_id"]
+    assert len(bot.execution_runtime.store.list_runs(job_id="reports.daily")) == 1
+
+
+def test_report_request_completes_real_conversation_without_extra_retrieval(
+    bot, real_pi_bridge
+):
+    from src.interactive.assistant.harness import ConversationHarness
+
+    bot.client.complete.side_effect = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "report-preview",
+                "type": "function",
+                "function": {
+                    "name": "report_request",
+                    "arguments": json.dumps({"kind": "daily"}),
+                },
+            }],
+        },
+        {"role": "assistant", "content": "报告预览已生成，请确认后执行。"},
+    ]
+    bot.harness = ConversationHarness(bot.client, bot.settings, bot.root, bot._stop)
+    bot.handle("chat", "owner", "现在生成完整日报", "natural-report")
+    assert bot.store.recent_turns("chat", "owner")[0]["status"] == "completed"
+    actions = bot.store.recent("chat", "owner")
+    assert len(actions) == 1
+    assert actions[0]["kind"] == "report"
+    assert not bot.execution_runtime.store.list_runs(job_id="reports.daily")
+    assert bot.client.complete.call_count == 2

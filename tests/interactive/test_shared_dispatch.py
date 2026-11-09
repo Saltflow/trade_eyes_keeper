@@ -36,7 +36,7 @@ def event(text, message_id="message-1", chat_id="allowed"):
     return {
         "header": {"event_type": "im.message.receive_v1"},
         "event": {
-            "sender": {"sender_type": "user"},
+            "sender": {"sender_type": "user", "sender_id": {"open_id": "owner"}},
             "message": {
                 "chat_id": chat_id,
                 "message_id": message_id,
@@ -67,10 +67,28 @@ def test_both_transports_dispatch_same_commands(text, handler, args):
     ), patch.object(bot, "_send_message"):
         assert handle_feishu_message(app, event(text)) == "accepted"
         bot._process_update(
-            {"message": {"chat": {"id": "allowed"}, "text": text, "message_id": 1}}
+            {
+                "message": {
+                    "chat": {"id": "allowed"},
+                    "from": {"id": "owner"},
+                    "text": text,
+                    "message_id": 1,
+                }
+            }
         )
     assert call.call_count == 2
     assert all(item.args == args for item in call.call_args_list)
+    if handler in {"handle_daily", "handle_brief"}:
+        assert call.call_args_list[0].kwargs == {
+            "sender": "owner",
+            "chat_id": "allowed",
+            "request_id": "feishu:allowed:message-1",
+        }
+        assert call.call_args_list[1].kwargs == {
+            "sender": "telegram:owner",
+            "chat_id": "allowed",
+            "request_id": "telegram:allowed:1",
+        }
 
 
 @pytest.mark.parametrize(
@@ -124,7 +142,9 @@ def test_feishu_access_state_survives_multiple_events():
         assert handle_feishu_message(app, event("/daily", "one")) == "accepted"
         assert handle_feishu_message(app, event("/daily", "one")) == "duplicate"
         assert handle_feishu_message(app, event("/daily", "two")) == "rate_limited"
-    daily.assert_called_once_with()
+    daily.assert_called_once_with(
+        sender="owner", chat_id="allowed", request_id="feishu:allowed:one"
+    )
 
 
 def test_only_explicit_feishu_wildcard_accepts_other_chats():
@@ -144,7 +164,9 @@ def test_only_explicit_feishu_wildcard_accepts_other_chats():
             handle_feishu_message(app, event("/daily", "two", "other"))
             == "rate_limited"
         )
-    daily.assert_called_once_with()
+    daily.assert_called_once_with(
+        sender="owner", chat_id="other", request_id="feishu:other:one"
+    )
 
     settings["interactive"]["feishu"]["allowed_chat_ids"] = []
     empty_app = FeishuApp(settings)

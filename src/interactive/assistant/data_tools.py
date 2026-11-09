@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 import re
@@ -14,10 +15,13 @@ from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree
 
 import yaml
-from bs4 import BeautifulSoup, Comment
 
 from ...data.dataset_catalog import DatasetCatalog, _code, _url, eligibility_reason
+from ...data.evidence_text import cached_parse as _cached_parse
+from ...data.evidence_text import html_rows as _html_rows
+from ...data.evidence_text import numbered_lines, parsed_projection, physical_text_lines
 from ...data_hub.materials import DataHub
+from ...notification.receipts import public_deliveries
 from ...platform_composition import authority_for
 
 MAX_BYTES = 8 * 1024 * 1024
@@ -84,6 +88,12 @@ def _schema(name, description, properties, required=()):
 
 
 TOOLS = [
+    _schema("data_search", "检索已登记资料正文，不联网或OCR；返回引用位置、游标和未覆盖原因",
+            {"query": {"type": "string", "minLength": 2, "maxLength": 120},
+             **{key: {"type": "string"} for key in
+                ("dataset_id", "file_id", "code", "kind", "date_from", "date_to", "cursor")},
+             "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, ["query"]),
+
     _schema(
         "data_find",
         "发现现有业务数据、报告正文、快照、材料和有权限的个人数据。",
@@ -152,7 +162,8 @@ TOOLS = [
 def _safe(value, authenticated=False):
     if isinstance(value, dict):
         return {
-            str(k): _safe(v, authenticated)
+            str(k): public_deliveries(v)
+            if k == "deliveries" else _safe(v, authenticated)
             for k, v in value.items()
             if not (IDENTITY if authenticated else PRIVATE).search(str(k))
         }
@@ -174,6 +185,14 @@ def _field(row, field):
             return None
         value = value.get(part)
     return value
+
+
+def _private_field(field, blocked):
+    delivery_field = re.fullmatch(
+        r"(?:result\.)?deliveries\.(?:email|feishu|telegram)\.(?:status|reason|http_status|smtp_code|provider_code|code)",
+        field,
+    )
+    return bool(blocked.search(field) and not delivery_field)
 
 
 def _matches(row, filters):
@@ -219,7 +238,7 @@ def paginate_rows(
     if fields is not None and (
         not isinstance(fields, list)
         or len(fields) > 50
-        or any(not isinstance(f, str) or blocked.search(f) for f in fields)
+        or any(not isinstance(f, str) or _private_field(f, blocked) for f in fields)
     ):
         raise ValueError("invalid or private field")
     filters = filters or []
@@ -230,7 +249,7 @@ def paginate_rows(
             not isinstance(f, dict)
             or set(f) != {"field", "op", "value"}
             or not isinstance(f["field"], str)
-            or blocked.search(f["field"])
+            or _private_field(f["field"], blocked)
             or f["op"] not in {"eq", "ne", "lt", "lte", "gt", "gte", "contains"}
         ):
             raise ValueError("invalid filter")
@@ -239,17 +258,20 @@ def paginate_rows(
         or set(aggregate) - {"op", "field"}
         or aggregate.get("op") not in {"count", "sum", "min", "max", "mean"}
         or (aggregate.get("op") != "count" and not aggregate.get("field"))
-        or blocked.search(str(aggregate.get("field", "")))
+        or _private_field(str(aggregate.get("field", "")), blocked)
     ):
         raise ValueError("invalid aggregate")
     if collection is not None:
         if (
             not isinstance(collection, str)
             or not re.fullmatch(r"[\w-]+(?:\.[\w-]+)*", collection)
-            or any(blocked.search(part) for part in collection.split("."))
+            or (
+                any(blocked.search(part) for part in collection.split("."))
+                and not re.fullmatch(r"(?:result\.)?deliveries\.(?:email|feishu|telegram)", collection)
+            )
         ):
             raise ValueError("invalid or private collection")
-        value = _field(value, collection)
+        value = _field(_safe(value, authenticated), collection)
         if value is None:
             raise ValueError("collection is missing; inspect available fields")
         if isinstance(value, dict):
@@ -343,79 +365,6 @@ def paginate_rows(
             "complete": complete,
         }
     return result
-
-
-def _html_rows(text):
-    soup = BeautifulSoup(text, "html.parser")
-    for item in soup.find_all(string=lambda value: isinstance(value, Comment)):
-        item.extract()
-    for item in soup(["script", "style", "head", "img", "iframe", "form"]):
-        item.decompose()
-    # Keep report links in a text-only projection; never fetch external assets.
-    for link in soup.find_all("a", href=True):
-        href = link["href"]
-        if href.startswith(("https://", "http://")) and not re.search(
-            r"(token|secret|password|api_key)=", href, re.IGNORECASE
-        ):
-            link.append(f" ({href})")
-    for row in soup.find_all("tr"):
-        if row.find("tr") is not None:
-            continue
-        cells = row.find_all(["td", "th"], recursive=False)
-        if cells:
-            row.replace_with(
-                " | ".join(cell.get_text(" ", strip=True) for cell in cells)
-            )
-    return (
-        {"text": line.strip()}
-        for line in soup.get_text("\n").splitlines()
-        if line.strip()
-    )
-
-
-def _cached_parse(hub, digest):
-    """Use verified existing SDK parses without loading oversized image JSON."""
-    caches = [hub.parsed]
-    quality_cache = getattr(hub.parsed, "_quality_cache", None)
-    if callable(quality_cache):
-        caches.insert(0, quality_cache())
-    for cache in caches:
-        path = cache._path(digest)
-        if not path.exists():
-            reference = path.with_name("parsed.ref.json")
-            if reference.exists():
-                if reference.stat().st_size > MAX_BYTES:
-                    raise ValueError(
-                        "material parse reference exceeds reader bound; not scanned"
-                    )
-                record = json.loads(reference.read_text(encoding="utf-8"))
-                path = Path(record["path"])
-            else:
-                legacy = cache.root / "legacy_roots.json"
-                if legacy.exists():
-                    if legacy.stat().st_size > MAX_BYTES:
-                        raise ValueError(
-                            "material legacy index exceeds reader bound; not scanned"
-                        )
-                    roots = json.loads(legacy.read_text(encoding="utf-8"))
-                    path = next(
-                        (
-                            candidate
-                            for root in roots
-                            if (
-                                candidate := Path(root) / digest / "parsed.json"
-                            ).is_file()
-                        ),
-                        path,
-                    )
-        if not path.exists():
-            continue
-        if path.stat().st_size > MAX_BYTES:
-            raise ValueError(
-                "existing material parse exceeds bounded reader size; not scanned"
-            )
-        return cache.get(digest)
-    return None
 
 
 def _csv_row(row):
@@ -608,6 +557,21 @@ def read_path(path, *, table=None, **options):
     else:
         rows = _html_rows(text)
     return paginate_rows(rows, **options)
+
+
+def _read_evidence_rows(lines, metadata, gaps, **options):
+    """Paginate the same text coordinates returned by body search."""
+    if options.pop("table", None) is not None:
+        raise ValueError("table does not apply to evidence text")
+    result = paginate_rows(
+        numbered_lines(lines, line_basis=metadata["line_basis"]), **options
+    )
+    result["coverage_gaps"].extend(gaps)
+    if any(reason.startswith(("visual_text_unavailable", "existing_parse_incomplete"))
+           for reason in gaps):
+        result["scan_complete"] = False
+        result["truncated"] = True
+    return {**result, **metadata}
 
 
 class BusinessDataTools:
@@ -924,7 +888,9 @@ class BusinessDataTools:
                 name = Path(value.get("path", "")).name
                 references = aliases.get(digest, [])
                 urls = [url for x in references if (url := _url(x.get("url", "")))]
-                titles = [unquote(Path(urlsplit(url).path).name) for url in urls]
+                titles = [x.get("source_metadata", {}).get("title") for x in references
+                          if x.get("source_metadata", {}).get("title")]
+                titles.extend(unquote(Path(urlsplit(url).path).name) for url in urls)
                 metadata_text = " ".join([name, *urls, *titles])
                 unknown = name in {"original.blob", "original.bin"}
                 if (
@@ -941,7 +907,7 @@ class BusinessDataTools:
                     continue
                 parse_gap = []
                 try:
-                    parsed = _cached_parse(hub, digest)
+                    parsed = _cached_parse(hub, digest, max_bytes=MAX_BYTES)
                 except (OSError, ValueError, KeyError) as exc:
                     parsed = None
                     parse_gap = [str(exc)]
@@ -972,6 +938,14 @@ class BusinessDataTools:
                 complete = False
         return sorted(result, key=lambda item: item["data_id"]), complete
 
+    def search(self, **arguments):
+        if set(arguments) - {"query", "dataset_id", "file_id", "code", "kind", "date_from", "date_to", "cursor", "limit"}:
+            raise ValueError("unknown text search argument")
+        gaps = [] if arguments.get("cursor") else self._refresh_public()
+        result = self.catalog.search_text(**arguments)
+        result["coverage_gaps"] = gaps + result["coverage_gaps"]
+        return _safe(result)
+
     def read(self, data_id, **options):
         if set(options) - {
             "table",
@@ -995,26 +969,38 @@ class BusinessDataTools:
             hub = DataHub(self.authority)
             digest = data_id.removeprefix("material:")
             record = hub.resolve(digest)
-            parsed = _cached_parse(hub, digest)
-            if parsed is None:
-                path = Path(record["path"])
-                if path.suffix.lower() not in READABLE:
-                    raise ValueError(
-                        "material has no existing text parse; query never creates one"
-                    )
-                result = read_path(path, **options)
+            parsed = _cached_parse(hub, digest, max_bytes=MAX_BYTES)
+            if parsed is not None:
+                # Existing material IDs remain readable even without a catalog
+                # registration. Never create a parse from this read path.
+                text, basis, gaps = parsed_projection(parsed, max_chars=MAX_BYTES)
+                result = _read_evidence_rows(
+                    physical_text_lines(text),
+                    {"line_basis": basis,
+                     "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()},
+                    gaps, **options,
+                )
             else:
-
-                def existing_text():
-                    for part in parsed.get("content", []):
-                        if part.get("type") != "text":
-                            continue
-                        if "html" in str(parsed.get("content_type", "")):
-                            yield from _html_rows(part.get("text", ""))
-                        else:
-                            yield {"text": part.get("text", "")}
-
-                result = paginate_rows(existing_text(), **options)
+                # The existing generic pointer supplies MIME for .blob originals;
+                # it is not an authority requirement for cached material parses.
+                reference = f"data/dataset_documents/web/{digest}.material-ref.json"
+                with self.catalog._connect() as db:
+                    indexed = db.execute(
+                        "SELECT * FROM files WHERE relative_path=? AND present=1",
+                        (reference,),
+                    ).fetchone()
+                if indexed is not None:
+                    lines, metadata, gaps = self.catalog._search_text_source(indexed)
+                    if metadata["data_id"] != data_id:
+                        raise ValueError("indexed material identity mismatch")
+                    result = _read_evidence_rows(lines, metadata, gaps, **options)
+                else:
+                    path = Path(record["path"])
+                    if path.suffix.lower() not in READABLE:
+                        raise ValueError(
+                            "material has no existing text parse; query never creates one"
+                        )
+                    result = read_path(path, **options)
             return {
                 **result,
                 "data_id": data_id,
@@ -1025,6 +1011,20 @@ class BusinessDataTools:
                 ).isoformat()
                 if isinstance(record.get("at"), (int, float))
                 else None,
+            }
+        with self.catalog._connect() as db:
+            indexed = db.execute(
+                "SELECT * FROM files WHERE file_id=? AND present=1", (data_id,)
+            ).fetchone()
+        if indexed is not None and (
+            Path(indexed["relative_path"]).suffix.lower() == ".pdf"
+            or indexed["relative_path"].endswith(".material-ref.json")
+        ):
+            lines, metadata, gaps = self.catalog._search_text_source(indexed)
+            return {
+                **_read_evidence_rows(lines, metadata, gaps, **options),
+                "data_id": data_id, "source": indexed["relative_path"],
+                "as_of": indexed["date_end"] or None,
             }
         path, meta = self.catalog.resolve_file(data_id)
         before = path.stat()

@@ -414,3 +414,31 @@ def test_scan_limit_has_no_nonprogressing_next_page(monkeypatch):
         assert result["truncated"] and result["scan_limit_reached"]
         assert result["next_offset"] is None
         assert result["coverage_gaps"]
+
+
+@pytest.mark.parametrize("authenticated", [False, True])
+def test_email_channel_failure_survives_redaction_without_provider_identity(authenticated):
+    value = {"result": {"deliveries": {
+        "email": {"status": "failed", "reason": "smtp_rejected", "smtp_code": 550,
+                  "recipient": "private@example.com", "password": "private-secret",
+                  "detail": "private-user was rejected", "pieces": [{"status": "sent"}]},
+        "feishu": {"status": "sent", "chat_id": "private-chat"},
+    }}, "email": "private@example.com"}
+    row = paginate_rows(value, authenticated=authenticated)["items"][0]
+    assert row["result"]["deliveries"]["email"]["status"] == "failed"
+    assert row["result"]["deliveries"]["email"]["reason"] == "smtp_rejected"
+    assert row["result"]["deliveries"]["email"]["smtp_code"] == 550
+    assert row["result"]["deliveries"]["feishu"]["status"] == "sent"
+    assert "private" not in json.dumps(row)
+    assert "email" not in row
+
+
+def test_safe_email_status_can_be_filtered_without_opening_recipient_projection():
+    value = {"result": {"deliveries": {"email": {"status": "failed", "reason": "smtp_rejected", "recipient": "hidden@example.org", "detail": "private provider response"}}}}
+    result = paginate_rows(value, fields=["result.deliveries.email.status"], filters=[{"field": "result.deliveries.email.status", "op": "eq", "value": "failed"}])
+    assert result["items"] == [{"result.deliveries.email.status": "failed"}]
+    with pytest.raises(ValueError):
+        paginate_rows(value, fields=["result.deliveries.email.recipient"])
+    result = paginate_rows(value, collection="result.deliveries.email")
+    assert "hidden@example" not in str(result)
+    assert "private provider" not in str(result)

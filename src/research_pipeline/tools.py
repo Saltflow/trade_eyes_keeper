@@ -59,7 +59,7 @@ def research_tool_schema() -> list[dict]:
         tool(
             "research_pipeline_tasks",
             "列出当前原会话本人发起的研究，含中断任务；不扫描其他用户资料",
-            {"limit": {"type": "integer", "minimum": 1, "maximum": 20}},
+            {"offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 20}},
             [],
         ),
         tool(
@@ -232,17 +232,22 @@ class ResearchTools:
         if name not in {x["function"]["name"] for x in research_tool_schema()}:
             raise ValueError("research_tool_not_registered")
         if name == "research_pipeline_tasks":
-            if set(arguments) - {"limit"}:
+            if not chat or not sender:
+                raise PermissionError("research_origin_not_authorized")
+            if set(arguments) - {"limit", "offset"}:
                 raise ValueError("unknown_research_task_query_parameter")
             limit = arguments.get("limit", 10)
             if type(limit) is not int or not 1 <= limit <= 20:
                 raise ValueError("invalid_research_task_limit")
+            offset = arguments.get("offset", 0)
+            if type(offset) is not int or offset < 0:
+                raise ValueError("invalid_research_task_offset")
             with self.store.connection() as db:
                 rows = db.execute(
                     "SELECT data FROM research_runs WHERE json_extract(data,'$.spec.origin.channel')='feishu' "
                     "AND json_extract(data,'$.spec.origin.chat')=? AND json_extract(data,'$.spec.origin.sender')=? "
-                    "ORDER BY rowid DESC LIMIT ?",
-                    (chat, sender, limit),
+                    "ORDER BY rowid DESC LIMIT ? OFFSET ?",
+                    (chat, sender, limit + 1, offset),
                 ).fetchall()
             import json
 
@@ -262,8 +267,9 @@ class ResearchTools:
                             "repair_state",
                         }
                     }
-                    for row in rows
+                    for row in rows[:limit]
                 ],
+                "next_offset": offset + limit if len(rows) > limit else None,
                 "origin_scoped": True,
             }
         allowed = (

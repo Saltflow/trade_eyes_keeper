@@ -2,9 +2,42 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 PIECE_STATUSES = frozenset({"sent", "failed", "partial", "unknown", "skipped"})
+
+
+def public_deliveries(value) -> dict:
+    """Keep typed delivery evidence, never raw provider text or recipients."""
+    def receipt(item, depth=0):
+        status = item.get("status")
+        result = {
+            "status": status
+            if status in PIECE_STATUSES | {"not_requested"}
+            else "unknown"
+        }
+        reason = item.get("reason")
+        if isinstance(reason, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", reason):
+            result["reason"] = reason
+        for field in ("http_status", "smtp_code", "provider_code", "code"):
+            if type(item.get(field)) is int:
+                result[field] = item[field]
+        if depth < 3 and isinstance(item.get("pieces"), list):
+            result["pieces"] = [
+                receipt(piece, depth + 1)
+                for piece in item["pieces"][:100]
+                if isinstance(piece, dict)
+            ]
+        return result
+
+    if not isinstance(value, dict):
+        return {}
+    return {
+        channel: receipt(value[channel])
+        for channel in ("email", "feishu", "telegram")
+        if isinstance(value.get(channel), dict)
+    }
 
 
 def normalize_receipt(value) -> dict:

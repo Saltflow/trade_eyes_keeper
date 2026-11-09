@@ -198,7 +198,13 @@ def test_legacy_unknown_dispatch_is_never_replayed_and_other_chat_is_filtered(tm
     denied["event"]["message"]["chat_id"] = "forbidden"
     assert inbox.accept(denied) is None
     inbox.accept(event(text="/config set x 1"))
-    handler = Mock(side_effect=TimeoutError("side effect may exist"))
+    def command_effect(_app, _payload):
+        from src.interactive.ingress import ingress_command_dispatch
+
+        assert ingress_command_dispatch.get()()
+        raise TimeoutError("side effect may exist")
+
+    handler = Mock(side_effect=command_effect)
     with pytest.raises(TimeoutError):
         inbox.dispatch(Mock(), handler)
     inbox.dispatch(Mock(), handler)

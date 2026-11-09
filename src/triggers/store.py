@@ -622,6 +622,22 @@ class TriggerStore:
                 for row in connection.execute(sql + " ORDER BY created_at,id", args)
             ]
 
+    def action_page(self, owner, chat, *, limit=20, offset=0):
+        if not isinstance(chat, str) or not chat.strip():
+            raise ValueError("authenticated chat is required")
+        if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or offset < 0:
+            raise ValueError("invalid action page")
+        with self._connection(None) as db:
+            rows = db.execute(
+                "SELECT id,number,kind,state,run_id,reason,created_at,updated_at "
+                "FROM trigger_actions WHERE owner=? AND json_extract(payload,'$.chat_id')=? "
+                "ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?",
+                (_owner(owner), chat, limit + 1, offset),
+            ).fetchall()
+        return {"items": [dict(row) for row in rows[:limit]],
+                "next_offset": offset + limit if len(rows) > limit else None,
+                "coverage_gaps": []}
+
     def action_allowed(self, action_id, *, db=None):
         with self._connection(db) as connection:
             row = connection.execute(

@@ -37,15 +37,17 @@ class TestRefDateHandler:
             "src.search.artifacts.load_latest_strategy_run",
             lambda *args, **kwargs: None,
         )
-        r = handle_ref_date("2026-07-14")
-        assert "没有可绑定" in r
+        from src.interactive.commands.handlers import prepare_ref_date
+
+        with pytest.raises(ValueError, match="没有可绑定"):
+            prepare_ref_date("2026-07-14")
         assert "2026-07-14" not in handle_ref_date()
 
     def test_bad_date_rejected(self):
-        from src.interactive.commands.handlers import handle_ref_date
+        from src.interactive.commands.handlers import prepare_ref_date
 
-        r = handle_ref_date("abc")
-        assert "格式错误" in r
+        with pytest.raises(ValueError, match="格式错误"):
+            prepare_ref_date("abc")
 
 
 class TestRefDateCommandParser:

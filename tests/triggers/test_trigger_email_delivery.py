@@ -227,7 +227,7 @@ def test_revocation_during_preparation_prevents_smtp_connection(route, monkeypat
 
     def archive(*_):
         route.store.remove("alice", [1])
-        return "controlled.html"
+        return "controlled.html", None
 
     monkeypatch.setattr(notifier, "_save_email_copy", archive)
     receipt = notifier._send_email("controlled", "body")

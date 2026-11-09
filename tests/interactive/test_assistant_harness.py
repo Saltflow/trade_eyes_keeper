@@ -263,3 +263,30 @@ def test_model_520_is_not_retried_and_does_not_repeat_tools(
     assert client.complete.call_count == (2 if after_tool else 1)
     assert invoke.call_count == int(after_tool)
     assert harness._process is None
+
+
+@pytest.mark.parametrize("name,arguments", [
+    ("data_search", {"query": "政策变更"}),
+    ("fetch_web_source", {"url": "https://example.org/report"}),
+    ("fetch_stock_fundamentals", {"code": "01339"}),
+    ("report_get", {"run_id": "known-run"}),
+    ("report_find", {}),
+    ("project_status", {}),
+    ("project_capabilities", {}),
+])
+def test_new_project_tools_satisfy_real_pi_retrieval_boundary(tmp_path, real_pi_bridge, name, arguments):
+    from src.interactive.assistant.service import FeishuAssistant
+
+    definition = object.__new__(FeishuAssistant)
+    definition.capabilities = None
+    schema = next(tool for tool in definition.tool_schema() if tool["function"]["name"] == name)
+    reply = call(name=name)
+    reply["tool_calls"][0]["function"]["arguments"] = json.dumps(arguments)
+    client = Mock()
+    client.complete.side_effect = [reply, {"role": "assistant", "content": "已依据本轮工具证据说明。"}]
+    invoke = Mock(return_value={"source": "fixture", "text": "原始证据", "status": "available"})
+    harness = ConversationHarness(client, AssistantSettings(), tmp_path, threading.Event())
+    answer = harness.run([{ "role": "user", "content": "查清原因并引用依据"}], [schema], invoke, Mock(), lambda value: value, lambda _: [], require_retrieval=True)
+    assert answer == "已依据本轮工具证据说明。"
+    invoke.assert_called_once_with(name, arguments)
+    assert client.complete.call_count == 2

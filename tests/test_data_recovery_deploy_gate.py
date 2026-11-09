@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import ci_cd_deploy as deploy
 
 
@@ -6,10 +8,11 @@ def test_data_recovery_regression_blocks_deployment(monkeypatch):
     calls = []
     required = {
         "tests/test_vanguard_identity_cache.py",
-        "tests/test_optimizer_shared_recovery.py",
+        "tests/test_backtest_recovery.py",
         "tests/test_us_market_history.py",
-        "tests/test_optimizer_data_notifications.py",
     }
+    root = Path(__file__).resolve().parents[1]
+    assert all((root / name).is_file() for name in required)
 
     def pytest_run(*args, **kw):
         calls.append(args)

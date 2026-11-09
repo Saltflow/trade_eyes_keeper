@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pandas as pd
+from bs4 import BeautifulSoup
 
 from src.notification.email_notifier import EmailNotifier
 
@@ -47,13 +48,15 @@ def _report(selection_diagnostics=None):
 
 
 def _stock_data():
-    today = pd.Timestamp.now().strftime("%Y-%m-%d")
+    today = "2026-09-30"
     return pd.DataFrame(
         [
             {
                 "stock_code": "601728",
                 "stock_name": "中国电信<script>",
                 "date": today,
+                "quote_status": "realtime",
+                "quote_as_of": "2026-09-30T14:59:00+08:00",
                 "open": 6.1,
                 "close": 6.2,
                 "ma60": 6.0,
@@ -64,6 +67,8 @@ def _stock_data():
                 "stock_code": "00700",
                 "stock_name": "腾讯控股",
                 "date": today,
+                "quote_status": "delayed",
+                "quote_as_of": "2026-09-30T14:44:00+08:00",
                 "open": 420.0,
                 "close": 419.0,
                 "ma60": 430.0,
@@ -74,6 +79,8 @@ def _stock_data():
                 "stock_code": "VOO",
                 "stock_name": "Vanguard 标普500",
                 "date": today,
+                "quote_status": "last_close",
+                "quote_as_of": "2026-09-29T16:00:00-04:00",
                 "open": 700.0,
                 "close": 701.0,
                 "ma60": 680.0,
@@ -84,9 +91,15 @@ def _stock_data():
                 "stock_code": "000001",
                 "stock_name": "过期数据",
                 "date": "2020-01-01",
+                "quote_status": "unavailable",
+                "quote_as_of": "2020-01-01T15:00:00+08:00",
+                "quote_reason": "历史报价已过期 <script>",
                 "open": 10.0,
                 "close": 10.0,
                 "ma60": 10.0,
+                "pe_ratio": 8.0,
+                "pb_ratio": 1.2,
+                "roe": 15.0,
             },
         ]
     )
@@ -133,7 +146,26 @@ def test_daily_matrix_keeps_all_markets_prioritizes_actions_without_badges(monke
     assert all(code in body for code in ("601728", "00700", "VOO", "000001"))
     assert "行动清单" not in body
     assert "ma60 区间" not in body
-    assert "未就绪" in body
+    soup = BeautifulSoup(body, "html.parser")
+    summary = {
+        cell.select_one(".summary-label").get_text(): cell.select_one(
+            ".summary-value"
+        ).get_text()
+        for cell in soup.select(".summary-cell")
+    }
+    assert {
+        key: summary[key] for key in ("实时报价", "延迟采样", "最近收盘", "行情缺口")
+    } == {key: "1" for key in ("实时报价", "延迟采样", "最近收盘", "行情缺口")}
+    rows = soup.select(".watchlist-table tbody tr")
+    assert len(rows) == 4
+    stale = next(row for row in rows if row.select_one("strong").get_text() == "000001")
+    cells = stale.select("td")
+    assert [cell.get_text() for cell in cells[1:3]] == ["—", "—"]
+    assert cells[3].strong.get_text() == "—"
+    assert cells[3].select_one(".price-change").get_text() == "涨跌未知"
+    assert [cell.get_text() for cell in cells[4:]] == ["8.0", "1.20", "14.5%", "15.00"]
+    assert "缺口" in stale.select_one(".status-badge").get_text()
+    assert "2020-01-01 15:00:00+08:00" in stale.get_text()
     assert "&lt;script&gt;" in body
     assert "<script>" not in body
     assert "mobile-hide" in body
@@ -158,7 +190,9 @@ def test_daily_matrix_uses_configured_pool_and_keeps_missing_data(monkeypatch):
                     {
                         "stock_code": "GOOG",
                         "stock_name": "Google",
-                        "date": pd.Timestamp.now().strftime("%Y-%m-%d"),
+                        "date": "2026-09-30",
+                        "quote_status": "delayed",
+                        "quote_as_of": "2026-09-30T10:00:00-04:00",
                         "open": 100.0,
                         "close": 101.0,
                     }
@@ -174,7 +208,21 @@ def test_daily_matrix_uses_configured_pool_and_keeps_missing_data(monkeypatch):
     assert "601728" in body
     assert "01339" in body
     assert "GOOG" not in body
-    assert body.count("未就绪") == 1
+    soup = BeautifulSoup(body, "html.parser")
+    rows = soup.select(".watchlist-table tbody tr")
+    assert [row.select_one("strong").get_text() for row in rows] == ["601728", "01339"]
+    missing = rows[1].select("td")
+    assert "源时间未知" in missing[0].get_text()
+    assert [cell.get_text() for cell in missing[1:3]] == ["—", "—"]
+    assert missing[3].strong.get_text() == "—"
+    assert [cell.get_text() for cell in missing[4:]] == ["—"] * 4
+    assert rows[0].select_one(".current-quote strong").get_text() == "6.20"
+    gap = next(
+        cell
+        for cell in soup.select(".summary-cell")
+        if cell.select_one(".summary-label").get_text() == "行情缺口"
+    )
+    assert gap.select_one(".summary-value").get_text() == "1"
 
 
 def test_daily_events_are_complete_and_urls_are_sanitized(monkeypatch):

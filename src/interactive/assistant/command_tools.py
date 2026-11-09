@@ -15,6 +15,17 @@ def configuration_hash(root):
     return hashlib.sha256((Path(root) / "config/config.yaml").read_bytes()).hexdigest()
 
 
+def prepare_report(root, kind="daily", report_id="morning_snapshot"):
+    if kind not in {"daily", "brief"} or report_id not in {"morning_snapshot", "afternoon_snapshot"}:
+        raise ValueError("需要完整daily/brief报告及有效简报编号")
+    return {
+        "kind": kind, "report_id": report_id, "force": True,
+        "config_sha256": configuration_hash(root),
+        "preview": {"report_type": kind, "report_id": report_id,
+                    "effect": "按配置完整监控池生成报告并联发全部启用渠道；入队回执不代表送达。"},
+    }
+
+
 def watchlist_preview(payload):
     diff = payload.get("diff", [])
     if len(diff) != 1 or diff[0].get("key") != "stocks":
@@ -52,16 +63,31 @@ def prepare_command(root, configuration, text, market=None):
         commands.RemoveCommand,
         commands.BacktestCommand,
         commands.SaveCommand,
-        commands.BriefCommand,
-        commands.DailyCommand,
         commands.DailyReportFrequencyCommand,
         commands.ScheduleCommand,
         commands.ModeCommand,
         commands.RefDateCommand,
         commands.RefPositionCommand,
     )
+    if isinstance(command, (commands.DailyCommand, commands.BriefCommand)):
+        raise ValueError("报告已迁入report_request；bot_command不再执行报告请求")  # noqa: TRY004
     if not isinstance(command, allowed):
         raise ValueError("该命令未开放对话执行")  # noqa: TRY004
+    if isinstance(command, commands.RefDateCommand):
+        if Path(root).resolve() != handlers.CONFIG_PATH.parent.parent.resolve():
+            raise ValueError("参考持仓配置根目录不一致")
+        if not command.date_str:
+            return {"kind": "read", "result": {"response": handlers.handle_ref_date()}}
+        plan = handlers.prepare_ref_date(command.date_str)
+        return {
+            "kind": "command",
+            "payload": {
+                "command": text,
+                "config_sha256": configuration_hash(root),
+                "reference_reset": plan,
+                "preview": plan["preview"],
+            },
+        }
     if isinstance(command, (commands.AddCommand, commands.RemoveCommand)):
         action = "add" if isinstance(command, commands.AddCommand) else "remove"
         proposals = configuration.propose_watchlist(action, command.codes, market)

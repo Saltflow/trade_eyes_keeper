@@ -63,9 +63,13 @@ def test_host_supplies_tool_evidence_policy_and_model_port():
             return {"role": "assistant", "content": "evidence-based result"}
 
     client = Client()
+    config = settings()
+    # This successful protocol round trip starts the real Node bridge. Allow
+    # startup under suite load; short deadline tests keep their own budgets.
+    config.conversation_timeout_seconds = 30
     agent = ConversationHarness(
         client,
-        settings(),
+        config,
         bridge_path=Path(__file__).resolve().parents[1] / "tools/feishu-pi/bridge.mjs",
         node_executable=os.environ.get("FEISHU_PI_TEST_NODE") or shutil.which("node"),
         retrieval_tools={"read_evidence"},

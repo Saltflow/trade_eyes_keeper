@@ -10,7 +10,7 @@ from .commands import handlers
 logger = logging.getLogger(__name__)
 
 
-def dispatch_command(command) -> str:
+def dispatch_command(command, *, sender=None, chat_id=None, request_id=None) -> str:
     """Execute an already parsed command through the common application handlers."""
     if isinstance(command, commands.HelpCommand):
         return handlers.handle_help()
@@ -27,9 +27,13 @@ def dispatch_command(command) -> str:
     if isinstance(command, commands.SaveCommand):
         return handlers.handle_save()
     if isinstance(command, commands.BriefCommand):
-        return handlers.handle_brief(command.report_id)
+        return handlers.handle_brief(
+            command.report_id, sender=sender, chat_id=chat_id, request_id=request_id
+        )
     if isinstance(command, commands.DailyCommand):
-        return handlers.handle_daily()
+        return handlers.handle_daily(
+            sender=sender, chat_id=chat_id, request_id=request_id
+        )
     if isinstance(command, commands.DailyReportFrequencyCommand):
         return handlers.handle_daily_report_frequency(command.frequency)
     if isinstance(command, commands.ScheduleCommand):
@@ -58,7 +62,9 @@ class CommandExecutor:
         self._stopped = threading.Event()
         self._backtest_slot = threading.BoundedSemaphore(1)
 
-    def execute(self, chat_id: str, command, *, on_result=None) -> None:
+    def execute(
+        self, chat_id: str, command, *, on_result=None, sender=None, request_id=None
+    ) -> None:
         if self._stopped.is_set():
             if on_result:
                 on_result("❌ 命令执行器正在停止，未开始执行。")
@@ -82,11 +88,17 @@ class CommandExecutor:
                 self._backtest_slot.release()
                 raise
             return
-        self._run_command(chat_id, command, on_result)
+        self._run_command(
+            chat_id, command, on_result, sender=sender, request_id=request_id
+        )
 
-    def _run_command(self, chat_id: str, command, on_result=None) -> None:
+    def _run_command(
+        self, chat_id: str, command, on_result=None, *, sender=None, request_id=None
+    ) -> None:
         try:
-            response = dispatch_command(command)
+            response = dispatch_command(
+                command, sender=sender, chat_id=chat_id, request_id=request_id
+            )
         except Exception:
             logger.exception("Bot command failed: %s", type(command).__name__)
             response = "❌ 命令执行失败，请查看服务日志。"

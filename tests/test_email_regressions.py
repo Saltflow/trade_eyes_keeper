@@ -37,7 +37,7 @@ def test_sent_mime_has_one_encoding_and_decodable_inline_images(
     monkeypatch.setattr(
         "src.notification.email_notifier.channel_enabled", lambda *args: True
     )
-    monkeypatch.setattr(notifier, "_save_email_copy", lambda *args: "mock.html")
+    monkeypatch.setattr(notifier, "_save_email_copy", lambda *args: ("mock.html", None))
     png = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZk"
         "AAAAASUVORK5CYII="

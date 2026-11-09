@@ -36,7 +36,9 @@ def _stock_data():
             {
                 "stock_code": "601728",
                 "stock_name": "<script>alert(1)</script>" + "很长名称" * 20,
-                "date": pd.Timestamp.now().strftime("%Y-%m-%d"),
+                "date": "2026-09-30",
+                "quote_status": "realtime",
+                "quote_as_of": "2026-09-30T14:59:00+08:00",
                 "close": 10.2,
                 "open": 10.0,
                 "prev_close": 9.75,
@@ -85,10 +87,13 @@ def test_daily_matrix_shows_open_previous_close_and_current_price(monkeypatch):
     soup = BeautifulSoup(_daily_body(_notifier(monkeypatch)), "html.parser")
     table = soup.select_one(".watchlist-table")
     headers = table.select("thead th")
-    assert [item.get_text() for item in headers[:4]] == ["标的", "今开", "昨收", "现价"]
+    assert [item.get_text() for item in headers[:4]] == ["标的", "开盘", "前收", "报价"]
     assert "股息率" not in table.get_text()
     assert all("mobile-hide" not in item.get("class", []) for item in headers[1:4])
     cells = table.select_one("tbody tr").select("td")
+    assert cells[0].select_one(".status-badge").get_text() == (
+        "实时 · 截至 2026-09-30 14:59:00+08:00"
+    )
     assert [cell.get_text() for cell in cells[1:3]] == ["10.00", "9.75"]
     assert cells[3].strong.get_text() == "10.20"
     assert cells[3].select_one(".price-change").get_text() == "+4.62%"
@@ -156,6 +161,12 @@ def test_daily_missing_values_and_long_text_do_not_break_html(monkeypatch):
                 "stock_code": "000001",
                 "stock_name": "名称" * 100,
                 "close": None,
+                "quote_status": "unavailable",
+                "quote_as_of": None,
+                "quote_reason": "行情源缺失 <script>",
+                "pe_ratio": 8.0,
+                "pb_ratio": 1.2,
+                "roe": 15.0,
                 "ma60": None,
             }
         ]
@@ -169,4 +180,12 @@ def test_daily_missing_values_and_long_text_do_not_break_html(monkeypatch):
     assert len(soup.find_all("html")) == 1
     assert body.strip().endswith("</html>")
     assert "000001" in body
-    assert "—" in body
+    rows = soup.select(".watchlist-table tbody tr")
+    assert len(rows) == 1
+    cells = rows[0].select("td")
+    assert [cell.get_text() for cell in cells[1:3]] == ["—", "—"]
+    assert cells[3].strong.get_text() == "—"
+    assert cells[3].select_one(".price-change").get_text() == "涨跌未知"
+    assert [cell.get_text() for cell in cells[4:]] == ["8.0", "1.20", "14.5%", "15.00"]
+    assert "缺口 · 源时间未知" in cells[0].get_text()
+    assert "行情源缺失 &lt;script&gt;" in body

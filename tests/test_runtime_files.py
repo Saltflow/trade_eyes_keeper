@@ -228,6 +228,7 @@ def host_writer(path, health=None):
         health=lambda: {"ready": True} if health is None else health
     )
     service.failure, service.health_reporter = None, None
+    service.trigger_runtime = None
     service.bots, service.threads = {}, {}
     service.scheduling, service.started_at = True, "fixture-start"
     service._owner_evidence, service._diagnostics = {}, []

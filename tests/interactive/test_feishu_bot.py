@@ -266,7 +266,7 @@ class Client:
     def start(self):
         self.handler.callback({
             "header": {"event_type": "im.message.receive_v1"},
-            "event": {"message": {
+            "event": {"sender": {"sender_id": {"open_id": "owner"}}, "message": {
                 "chat_id": "allowed", "message_id": "spawn-message",
                 "content": json.dumps({"text": "/daily"}),
             }},
@@ -312,4 +312,6 @@ JSON = SimpleNamespace(marshal=json.dumps)
         assert not worker.is_alive()
         assert not errors
         assert bot._process is None
-        daily.assert_called_once_with()
+        daily.assert_called_once_with(
+            sender="owner", chat_id="allowed", request_id="feishu:allowed:spawn-message"
+        )

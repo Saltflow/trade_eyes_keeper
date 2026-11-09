@@ -106,6 +106,7 @@ def test_manual_ref_reset_pins_all_markets_to_latest_active_run(
     tmp_path,
     monkeypatch,
 ):
+    monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -182,7 +183,9 @@ def test_manual_ref_reset_pins_all_markets_to_latest_active_run(
         FakeManager,
     )
 
-    response = handlers.handle_ref_date("2026-07-30")
+    plan = handlers.prepare_ref_date("2026-07-30")
+    assert not resets
+    response = handlers.apply_ref_date(plan)
 
     assert response.startswith("✅")
     assert len(resets) == 3

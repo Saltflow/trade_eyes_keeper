@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 
-from .command_parser import parse_command
+from .command_parser import BriefCommand, DailyCommand, parse_command
 from .feishu_app import FeishuApp
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ def handle_feishu_message(app: FeishuApp, body: dict) -> str:
         return finish("ignored", "assistant_disabled_or_empty_text")
     if not is_command and message.get("chat_type") != "p2p" and not addressed:
         return finish("ignored", "group_not_addressed")
-    from .ingress import ingress_access_check
+    from .ingress import ingress_access_check, ingress_command_dispatch
 
     def check_access():
         return app.access.accept(
@@ -82,10 +82,26 @@ def handle_feishu_message(app: FeishuApp, body: dict) -> str:
         return finish(result, "access_check")
     if is_command:
         command = parse_command(text)
+        report_context = {}
+        if isinstance(command, (DailyCommand, BriefCommand)):
+            identity = (event.get("sender") or {}).get("sender_id") or {}
+            owner = identity.get("open_id") if isinstance(identity, dict) else None
+            message_id = message.get("message_id") or header.get("event_id")
+            if not owner or not message_id:
+                return finish("ignored", "missing_report_identity")
+            report_context = {
+                "sender": str(owner),
+                "request_id": f"feishu:{chat_id}:{message_id}",
+            }
         logger.info(
             "Feishu command: chat=%s command=%s", chat_id, command.cmd_type.name
         )
-        app.command_executor.execute(chat_id, command)
+        # The handler alone knows whether authenticated mention normalization
+        # produced a command. Persist its boundary before any command effect.
+        begin_command = ingress_command_dispatch.get()
+        if begin_command is not None and not begin_command():
+            return finish("duplicate", "command_already_dispatched")
+        app.command_executor.execute(chat_id, command, **report_context)
         return finish("accepted", "legacy_command")
     sender_id = (event.get("sender") or {}).get("sender_id") or {}
     sender = str(sender_id.get("open_id") or "") if isinstance(sender_id, dict) else ""

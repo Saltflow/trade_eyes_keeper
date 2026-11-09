@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -157,19 +158,58 @@ def test_concurrent_processes_do_not_lose_updates(tmp_path):
 def test_bot_field_updates_preserve_concurrent_changes_and_secrets(
     tmp_path, monkeypatch
 ):
+    from src.instruments.resolver import InstrumentResolver
+    from src.interactive.assistant.config_tools import (
+        ConfigurationConflict,
+        ConfigurationTools,
+    )
+
+    directory = tmp_path / "project" / "config"
+    directory.mkdir(parents=True)
     path = _config_file(
-        tmp_path,
+        directory,
         {"stocks": ["600036"], "scheduler": {"run_time": "19:00"}},
     )
     monkeypatch.setattr(handlers, "CONFIG_PATH", path)
+    monkeypatch.setattr(
+        InstrumentResolver, "resolve",
+        lambda self, code, market=None: {
+            "code": code, "name": "offline fixture", "market": market,
+            "source": "offline_test",
+        },
+    )
     monkeypatch.setenv("EMAIL_PASSWORD", "runtime-secret")
     assert handlers._load_config()["email"]["sender_password"] == "runtime-secret"
 
+    # All three commands preview the same revision. Exactly one may commit;
+    # the others must explicitly reject stale previews rather than lose writes.
+    barrier = threading.Barrier(3)
+    original = ConfigurationTools.propose_watchlist
+
+    def concurrent_preview(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
+        barrier.wait(timeout=10)
+        return result
+
+    def attempt(codes):
+        try:
+            return handlers.handle_add(codes)
+        except ConfigurationConflict:
+            return "conflict"
+
+    monkeypatch.setattr(ConfigurationTools, "propose_watchlist", concurrent_preview)
     with ThreadPoolExecutor(max_workers=3) as pool:
         responses = list(
-            pool.map(handlers.handle_add, [["GOOG"], ["00883"], ["601985"]])
+            pool.map(attempt, [["GOOG"], ["00883"], ["601985"]])
         )
-    assert all(response.startswith("✅") for response in responses)
+    assert sum(response.startswith("✅") for response in responses) == 1
+    assert responses.count("conflict") == 2
+    assert len(ConfigStore(path).load_raw()["stocks"]) == 2
+    monkeypatch.setattr(ConfigurationTools, "propose_watchlist", original)
+    # Explicit new commands re-read the current configuration after conflicts.
+    for codes, response in zip([["GOOG"], ["00883"], ["601985"]], responses):
+        if response == "conflict":
+            assert handlers.handle_add(codes).startswith("✅")
     handlers.handle_daily_report_frequency("weekly")
     handlers.handle_remove(["00883"])
 

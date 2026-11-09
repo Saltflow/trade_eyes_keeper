@@ -547,14 +547,17 @@ class ProposalStore:
                 self._audit(db, action_id, status, note)
             return bool(changed)
 
-    def recent(self, chat: str, sender: str) -> list[dict]:
+    def recent(self, chat: str, sender: str, *, limit=10, offset=0) -> list[dict]:
+        if type(limit) is not int or not 1 <= limit <= 101 or type(offset) is not int or offset < 0:
+            raise ValueError("invalid proposal page")
         with self.connection() as db:
             rows = db.execute(
-                "SELECT id,kind,status,note,created FROM actions "
-                "WHERE chat=? AND sender=? ORDER BY created DESC LIMIT 10",
-                (chat, sender),
+                "SELECT id,kind,status,note,created,updated,expires,result FROM actions "
+                "WHERE chat=? AND sender=? ORDER BY created DESC,id DESC LIMIT ? OFFSET ?",
+                (chat, sender, limit, offset),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [{**dict(row), "result": json.loads(row["result"]) if row["result"] else None}
+                for row in rows]
 
     def recover(self) -> list[dict]:
         with self.connection() as db:

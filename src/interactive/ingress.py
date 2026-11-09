@@ -16,6 +16,7 @@ from contextvars import ContextVar
 from pathlib import Path
 
 ingress_access_check = ContextVar("ingress_access_check", default=None)
+ingress_command_dispatch = ContextVar("ingress_command_dispatch", default=None)
 
 
 class DurableIngress:
@@ -133,26 +134,41 @@ class DurableIngress:
             )
             return result
 
-    def dispatch(self, app, handler):
-        from .feishu_handler import _message_text
+    def begin_command(self, identity: str) -> bool:
+        """Commit the non-replay boundary before the handler executes a command."""
+        with self.connection() as db:
+            changed = db.execute(
+                "UPDATE execution_ingress SET state='unknown',"
+                "result='legacy_dispatch_started',updated=? "
+                "WHERE id=? AND app_id=? AND state='pending'",
+                (time.time(), identity, self.app_id),
+            ).rowcount
+        return changed == 1
 
+    def dispatch(self, app, handler):
         for row in self.pending():
             payload = json.loads(row["payload"])
-            message = (payload.get("event") or {}).get("message") or {}
-            legacy = _message_text(message).startswith("/")
-            if legacy:
-                # Persist uncertainty before a command can write or send.
-                self.finish(row["id"], "legacy_dispatch_started", state="unknown")
+            command_started = False
+
+            def begin_command(identity=row["id"]):
+                nonlocal command_started
+                if command_started:
+                    return False
+                command_started = self.begin_command(identity)
+                return command_started
+
             token = ingress_access_check.set(
                 lambda checker, identity=row["id"]: self.check_access(identity, checker)
             )
+            command_token = ingress_command_dispatch.set(begin_command)
             try:
                 result = handler(app, payload)
             finally:
+                ingress_command_dispatch.reset(command_token)
                 ingress_access_check.reset(token)
-            if result in {"retry", "unavailable"} and not legacy:
+            if result in {"retry", "unavailable"} and not command_started:
                 continue
-            if legacy:
+            if command_started:
                 with self.connection() as db:
                     db.execute(
                         "UPDATE execution_ingress SET state='done',result=?,updated=? "

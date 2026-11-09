@@ -26,6 +26,7 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 TERMINAL = frozenset({"succeeded", "skipped", "failed", "partial", "unknown"})
 DEFAULT_LANES = {"conversation": 2, "personal": 2, "report": 1, "default": 1}
+_STORE_TIMEOUT_SECONDS = 10
 
 
 class QueueFull(RuntimeError):
@@ -187,7 +188,7 @@ class ExecutionStore:
         self._connections: dict[tuple[int, str, bool], _StoreConnection] = {}
         self._connection_pid = os.getpid()
         with self.connection() as db:
-            db.execute("PRAGMA journal_mode=WAL")
+            self._initialize_journal(db)
             db.executescript("""
                 BEGIN IMMEDIATE;
                 CREATE TABLE IF NOT EXISTS execution_modules (
@@ -243,6 +244,34 @@ class ExecutionStore:
             self.path.chmod(0o600)
         # Construction commonly happens on a thread that never executes work.
         self.close_idle_connections()
+
+    @staticmethod
+    def _initialize_journal(db: sqlite3.Connection) -> None:
+        # Concurrent first openers can get SQLITE_BUSY while upgrading the
+        # journal lock even with a busy handler. Retry only this initialization
+        # statement, within the existing connection timeout; never replay work.
+        native_timeout = db.execute("PRAGMA busy_timeout").fetchone()[0]
+        deadline = time.monotonic() + _STORE_TIMEOUT_SECONDS
+        try:
+            while True:
+                remaining = max(1, int((deadline - time.monotonic()) * 1000))
+                db.execute(f"PRAGMA busy_timeout={min(native_timeout, remaining)}")
+                try:
+                    db.execute("PRAGMA journal_mode=WAL").fetchone()
+                    return
+                except sqlite3.OperationalError as exc:
+                    code = getattr(exc, "sqlite_errorcode", None)
+                    busy = (
+                        code & 0xFF == getattr(sqlite3, "SQLITE_BUSY", 5)
+                        if code is not None
+                        else str(exc) == "database is locked"  # Python 3.10
+                    )
+                    remaining = deadline - time.monotonic()
+                    if not busy or remaining <= 0:
+                        raise
+                    time.sleep(min(0.01, remaining))
+        finally:
+            db.execute(f"PRAGMA busy_timeout={native_timeout}")
 
     @contextmanager
     def connection(self, *, database=None, autocommit=False):
@@ -310,7 +339,7 @@ class ExecutionStore:
                     cached.borrowed = False
 
     def _open_connection(self, database, autocommit):
-        timeout = 30 if autocommit else 10
+        timeout = 30 if autocommit else _STORE_TIMEOUT_SECONDS
         db = sqlite3.connect(
             database,
             timeout=timeout,
@@ -319,7 +348,7 @@ class ExecutionStore:
             isolation_level=None if autocommit else "",
         )
         db.row_factory = sqlite3.Row
-        db.execute(f"PRAGMA busy_timeout={timeout * 1000}")
+        db.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
         db.execute("PRAGMA synchronous=FULL")
         # Four cached handles must not each retain SQLite's default 2 MiB.
         db.execute("PRAGMA cache_size=-64")
@@ -530,6 +559,14 @@ class ExecutionStore:
             )
 
     get_run = get
+
+    def get_request(self, job_id: str, request_id: str) -> dict | None:
+        """Read the existing unique request receipt; never submit or retry it."""
+        with self.connection() as db:
+            return self._decode(db.execute(
+                "SELECT * FROM execution_runs WHERE job_id=? AND request_id=?",
+                (job_id, request_id),
+            ).fetchone())
 
     def count_pending(self, job_id: str, db: sqlite3.Connection | None = None) -> int:
         def count(connection):

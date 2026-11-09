@@ -127,7 +127,18 @@ class TelegramBot:
                 self._send_message(chat_id, "操作过于频繁，请稍后再试。")
             return
         command = parse_command(text)
-        self.command_executor.execute(chat_id, command)
+        from .command_parser import BriefCommand, DailyCommand
+
+        context = {}
+        if isinstance(command, (DailyCommand, BriefCommand)):
+            sender = (message.get("from") or {}).get("id")
+            if sender is None or not event_id:
+                return
+            context = {
+                "sender": f"telegram:{sender}",
+                "request_id": f"telegram:{event_id}",
+            }
+        self.command_executor.execute(chat_id, command, **context)
 
     def run(self) -> None:
         """Block while polling. A stop waits at most the current bounded HTTP call."""

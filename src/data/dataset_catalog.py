@@ -6,6 +6,7 @@ the project backtest/data-readiness contracts have passed.
 
 from __future__ import annotations
 
+import base64
 import csv
 import hashlib
 import json
@@ -21,6 +22,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 MAX_JSON_BYTES = 32 * 1024 * 1024
 PAGE_LIMIT = 100
+SEARCH_FILE_BYTES = 8 * 1024 * 1024
+SEARCH_TOTAL_BYTES = 32 * 1024 * 1024
 DOCUMENT_COUNTS_NOTICE = (
     "统计范围为所选dataset_id或全库，不受code/status/分页筛选影响。"
     "available仅表示有已登记内容，可能只有文字或JSON，绝不代表PDF与文字齐备。"
@@ -149,6 +152,20 @@ def _json(value) -> str:
 
 def _identifier(prefix: str, value: str) -> str:
     return prefix + hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
+
+
+def _text_match_offset(line: str, term: str) -> int:
+    """Map a case-folded match back to the original citation's character offset."""
+    folded = line.casefold()
+    offset = folded.find(term)
+    if offset < 0 or len(folded) == len(line):
+        return offset
+    consumed = 0
+    for index, character in enumerate(line):
+        if consumed >= offset:
+            return index
+        consumed += len(character.casefold())
+    return len(line)
 
 
 def _safe_relative(value: str) -> str:
@@ -1556,17 +1573,21 @@ class DatasetCatalog:
                     JOIN document_sources s ON d.document_id=s.document_id
                     JOIN files f ON s.file_id=f.file_id
                     WHERE f.present=1 {condition}
-                ), present_artifacts AS (
-                    SELECT a.document_id, MAX(a.kind='pdf') pdf,
-                           MAX(a.kind='text') text
-                    FROM document_artifacts a JOIN files af ON af.file_id=a.file_id
-                    WHERE af.present=1 GROUP BY a.document_id
+                ), artifact_flags AS (
+                    SELECT s.document_id,
+                           MAX(CASE WHEN af.present=1 AND a.kind='pdf'
+                               THEN 1 ELSE 0 END) pdf,
+                           MAX(CASE WHEN af.present=1 AND a.kind='text'
+                               THEN 1 ELSE 0 END) text
+                    FROM scoped s
+                    LEFT JOIN document_artifacts a ON a.document_id=s.document_id
+                    LEFT JOIN files af ON af.file_id=a.file_id
+                    GROUP BY s.document_id
                 )
-                SELECT COUNT(*) total, COALESCE(SUM(a.pdf),0) pdf,
-                       COALESCE(SUM(a.text),0) text,
-                       COALESCE(SUM(a.pdf=1 AND a.text=1),0) paired
-                FROM scoped s LEFT JOIN present_artifacts a
-                ON a.document_id=s.document_id""",
+                SELECT COUNT(*) total, COALESCE(SUM(pdf),0) pdf,
+                       COALESCE(SUM(text),0) text,
+                       COALESCE(SUM(pdf=1 AND text=1),0) paired
+                FROM artifact_flags""",
                 args,
             ).fetchone()
         return {
@@ -1676,6 +1697,67 @@ class DatasetCatalog:
                         "error": "stored download result is malformed"
                     }
         return item
+
+    def register_material(self, record: dict) -> dict:
+        """Index a tiny public DataHub reference, retaining the original in place.
+
+        This is explicit incremental registration, not acquisition or parsing.
+        A failed index leaves both the original and reference available to retry.
+        CNINFO document identities remain confined to register_document_source.
+        """
+        from src.data_hub import DataHub
+
+        digest = record.get("sha256") if isinstance(record, dict) else None
+        if (
+            self.material_authority.scope != "public"
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or record.get("material_id", f"material:{digest}") != f"material:{digest}"
+        ):
+            raise ValueError("a public material identity is required")
+        hub = DataHub(self.material_authority)
+        verified = hub.resolve(digest)
+        directory = self.root
+        for name in ("data", "dataset_documents", "web"):
+            directory /= name
+            if not directory.exists():
+                directory.mkdir()
+            info = directory.lstat()
+            if (
+                directory.is_symlink()
+                or getattr(info, "st_file_attributes", 0) & 0x400
+                or not stat.S_ISDIR(info.st_mode)
+            ):
+                raise ValueError("material references must use unlinked directories")
+        path = directory / f"{digest}.material-ref.json"
+        relative = path.relative_to(self.root).as_posix()
+        if path.exists() or path.is_symlink():
+            _checked_file(self.root, relative)
+            existing = hub.resolve_reference(path)
+            if existing["sha256"] != digest:
+                raise ValueError("existing material reference identity changed")
+        else:
+            media = str(record.get("content_type", "")).split(";", 1)[0].strip().lower()
+            if not media:
+                media = {
+                    ".pdf": "application/pdf",
+                    ".html": "text/html",
+                    ".htm": "text/html",
+                    ".txt": "text/plain",
+                    ".md": "text/markdown",
+                }.get(Path(verified["path"]).suffix.lower(), "application/octet-stream")
+            hub.write_reference(path, verified, kind=media)
+        result = self.index_paths([relative])
+        if result["indexed_files"] != 1 or result["index_failures"]:
+            raise ValueError("material original saved but catalog registration failed")
+        return {
+            "material_id": f"material:{digest}",
+            "data_id": f"material:{digest}",
+            "file_id": result["files"][0]["file_id"],
+            "sha256": digest,
+            "reference_path": relative,
+            "status": "registered",
+        }
 
     def register_document_source(
         self, document_id, source_url, title, publication_date, code
@@ -2041,8 +2123,404 @@ class DatasetCatalog:
             "next_start_line": end_line + 1 if truncated else None,
         }
 
+    def _search_text_source(self, row):
+        """Read one bounded, hash-verified indexed source, without parsing it."""
+        from .evidence_text import (
+            cached_parse,
+            html_rows,
+            parsed_projection,
+            physical_text_lines,
+        )
+
+        path = _checked_file(self.root, row["relative_path"])
+        before = path.stat()
+        if before.st_size > SEARCH_FILE_BYTES:
+            raise ValueError("file_size_limit")
+        with path.open("rb") as stream:
+            raw = stream.read(SEARCH_FILE_BYTES + 1)
+        after = path.stat()
+        if (
+            len(raw) > SEARCH_FILE_BYTES
+            or (before.st_size, before.st_mtime_ns, before.st_ino)
+            != (after.st_size, after.st_mtime_ns, after.st_ino)
+            or before.st_size != row["bytes"]
+            or before.st_mtime_ns != row["mtime_ns"]
+            or hashlib.sha256(raw).hexdigest() != row["sha256"]
+        ):
+            raise ValueError("content_changed_refresh_catalog")
+        _checked_file(self.root, row["relative_path"])
+        meta = {
+            "file_id": row["file_id"],
+            "data_id": row["file_id"],
+            "source_file_id": row["file_id"],
+            "path": row["relative_path"],
+            "sha256": row["sha256"],
+            "line_basis": "source_text",
+        }
+        gaps = []
+        is_reference = path.name.endswith(".material-ref.json")
+        if path.suffix.lower() == ".pdf" or is_reference:
+            from src.data_hub import DataHub
+
+            if self.material_authority.scope != "public":
+                raise ValueError("public_material_scope_required")
+            hub = DataHub(self.material_authority)
+            digest = row["sha256"]
+            if is_reference:
+                marker = json.loads(raw)
+                if (
+                    marker.get("authority_id") != self.material_authority.authority_id
+                    or marker.get("scope") != "public"
+                    or not re.fullmatch(r"[0-9a-f]{64}", str(marker.get("sha256", "")))
+                ):
+                    raise ValueError("material_reference_scope_mismatch")
+                digest = marker["sha256"]
+                # Bound the original before DataHub's integrity verification.
+                manifest = hub.root / "objects" / digest / "original.json"
+                with manifest.open("rb") as stream:
+                    record_raw = stream.read(65537)
+                if len(record_raw) > 65536:
+                    raise ValueError("material_metadata_size_limit")
+                record = json.loads(record_raw)
+                original = Path(record["path"])
+                if original.stat().st_size > SEARCH_FILE_BYTES:
+                    raise ValueError("material_original_size_limit")
+                resolved = hub.resolve_reference(path)
+                meta.update(
+                    data_id=f"material:{digest}",
+                    material_id=f"material:{digest}",
+                    sha256=digest,
+                    index_sha256=row["sha256"],
+                )
+                if Path(resolved["path"]).stat().st_size > SEARCH_FILE_BYTES:
+                    raise ValueError("material_original_size_limit")
+            parsed = cached_parse(hub, digest, max_bytes=SEARCH_FILE_BYTES)
+            if parsed is None:
+                media = str(resolved.get("kind", "")) if is_reference else ""
+                text_media = media in {
+                    "text/plain",
+                    "text/markdown",
+                    "text/html",
+                    "application/xhtml+xml",
+                }
+                if not is_reference or (
+                    Path(resolved["path"]).suffix.lower() not in TEXT_EXTENSIONS
+                    and not text_media
+                ):
+                    raise ValueError("existing_text_parse_unavailable")
+                with Path(resolved["path"]).open("rb") as stream:
+                    original_raw = stream.read(SEARCH_FILE_BYTES + 1)
+                if (
+                    len(original_raw) > SEARCH_FILE_BYTES
+                    or hashlib.sha256(original_raw).hexdigest() != digest
+                ):
+                    raise ValueError("material_original_changed")
+                if original_raw.lstrip().startswith(b"%PDF-"):
+                    raise ValueError("existing_text_parse_unavailable")
+                text = original_raw.decode("utf-8-sig")
+                if "\x00" in text:
+                    raise ValueError("unsupported_text_encoding")
+                if Path(resolved["path"]).suffix.lower() in {
+                    ".html",
+                    ".htm",
+                } or media in {"text/html", "application/xhtml+xml"}:
+                    text = "\n".join(item["text"] for item in html_rows(text))
+                    meta["line_basis"] = "rendered_html_text"
+            else:
+                if parsed.get("sha256") != digest:
+                    raise ValueError("parsed_source_hash_mismatch")
+                text, meta["line_basis"], gaps = parsed_projection(
+                    parsed, max_chars=SEARCH_FILE_BYTES
+                )
+        elif path.suffix.lower() in TEXT_EXTENSIONS:
+            text = raw.decode("utf-8-sig")
+            if "\x00" in text:
+                raise ValueError("unsupported_text_encoding")
+            if path.suffix.lower() in {".html", ".htm"}:
+                text = "\n".join(item["text"] for item in html_rows(text))
+                meta["line_basis"] = "rendered_html_text"
+        else:
+            raise ValueError("unsupported_format_no_existing_text")
+        final = _checked_file(self.root, row["relative_path"]).stat()
+        if (before.st_size, before.st_mtime_ns, before.st_ino) != (
+            final.st_size,
+            final.st_mtime_ns,
+            final.st_ino,
+        ):
+            raise ValueError("content_changed_while_reading")
+        meta["text_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return physical_text_lines(text), meta, gaps
+
+    def search_text(
+        self,
+        query,
+        *,
+        dataset_id=None,
+        file_id=None,
+        code=None,
+        kind=None,
+        date_from=None,
+        date_to=None,
+        limit=20,
+        cursor=None,
+        max_files=40,
+    ) -> dict:
+        """Literal offline body search over indexed candidates, never a disk crawl.
+
+        Citations use physical text lines, rendered HTML lines, or existing
+        DataHub text-view lines as explicitly labelled in ``line_basis``.
+        Coverage describes this page; callers must retain gaps across pages.
+        """
+        from .evidence_text import numbered_lines
+
+        if (
+            not isinstance(query, str)
+            or not 2 <= len(query.strip()) <= 120
+            or "\n" in query
+            or "\r" in query
+        ):
+            raise ValueError("query must contain 2..120 characters")
+        if type(limit) is not int or not 1 <= limit <= 50:
+            raise ValueError("limit must be 1..50")
+        if type(max_files) is not int or not 1 <= max_files <= 100:
+            raise ValueError("max_files must be 1..100")
+        for name, value in (
+            ("dataset_id", dataset_id),
+            ("file_id", file_id),
+            ("kind", kind),
+            ("code", code),
+        ):
+            if value is not None and (
+                not isinstance(value, str) or not value or len(value) > 128
+            ):
+                raise ValueError(f"invalid {name}")
+        for value in (date_from, date_to):
+            if value is not None and (
+                not isinstance(value, str)
+                or date.fromisoformat(value).isoformat() != value
+            ):
+                raise ValueError("dates must use YYYY-MM-DD")
+        if date_from and date_to and date_from > date_to:
+            raise ValueError("date_from must not follow date_to")
+        query = query.strip()
+        term = query.casefold()
+        filters = {
+            "dataset_id": dataset_id,
+            "file_id": file_id,
+            "code": code,
+            "kind": kind,
+            "date_from": date_from,
+            "date_to": date_to,
+            "query": query,
+        }
+        scope = hashlib.sha256(_json(filters).encode()).hexdigest()
+        status = self.index_status()
+        revision = status.get("build_id")
+        position, start_line, previous_text_hash = "", 1, None
+        if cursor is not None:
+            try:
+                if not isinstance(cursor, str) or len(cursor) > 2048:
+                    raise ValueError
+                state = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+                if (
+                    state["scope"] != scope
+                    or state["revision"] != revision
+                    or not re.fullmatch(r"file_[0-9a-f]{24}", state["file_id"])
+                    or type(state["line"]) is not int
+                    or state["line"] < 1
+                ):
+                    raise ValueError
+                position, start_line = state["file_id"], state["line"]
+                previous_text_hash = state.get("text_sha256")
+            except (ValueError, TypeError, KeyError, UnicodeError) as exc:
+                raise ValueError(
+                    "invalid or stale search cursor; restart search"
+                ) from exc
+        clauses, args = ["f.present=1"], []
+        for column, value in (
+            ("dataset_id", dataset_id),
+            ("file_id", file_id),
+            ("kind", kind),
+        ):
+            if value is not None:
+                clauses.append(f"f.{column}=?")
+                args.append(value)
+        base_where, base_args = " AND ".join(clauses), list(args)
+        # Materialize the matching IDs once. A correlated source EXISTS makes
+        # SQLite scan the entire source table for every indexed file at scale.
+        company_known = """f.file_id IN (
+            SELECT file_id FROM file_codes UNION
+            SELECT a.file_id FROM document_artifacts a
+            JOIN document_sources s ON a.document_id=s.document_id WHERE s.code<>'')"""
+        if code is not None:
+            normalized = _code(code)
+            if not normalized:
+                raise ValueError("invalid company code")
+            clauses.append("""f.file_id IN (
+                SELECT file_id FROM file_codes WHERE code=? UNION
+                SELECT a.file_id FROM document_artifacts a JOIN document_sources s
+                ON a.document_id=s.document_id WHERE s.code=?)""")
+            args.extend((normalized, normalized))
+        # Unknown dates are reported as a coverage gap, never silently searched
+        # outside a requested date window. Artifact links supply publication date.
+        source = "files f"
+        date_start, date_end = "f.date_start", "f.date_end"
+        if date_from or date_to:
+            source += """ LEFT JOIN (
+                SELECT a.file_id,MAX(d.publication_date) AS publication_date
+                FROM document_artifacts a JOIN documents d
+                ON a.document_id=d.document_id GROUP BY a.file_id
+            ) linked ON linked.file_id=f.file_id"""
+            date_start = "COALESCE(NULLIF(f.date_start,''),linked.publication_date,'')"
+            date_end = "COALESCE(NULLIF(f.date_end,''),linked.publication_date,'')"
+        if date_from or date_to:
+            clauses.append(f"{date_start}<>'' AND {date_end}<>''")
+        if date_from:
+            clauses.append(f"{date_end}>=?")
+            args.append(date_from)
+        if date_to:
+            clauses.append(f"{date_start}<=?")
+            args.append(date_to)
+        gaps = []
+        with self._connect() as db:
+            if code is not None:
+                unknown = db.execute(
+                    f"SELECT COUNT(*) FROM files f WHERE {base_where} AND NOT ({company_known})",
+                    base_args,
+                ).fetchone()[0]
+                if unknown:
+                    gaps.append(
+                        {"reason": "company_metadata_unavailable", "files": unknown}
+                    )
+            if date_from or date_to:
+                unknown = db.execute(
+                    f"SELECT COUNT(*) FROM {source} WHERE {base_where} AND {date_start}=''",
+                    base_args,
+                ).fetchone()[0]
+                if unknown:
+                    gaps.append(
+                        {"reason": "date_metadata_unavailable", "files": unknown}
+                    )
+            where = " AND ".join(clauses)
+            total = db.execute(
+                f"SELECT COUNT(*) FROM {source} WHERE {where}", args
+            ).fetchone()[0]
+            rows = db.execute(
+                f"SELECT f.* FROM {source} WHERE {where} AND f.file_id>=? "
+                "ORDER BY f.file_id LIMIT ?",
+                [*args, position, max_files + 1],
+            ).fetchall()
+        if status["index_status"] != "completed":
+            gaps.append(
+                {
+                    "reason": "catalog_coverage_incomplete",
+                    "index_status": status["index_status"],
+                }
+            )
+        matches, scanned, consumed, next_state = [], 0, 0, None
+
+        def continuation(row, line=1, text_hash=None):
+            return {
+                "scope": scope,
+                "revision": revision,
+                "file_id": row["file_id"],
+                "line": line,
+                "text_sha256": text_hash,
+            }
+
+        for index, row in enumerate(rows):
+            if scanned >= max_files:
+                next_state = continuation(row)
+                break
+            # Reserve bounded cached parse/original reads in addition to file bytes.
+            binary = Path(row["relative_path"]).suffix.lower() == ".pdf" or row[
+                "relative_path"
+            ].endswith(".material-ref.json")
+            cost = row["bytes"] + (2 * SEARCH_FILE_BYTES if binary else 0)
+            if (
+                row["bytes"] <= SEARCH_FILE_BYTES
+                and consumed + cost > SEARCH_TOTAL_BYTES
+            ):
+                next_state = continuation(row)
+                break
+            scanned += 1
+            if row["bytes"] > SEARCH_FILE_BYTES:
+                gaps.append({"file_id": row["file_id"], "reason": "file_size_limit"})
+                continue
+            consumed += cost
+            try:
+                lines, meta, source_gaps = self._search_text_source(row)
+                if (
+                    row["file_id"] == position
+                    and previous_text_hash is not None
+                    and previous_text_hash != meta["text_sha256"]
+                ):
+                    raise ValueError("parsed_text_changed_restart_search")
+                gaps.extend(
+                    {"file_id": row["file_id"], "reason": reason}
+                    for reason in source_gaps
+                )
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+                gaps.append({"file_id": row["file_id"], "reason": reason[:160]})
+                continue
+            for evidence in numbered_lines(lines, line_basis=meta["line_basis"]):
+                number, line, page = (
+                    evidence["line"],
+                    evidence["text"],
+                    evidence["page"],
+                )
+                if row["file_id"] == position and number < start_line:
+                    continue
+                found = _text_match_offset(line, term)
+                if found < 0:
+                    continue
+                snippet_start = max(0, found - 120)
+                matches.append(
+                    {
+                        **meta,
+                        "dataset_id": row["dataset_id"],
+                        "start_line": number,
+                        "end_line": number,
+                        "page": page,
+                        "text": line[snippet_start : snippet_start + 600],
+                        "snippet_truncated": snippet_start > 0
+                        or len(line) > snippet_start + 600,
+                    }
+                )
+                if len(matches) == limit:
+                    if number < len(lines):
+                        next_state = continuation(row, number + 1, meta["text_sha256"])
+                    elif index + 1 < len(rows):
+                        next_state = continuation(rows[index + 1])
+                    break
+            if len(matches) == limit:
+                break
+        if next_state:
+            gaps.append({"reason": "page_limit", "resume_with_cursor": True})
+        next_cursor = (
+            base64.urlsafe_b64encode(_json(next_state).encode()).decode()
+            if next_state
+            else None
+        )
+        return {
+            "query": query,
+            "results": matches,
+            "candidate_files": total,
+            "scanned_files": scanned,
+            "next_cursor": next_cursor,
+            "coverage_gaps": gaps,
+            "coverage_scope": "current_page_of_indexed_files",
+            "search_complete": cursor is None and next_cursor is None and not gaps,
+            "notice": "仅检索已索引且通过读取校验的现有正文；未覆盖或未解析不代表不存在。"
+            "分页时必须保留此前各页缺口；行号坐标以line_basis为准。",
+            **status,
+        }
+
     def search_document_text(self, document_id, query, limit=8):
         """Search indexed text for one archived document and keep page evidence."""
+        from .evidence_text import numbered_lines
+
         if not isinstance(document_id, str) or not re.fullmatch(
             r"cninfo_[0-9a-f]{64}", document_id
         ):
@@ -2069,37 +2547,34 @@ class DatasetCatalog:
                 "SELECT * FROM files WHERE file_id=? AND present=1",
                 (artifact["file_id"],),
             ).fetchone()
-        if file is None or file["bytes"] > 8 * 1024 * 1024:
+        if file is None or file["bytes"] > SEARCH_FILE_BYTES:
             raise ValueError("indexed report text is unavailable or too large")
-        path = _checked_file(self.root, file["relative_path"])
-        if _sha256(path) != file["sha256"]:
-            raise ValueError("report text changed; rebuild the catalog")
-        terms = [query.strip().casefold()]
-        if len(terms[0]) < 2:
+        lines, meta, gaps = self._search_text_source(file)
+        term = query.strip().casefold()
+        if len(term) < 2:
             raise ValueError("query must be at least two characters")
-        matches, total, current_page = [], 0, None
-        with path.open("r", encoding="utf-8-sig") as handle:
-            for number, line in enumerate(handle, 1):
-                page_match = re.search(
-                    r"(?:PAGE|页)\s*[:#：]?\s*(\d+)", line, re.IGNORECASE
+        matches, total = [], 0
+        for evidence in numbered_lines(lines, line_basis=meta["line_basis"]):
+            number, line, current_page = (
+                evidence["line"],
+                evidence["text"],
+                evidence["page"],
+            )
+            found = _text_match_offset(line, term)
+            if found < 0:
+                continue
+            total += 1
+            if len(matches) < limit:
+                start = max(0, found - 120)
+                matches.append(
+                    {
+                        **meta,
+                        "start_line": number,
+                        "end_line": number,
+                        "page": current_page,
+                        "text": line[start : start + 500],
+                    }
                 )
-                if page_match:
-                    current_page = int(page_match.group(1))
-                normalized = line.casefold()
-                if not any(term in normalized for term in terms):
-                    continue
-                total += 1
-                if len(matches) < limit:
-                    matches.append(
-                        {
-                            "path": file["relative_path"],
-                            "start_line": number,
-                            "end_line": number,
-                            "sha256": file["sha256"],
-                            "page": current_page,
-                            "text": line.rstrip()[:500],
-                        }
-                    )
         return {
             "document_id": document_id,
             "file_id": file["file_id"],
@@ -2107,4 +2582,5 @@ class DatasetCatalog:
             "results": matches,
             "total_matches": total,
             "truncated": total > len(matches),
+            "coverage_gaps": gaps,
         }

@@ -527,8 +527,14 @@ def run_report_worker(
             config["interactive"] = credentials.get("interactive", {})
             from ..triggers.delivery import binding_status
 
-            if binding_status(config) != "allowed":
-                result = RunResult("skipped", "trigger_revoked")
+            state = binding_status(config)
+            if state != "allowed":
+                result = RunResult(
+                    "skipped" if state == "revoked" else "failed",
+                    "trigger_revoked"
+                    if state == "revoked"
+                    else "trigger_binding_invalid",
+                )
                 _write_json(result_path, result.to_dict())
                 return report_exit_code(result)
         if application is None:

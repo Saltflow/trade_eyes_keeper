@@ -48,7 +48,7 @@ def test_direct_sends_cannot_bypass_switches(channel, switch, tmp_path, monkeypa
         monkeypatch.setenv(name, "YES")
     if channel == "email":
         notifier = EmailNotifier(config)
-        archive = Mock(return_value=tmp_path / "report.html")
+        archive = Mock(return_value=(tmp_path / "report.html", None))
         monkeypatch.setattr(notifier, "_save_email_copy", archive)
         notifier._send_email("test", "<p>test</p>")
         archive.assert_called_once()

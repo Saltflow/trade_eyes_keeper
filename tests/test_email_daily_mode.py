@@ -6,6 +6,7 @@ import os
 import sys
 
 import pandas as pd
+from bs4 import BeautifulSoup
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -87,7 +88,9 @@ class TestDailyModeEmail:
                 {
                     "stock_code": "601728",
                     "stock_name": "中国电信",
-                    "date": pd.Timestamp.now().strftime("%Y-%m-%d"),
+                    "date": "2026-09-30",
+                    "quote_status": "last_close",
+                    "quote_as_of": "2026-09-30T15:00:00+08:00",
                     "open": 6.1,
                     "close": 6.2,
                     "high": 6.3,
@@ -121,7 +124,16 @@ class TestDailyModeEmail:
         assert "1.10" in html
         assert "8.7%" in html
         assert "锚值" not in html
-        assert "基本面" not in html
+        soup = BeautifulSoup(html, "html.parser")
+        headings = soup.select(".section-heading, h1, h2, h3, h4, h5, h6")
+        assert all("基本面" not in heading.get_text() for heading in headings)
+        assert (
+            "已有基本面独立保留"
+            in soup.select_one(".watchlist-section .muted-note").get_text()
+        )
+        assert soup.select_one(".status-badge").get_text() == (
+            "最近收盘 · 截至 2026-09-30 15:00:00+08:00"
+        )
         assert "技术面" not in html
         assert "MACD柱" not in html
         assert "三市场决策板" not in html

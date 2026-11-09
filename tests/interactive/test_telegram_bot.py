@@ -28,7 +28,12 @@ def _make_bot_config(extra=None):
 def _update(text, message_id=1, chat_id="123"):
     return {
         "update_id": message_id,
-        "message": {"chat": {"id": chat_id}, "text": text, "message_id": message_id},
+        "message": {
+            "chat": {"id": chat_id},
+            "from": {"id": "owner"},
+            "text": text,
+            "message_id": message_id,
+        },
     }
 
 
@@ -125,7 +130,9 @@ def test_unauthorized_disabled_and_duplicate_updates_do_not_dispatch():
         bot._process_update(_update("/daily"))
         bot.stop()
         bot._process_update(_update("/daily", message_id=2))
-    daily.assert_called_once_with()
+    daily.assert_called_once_with(
+        sender="telegram:owner", chat_id="123", request_id="telegram:123:1"
+    )
 
 
 @pytest.mark.parametrize("flag", ["SKIP_NOTIFICATIONS", "SKIP_TELEGRAM"])

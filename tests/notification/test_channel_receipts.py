@@ -58,7 +58,7 @@ def response(body, status=200):
 @pytest.fixture
 def smtp(config, monkeypatch):
     notifier = EmailNotifier(config)
-    monkeypatch.setattr(notifier, "_save_email_copy", lambda *_: "controlled.html")
+    monkeypatch.setattr(notifier, "_save_email_copy", lambda *_: ("controlled.html", None))
     connection = MagicMock()
     server = connection.__enter__.return_value
     server.send_message.return_value = {}

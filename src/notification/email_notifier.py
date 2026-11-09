@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import platform
 import smtplib
@@ -17,6 +18,7 @@ from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
+from uuid import uuid4
 
 import pandas as pd
 
@@ -654,7 +656,7 @@ class EmailNotifier(BaseNotifier):
             return guard
 
         # 保存邮件副本（无论是否跳过发送）
-        copy_path = self._save_email_copy(subject, body)
+        copy_path, copy_sha256 = self._save_email_copy(subject, body) or (None, None)
         if copy_path:
             logger.info("邮件副本保存成功，路径: %s", copy_path)
         else:
@@ -819,11 +821,13 @@ class EmailNotifier(BaseNotifier):
                         recipients=recipients,
                         message_id=msg["Message-ID"],
                         archive=copy_path,
+                        archive_sha256=copy_sha256,
                     )
                 else:
                     receipt = self._smtp_recipient_receipt(refused, recipients)
                 receipt["message_id"] = msg["Message-ID"]
                 receipt["archive"] = str(copy_path) if copy_path else None
+                receipt["archive_sha256"] = copy_sha256
             return receipt
         except Exception as exc:  # noqa: BLE001 -- optional placement metadata  # noqa: BLE001 - classify transport stage
             logger.error("SMTP阶段异常: %s", type(exc).__name__)
@@ -835,6 +839,7 @@ class EmailNotifier(BaseNotifier):
                 recipients=recipients,
                 message_id=msg.get("Message-ID") if submitted else None,
                 archive=copy_path,
+                archive_sha256=copy_sha256,
             )
 
     @staticmethod
@@ -880,6 +885,7 @@ class EmailNotifier(BaseNotifier):
         recipients: list,
         message_id=None,
         archive=None,
+        archive_sha256=None,
     ) -> dict:
         rejected = isinstance(
             exc,
@@ -902,6 +908,7 @@ class EmailNotifier(BaseNotifier):
             else ("smtp_submission_unknown" if submitted else "smtp_pre_submit_failed"),
             "error": type(exc).__name__,
             "archive": str(archive) if archive else None,
+            "archive_sha256": archive_sha256,
             "message_id": message_id,
             "pieces": [
                 {
@@ -975,13 +982,16 @@ class EmailNotifier(BaseNotifier):
             logger.error(f"发送部署通知邮件失败: {msg}")
             return False, msg
 
-    def _save_email_copy(self, subject, body):
+    def _save_email_copy(self, subject: str, body: str) -> tuple[Path, str | None] | None:
         """
         保存邮件副本到本地文件
 
         Args:
             subject: 邮件主题
             body: 邮件正文（HTML格式）
+
+        Returns:
+            新副本路径和保存时的哈希；哈希不可用时不影响后续SMTP结果。
         """
         try:
             # 生成文件名：日期_时间_主题前30字符
@@ -994,7 +1004,7 @@ class EmailNotifier(BaseNotifier):
             )
             clean_subject = clean_subject[:50]  # 限制长度
 
-            filename = f"{date_str}_{time_str}_{clean_subject}.html"
+            filename = f"{date_str}_{time_str}_{clean_subject}_{uuid4().hex}.html"
             filepath = self.email_archive_dir / filename
 
             # 直接保存正文（已经是完整 HTML 文档，由统一日报或简报模板渲染）
@@ -1004,12 +1014,20 @@ class EmailNotifier(BaseNotifier):
                 f"发送时间: {current_time.strftime('%Y-%m-%d %H:%M:%S')} | "
                 f"收件人: {self.receiver_email} -->\n"
             )
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write(meta_comment)
-                f.write(body)
+            content = (meta_comment + body).encode("utf-8")
+            with open(filepath, "xb") as f:
+                f.write(content)
+
+            # Pin the bytes saved for this message, never certify them during reads.
+            # Archival evidence failure cannot change an SMTP acknowledgement.
+            try:
+                digest = hashlib.sha256(content).hexdigest()
+            except Exception as exc:  # noqa: BLE001 - optional archival evidence
+                logger.warning("邮件副本哈希不可用: %s", type(exc).__name__)
+                digest = None
 
             logger.info(f"邮件副本已保存: {filepath}")
-            return filepath
+            return filepath, digest
 
         except Exception as e:  # noqa: BLE001 -- contain optional report/OS/archive failures
             logger.error(

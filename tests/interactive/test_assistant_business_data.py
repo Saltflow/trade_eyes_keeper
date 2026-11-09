@@ -135,15 +135,15 @@ def test_report_execution_reads_respect_snapshot_owner_and_chat(business_bot):
         )
     found = bot.call_tool("chat", "owner", "data_find", {"domain": "executions"})
     ids = {item["data_id"] for item in found["items"]}
-    assert ids == {"report_run:" + runs[name] for name in ("public", "own")}
-    for name in ("public", "own"):
+    assert ids == {"report_run:" + runs[name] for name in ("own",)}
+    for name in ("own",):
         result = bot.call_tool("chat", "owner", "data_read", {
             "data_id": "report_run:" + runs[name],
         })
         assert result["items"][0]["run_id"] == runs[name]
         assert "config_snapshot" not in json.dumps(result)
         assert "must-never-leak" not in json.dumps(result)
-    for name in ("foreign_owner", "foreign_chat"):
+    for name in ("public", "foreign_owner", "foreign_chat"):
         with pytest.raises(PermissionError):
             bot.call_tool("chat", "owner", "data_read", {
                 "data_id": "report_run:" + runs[name],
@@ -213,3 +213,105 @@ def test_real_pi_reads_public_dividend_then_creates_once_daily_rule(
     assert bot.client.complete.call_count == 4
     assert "已保存触发器 1" in bot.send_message.call_args.args[1]
     assert actual._process is None
+
+
+@pytest.mark.parametrize("profile", [{"repository"}, {"personal"}, {"research"}, set(), None])
+def test_capability_answer_matches_actual_callable_tools(business_bot, profile):
+    bot = business_bot(profile)
+    result = bot.call_tool("chat", "owner", "project_capabilities", {})
+    listed = {row["name"] for rows in result["groups"].values() for row in rows if row["available"]}
+    actual = {tool["function"]["name"] for tool in bot.tool_schema()}
+    assert listed == actual
+    assert len(result["groups"]) == 6
+    assert ("search_repository" in actual) == (profile is None or bool({"repository", "research"} & profile))
+    if profile == {"repository"}:
+        assert "prepare_research" not in actual
+        assert "propose_configuration" not in actual
+        with pytest.raises(ValueError, match="未开放"):
+            bot.call_tool("chat", "owner", "prepare_research", {})
+    with pytest.raises(ValueError, match="未开放"):
+        bot.call_tool("chat", "owner", "unregistered_action", {})
+
+
+def test_project_status_does_not_treat_stale_or_missing_heartbeat_as_live(business_bot):
+    bot = business_bot(None)
+    result = bot.call_tool("chat", "owner", "project_status", {})
+    assert result["ready"] is False
+    assert result["coverage_gaps"]
+    with pytest.raises(ValueError):
+        bot.call_tool("chat", "owner", "project_status", {"path": "/etc/passwd"})
+
+
+def test_actual_tool_queries_keep_report_failure_and_proposal_relationship(business_bot, monkeypatch):
+    bot = business_bot(None)
+    path = bot.root / "config/config.yaml"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text("stocks: ['01339']\n", encoding="utf-8")
+    monkeypatch.setattr(bot.execution_runtime, "start_if_unowned", lambda: False)
+    preview = bot.call_tool("chat", "owner", "report_request", {"kind": "daily"})
+    action = preview["proposal_ids"][0]
+    with pytest.raises(ValueError):
+        bot._control("chat", "other", "确认", action)
+    bot._control("chat", "owner", "确认", action)
+    proposal = bot.call_tool("chat", "owner", "query_tasks", {"action_id": action})
+    run_id = proposal["result"]["run_id"]
+    receipt = {"deliveries": {"email": {"status": "failed", "reason": "smtp_rejected", "recipient": "private@example.com"}, "feishu": {"status": "sent"}}}
+    with bot.execution_runtime.store.connection() as db:
+        db.execute("UPDATE execution_runs SET status='failed',stage='delivery',reason='delivery_failed',result=? WHERE id=?", (json.dumps(receipt), run_id))
+    result = bot.call_tool("chat", "owner", "report_get", {"run_id": run_id})
+    assert result["stage"] == "delivery"
+    assert result["result"]["deliveries"]["email"]["status"] == "failed"
+    assert "private@example" not in json.dumps(result)
+    tasks = bot.call_tool("chat", "owner", "query_tasks", {"source": "reports"})
+    assert tasks["sources"]["reports"]["items"][0]["run_id"] == run_id
+    with pytest.raises(PermissionError):
+        bot.call_tool("chat", "other", "report_get", {"run_id": run_id})
+    assert not bot.call_tool("chat", "other", "query_tasks", {"source": "reports"})["sources"]["reports"]["items"]
+
+
+def test_web_source_is_registered_searchable_and_read_without_second_fetch(business_bot, monkeypatch):
+    from src.data_hub import public_web
+    bot = business_bot(None)
+    download = Mock(return_value=("<html><body>会计政策重述证据 original evidence</body></html>".encode(), {"url": "https://example.org/report", "content_type": "text/html"}))
+    monkeypatch.setattr(public_web, "fetch_public", download)
+    result = bot.call_tool("chat", "owner", "fetch_web_source", {"url": "https://example.org/report", "title": "重述报告"})
+    assert result["catalog"]["status"] == "registered"
+    material_id = result["material_id"]
+    found = bot.call_tool("chat", "owner", "data_search", {"query": "政策重述"})
+    assert any(row["data_id"] == material_id for row in found["results"])
+    reread = bot.call_tool("chat", "owner", "data_read", {"data_id": material_id})
+    assert "政策重述" in str(reread)
+    assert download.call_count == 1
+
+
+def test_structured_read_and_explicit_fetch_have_distinct_effects(business_bot):
+    bot = business_bot(None)
+    bot.call_tool("chat", "owner", "query_stock_fundamentals", {"code": "01339"})
+    assert bot.research.query_stock_fundamentals.call_args.kwargs["_allow_backfill"] is False
+    bot.call_tool("chat", "owner", "fetch_stock_fundamentals", {"code": "01339"})
+    assert bot.research.query_stock_fundamentals.call_args.kwargs["_allow_backfill"] is True
+
+
+def test_task_source_failures_do_not_hide_proposals_and_expiry_is_read_only(business_bot, monkeypatch):
+    bot = business_bot(None)
+    item = bot.store.create("config", "chat", "owner", {}, ttl=-1)
+    monkeypatch.setattr(bot, "_report_tools_for", Mock(side_effect=OSError("queue unavailable")))
+    page = bot.call_tool("chat", "owner", "query_tasks", {"source": "proposals"})
+    assert page["sources"]["proposals"]["items"][0]["status"] == "expired"
+    assert bot.store.get(item["id"], "chat", "owner")["status"] == "previewing"
+    page = bot.call_tool("chat", "owner", "query_tasks", {})
+    assert page["sources"]["proposals"]["status"] == "ok"
+    assert page["sources"]["reports"]["status"] == "failed"
+
+
+def test_body_search_records_real_citation_ranges(business_bot):
+    bot = business_bot(None)
+    path = bot.root / "reports" / "evidence.md"
+    path.parent.mkdir()
+    path.write_text("# 会计口径\n政策变更的原始依据\n", encoding="utf-8")
+    bot._turn_context.current = {"sender": "owner", "chat": "chat", "id": bot.store.begin_turn("chat", "owner", "citation-test", "查口径")}
+    found = bot.call_tool("chat", "owner", "data_search", {"query": "政策变更"})
+    row = found["results"][0]
+    citation = f"{row['path']}:L{row['start_line']}-L{row['end_line']}"
+    assert not bot._citation_errors(citation)
+    assert bot._turn_context.current["sources"]

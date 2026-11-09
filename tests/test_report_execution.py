@@ -409,16 +409,32 @@ def test_public_cli_submits_and_propagates_failure(profile, monkeypatch, flag, k
 
 
 def test_bot_queues_forced_report_without_popen(profile, monkeypatch):
-    _config, path = profile
+    from src.interactive.assistant import report_tools
+
+    config, path = profile
     monkeypatch.setattr(handlers, "CONFIG_PATH", path)
-    submit = Mock(return_value="queued")
-    monkeypatch.setattr(reports, "submit_report", submit)
-    assert "已触发" in handlers.handle_daily()
-    assert "已触发" in handlers.handle_brief("afternoon_snapshot")
-    assert len(submit.call_args_list) == 2
-    for call in submit.call_args_list:
-        assert call.kwargs["force"] is True
-        assert call.kwargs["source"] == "bot"
+    monkeypatch.setenv("SKIP_EMAIL", "true")
+    monkeypatch.setenv("SKIP_NOTIFICATIONS", "true")
+    runtime = ExecutionRuntime(ExecutionStore(reports.runtime_path(config)))
+    monkeypatch.setattr(runtime, "start_if_unowned", Mock(return_value=False))
+    monkeypatch.setattr(report_tools, "get_runtime", lambda _: runtime)
+    daily = handlers.handle_daily(
+        sender="owner", chat_id="chat", request_id="event:daily"
+    )
+    brief = handlers.handle_brief(
+        "afternoon_snapshot", sender="owner", chat_id="chat", request_id="event:brief"
+    )
+    runs = runtime.store.list_runs()
+    assert len(runs) == 2
+    for run in runs:
+        assert run["id"] in daily + brief
+        assert run["status"] == "queued"
+        assert run["payload"]["force"] is True
+        assert run["source"] == "bot"
+        assert run["payload"]["config_snapshot"]["_report_context"] == {
+            "owner": "owner", "chat_id": "chat"
+        }
+    runtime.stop(drain=False)
 
 
 def test_scheduled_callbacks_only_submit_and_obsolete_generation_is_ignored(

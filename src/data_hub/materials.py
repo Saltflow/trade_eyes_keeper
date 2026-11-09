@@ -88,7 +88,9 @@ class DataHub:
             return self._verified(record)
         return None
 
-    def _register(self, path, *, url="", version="", expected_sha=""):
+    def _register(
+        self, path, *, url="", version="", expected_sha="", source_metadata=None
+    ):
         path = Path(path).resolve()
         digest = file_sha(path)
         if expected_sha and digest != expected_sha:
@@ -121,8 +123,23 @@ class DataHub:
             }
             atomic_write(blob_index, record, exclusive=True)
         result = {**record, "url": canonical_url(url), "version": str(version)}
+        if source_metadata is not None:
+            result["source_metadata"] = dict(source_metadata)
         if url:
             exact = self._alias(url, str(version))
+            latest = self._alias(url)
+            if version and latest.exists():
+                previous = load(latest)
+                if not previous.get("version"):
+                    # The initial unversioned fetch is also evidence. Freeze its
+                    # complete provenance before replacing the mutable latest alias.
+                    historical = {**previous, "version": previous["sha256"]}
+                    history = self._alias(url, historical["version"])
+                    if history.exists():
+                        if load(history) != historical:
+                            raise MaterialError("immutable_material_alias_changed")
+                    else:
+                        atomic_write(history, historical, exclusive=True)
             if exact.exists() and load(exact)["sha256"] != digest:
                 raise MaterialError("immutable_material_alias_changed")
             if not exact.exists():
@@ -130,7 +147,7 @@ class DataHub:
             if version:
                 # A discovery-less consumer reads the latest known official
                 # version. Earlier version aliases and bytes remain immutable.
-                atomic_write(self._alias(url), result)
+                atomic_write(latest, result)
         return result
 
     def register_original(self, path, *, url="", version="", expected_sha=""):
@@ -152,12 +169,15 @@ class DataHub:
         expected_sha="",
         content_type=None,
         local_path=None,
+        source_metadata=None,
     ):
         """Download once under a durable URL/version attempt, or reuse a ref.
 
         The trusted adapter validates public URLs and performs shared request
         admission for each actual HTTP/redirect. Callback retries are not hidden
         here; an attempted failure is not automatically retried by another app.
+        An optional source_metadata dict may be filled by the downloader; it is
+        saved with the URL/version alias so cache readers retain response dates.
         """
         url = canonical_url(url)
         key = fingerprint(url)
@@ -182,7 +202,11 @@ class DataHub:
                 digest = file_sha(Path(local_path))
                 with hash_lock(self.root / "blob_locks" / (digest + ".lock")):
                     result = self._register(
-                        local_path, url=url, version=version, expected_sha=expected_sha
+                        local_path,
+                        url=url,
+                        version=version,
+                        expected_sha=expected_sha,
+                        source_metadata=source_metadata,
                     )
                 return {**result, "cache_hit": True}
             url_state = self.root / "source_states" / (key + ".json")
@@ -249,7 +273,11 @@ class DataHub:
                         path.parent.mkdir(parents=True, exist_ok=True)
                         target.replace(path)
                     result = self._register(
-                        path, url=url, version=version, expected_sha=expected_sha
+                        path,
+                        url=url,
+                        version=version,
+                        expected_sha=expected_sha,
+                        source_metadata=source_metadata,
                     )
                 atomic_write(attempt_path, {**attempt, "status": "complete", **result})
                 atomic_write(url_state, {**attempt, "status": "complete", **result})

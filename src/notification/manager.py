@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from importlib import import_module
 
 from .settings import channel_enabled, env_flag
 
@@ -16,54 +17,41 @@ class NotifierManager:
 
     def __init__(self, config: dict):
         self.trigger_delivery = "_trigger_context" in config
+        self.email = None
+        self.feishu = None
+        self.telegram = None
+        self._initialization_failures = {}
         if env_flag("SKIP_NOTIFICATIONS"):
-            self.email = None
-            self.feishu = None
-            self.telegram = None
             return
-        if "_trigger_context" in config:
-            from ..triggers.delivery import TriggerChatNotifier
-            from ..triggers.email_delivery import TriggerEmailNotifier
-            from ..triggers.telegram_delivery import TriggerTelegramNotifier
-
-            self.email = (
-                TriggerEmailNotifier(config)
-                if channel_enabled(config, "email")
-                else None
+        channels = (
+            (
+                ("email", "..triggers.email_delivery", "TriggerEmailNotifier"),
+                ("feishu", "..triggers.delivery", "TriggerChatNotifier"),
+                ("telegram", "..triggers.telegram_delivery", "TriggerTelegramNotifier"),
             )
-            self.feishu = (
-                TriggerChatNotifier(config)
-                if channel_enabled(config, "feishu")
-                else None
+            if self.trigger_delivery
+            else (
+                ("email", ".email_notifier", "EmailNotifier"),
+                ("feishu", ".feishu_notifier", "FeishuNotifier"),
+                ("telegram", ".telegram_notifier", "TelegramNotifier"),
             )
-            self.telegram = (
-                TriggerTelegramNotifier(config)
-                if channel_enabled(config, "telegram")
-                else None
-            )
-            return
-        if channel_enabled(config, "email"):
-            from .email_notifier import EmailNotifier
-
-            self.email = EmailNotifier(config)
-        else:
-            self.email = None
-
-        # Feishu
-        if channel_enabled(config, "feishu"):
-            from .feishu_notifier import FeishuNotifier
-
-            self.feishu = FeishuNotifier(config)
-        else:
-            self.feishu = None
-
-        # Telegram
-        if channel_enabled(config, "telegram"):
-            from .telegram_notifier import TelegramNotifier
-
-            self.telegram = TelegramNotifier(config)
-        else:
-            self.telegram = None
+        )
+        for name, module, class_name in channels:
+            if not channel_enabled(config, name):
+                continue
+            try:
+                notifier = getattr(import_module(module, __package__), class_name)
+                setattr(self, name, notifier(config))
+            except Exception as exc:  # noqa: BLE001 - isolate channel initialization
+                # No transport has started. Retain a failed channel instead of
+                # silently treating it as disabled or blocking later channels.
+                error = type(exc).__name__
+                self._initialization_failures[name] = {
+                    "status": "failed",
+                    "reason": "channel_initialization_failed",
+                    "error": error,
+                }
+                logger.error("频道 %s 初始化失败: %s", name, error)
 
     # ── 渠道列表 ────────────────────────────
 
@@ -80,7 +68,10 @@ class NotifierManager:
         established ``(bool, detail)`` result. Merely returning without raising
         proves neither remote acceptance nor delivery.
         """
-        deliveries = {}
+        deliveries = {
+            name: dict(receipt)
+            for name, receipt in getattr(self, "_initialization_failures", {}).items()
+        }
         for name in ("email", "feishu", "telegram"):
             channel = getattr(self, name)
             if channel is None:
@@ -146,7 +137,7 @@ class NotifierManager:
     def send_deployment_notification(
         self, status: str, version: str = "", summary: str = ""
     ) -> dict[str, bool]:
-        results = {}
+        results = dict.fromkeys(getattr(self, "_initialization_failures", {}), False)
         for name in ("email", "feishu", "telegram"):
             ch = getattr(self, name)
             if ch is None:
@@ -165,4 +156,6 @@ class NotifierManager:
         """发送测试邮件（仅 Email 频道）"""
         if self.email:
             return self.email.send_test_email()
+        if "email" in getattr(self, "_initialization_failures", {}):
+            return False, "Email 频道初始化失败"
         return False, "Email 频道未启用"
