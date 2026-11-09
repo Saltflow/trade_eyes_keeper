@@ -32,14 +32,14 @@ def response(raw=b"<html><body>Original evidence</body></html>", **metadata):
 
 
 def test_search_archives_page_and_marks_snippets_as_discovery(authority, fetch):
-    raw = """<html><body><div class="result">
-        <a class="result__a" href="https://www.cninfo.com.cn/company">巨潮资讯</a>
-        <a class="result__snippet">官方披露摘要</a></div>
-        <div class="result"><a class="result__a"
-        href="javascript:alert(1)">unsafe</a></div></body></html>""".encode()
+    raw = """<html><body><ol><li class="b_algo">
+        <h2><a href="https://www.cninfo.com.cn/company">巨潮资讯</a></h2>
+        <div class="b_caption"><p>官方披露摘要</p></div></li>
+        <li class="b_algo"><h2><a
+        href="javascript:alert(1)">unsafe</a></h2></li></ol></body></html>""".encode()
     fetch.return_value = response(raw)
     result = search_web("600150 annual report", limit=3, authority=authority)
-    assert result["provider"] == "duckduckgo"
+    assert result["provider"] == "bing"
     assert result["original"]["status"] == "saved"
     assert len(result["results"]) == 1
     item = result["results"][0]
@@ -53,9 +53,23 @@ def test_search_archives_page_and_marks_snippets_as_discovery(authority, fetch):
     record = DataHub(authority).resolve(result["sha256"])
     assert Path(record["path"]).read_bytes() == raw
     assert fetch.call_args.args[1] == authority
-    assert fetch.call_args.args[0].startswith("https://html.duckduckgo.com/")
+    assert fetch.call_args.args[0].startswith("https://cn.bing.com/search?")
     assert "deadline" in fetch.call_args.kwargs
     assert "cancel" in fetch.call_args.kwargs
+
+
+def test_explicit_duckduckgo_remains_supported(authority, fetch):
+    raw = b'''<html><body><div class="result">
+        <a class="result__a" href="https://example.org/source">Source</a>
+        <a class="result__snippet">Original source discovery</a>
+        </div></body></html>'''
+    fetch.return_value = response(raw)
+    result = search_web("query", authority=authority, provider="duckduckgo")
+    assert result["provider"] == "duckduckgo"
+    assert result["original"]["status"] == "saved"
+    assert result["results"][0]["url"] == "https://example.org/source"
+    assert fetch.call_args.args[0].startswith("https://html.duckduckgo.com/")
+    fetch.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -282,11 +296,13 @@ def test_pdf_uses_only_existing_local_parser(authority, fetch):
     assert DataHub(authority).parsed.get(result["sha256"])["page_texts"] == {"1": ""}
 
 
-def test_search_failure_does_not_fallback_provider(authority, fetch):
+@pytest.mark.parametrize("provider", [None, "duckduckgo"])
+def test_search_failure_does_not_fallback_provider(authority, fetch, provider):
     fetch.side_effect = ValueError("source_http_503")
-    result = search_web("query", authority=authority)
+    options = {"provider": provider} if provider is not None else {}
+    result = search_web("query", authority=authority, **options)
     assert result["results"] == []
-    assert result["provider"] == "duckduckgo"
+    assert result["provider"] == (provider or "bing")
     assert result["original"]["status"] == "failed"
     fetch.assert_called_once()
 

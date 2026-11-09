@@ -189,7 +189,7 @@ def search_web(
     project_root: Path | str | None = None,
     authority: AuthorityRef | None = None,
     refresh: bool = True,
-    provider: str = "duckduckgo",
+    provider: str = "bing",
     register_material: Callable[[dict], object] | None = None,
     deadline: float | None = None,
     cancel: threading.Event | None = None,
