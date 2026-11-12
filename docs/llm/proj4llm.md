@@ -5161,3 +5161,11 @@ User-authorized batch: `data/fundamental_data/terra61_high_batch100_20261102/man
 - 新邮件附件归档实际 MIME 字节、固定哈希及所属报告 run；私有附件读取校验 owner/chat 和原始回执，缺解析/归档失败与已发送状态分开，不公开登记附件或补造旧 PDF。
 - 监控列表、参考持仓、保存配置改用明确工具和既有 ProposalStore；原业务移入现有 core 模块，同步删除模型拼 slash 的往返。相对触发时间用 after_seconds，由认证消息/持久 turn 时间计算，不取整或重试顺延；list/prefix 参数说明同步修正。
 - 版本、测试和线上边界以 docs/development/project_tools_gaps_20261112.md 为准；历史记录中的“未部署”仅描述当时批次。
+
+
+### 2026-11-12 两层工具补缺上线及真实验收
+
+- ec10f452 已推送 master 并于 20:04 +08:00 部署；283 份受管理源码哈希与发布清单一致，228 份保护配置/持仓文件未变，生产隔离回归 871 passed / 0 failed / 0 errors / 0 skipped。业务源码新增 965、删除 1432，净减少 467 行。
+- DS 原生搜索真实调用、IFRS 官方 PDF 原文归档解析、另一会话禁网重读和当前 54 项工具能力查询均通过。模型验收使用生产代码及真实 DS API、隔离会话，不冒充真实飞书入站。
+- 新建一次性触发器 #16（不是重放历史动作），180 秒相对时间完整保留；全 26 标的日报成功，邮件及飞书三段逐渠道成功，Gmail INBOX 收件确认，实际 PDF 108285 字节与归档 SHA256 完全一致。附件私有读取和越权拒绝通过；尚无正文解析时明确返回 existing_text_parse_unavailable。
+- 完整部署、真实数据及剩余边界见 docs/development/project_tools_gaps_20261112.md；旧段落中的候选、未部署和 Bing 默认仅记录当时状态，已被本次发布取代。
