@@ -134,3 +134,33 @@ def load_config(config_path: Path | str | None = None) -> dict:
     """Load the central runtime configuration for command-line entry points."""
     path = DEFAULT_CONFIG_PATH if config_path is None else config_path
     return ConfigStore(path).load_runtime()
+
+
+def save_configuration(config_path: Path) -> str:
+    """把当前 config.yaml 提交到 git。"""
+    import logging
+    import subprocess
+
+    logger = logging.getLogger(__name__)
+
+    repo = config_path.parent.parent  # .../trade_eyes_keeper
+    try:
+        subprocess.run(
+            [
+                "git", "commit", "--only", "-m", "bot: watchlist updated via /save",
+                "--no-verify", "--", "config/config.yaml",
+            ],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+        logger.info("配置已提交到 git")
+        return "✅ 监控列表已保存到 git。下次本地 <code>git pull</code> 即可同步。"
+    except subprocess.CalledProcessError as e:
+        msg = e.stderr.decode() if e.stderr else str(e)
+        logger.error(f"git commit 失败: {msg}")
+        return f"❌ git 保存失败: {msg[:200]}"
+    except Exception as e:
+        logger.exception("git 保存异常")
+        return f"❌ 保存失败: {e}"

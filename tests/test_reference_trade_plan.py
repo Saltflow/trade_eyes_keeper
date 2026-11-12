@@ -159,7 +159,7 @@ def test_manual_ref_reset_pins_all_markets_to_latest_active_run(
     )
     monkeypatch.setattr(
         "src.search.artifacts.load_latest_strategy_run",
-        lambda: active,
+        lambda **kwargs: active,
     )
     resets = []
 

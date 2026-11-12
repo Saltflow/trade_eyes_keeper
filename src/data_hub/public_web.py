@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import http.client
 import ipaddress
+import json
 import socket
 import ssl
 import time
-from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit
+
+from urllib3.exceptions import HTTPError
 
 from ..task_runtime.request_policy import RequestPolicy
-from .http import access_verification
+from .http import AuthorityHTTP, access_verification
+
+SEARCH_ENDPOINT = "https://api.deepseek.com/v1/tools/search"
 
 
 def public_address(url):
@@ -126,50 +131,100 @@ def fetch_public(url, authority, *, deadline, cancel, max_bytes=20 * 1024 * 1024
     raise ValueError("evidence_redirect_limit")
 
 
-def search_url(query, provider="bing"):
-    if not isinstance(query, str) or not 1 <= len(query.strip()) <= 256:
+def search_url(query, limit=5):
+    """Public provenance/cache identity; the actual API request is POST."""
+    if not isinstance(query, str) or not 1 <= len(query.strip()) <= 128:
         raise ValueError("bounded_search_query_required")
-    endpoints = {
-        "bing": "https://cn.bing.com/search?",
-        "duckduckgo": "https://html.duckduckgo.com/html/?",
-    }
-    if provider not in endpoints:
-        raise ValueError("unsupported_search_provider")
-    return endpoints[provider] + urlencode({"q": query.strip()})
+    if type(limit) is not int or not 1 <= limit <= 8:
+        raise ValueError("bounded_search_count_required")
+    return SEARCH_ENDPOINT + "?" + urlencode({"query": query.strip(), "count": limit})
+
+
+def search_public(query, authority, *, api_key, limit=5, deadline, cancel):
+    """One authenticated DS Search call, using the existing request policy."""
+    identity = search_url(query, limit)
+    if not isinstance(api_key, str) or not api_key.strip():
+        raise ValueError("deepseek_search_api_key_missing")
+    if cancel.is_set() or time.monotonic() >= deadline:
+        raise TimeoutError("search_request_stopped")
+    client = AuthorityHTTP(authority)
+    response = None
+    try:
+        response = client.post(
+            SEARCH_ENDPOINT,
+            json={"query": query.strip(), "count": limit, "need_content": False},
+            headers={
+                "Authorization": "Bearer " + api_key.strip(),
+                "Accept-Encoding": "identity",
+            },
+            timeout=20,
+            deadline=deadline,
+            cancel=cancel,
+            stream=True,
+        )
+        if response.status_code != 200:
+            # Do not persist provider error text or authenticated request objects.
+            raise ValueError(f"deepseek_search_http_{response.status_code}")
+        if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+            raise ValueError("search_encoded_body_not_supported")
+        chunks, size = [], 0
+        # A one-byte chunk yields even on a drip-fed response. Larger chunks
+        # can keep resetting the read idle timeout before returning control.
+        # This also supports production urllib3 1.26 without another transport.
+        for chunk in response.iter_content(1):
+            if cancel.is_set() or time.monotonic() >= deadline:
+                raise TimeoutError("search_request_stopped")
+            size += len(chunk)
+            if size > 2 * 1024 * 1024:
+                raise ValueError("search_response_size_limit")
+            chunks.append(chunk)
+        return b"".join(chunks), {
+            "url": identity,
+            "content_type": "application/json",
+            "provider": "deepseek",
+            "method": "POST",
+            "endpoint": SEARCH_ENDPOINT,
+        }
+    except TimeoutError:
+        raise
+    except (OSError, HTTPError):
+        raise TimeoutError("deepseek_search_transport_failed") from None
+    finally:
+        if response is not None:
+            response.close()
+        client.close()
 
 
 def search_results(raw):
-    from bs4 import BeautifulSoup
-
-    soup = BeautifulSoup(raw, "html.parser")
+    try:
+        payload = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise ValueError("deepseek_search_invalid_json") from None
+    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+        raise ValueError("deepseek_search_invalid_results")  # noqa: TRY004 - invalid provider response
     results = []
-    for item in soup.select("li.b_algo, .result"):
-        bing = "b_algo" in item.get("class", [])
-        link = item.select_one("h2 a" if bing else ".result__a")
-        if not link:
-            continue
-        base = "https://cn.bing.com" if bing else "https://html.duckduckgo.com"
-        url = urljoin(base, link.get("href", ""))
-        parsed = urlsplit(url)
-        if parsed.hostname in {"duckduckgo.com", "html.duckduckgo.com"}:
-            url = parse_qs(parsed.query).get("uddg", [url])[0]
+    for item in payload["results"]:
+        if not isinstance(item, dict) or not isinstance(item.get("url"), str):
+            raise ValueError("deepseek_search_invalid_result")  # noqa: TRY004 - invalid provider response
+        url = item["url"]
         target = urlsplit(url)
-        if target.scheme != "https" or target.hostname in {
-            "bing.com",
-            "www.bing.com",
-            "cn.bing.com",
-            "duckduckgo.com",
-            "html.duckduckgo.com",
-        }:
+        if (
+            target.scheme != "https"
+            or not target.hostname
+            or target.username is not None
+            or target.password is not None
+            or len(url) > 4096
+            or any(ord(c) < 32 for c in url)
+        ):
             continue
         if any(row["url"] == url for row in results):
             continue
-        snippet = item.select_one(".b_caption p, p" if bing else ".result__snippet")
         results.append(
             {
-                "title": link.get_text(" ", strip=True)[:300],
+                "title": str(item.get("title") or "")[:300],
                 "url": url,
-                "snippet": snippet.get_text(" ", strip=True)[:1000] if snippet else "",
+                "snippet": str(item.get("snippet") or "")[:1000],
+                "summary": str(item.get("summary") or "")[:8000],
                 "status": "discovery_only_not_primary_evidence",
             }
         )

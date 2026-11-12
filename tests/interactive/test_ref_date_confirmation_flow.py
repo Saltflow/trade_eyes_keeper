@@ -36,7 +36,7 @@ def reset_project(tmp_path, monkeypatch):
         strategy_for=lambda group: SimpleNamespace(name="fixture"),
         run_id_for=lambda group: f"run-{group}",
     )
-    monkeypatch.setattr("src.search.artifacts.load_latest_strategy_run", lambda: active)
+    monkeypatch.setattr("src.search.artifacts.load_latest_strategy_run", lambda **kwargs: active)
     monkeypatch.setattr(
         "src.search.config.get_market_optimizer_configs",
         lambda cfg: {
@@ -77,10 +77,8 @@ def propose(assistant, date="2026-11-09"):
     return assistant.call_tool(
         "chat",
         "alice",
-        "bot_command",
-        {
-            "command": f"/ref_date {date}",
-        },
+        "reference_portfolio",
+        {"action": "reset", "date": date},
     )["proposal_ids"][0]
 
 
@@ -99,7 +97,7 @@ def test_old_direct_entry_never_resets_even_with_global_pending(
 
 def test_query_does_not_create_a_proposal(assistant):
     result = assistant.call_tool(
-        "chat", "alice", "bot_command", {"command": "/ref_date"}
+        "chat", "alice", "reference_portfolio", {"action": "view"}
     )
     assert "参考持仓基期" in result["response"]
     assert assistant.store.recent("chat", "alice") == []

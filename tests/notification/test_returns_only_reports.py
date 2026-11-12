@@ -225,7 +225,8 @@ def test_daily_email_uses_only_ke_curve_and_retains_full_fundamentals_events(
         "_send_email",
         lambda *args, **kwargs: sent.append((args, kwargs)) or {"status": "sent"},
     )
-    monkeypatch.setattr(notifier, "_generate_daily_pdf", lambda *args: None)
+    pdf = b"%PDF-1.7\ncontrolled report fixture\n%%EOF"
+    monkeypatch.setattr(notifier, "_generate_daily_pdf", lambda *args: pdf)
     monkeypatch.setattr(
         "src.notification.email_notifier.generate_return_curve_png",
         lambda payload: b"synthetic-png",
@@ -241,6 +242,7 @@ def test_daily_email_uses_only_ke_curve_and_retains_full_fundamentals_events(
     assert "合成三季报_全文" in body and "fixture.pdf" in body
     assert "cid:chart002" in body and "Ke策略收益曲线" in body
     assert sent[0][1]["portfolio_chart_dict"] == {"overview": b"synthetic-png"}
+    assert sent[0][1]["pdf_bytes"] == pdf
     assert original.signal_scan is not None
 
 

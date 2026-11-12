@@ -13,7 +13,7 @@ import sqlite3
 from contextlib import closing
 from copy import deepcopy
 from dataclasses import asdict, is_dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from zoneinfo import ZoneInfo
@@ -79,6 +79,8 @@ personal_monitor仅保留持仓事实及历史记录；所有提醒、投资条�
 三季报事件使用announcement.q3_report、report_period=Q3、day_offsets=[0,1]，按监控池动态匹配。
 到期事件缺时刻默认Asia/Shanghai 09:50，命中后生成完整日报；回执必须给出完整年月日和时区。未给年份且今年日期已过时询问年份，不偷偷跨年。
 编号是持久number，不是列表行号；先list/get取得真实状态，不猜编号或他人身份。
+list只接受state；prefix只用于catalog字段前缀，不能作为触发器名称筛选。
+“N秒/分钟/小时后”用schedule.after_seconds表示精确间隔，由系统基于认证消息时间计算；不要自行换算成整分钟at。绝对时刻仍使用at/times。
 删除区分已删除、已不存在与已提交将尽力停止；正在投递或已送达可能无法撤回，未知投递不得声称已撤回。
 只依据工具成功回执声称已创建或更改；复杂自然语言应转结构化规则，缺失条件明确询问。
 list/get按action_results逐动作、channels逐渠道解释状态；飞书成功不代表邮件成功。last_result只兼容最新一条，不代表其他报告无记录。报告数据未就绪与是否投递成功分别说明。
@@ -111,7 +113,11 @@ def trigger_tool_schema() -> list[dict]:
                             "type": "string",
                             "enum": ["active", "paused", "done", "deleted", "all"],
                         },
-                        "prefix": {"type": "string", "maxLength": 200},
+                        "prefix": {
+                            "type": "string",
+                            "maxLength": 200,
+                            "description": "仅action=catalog使用，筛选字段路径前缀；list不接受此参数。",
+                        },
                         "expected_revision": {"type": "integer", "minimum": 1},
                         "changes": {
                             "type": "object",
@@ -129,7 +135,14 @@ def trigger_tool_schema() -> list[dict]:
                                 },
                                 "schedule": {
                                     "type": "object",
-                                    "description": "at为带时区ISO时刻，或times为多个ISO时刻；timezone默认为Asia/Shanghai。",
+                                    "properties": {
+                                        "after_seconds": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                            "maximum": 31622400,
+                                        },
+                                    },
+                                    "description": "相对时间仅传after_seconds正整数（例如3分钟后=180），基于认证消息时间保留秒；不能同时传at/times/kind。绝对时间at为带时区ISO时刻，或times为多个ISO时刻；timezone默认为Asia/Shanghai。",
                                 },
                                 "event": {
                                     "type": "object",
@@ -340,7 +353,7 @@ class TriggerTools:
             raise ValueError("规则不能指定owner/chat/sender/route；使用当前认证会话")
         if not message_id:
             raise ValueError("当前消息缺少可验证上下文，未创建触发器")
-        value = self._prepare(spec)
+        value = self._prepare(spec, now)
         raw = json.dumps(
             spec,
             sort_keys=True,
@@ -354,10 +367,19 @@ class TriggerTools:
         created = self.store.create(self.owner, value, request_key=key, now=now)
         return self._saved_reply("created", created)
 
-    def _prepare(self, spec: dict) -> dict:
+    def _prepare(self, spec: dict, now: datetime) -> dict:
         if not isinstance(spec, dict) or _untrusted_route(spec):
             raise ValueError("规则不能指定owner/chat/sender/route；使用当前认证会话")
         value = deepcopy(spec)
+        schedule = value.get("schedule")
+        if isinstance(schedule, dict) and "after_seconds" in schedule:
+            seconds = schedule["after_seconds"]
+            if set(schedule) - {"after_seconds", "timezone", "window_seconds"}:
+                raise ValueError("after_seconds不能与绝对时刻或重复日程混用")
+            if type(seconds) is not int or not 1 <= seconds <= 366 * 86400:
+                raise ValueError("after_seconds需要1至31622400的整数秒数")
+            schedule.pop("after_seconds")
+            schedule["at"] = (now + timedelta(seconds=seconds)).isoformat()
         actions = value.get("actions")
         if not isinstance(actions, list) or not 1 <= len(actions) <= 10:
             raise ValueError("请提供1至10个daily或brief报告动作；optimize仅预留")
@@ -418,7 +440,7 @@ class TriggerTools:
             dates = [
                 datetime.fromisoformat(moment)
                 .astimezone(BEIJING)
-                .strftime("%Y年%m月%d日 %H:%M")
+                .strftime("%Y年%m月%d日 %H:%M:%S")
                 for moment in schedule["times"]
             ]
             when = "，时间为" + "、".join(dates) + "（Asia/Shanghai）"
@@ -809,7 +831,7 @@ class TriggerTools:
                     "、".join(
                         datetime.fromisoformat(value)
                         .astimezone(zone)
-                        .strftime("%Y年%m月%d日 %H:%M")
+                        .strftime("%Y年%m月%d日 %H:%M:%S")
                         for value in schedule["times"]
                     )
                     + f"（{zone.key}）"
@@ -824,7 +846,7 @@ class TriggerTools:
                 summary.append(days + schedule["at"] + f"（{zone.key}）")
             due = next_due(schedule, now)
             next_label = (
-                due.astimezone(zone).strftime("%Y年%m月%d日 %H:%M") + f"（{zone.key}）"
+                due.astimezone(zone).strftime("%Y年%m月%d日 %H:%M:%S") + f"（{zone.key}）"
                 if due
                 else "暂无后续时刻，等待本次执行结果"
             )
@@ -929,9 +951,11 @@ class TriggerTools:
             "quote_samples": diagnostic.get("quote_samples", {}),
         }
         for path, sample in diagnostic.get("quote_samples", {}).items():
-            message += (f"\n采样报价：{path}={sample['value']}；"
-                        f"源时间 {sample['source_time']}；采集时间 {sample['collected_at']}"
-                        "（延迟报价，非实时）")
+            message += (
+                f"\n采样报价：{path}={sample['value']}；"
+                f"源时间 {sample['source_time']}；采集时间 {sample['collected_at']}"
+                "（延迟报价，非实时）"
+            )
         if detail:
             notes = []
             labels = {
@@ -979,7 +1003,10 @@ class TriggerTools:
                 "catalog": {"prefix"},
             }[action]
             if set(params) - allowed:
-                raise ValueError("触发器操作含未知参数；身份和会话不可通过工具指定")
+                raise ValueError(
+                    f"{action}仅允许参数：{','.join(sorted(allowed))}；"
+                    "prefix仅用于catalog。身份和会话不可通过工具指定"
+                )
             if action == "create":
                 return self._create(
                     params.get("spec"),
@@ -1017,7 +1044,9 @@ class TriggerTools:
                 record = self.store.get(self.owner, number)
                 if record is None or record["state"] == "deleted":
                     return _reply("not_found", f"触发器 {number} 不存在。")
-                value = self._prepare({**self._editable_spec(record), **changes})
+                value = self._prepare(
+                    {**self._editable_spec(record), **changes}, _clock(now or self.now)
+                )
                 # Pass only requested fields. A full normalized spec would
                 # re-open a done schedule or move its route on a label edit.
                 patch = {key: value.get(key) for key in changes}

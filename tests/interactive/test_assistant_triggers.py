@@ -311,9 +311,9 @@ def test_tool_cannot_change_authenticated_owner_chat_or_user_target_number(
     assert assistant.store.recent_turns("chat", "owner")[0]["status"] == "completed"
 
 
-def test_global_scheduler_proposals_stay_distinct_from_personal_crud():
+def test_retired_global_scheduler_is_readonly():
     assert "trigger_manage直接执行可逆管理" in SYSTEM_PROMPT
-    assert "改变全局scheduler配置" in SYSTEM_PROMPT
+    assert "旧值仅供查询，不可写入" in SYSTEM_PROMPT
     assert "必须走配置提案和确认" not in SYSTEM_PROMPT
 
 
@@ -592,3 +592,56 @@ def test_successful_text_history_is_available_to_pi_on_followup(assistant_factor
     send(assistant, "刚才的条件是什么", "followup")
     assert len(assistant.trigger_store.list("owner")) == 1
     assert "低于40" in assistant.send_message.call_args.args[1]
+
+
+@pytest.mark.parametrize(
+    "message_time", [None, {"create_time": "invalid"}, {"create_time": "1793451607924"}]
+)
+def test_relative_schedule_uses_stable_platform_or_persisted_time(
+    assistant_factory, message_time
+):
+    from datetime import timedelta
+
+    from src.interactive.assistant.personal_tools import message_datetime
+
+    assistant = assistant_factory()
+    turn = assistant.store.begin_turn(
+        "chat", "owner", "relative", "3分钟后生成完整日报"
+    )
+    received = datetime.fromtimestamp(
+        assistant.store.turn(turn)["created"], timezone.utc
+    )
+    expected = message_datetime(message_time, now=received) + timedelta(seconds=180)
+    seen = []
+
+    def create(messages, tools, invoke, *args, **kwargs):
+        result = invoke(
+            "trigger_manage",
+            {
+                "action": "create",
+                "spec": {
+                    "label": "精确三分钟",
+                    "schedule": {"after_seconds": 180},
+                    "actions": [{"kind": "daily"}],
+                    "match_policy": "once",
+                },
+            },
+        )
+        seen.append(result["data"]["trigger"]["number"])
+        return result["message"]
+
+    assistant.harness.run.side_effect = create
+    for _ in range(2):
+        assistant.handle(
+            "chat",
+            "owner",
+            "3分钟后生成完整日报",
+            "relative",
+            turn_id=turn,
+            message_time=message_time,
+        )
+    assert seen == [1, 1]
+    record = assistant.trigger_store.get("owner", 1)
+    due = datetime.fromisoformat(record["spec"]["schedule"]["times"][0])
+    assert due == expected
+    assert len(assistant.trigger_store.list("owner")) == 1

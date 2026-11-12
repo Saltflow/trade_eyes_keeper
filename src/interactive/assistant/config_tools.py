@@ -20,16 +20,14 @@ from typing import Any
 import yaml
 
 from ...core.config_store import ConfigStore
-from ...core.schedule_manager import ScheduleManager, get_schedule_manager
+from ...core.schedule_manager import get_schedule_manager
 from ...notification.settings import env_flag
 
 _APP = "config/config.yaml"
 _MARKETS = ("a_share", "hk", "us")
 _WATCH_MARKETS = (*_MARKETS, "sg")
 _NEXT_TASK = "下次任务生效；已开始的任务继续使用原配置快照"
-_SCHEDULE_EFFECT = "确认保存后刷新运行中的调度器；未运行时在服务启动后生效"
 _SYMBOL = re.compile(r"[A-Za-z0-9^][A-Za-z0-9.^=_-]{0,31}\Z")
-_TIME = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d\Z")
 
 
 class ConfigurationConflict(ValueError):
@@ -103,8 +101,6 @@ class _Rule:
             valid = type(value) is int
         elif self.kind == "number":
             valid = type(value) in {int, float} and math.isfinite(value)
-        elif self.kind == "time":
-            valid = isinstance(value, str) and bool(_TIME.fullmatch(value))
         elif self.kind == "enum":
             valid = isinstance(value, str) and value in self.choices
         elif self.kind == "symbols":
@@ -122,11 +118,6 @@ class _Rule:
                 )
                 and len(set(value)) == len(value)
             )
-        elif self.kind == "report_triggers":
-            from ...notification.report_triggers import validate_report_trigger
-
-            validate_report_trigger(value)
-            valid = True
         else:
             valid = False
         if not valid:
@@ -146,28 +137,6 @@ class _Rule:
             result["maximum"] = self.maximum
         if self.choices:
             result["choices"] = list(self.choices)
-        if self.kind == "report_triggers":
-            result["schema"] = {
-                "mode": ["any", "all"],
-                "condition_keys": ["path", "operator", "value"],
-                "path_syntax": "dot-separated fields with optional * wildcard segments",
-                "operators": [
-                    "exists",
-                    "non_empty",
-                    "contains",
-                    "equals",
-                    "gt",
-                    "gte",
-                    "lt",
-                    "lte",
-                ],
-                "max_conditions": 20,
-                "allowed_roots": [
-                    "dividend_events",
-                    "placements",
-                    "announcements",
-                ],
-            }
         return result
 
 
@@ -372,39 +341,6 @@ class ConfigurationTools:
             key = f"announcements.{name}"
             add(key, rule, description)
             fields[key] = replace(fields[key], value=announcement_values[key]["value"])
-        add(
-            "scheduler.run_time",
-            _Rule("time"),
-            "日报调度时间 HH:MM",
-            default="19:00",
-            effect=_SCHEDULE_EFFECT,
-        )
-        add(
-            "scheduler.daily_enabled",
-            _Rule("boolean"),
-            "启用定时日报",
-            default=True,
-            effect=_SCHEDULE_EFFECT,
-        )
-        add(
-            "scheduler.daily_report_frequency",
-            _Rule("enum", choices=("daily", "weekly", "off")),
-            "普通日报频次；weekly 按配置的星期发送，告警仍即时发送",
-            default="daily",
-        )
-        add(
-            "scheduler.daily_report_triggers",
-            _Rule("report_triggers"),
-            "定时日报声明式发送条件；使用 path/operator/value，mode=any或all。空对象保持原行为",
-            default={},
-            effect=_SCHEDULE_EFFECT,
-        )
-        add(
-            "scheduler.daily_report_weekday",
-            _Rule("integer", 0, 6),
-            "每周日报的星期，0=周一，6=周日",
-            default=4,
-        )
         briefs = _get(app, ("scheduler", "brief_reports"), [])
         if not isinstance(briefs, list):
             raise TypeError("scheduler.brief_reports 必须是列表")
@@ -417,17 +353,16 @@ class ConfigurationTools:
                 r"[a-zA-Z0-9_-]+", brief_id
             ):
                 raise ValueError("简报 id 无效")
-            if ScheduleManager._retired_job(brief_id):
+            if brief_id in {"optimize", "brief_optimize"} or brief_id.startswith(
+                ("fundamental_quant", "brief_fundamental_quant")
+            ):
                 continue
             if brief_id in seen_briefs:
                 raise ValueError("简报 id 重复")
             seen_briefs.add(brief_id)
             for suffix, rule, default in (
-                ("run_time", _Rule("time"), "09:50"),
-                ("enabled", _Rule("boolean"), True),
                 ("skip_weekends", _Rule("boolean"), True),
                 ("stocks", _Rule("symbols"), []),
-                ("triggers", _Rule("report_triggers"), {}),
             ):
                 add(
                     f"scheduler.brief_reports.{brief_id}.{suffix}",
@@ -435,9 +370,7 @@ class ConfigurationTools:
                     f"简报 {brief_id} 的 {suffix}",
                     path=("scheduler", "brief_reports", index, suffix),
                     default=default,
-                    effect=_SCHEDULE_EFFECT
-                    if suffix in {"run_time", "enabled", "triggers"}
-                    else _NEXT_TASK,
+                    effect=_NEXT_TASK,
                 )
         for channel in ("email", "feishu", "telegram"):
             section = _get(app, ("notification", channel), {}) or {}
@@ -483,6 +416,15 @@ class ConfigurationTools:
             key, value = change["key"], change["value"]
             spec = registry.get(key)
             if spec is None:
+                if key in {
+                    "scheduler.run_time", "scheduler.run_on_startup",
+                    "scheduler.daily_enabled", "scheduler.daily_report_frequency",
+                    "scheduler.daily_report_weekday", "scheduler.daily_report_triggers",
+                } or (
+                    key.startswith("scheduler.brief_reports.")
+                    and key.rsplit(".", 1)[-1] in {"enabled", "run_time", "triggers"}
+                ):
+                    raise ValueError("固定报告配置已退役，请使用受管触发器；旧提案不能执行")
                 raise ValueError(f"不可修改的配置字段：{key}；请先查询可编辑字段")
             if key in announcement_values and not announcement_values[key]["valid"]:
                 raise ValueError(f"{key} 原配置类型异常，未生成变更；原值未展示")
@@ -504,9 +446,6 @@ class ConfigurationTools:
             proposed = deepcopy(snapshots)
             for spec, value in items:
                 _set(proposed[target], spec.path, value)
-            keys = [spec.key for spec, _ in items]
-            if target == _APP and any(key.startswith("scheduler.") for key in keys):
-                ScheduleManager._scheduled_specs(proposed[_APP])
             dependencies = {}
             markets = sorted({group for spec, _ in items for group in spec.markets})
             effects = list(dict.fromkeys(spec.effect for spec, _ in items))
@@ -679,7 +618,7 @@ class ConfigurationTools:
             else:
                 try:
                     manager.reload_config()
-                    effect = "立即生效（运行中的调度器已刷新）；日报频次等业务设置在下次任务读取"
+                    effect = "配置已刷新；报告业务设置在下次任务读取，不创建固定调度"
                 except Exception as exc:  # noqa: BLE001 - the YAML is already committed
                     effect = "配置已保存，但调度器刷新失败；需要重启服务"
                     # Never propagate a runtime exception containing config/credentials.

@@ -21,6 +21,284 @@ from src.interactive.feishu_handler import handle_feishu_message
 from src.interactive.telegram_bot import TelegramBot
 
 
+def test_report_get_discovers_receipt_attachment_with_pinned_hash(reports, monkeypatch):
+    from src.data_hub.materials import DataHub
+
+    prohibited = Mock(side_effect=AssertionError("read must not register or parse PDF"))
+    monkeypatch.setattr(DataHub, "register_original", prohibited)
+    monkeypatch.setattr(DataHub, "ensure_parsed", prohibited)
+    path = reports.root / "data/email_archive/.attachments/sent.pdf"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"%PDF-1.7\ncontrolled exact sent bytes\n%%EOF")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    run = reports.submit(request_id="attachment-regression")
+    result = {
+        "deliveries": {
+            "email": {
+                "status": "sent",
+                "attachments": [
+                    {
+                        "filename": "日报.pdf",
+                        "content_type": "application/pdf",
+                        "archive": str(path),
+                        "archive_sha256": digest,
+                        "archive_status": "saved",
+                        "bytes": path.stat().st_size,
+                    }
+                ],
+            }
+        }
+    }
+    with reports.runtime.store.connection() as db:
+        db.execute(
+            "UPDATE execution_runs SET status='succeeded', result=? WHERE id=?",
+            (json.dumps(result), run["run_id"]),
+        )
+    projected = reports.get(run["run_id"])
+    assert len(projected["archives"]) == 1
+    assert projected["archives"][0]["sha256"] == digest
+    assert (
+        projected["archives"][0]["source"] == "data/email_archive/.attachments/sent.pdf"
+    )
+    assert (
+        projected["archives"][0]["data_id"]
+        == f"report_artifact:{run['run_id']}:{digest}"
+    )
+    linked = projected["archives"][0]
+    assert reports.runs()["items"][0]["archives"][0]["data_id"] == linked["data_id"]
+    assert report_tools.eligibility_reason(linked["source"])
+    public = BusinessDataTools(reports.root)
+    assert not any(
+        item.get("source") == linked["source"]
+        for item in public.find(domain="reports")["items"]
+    )
+    assert not (
+        reports.root / "data/shared_platform/materials/objects" / digest
+    ).exists()
+    with pytest.raises(ValueError):
+        public.catalog.index_paths([linked["source"]])
+    assert reports.read_artifact(linked["data_id"])["coverage_gaps"] == [
+        "existing_text_parse_unavailable"
+    ]
+    for owner, chat in (("other", "chat"), ("owner", "other")):
+        foreign = report_tools.ReportTools(
+            reports.config,
+            owner=owner,
+            chat_id=chat,
+            runtime=reports.runtime,
+            config_path=reports.config_path,
+        )
+        with pytest.raises(PermissionError):
+            foreign.read_artifact(linked["data_id"])
+        with pytest.raises(PermissionError):
+            foreign.get(run["run_id"])
+        assert foreign.runs()["items"] == []
+    # Only a pre-existing neutral parse may supply text; this call never creates one.
+    from src.platform_composition import authority_for
+
+    hub = DataHub(authority_for(reports.root, reports.config))
+    hub.parsed._save(
+        {
+            "sha256": digest,
+            "complete": True,
+            "content_type": "application/pdf",
+            "content": [{"type": "text", "text": "exact cached report"}],
+            "page_texts": {"1": "exact cached report"},
+        }
+    )
+    text = reports.read_artifact(linked["data_id"])
+    assert text["sha256"] == digest
+    assert "exact cached report" in json.dumps(text)
+    path.write_bytes(b"%PDF-changed")
+    assert reports.get(run["run_id"])["archives"] == []
+    with pytest.raises(ValueError, match="archive_content_changed"):
+        reports.read_artifact(linked["data_id"])
+    prohibited.assert_not_called()
+
+
+def test_service_data_read_uses_owner_chat_and_never_publicly_indexes_attachment(
+    reports,
+):
+    from src.interactive.assistant.service import FeishuAssistant
+    from src.interactive.assistant.store import ProposalStore
+
+    path = reports.root / "data/email_archive/.attachments/reader.html"
+    path.parent.mkdir(parents=True)
+    path.write_text("<p>private exact attachment</p>", encoding="utf-8")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    run_id = _record_result(
+        reports,
+        {
+            "status": "succeeded",
+            "deliveries": {
+                "email": {
+                    "status": "sent",
+                    "attachments": [
+                        {
+                            "filename": "reader.html",
+                            "content_type": "text/html",
+                            "archive_status": "saved",
+                            "archive": str(path),
+                            "archive_sha256": digest,
+                        }
+                    ],
+                }
+            },
+        },
+    )
+    key = reports.get(run_id)["archives"][0]["data_id"]
+    bot = FeishuAssistant(
+        reports.config,
+        Mock(),
+        project_root=reports.root,
+        configuration=Mock(),
+        research=Mock(),
+        client=Mock(),
+        store=ProposalStore(reports.runtime.store.path),
+        execution_runtime=reports.runtime,
+        start_workers=False,
+    )
+    try:
+        value = bot.call_tool("chat", "owner", "data_read", {"data_id": key})
+        assert "private exact attachment" in json.dumps(value)
+        assert value["sha256"] == digest
+        for chat, owner in (("chat", "other"), ("other", "owner")):
+            with pytest.raises(PermissionError):
+                bot.call_tool(chat, owner, "data_read", {"data_id": key})
+        # The public catalog cannot provide an alternate file_id for the hidden file.
+        catalog = report_tools.DatasetCatalog(reports.root)
+        with pytest.raises(ValueError):
+            catalog.index_paths(["data/email_archive/.attachments/reader.html"])
+        with catalog._connect() as db:
+            assert (
+                db.execute(
+                    "SELECT COUNT(*) FROM files WHERE relative_path=?",
+                    ("data/email_archive/.attachments/reader.html",),
+                ).fetchone()[0]
+                == 0
+            )
+    finally:
+        bot.stop()
+
+
+def test_attachment_archival_failure_does_not_hide_sent_receipt(reports):
+    run_id = _record_result(
+        reports,
+        {
+            "status": "succeeded",
+            "deliveries": {
+                "email": {
+                    "status": "sent",
+                    "attachments": [
+                        {
+                            "filename": "日报.pdf",
+                            "archive_status": "failed",
+                            "reason": "attachment_archive_failed",
+                        }
+                    ],
+                }
+            },
+        },
+    )
+    result = reports.get(run_id)
+    assert result["result"]["deliveries"]["email"]["status"] == "sent"
+    assert "email_attachment_archive_failed" in result["coverage_gaps"]
+    assert result["archives"] == []
+
+
+def test_actual_mime_attachments_reach_private_report_receipts_and_reader(
+    reports, monkeypatch
+):
+    from unittest.mock import MagicMock
+
+    from src.notification import email_notifier
+    from src.notification.email_notifier import EmailNotifier
+
+    monkeypatch.setattr(email_notifier, "channel_enabled", lambda *_: True)
+    connection = MagicMock()
+    server = connection.__enter__.return_value
+    server.send_message.return_value = {}
+    monkeypatch.setattr("smtplib.SMTP_SSL", Mock(return_value=connection))
+    notifier = EmailNotifier(
+        {
+            "email": {
+                "archive_dir": str(reports.root / "data/email_archive"),
+                "smtp_server": "smtp.invalid",
+                "sender_email": "sender@example.invalid",
+                "receiver_email": "reader@example.invalid",
+                "sender_password": "synthetic",
+            }
+        }
+    )
+    delivery = notifier._send_email(
+        "report",
+        "<p>body</p>",
+        pdf_bytes=b"%PDF-1.7\n%%EOF",
+        attachments=[
+            {
+                "filename": "reader.html",
+                "content_type": "text/html",
+                "content": b"<p>private portable report</p>",
+            }
+        ],
+    )
+    run_id = _record_result(
+        reports, {"status": "succeeded", "deliveries": {"email": delivery}}
+    )
+    projected = reports.get(run_id)
+    attachments = [
+        item for item in projected["archives"] if item["product"] == "email_attachment"
+    ]
+    parts = [
+        part
+        for part in server.send_message.call_args.args[0].walk()
+        if part.get_content_disposition() == "attachment"
+    ]
+    assert len(attachments) == len(parts) == 2
+    for linked, part in zip(attachments, parts):
+        exact = part.get_payload(decode=True)
+        assert (reports.root / linked["source"]).read_bytes() == exact
+        assert linked["sha256"] == hashlib.sha256(exact).hexdigest()
+        assert linked["filename"] == part.get_filename()
+        read = reports.read_artifact(linked["data_id"])
+        if linked["content_type"] == "application/pdf":
+            assert read["available"] is False
+        else:
+            assert "private portable report" in json.dumps(read)
+    assert "reader@example.invalid" not in json.dumps(projected)
+    server.send_message.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "failure", ["hash_missing", "hash_wrong", "hardlink", "wrong_root"]
+)
+def test_private_attachment_reference_rejects_unverified_or_unsafe_files(
+    reports, failure
+):
+    path = reports.root / "data/email_archive/.attachments/reader.html"
+    path.parent.mkdir(parents=True)
+    path.write_text("<p>private</p>", encoding="utf-8")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if failure == "hardlink":
+        os.link(path, path.with_name("linked.html"))
+    elif failure == "wrong_root":
+        path = path.parent.parent / "public.html"
+        path.write_text("<p>private</p>", encoding="utf-8")
+    entry = {"filename": "reader.html", "archive": str(path), "archive_status": "saved"}
+    if failure != "hash_missing":
+        entry["archive_sha256"] = "0" * 64 if failure == "hash_wrong" else digest
+    run_id = _record_result(
+        reports,
+        {
+            "status": "succeeded",
+            "deliveries": {"email": {"status": "sent", "attachments": [entry]}},
+        },
+    )
+    assert reports.get(run_id)["archives"] == []
+    with pytest.raises(ValueError):
+        reports.read_artifact(f"report_artifact:{run_id}:{digest}")
+
+
 @pytest.fixture
 def reports(tmp_path, monkeypatch):
     monkeypatch.setenv("SKIP_EMAIL", "true")

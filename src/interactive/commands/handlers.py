@@ -50,8 +50,8 @@ def handle_help() -> str:
                 ("/daily", "触发完整日报"),
                 ("/brief [afternoon]", "触发简报（默认早盘）"),
                 (
-                    "/report_frequency [daily|weekly|off]",
-                    "设置固定日报频次；weekly 每周五",
+                    "/report_frequency",
+                    "查看已停用的旧频次配置；报告调度使用触发器",
                 ),
                 (
                     "/backtest 代码 起 止",
@@ -74,8 +74,8 @@ def handle_help() -> str:
             "🔔 调度",
             [
                 (
-                    "/schedule [任务 时间]",
-                    "查看/修改调度 例 <code>/schedule daily 20:00</code>",
+                    "/schedule",
+                    "只读查看调度；报告调度使用触发器",
                 ),
             ],
         ),
@@ -312,36 +312,9 @@ def handle_backtest(code: str, start: str, end: str) -> str:
 
 
 def handle_save(config_path=None) -> str:
-    """把当前 config.yaml 提交到 git。"""
-    import subprocess
+    from ...core.config_store import save_configuration
 
-    if config_path is None:
-        config_path = CONFIG_PATH
-    repo = config_path.parent.parent  # .../trade_eyes_keeper
-    try:
-        subprocess.run(
-            ["git", "add", "config/config.yaml"],
-            cwd=repo,
-            check=True,
-            capture_output=True,
-            timeout=10,
-        )
-        subprocess.run(
-            ["git", "commit", "-m", "bot: watchlist updated via /save", "--no-verify"],
-            cwd=repo,
-            check=True,
-            capture_output=True,
-            timeout=10,
-        )
-        logger.info("配置已提交到 git")
-        return "✅ 监控列表已保存到 git。下次本地 <code>git pull</code> 即可同步。"
-    except subprocess.CalledProcessError as e:
-        msg = e.stderr.decode() if e.stderr else str(e)
-        logger.error(f"git commit 失败: {msg}")
-        return f"❌ git 保存失败: {msg[:200]}"
-    except Exception as e:
-        logger.exception("git 保存异常")
-        return f"❌ 保存失败: {e}"
+    return save_configuration(config_path or CONFIG_PATH)
 
 
 def _submit_report(kind, report_id, *, sender, chat_id, request_id):
@@ -390,72 +363,28 @@ def handle_daily(*, sender=None, chat_id=None, request_id=None) -> str:
 
 
 def handle_daily_report_frequency(frequency: str | None = None) -> str:
-    """查看或修改定时普通日报的发送频次。
-
-    频次控制固定定时日报；托管触发器按自己的条件执行，
-    ``/daily`` 手动触发也始终发送。
-    """
-    labels = {
-        "daily": "每天（交易日）",
-        "weekly": "每周五",
-        "off": "关闭定时普通日报",
-    }
-    config = _load_config()
-    scheduler = config.get("scheduler", {}) or {}
-    current = str(scheduler.get("daily_report_frequency", "daily")).lower()
-    if current not in labels:
-        current = "daily"
-
-    if not frequency:
-        return (
-            f"<b>日报频次</b>: {labels[current]} (<code>{current}</code>)\n"
-            "可选: <code>daily</code> 每个交易日、"
-            "<code>weekly</code> 每周五、<code>off</code> 关闭普通日报。\n"
-            "托管触发器与手动 <code>/daily</code> 不受影响。"
-        )
-
-    mode = str(frequency).strip().lower()
-    if mode not in labels:
-        return "❌ 频次只能是 daily、weekly 或 off。"
-
-    def mutate(current_config: dict) -> None:
-        current_config.setdefault("scheduler", {})["daily_report_frequency"] = mode
-
-    _update_config(mutate)
-    return f"✅ 日报频次已改为 {labels[mode]} (<code>{mode}</code>)。"
+    """Retired fixed-report configuration remains readable, never writable."""
+    if frequency:
+        return "❌ 固定日报频次入口已停用；请使用 trigger_manage 管理报告触发器。"
+    current = (_load_config().get("scheduler", {}) or {}).get("daily_report_frequency", "daily")
+    return f"旧日报频次配置: {current}（已停用）；报告调度请使用 trigger_manage。"
 
 
 def handle_schedule(action: str, task_id: str, time_str: str) -> str:
-    """查看或修改调度时间。"""
+    """Read existing schedules; report creation belongs to managed triggers."""
+    if action != "view" or task_id or time_str:
+        return "❌ 固定报告调度入口已停用；请使用 trigger_manage 管理报告触发器。"
     from ...core.schedule_manager import get_schedule_manager
 
     mgr = get_schedule_manager()
     if mgr is None:
         return "❌ 调度管理器未启动"
-
-    if action == "view" or not task_id:
-        items = mgr.get_schedule()
-        if not items:
-            return "当前无调度任务"
-        lines = ["<b>当前调度</b>\n"]
-        for s in items:
-            lines.append(f"<code>{s['name']}</code>: {s['time']} ({s['timezone']})")
-        return "\n".join(lines)
-
-    # set
-    try:
-        ok = mgr.reschedule(task_id, time_str)
-    except RuntimeError as exc:
-        logger.exception("刷新调度失败")
-        return f"❌ {exc}"
-    if ok:
-        label = {
-            "daily": "日报",
-            "morning_snapshot": "早盘简报",
-            "afternoon_snapshot": "收盘简报",
-        }.get(task_id, task_id)
-        return f"✅ {label}时间已改为 <code>{time_str}</code>（立即生效）"
-    return f"❌ 修改失败。任务名: {task_id}，时间: {time_str}"
+    items = mgr.get_schedule()
+    if not items:
+        return "当前无调度任务"
+    return "<b>当前调度</b>\n" + "\n".join(
+        f"<code>{s['name']}</code>: {s['time']} ({s['timezone']})" for s in items
+    )
 
 
 # ── /mode ────────────────────
@@ -494,220 +423,25 @@ def handle_mode(mode: str) -> str:
     return "⚠️ 执行模式由 TradePlan 声明，不能通过 /mode 修改。"
 
 
-def handle_ref_position(
-    action: str,
-    group: str,
-    code: str,
-    shares: int,
-    price: float,
-) -> str:
-    """Modify one bound reference position from an explicit bot instruction."""
-    from ...core.ref_portfolio import RefPortfolioManager
-    from ...markets import _detect_fine_group
-    from ...search.config import get_market_optimizer_config
+def handle_ref_position(action: str, group: str, code: str, shares: int, price: float) -> str:
+    from ...core.ref_portfolio import adjust_reference_position
 
-    labels = {"a_share": "A股", "hk": "港股", "us": "美股"}
-    files = {
-        "a_share": "data/ref_portfolio_a.yaml",
-        "hk": "data/ref_portfolio_hk.yaml",
-        "us": "data/ref_portfolio_us.yaml",
-    }
-    if group not in files:
-        return "❌ 市场只能是 a_share、hk 或 us。"
-    try:
-        detected = _detect_fine_group(code)
-    # Malformed bot symbols must not reach portfolio writes.
-    except Exception:  # noqa: BLE001
-        detected = ""
-    if detected != group:
-        return f"❌ {code} 不属于 {labels[group]}，未修改参考持仓。"
-
-    mgr = RefPortfolioManager(file_path=files[group])
-    pf = mgr.load()
-    if not mgr.is_initialized(pf):
-        return f"❌ {labels[group]}参考持仓尚未初始化；请先通过飞书对话提案设置基期。"
-    if not pf.is_bound:
-        return (
-            f"❌ {labels[group]}参考持仓未绑定已激活运行，未修改；"
-            "请先通过飞书对话提案重置基期。"
-        )
-
-    try:
-        execution = get_market_optimizer_config(
-            group, application_config=_load_config()
-        ).execution
-    except ValueError as exc:
-        return f"❌ 市场优化配置无效，未修改参考持仓：{exc}"
-    trade_date = datetime.now().astimezone().strftime("%Y-%m-%d")
-    try:
-        new_pf, trades = mgr.adjust_position(
-            pf,
-            code,
-            action,
-            shares,
-            price,
-            trade_date,
-            commission_rate=execution.commission_rate,
-            lot_size=execution.lot_sizes[group],
-            fx_rate=execution.fx_rates[group],
-            reason="manual_bot",
-        )
-    except ValueError as exc:
-        return f"❌ 参考持仓未修改：{exc}"
-    mgr.save(new_pf)
-
-    holding = new_pf.holdings.get(code)
-    target = holding.shares if holding is not None else 0
-    if not trades:
-        return (
-            f"✅ {labels[group]} <code>{code}</code> 已是目标仓位 "
-            f"{target} 股；未产生重复交易。"
-        )
-    trade = trades[-1]
-    side = "买入" if trade.action == "buy" else "卖出"
-    return (
-        f"✅ {labels[group]}参考持仓已修改\n"
-        f"{side} <code>{code}</code> {trade.shares} 股 @CNY {trade.price:.4f}\n"
-        f"目标仓位: {target} 股 | 现金: {new_pf.cash:,.2f}\n"
-        f"记录: <code>{trade.event_id}</code>"
-    )
+    return adjust_reference_position(CONFIG_PATH, action, group, code, shares, price)
 
 
 def handle_ref_date(date_str: str | None = None) -> str:
-    """Query reference portfolios; reset authorization belongs to proposals."""
-    from ...core.ref_portfolio import RefPortfolioManager
+    from ...core.ref_portfolio import reference_status
 
-    if date_str:
-        return "❌ 直接重置和旧 confirm 已停用；请在飞书对话中提出设置基期，检查提案后确认。"
-    current = (_load_config().get("optimizer", {}) or {}).get("reference_base_date", "")
-    # ── 查看状态（三组各自展示）──
-    lines = []
-    if current:
-        lines.append(f"📅 参考持仓基期: <b>{current}</b>")
-    else:
-        lines.append("📅 参考持仓基期: <b>未设置</b>")
-
-    any_init = False
-    for label, fname in [
-        ("A股", "data/ref_portfolio_a.yaml"),
-        ("港股", "data/ref_portfolio_hk.yaml"),
-        ("美股", "data/ref_portfolio_us.yaml"),
-    ]:
-        mgr = RefPortfolioManager(file_path=fname)
-        pf = mgr.load()
-        if not mgr.is_initialized(pf):
-            continue
-        any_init = True
-        lines.append(
-            f"\n<b>{label}</b>: 现金 {pf.cash:,.2f} | "
-            f"持仓 {len(pf.holdings)} 只 | 交易日 {pf.trading_days}"
-        )
-        if pf.is_bound:
-            lines.append(
-                f"  策略: <code>{pf.strategy_id}</code> | "
-                f"固定运行: <code>{pf.strategy_run_id}</code>"
-            )
-        else:
-            lines.append("  ⚠️ 旧持仓未绑定运行；不会继续交易，须手动重置。")
-        if pf.holdings:
-            for code, h in sorted(pf.holdings.items()):
-                lines.append(
-                    f"  • <code>{code}</code> {h.shares}股 成本 {h.avg_cost:.2f}"
-                )
-    if not any_init:
-        lines.append(
-            "\n📭 参考持仓未初始化"
-            "（请在飞书对话中提出设置基期，检查提案后确认）"
-        )
-    else:
-        lines.append(
-            "\n⚠️ 重置将<b>清空所有持仓</b>，请在飞书对话中提出并确认提案。"
-        )
-    return "\n".join(lines)
+    return reference_status(CONFIG_PATH, date_str)
 
 
 def prepare_ref_date(date_str: str) -> dict:
-    """Freeze the business inputs for the existing command proposal."""
-    from datetime import date
+    from ...core.ref_portfolio import prepare_reference_reset
 
-    from ...core.ref_portfolio import RefPortfolioManager, reference_execution_contract
-    from ...search.artifacts import load_latest_strategy_run
-    from ...search.config import get_market_optimizer_configs
-    from ...search.contracts import stable_hash
-
-    try:
-        if date.fromisoformat(date_str).isoformat() != date_str:
-            raise ValueError("noncanonical date")
-    except (TypeError, ValueError) as exc:
-        raise ValueError("日期格式错误，请使用 YYYY-MM-DD；旧 confirm 已停用") from exc
-    config = _load_config()
-    active = load_latest_strategy_run()
-    groups = (("a_share", "a"), ("hk", "hk"), ("us", "us"))
-    if active is None or any(
-        active.strategy_for(group) is None or active.params_by_group.get(group) is None
-        for group, _ in groups
-    ):
-        raise ValueError("没有可绑定的三市场完整已激活运行；参考持仓未重置")
-    markets = get_market_optimizer_configs(config)
-    capital = float(markets["a_share"].execution.initial_capital)
-    targets, portfolios = [], []
-    for group, suffix in groups:
-        path = Path(f"data/ref_portfolio_{suffix}.yaml").resolve()
-        portfolios.append(RefPortfolioManager(file_path=str(path)).load().to_dict())
-        params = active.params_by_group[group]
-        strategy = active.strategy_for(group)
-        targets.append({
-            "path": str(path),
-            "arguments": {
-                "initial_capital": capital,
-                "inception_date": date_str,
-                "market_group": group,
-                "strategy_run_id": active.run_id_for(group),
-                "strategy_id": strategy.name,
-                "strategy_timestamp": active.timestamp,
-                "params_hash": stable_hash({"strategy_id": strategy.name, "values": params.values}),
-                "execution_hash": stable_hash(reference_execution_contract(
-                    params.execution_snapshot, markets[group].execution, group,
-                )),
-            },
-        })
-    return {
-        "date": date_str,
-        "targets": targets,
-        "state_hash": stable_hash(portfolios),
-        "preview": {
-            "effect": "清空 A股/港股/美股 全部参考持仓并重置；未确认不执行",
-            "date": date_str,
-            "holdings_count": sum(len(pf["holdings"]) for pf in portfolios),
-            "cash": sum(pf["cash"] for pf in portfolios),
-            "initial_capital_per_market": capital,
-            "strategy_runs": {group: active.run_id_for(group) for group, _ in groups},
-        },
-    }
+    return prepare_reference_reset(CONFIG_PATH, date_str)
 
 
 def apply_ref_date(plan: dict) -> str:
-    """Apply only from the existing proposal's claimed/applying branch."""
-    from ...core.ref_portfolio import RefPortfolioManager
+    from ...core.ref_portfolio import apply_reference_reset
 
-    # Rebuild fixed paths and arguments; never write arbitrary payload paths.
-    current = prepare_ref_date(plan["date"])
-    if current != plan:
-        raise ValueError("参考持仓或策略已变化，请重新预览")
-    try:
-        for target in current["targets"]:
-            manager = RefPortfolioManager(file_path=target["path"])
-            expected = manager.reset(**target["arguments"])
-            if manager.load().to_dict() != expected.to_dict():
-                raise OSError("reference portfolio write verification failed")
-
-        def set_base_date(config):
-            optimizer = config.setdefault("optimizer", {})
-            optimizer["reference_base_date"] = current["date"]
-            optimizer.pop("_ref_date_pending", None)
-
-        _update_config(set_base_date)
-    except Exception:
-        logger.exception("Reference reset may have partially completed")
-        return "❌ 重置结果未确认，可能部分完成；此提案不会重复执行，请核对三市场持仓。"
-    return f"✅ 参考持仓已重置（A股/港股/美股 三分仓），基期：{current['date']}。"
+    return apply_reference_reset(CONFIG_PATH, plan)

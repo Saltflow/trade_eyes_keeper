@@ -210,10 +210,10 @@ def test_bot_field_updates_preserve_concurrent_changes_and_secrets(
     for codes, response in zip([["GOOG"], ["00883"], ["601985"]], responses):
         if response == "conflict":
             assert handlers.handle_add(codes).startswith("✅")
-    handlers.handle_daily_report_frequency("weekly")
+    assert handlers.handle_daily_report_frequency("weekly").startswith("❌")
     handlers.handle_remove(["00883"])
 
     raw = ConfigStore(path).load_raw()
     assert set(raw["stocks"]) == {"600036", "GOOG", "601985"}
-    assert raw["scheduler"] == {"run_time": "19:00", "daily_report_frequency": "weekly"}
+    assert raw["scheduler"] == {"run_time": "19:00"}
     assert "email" not in raw

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import platform
 import smtplib
 import socket
@@ -125,10 +126,14 @@ class EmailNotifier(BaseNotifier):
 
             # 生成日报 PDF 附件
             pdf_bytes = None
+            pdf_failure = None
             try:
                 pdf_bytes = self._generate_daily_pdf(session, stock_data)
+                if not pdf_bytes:
+                    pdf_failure = "daily_pdf_unavailable"
             except Exception as e:  # noqa: BLE001 -- contain optional report/OS/archive failures
                 logger.warning("日报 PDF 生成失败: %s", e)
+                pdf_failure = "daily_pdf_generation_failed"
 
             # 构建完整日报正文。
             body = self._build_email_body(
@@ -148,6 +153,23 @@ class EmailNotifier(BaseNotifier):
                 portfolio_chart_dict=portfolio_chart_dict,
                 pdf_bytes=pdf_bytes,
             )
+            if pdf_failure:
+                smtp_receipt = normalize_receipt(receipt)
+                pdf_receipt = {
+                    "status": "failed",
+                    "reason": pdf_failure,
+                    "label": "daily_pdf",
+                }
+                receipt = {
+                    **smtp_receipt,
+                    **(
+                        combine_receipts([smtp_receipt, pdf_receipt])
+                        if smtp_receipt["status"] != "skipped"
+                        else {}
+                    ),
+                    "smtp_status": smtp_receipt["status"],
+                    "pdf": pdf_receipt,
+                }
 
             logger.info(f"每日报告邮件任务完成 ({self.receiver_email}) (来自Session)")
             return receipt
@@ -669,6 +691,7 @@ class EmailNotifier(BaseNotifier):
         submitted = False
         receipt = None
         recipients = []
+        attachment_records = []
         try:
             # 创建 HTML 部分
             # MIMEText encodes the payload and sets its matching transfer header.
@@ -795,6 +818,10 @@ class EmailNotifier(BaseNotifier):
             if guard:
                 return guard
 
+            # The MIME payload is now final. Save exactly the decoded bytes that
+            # send_message will serialize, without letting archival gaps alter SMTP.
+            attachment_records = self._save_email_attachments(msg)
+
             # 连接到SMTP服务器并发送邮件
             if self.enable_ssl:
                 context = ssl.create_default_context()
@@ -828,19 +855,78 @@ class EmailNotifier(BaseNotifier):
                 receipt["message_id"] = msg["Message-ID"]
                 receipt["archive"] = str(copy_path) if copy_path else None
                 receipt["archive_sha256"] = copy_sha256
+                receipt["attachments"] = attachment_records
             return receipt
         except Exception as exc:  # noqa: BLE001 -- optional placement metadata  # noqa: BLE001 - classify transport stage
             logger.error("SMTP阶段异常: %s", type(exc).__name__)
             if receipt is not None:
                 return {**receipt, "cleanup_error": type(exc).__name__}
-            return self._smtp_failure_receipt(
-                exc,
-                submitted=submitted,
-                recipients=recipients,
-                message_id=msg.get("Message-ID") if submitted else None,
-                archive=copy_path,
-                archive_sha256=copy_sha256,
-            )
+            return {
+                **self._smtp_failure_receipt(
+                    exc,
+                    submitted=submitted,
+                    recipients=recipients,
+                    message_id=msg.get("Message-ID") if submitted else None,
+                    archive=copy_path,
+                    archive_sha256=copy_sha256,
+                ),
+                "attachments": attachment_records,
+            }
+
+    def _save_email_attachments(self, message) -> list[dict]:
+        """Pin MIME attachment bytes per message; never overwrite or infer history."""
+        records = []
+        for part in message.walk():
+            if part.get_content_disposition() != "attachment":
+                continue
+            record = {
+                "filename": part.get_filename(),
+                "content_type": part.get_content_type(),
+                "archive_status": "failed",
+            }
+            records.append(record)
+            path, created = None, False
+            try:
+                raw = part.get_payload(decode=True)
+                if not isinstance(raw, bytes):
+                    raise TypeError("attachment_bytes_unavailable")
+                record["bytes"] = len(raw)
+                digest = hashlib.sha256(raw).hexdigest()
+                # User-supplied filenames remain metadata, never filesystem paths.
+                suffix = Path(record["filename"] or "").suffix.lower()
+                if not suffix or not suffix[1:].isascii() or not suffix[1:].isalnum():
+                    suffix = ".bin"
+                if len(suffix) > 12:
+                    suffix = ".bin"
+                directory = self.email_archive_dir / ".attachments"
+                directory.mkdir(exist_ok=True)
+                for ancestor in (directory, self.email_archive_dir):
+                    if (
+                        ancestor.is_symlink()
+                        or getattr(ancestor.lstat(), "st_file_attributes", 0) & 0x400
+                    ):
+                        raise ValueError("linked_attachment_directory")
+                path = directory / (
+                    f"attachment_{uuid4().hex}_{len(records):03d}{suffix}"
+                )
+                with path.open("xb") as stream:
+                    created = True
+                    stream.write(raw)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                record.update(
+                    archive_status="saved", archive=str(path), archive_sha256=digest
+                )
+            except Exception as exc:  # noqa: BLE001 - SMTP outcome is independent
+                record["reason"] = "attachment_archive_failed"
+                record["error_type"] = type(exc).__name__
+                if created and path is not None:
+                    try:
+                        path.unlink()
+                    except OSError:
+                        pass
+                logger.warning("邮件附件归档失败: %s", type(exc).__name__)
+        return records
 
     @staticmethod
     def _smtp_recipient_receipt(refused, recipients: list) -> dict:

@@ -178,7 +178,7 @@ def test_public_discovery_is_not_evidence_and_private_dns_is_rejected(monkeypatc
         with pytest.raises(ValueError):
             public_address(url)
     rows = search_results(
-        b'<div class="result"><a class="result__a" href="https://issuer.example/report">Report</a><div class="result__snippet">Unverified excerpt</div></div>'
+        b'{"results":[{"url":"https://issuer.example/report","title":"Report","snippet":"Unverified excerpt"}]}'
     )
     assert rows[0]["status"] == "discovery_only_not_primary_evidence"
 

@@ -51,7 +51,6 @@ from src.session.session_manager import SessionManager
 from src.strategy.return_curves import load_return_curves
 
 MARKET_GROUPS = ("a_share", "hk", "us")
-DAILY_REPORT_FREQUENCIES = {"daily", "weekly", "off"}
 
 
 def _attach_return_curves(session, config):
@@ -393,41 +392,6 @@ def _report_delivery_result(delivery, session, skip_reason: str = ""):
     )
 
 
-def should_send_daily_report(
-    config: dict,
-    *,
-    now: datetime | None = None,
-    force: bool = False,
-) -> bool:
-    """Return whether the scheduled normal daily report should be sent.
-
-    ``weekly`` means Friday in the configured scheduler timezone.  Alerts are
-    handled separately by ``run_daily_task`` and remain immediate.
-    """
-    if force:
-        return True
-    scheduler = config.get("scheduler", {}) or {}
-    frequency = str(scheduler.get("daily_report_frequency", "daily")).lower()
-    if frequency not in DAILY_REPORT_FREQUENCIES:
-        logger = logging.getLogger(__name__)
-        logger.warning(
-            "未知日报频次 %r，按 daily 处理",
-            scheduler.get("daily_report_frequency"),
-        )
-        frequency = "daily"
-    if frequency == "off":
-        return False
-    if frequency == "weekly":
-        try:
-            report_weekday = int(scheduler.get("daily_report_weekday", 4))
-        except (TypeError, ValueError):
-            report_weekday = 4
-        if report_weekday not in range(7):
-            report_weekday = 4
-        return (now or datetime.now().astimezone()).weekday() == report_weekday
-    return True
-
-
 def run_daily_task(
     force: bool = False, *, config: dict | None = None, progress: Callable | None = None
 ):
@@ -459,24 +423,15 @@ def run_daily_task(
 
         # 1. 获取公告信息（可选） - 提前获取以填充股息数据缓存
         announcement_config = config.get("announcements", {})
-        daily_triggers = (config.get("scheduler", {}) or {}).get(
-            "daily_report_triggers", {}
-        )
-        from src.notification.report_triggers import required_report_data_roots
-
-        daily_trigger_roots = required_report_data_roots(daily_triggers)
         from src.triggers.report_context import (
             is_managed_daily,
             populate_trigger_announcements,
         )
 
         managed_daily = is_managed_daily(config)
-        event_triggers_need_announcements = bool(
-            daily_trigger_roots & {"announcements", "dividend_events"}
-        )
         # 创建公告抓取器用于公告信息获取
         announcement_fetcher = AnnouncementFetcher(config)
-        if announcement_config.get("enable", False) or event_triggers_need_announcements:
+        if announcement_config.get("enable", False):
             try:
                 logger.info("开始获取股票公告信息")
                 days = announcement_config.get("days", 7)
@@ -642,45 +597,11 @@ def run_daily_task(
         except Exception:  # Optional trigger observations cannot interrupt reports.
             logger.exception("Unable to save public daily trigger snapshot")
 
-        # Optional trigger mode gates the scheduled report as a whole. Manual
-        # runs keep their historical behavior, and an empty trigger list is a no-op.
-        trigger_mode = bool(daily_triggers) and not force
         if progress:
             progress("daily_notifications")
-        delivery = None
-        skip_reason = "daily_frequency_or_trigger_not_met"
-        if managed_daily:
-            skip_reason = ""
-            delivery = notifier.send_daily_report_from_session(session)
-        elif trigger_mode:
-            from src.notification.report_triggers import evaluate_report_triggers
-
-            evaluation = evaluate_report_triggers(session, daily_triggers)
-            if evaluation.matched:
-                logger.info(
-                    "日报触发条件满足: %s",
-                    ", ".join(map(str, evaluation.matched_conditions)),
-                )
-                skip_reason = ""
-                delivery = notifier.send_daily_report_from_session(session)
-            else:
-                logger.info("日报触发条件未满足，跳过发送: %s", daily_triggers)
-        elif should_send_daily_report(config, force=force):
-            logger.info("按配置频次发送每日报告")
-            skip_reason = ""
-            delivery = notifier.send_daily_report_from_session(session)
-        else:
-            frequency = str(
-                (config.get("scheduler", {}) or {}).get(
-                    "daily_report_frequency", "daily"
-                )
-            ).lower()
-            logger.info(
-                "日报频次为 %s，跳过普通日报发送；手动 /daily 仍可触发",
-                frequency,
-            )
+        delivery = notifier.send_daily_report_from_session(session)
         logger.info("每日任务执行完成")
-        return _report_delivery_result(delivery, session, skip_reason)
+        return _report_delivery_result(delivery, session)
     except Exception as e:
         logger.exception("执行日报任务时发生错误")
         return _report_result("failed", f"daily_task:{type(e).__name__}")
@@ -748,20 +669,6 @@ def run_brief_report(
         logger.info(f"简报：获取到 {len(session.stocks_data)} 只股票数据")
 
         _attach_return_curves(session, config)
-
-        brief_triggers = report_config.get("triggers", {})
-        from src.notification.report_triggers import required_report_data_roots
-
-        brief_trigger_roots = required_report_data_roots(brief_triggers)
-        if brief_trigger_roots & {
-            "dividend_events", "placements", "announcements"
-        }:
-            try:
-                _populate_brief_event_context(
-                    session, config, report_config, brief_trigger_roots
-                )
-            except Exception as exc:  # noqa: BLE001 - Trigger preparation fails closed.
-                logger.warning("简报事件触发数据准备失败，按未满足处理: %s", exc)
 
         if progress:
             progress("brief_report_quotes")
@@ -860,19 +767,6 @@ def run_brief_report(
         except Exception:  # Optional trigger observations cannot interrupt reports.
             logger.exception("Unable to save public brief trigger snapshot")
 
-        # Trigger rules only gate scheduled sends. Manual /brief stays explicit.
-        if not force and brief_triggers:
-            from src.notification.report_triggers import evaluate_report_triggers
-
-            evaluation = evaluate_report_triggers(session, brief_triggers)
-            if not evaluation.matched:
-                logger.info("简报触发条件未满足，跳过发送: %s", brief_triggers)
-                return _report_result("skipped", "brief_trigger_not_met", session)
-            logger.info(
-                "简报触发条件满足，命中条件编号: %s",
-                ", ".join(map(str, evaluation.matched_conditions)),
-            )
-
         # 定时简报按报价快照防重，开市门禁已在入口检查。
         if progress:
             progress("brief_notifications")
@@ -903,67 +797,6 @@ def run_brief_report(
     except Exception as e:
         logger.exception("简报任务失败 (%s)", report_id)
         return _report_result("failed", f"brief_task:{type(e).__name__}")
-
-
-def _populate_brief_event_context(
-    session, config: dict, report_config: dict, required_roots: set[str]
-) -> None:
-    """Load report data roots referenced by configured trigger predicates."""
-    configured_codes = report_config.get("stocks") or config.get("stocks", [])
-    codes = []
-    for item in configured_codes:
-        if isinstance(item, dict):
-            item = item.get("code", item.get("stock_code", ""))
-        codes.append(str(item))
-    codes = [code for code in codes if code]
-    if not codes:
-        return
-
-    if required_roots & {"announcements", "dividend_events"}:
-        from src.data.announcement_fetcher import AnnouncementFetcher
-
-        announcement_config = config.get("announcements", {}) or {}
-        fetcher = AnnouncementFetcher(config)
-        try:
-            session.announcements = fetcher.get_recent_important_announcements(
-                codes,
-                days=announcement_config.get("days", 7),
-                dividend_days=announcement_config.get("dividend_days", 420),
-            )
-        # Missing announcements leave triggers unmet.
-        except Exception as exc:  # noqa: BLE001
-            logging.getLogger(__name__).warning("简报公告事件查询失败: %s", exc)
-    if "dividend_events" in required_roots:
-        from src.data.dividend_events import DailyDividendEventResolver
-
-        try:
-            resolver = DailyDividendEventResolver(config)
-            session.dividend_schedule = resolver.public_schedule(
-                session.announcements,
-                session.get_all_dataframe(),
-            )
-            session.dividend_events = resolver.pending_events(session.dividend_schedule)
-        # Missing dividends leave triggers unmet.
-        except Exception as exc:  # noqa: BLE001
-            logging.getLogger(__name__).warning("简报分红事件解析失败: %s", exc)
-    if "placements" in required_roots:
-        from src.data.web_crawler import StockWebCrawler
-
-        crawler = StockWebCrawler(config)
-        placements = {}
-        for code in codes:
-            if not (code.isdigit() and len(code) == 6):
-                continue
-            try:
-                item = crawler.fetch_placement_data(code)
-                if item and item.get("is_locked"):
-                    placements[code] = item
-            # Isolate each optional placement source.
-            except Exception as exc:  # noqa: BLE001
-                logging.getLogger(__name__).warning(
-                    "简报解禁事件查询失败 %s: %s", code, exc
-                )
-        session.placements = placements
 
 
 def _send_restart_notification(config: dict, service):

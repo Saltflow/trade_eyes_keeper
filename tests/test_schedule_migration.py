@@ -147,7 +147,7 @@ def test_daily_and_brief_use_explicit_yaml_times(tmp_path, monkeypatch):
     assert cron.contents == ""
 
 
-def test_missing_daily_and_brief_times_are_adopted(tmp_path, monkeypatch):
+def test_missing_daily_and_brief_times_are_never_adopted(tmp_path, monkeypatch):
     path, cron = _setup(
         tmp_path,
         monkeypatch,
@@ -158,11 +158,8 @@ def test_missing_daily_and_brief_times_are_adopted(tmp_path, monkeypatch):
     result = migrate_legacy_cron(path, "/srv/trade project")
     raw = ConfigStore(path).load_raw()
     assert result["removed_jobs"] == 2
-    assert raw["scheduler"]["run_time"] == "19:15"
-    assert raw["scheduler"]["brief_reports"] == [
-        {"id": "afternoon_snapshot", "enabled": True, "run_time": "14:35"}
-    ]
-    assert "optimize_enabled" not in raw["scheduler"]
+    assert raw == {"scheduler": {}}
+    assert result["migrated_fields"] == []
     assert cron.contents == ""
 
 
@@ -188,7 +185,7 @@ def test_install_failure_does_not_save_config(tmp_path, monkeypatch):
     assert cron.contents == contents
 
 
-def test_config_commit_failure_restores_old_crontab(tmp_path, monkeypatch):
+def test_retirement_does_not_attempt_to_rewrite_yaml(tmp_path, monkeypatch):
     contents = "0 19 * * * cd /srv/trade && python3 main.py --once\n"
     path, cron = _setup(tmp_path, monkeypatch, {"stocks": []}, contents)
     before = path.read_bytes()
@@ -197,11 +194,11 @@ def test_config_commit_failure_restores_old_crontab(tmp_path, monkeypatch):
         raise OSError("config is not writable")
 
     monkeypatch.setattr("src.core.config_store.os.replace", fail_replace)
-    with pytest.raises(OSError, match="not writable"):
-        migrate_legacy_cron(path, "/srv/trade")
+    result = migrate_legacy_cron(path, "/srv/trade")
+    assert result == {"removed_jobs": 1, "migrated_fields": []}
     assert path.read_bytes() == before
-    assert cron.contents == contents
-    assert cron.installs == ["", contents]
+    assert cron.contents == ""
+    assert cron.installs == [""]
 
 
 def test_read_failure_never_modifies_config_or_cron(tmp_path, monkeypatch):

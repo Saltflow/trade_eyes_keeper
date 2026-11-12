@@ -20,8 +20,8 @@ def assistant(tmp_path, real_pi_bridge):
         {
             "target": "config/config.yaml",
             "revision": "v1",
-            "changes": [{"key": "scheduler.daily_report_frequency", "value": "weekly"}],
-            "diff": [{"before": "daily", "after": "weekly"}],
+            "changes": [{"key": "report.events.announcement_lookback_months", "value": 3}],
+            "diff": [{"before": 2, "after": 3}],
             "effect": "下次日报生效",
             "affected_markets": [],
         }
@@ -344,13 +344,13 @@ def test_natural_language_change_requires_separate_owner_confirmation(assistant)
             "propose_configuration",
             {
                 "changes": [
-                    {"key": "scheduler.daily_report_frequency", "value": "weekly"}
+                    {"key": "report.events.announcement_lookback_months", "value": 3}
                 ]
             },
         ),
         {"role": "assistant", "content": "请检查提案并确认。"},
     ]
-    assistant.handle("chat", "owner", "把日报改为每周")
+    assistant.handle("chat", "owner", "把公告查看窗口改为3个月")
     assistant.configuration.apply.assert_not_called()
     item = assistant.store.recent("chat", "owner")[0]
     assert item["status"] == "pending"

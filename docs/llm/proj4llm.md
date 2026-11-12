@@ -5152,3 +5152,12 @@ User-authorized batch: `data/fundamental_data/terra61_high_batch100_20261102/man
 
 - 52eaaa0 已推送并部署，服务器隔离验证 377 项通过；284 份受管理源码与提交一致，228 份配置/持仓/优化器保护文件未变。真实可见性与触发全渠道验收逐项记录在 `docs/development/two_layer_release_20261109.md`，不将服务就绪等同业务验收通过。
 - 线上默认 DuckDuckGo 端点 TCP 443 超时；既有 Bing provider 搜索页获取、解析与登记成功。Bot 包装层默认统一为底层已有的 Bing，仅改默认参数一行，保留显式 DuckDuckGo、无自动重试或新机制，身份/归档/抓取边界不变。配套默认和显式 provider 测试及上线真实路径分别验收。
+
+
+### 2026-11-12 两层工具补缺候选
+
+- DS Search API 复用现有密钥、AuthorityHTTP、DataHub 和解析回执；普通机器人与投研使用同一入口，删除 Bing/DDG 选择和页面解析。搜索摘要仍为未核实线索，原文抓取保持公网逐跳校验及原始字节留档；没有新增搜索服务/后台刷新。
+- G05 删除固定日报/简报注册、旧条件筛选与配置写入；旧提案拒绝执行，不自动迁移/重放。原完整报告 worker、手动入口和采集时钟保留。
+- 新邮件附件归档实际 MIME 字节、固定哈希及所属报告 run；私有附件读取校验 owner/chat 和原始回执，缺解析/归档失败与已发送状态分开，不公开登记附件或补造旧 PDF。
+- 监控列表、参考持仓、保存配置改用明确工具和既有 ProposalStore；原业务移入现有 core 模块，同步删除模型拼 slash 的往返。相对触发时间用 after_seconds，由认证消息/持久 turn 时间计算，不取整或重试顺延；list/prefix 参数说明同步修正。
+- 版本、测试和线上边界以 docs/development/project_tools_gaps_20261112.md 为准；历史记录中的“未部署”仅描述当时批次。

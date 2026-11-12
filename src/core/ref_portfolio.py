@@ -18,6 +18,8 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from .config_store import ConfigStore
+
 logger = logging.getLogger(__name__)
 
 # ── 常量 ──────────────────────────────────────────────────────
@@ -582,7 +584,11 @@ class RefPortfolioManager:
         """
         import pandas as pd
 
-        from ..backtest.in_kind import advance_in_kind, build_in_kind_schedule, execution_term
+        from ..backtest.in_kind import (
+            advance_in_kind,
+            build_in_kind_schedule,
+            execution_term,
+        )
         from ..search.contracts import stable_hash
 
         inception = _parse_date(pf.inception_date)
@@ -944,3 +950,219 @@ class RefPortfolioManager:
     def is_initialized(self, pf: RefPortfolio) -> bool:
         """持仓是否已初始化（有期初日期）。"""
         return bool(pf.inception_date)
+
+
+def adjust_reference_position(
+    config_path: Path,
+    action: str,
+    group: str,
+    code: str,
+    shares: int,
+    price: float,
+) -> str:
+    """Modify one bound reference position from an explicit bot instruction."""
+    from ..markets import _detect_fine_group
+    from ..search.config import get_market_optimizer_config
+
+    labels = {"a_share": "A股", "hk": "港股", "us": "美股"}
+    files = {
+        "a_share": "data/ref_portfolio_a.yaml",
+        "hk": "data/ref_portfolio_hk.yaml",
+        "us": "data/ref_portfolio_us.yaml",
+    }
+    if group not in files:
+        return "❌ 市场只能是 a_share、hk 或 us。"
+    try:
+        detected = _detect_fine_group(code)
+    # Malformed bot symbols must not reach portfolio writes.
+    except Exception:  # noqa: BLE001
+        detected = ""
+    if detected != group:
+        return f"❌ {code} 不属于 {labels[group]}，未修改参考持仓。"
+
+    mgr = RefPortfolioManager(file_path=config_path.parent.parent / files[group])
+    pf = mgr.load()
+    if not mgr.is_initialized(pf):
+        return f"❌ {labels[group]}参考持仓尚未初始化；请先通过飞书对话提案设置基期。"
+    if not pf.is_bound:
+        return (
+            f"❌ {labels[group]}参考持仓未绑定已激活运行，未修改；"
+            "请先通过飞书对话提案重置基期。"
+        )
+
+    try:
+        execution = get_market_optimizer_config(
+            group, application_config=ConfigStore(config_path).load_runtime()
+        ).execution
+    except ValueError as exc:
+        return f"❌ 市场优化配置无效，未修改参考持仓：{exc}"
+    trade_date = datetime.now().astimezone().strftime("%Y-%m-%d")
+    try:
+        new_pf, trades = mgr.adjust_position(
+            pf,
+            code,
+            action,
+            shares,
+            price,
+            trade_date,
+            commission_rate=execution.commission_rate,
+            lot_size=execution.lot_sizes[group],
+            fx_rate=execution.fx_rates[group],
+            reason="manual_bot",
+        )
+    except ValueError as exc:
+        return f"❌ 参考持仓未修改：{exc}"
+    mgr.save(new_pf)
+
+    holding = new_pf.holdings.get(code)
+    target = holding.shares if holding is not None else 0
+    if not trades:
+        return (
+            f"✅ {labels[group]} <code>{code}</code> 已是目标仓位 "
+            f"{target} 股；未产生重复交易。"
+        )
+    trade = trades[-1]
+    side = "买入" if trade.action == "buy" else "卖出"
+    return (
+        f"✅ {labels[group]}参考持仓已修改\n"
+        f"{side} <code>{code}</code> {trade.shares} 股 @CNY {trade.price:.4f}\n"
+        f"目标仓位: {target} 股 | 现金: {new_pf.cash:,.2f}\n"
+        f"记录: <code>{trade.event_id}</code>"
+    )
+
+
+def reference_status(config_path: Path, date_str: str | None = None) -> str:
+    """Query reference portfolios; reset authorization belongs to proposals."""
+
+    if date_str:
+        return "❌ 直接重置和旧 confirm 已停用；请在飞书对话中提出设置基期，检查提案后确认。"
+    current = (ConfigStore(config_path).load_runtime().get("optimizer", {}) or {}).get("reference_base_date", "")
+    # ── 查看状态（三组各自展示）──
+    lines = []
+    if current:
+        lines.append(f"📅 参考持仓基期: <b>{current}</b>")
+    else:
+        lines.append("📅 参考持仓基期: <b>未设置</b>")
+
+    any_init = False
+    for label, fname in [
+        ("A股", "data/ref_portfolio_a.yaml"),
+        ("港股", "data/ref_portfolio_hk.yaml"),
+        ("美股", "data/ref_portfolio_us.yaml"),
+    ]:
+        mgr = RefPortfolioManager(file_path=config_path.parent.parent / fname)
+        pf = mgr.load()
+        if not mgr.is_initialized(pf):
+            continue
+        any_init = True
+        lines.append(
+            f"\n<b>{label}</b>: 现金 {pf.cash:,.2f} | "
+            f"持仓 {len(pf.holdings)} 只 | 交易日 {pf.trading_days}"
+        )
+        if pf.is_bound:
+            lines.append(
+                f"  策略: <code>{pf.strategy_id}</code> | "
+                f"固定运行: <code>{pf.strategy_run_id}</code>"
+            )
+        else:
+            lines.append("  ⚠️ 旧持仓未绑定运行；不会继续交易，须手动重置。")
+        if pf.holdings:
+            for code, h in sorted(pf.holdings.items()):
+                lines.append(
+                    f"  • <code>{code}</code> {h.shares}股 成本 {h.avg_cost:.2f}"
+                )
+    if not any_init:
+        lines.append(
+            "\n📭 参考持仓未初始化"
+            "（请在飞书对话中提出设置基期，检查提案后确认）"
+        )
+    else:
+        lines.append(
+            "\n⚠️ 重置将<b>清空所有持仓</b>，请在飞书对话中提出并确认提案。"
+        )
+    return "\n".join(lines)
+
+
+def prepare_reference_reset(config_path: Path, date_str: str) -> dict:
+    """Freeze the business inputs for the existing command proposal."""
+    from datetime import date
+
+    from ..search.artifacts import load_latest_strategy_run
+    from ..search.config import get_market_optimizer_configs
+    from ..search.contracts import stable_hash
+
+    try:
+        if date.fromisoformat(date_str).isoformat() != date_str:
+            raise ValueError("noncanonical date")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("日期格式错误，请使用 YYYY-MM-DD；旧 confirm 已停用") from exc
+    config = ConfigStore(config_path).load_runtime()
+    active = load_latest_strategy_run(root=config_path.parent.parent / "data/optimizer")
+    groups = (("a_share", "a"), ("hk", "hk"), ("us", "us"))
+    if active is None or any(
+        active.strategy_for(group) is None or active.params_by_group.get(group) is None
+        for group, _ in groups
+    ):
+        raise ValueError("没有可绑定的三市场完整已激活运行；参考持仓未重置")
+    markets = get_market_optimizer_configs(config)
+    capital = float(markets["a_share"].execution.initial_capital)
+    targets, portfolios = [], []
+    for group, suffix in groups:
+        path = (config_path.parent.parent / f"data/ref_portfolio_{suffix}.yaml").resolve()
+        portfolios.append(RefPortfolioManager(file_path=str(path)).load().to_dict())
+        params = active.params_by_group[group]
+        strategy = active.strategy_for(group)
+        targets.append({
+            "path": str(path),
+            "arguments": {
+                "initial_capital": capital,
+                "inception_date": date_str,
+                "market_group": group,
+                "strategy_run_id": active.run_id_for(group),
+                "strategy_id": strategy.name,
+                "strategy_timestamp": active.timestamp,
+                "params_hash": stable_hash({"strategy_id": strategy.name, "values": params.values}),
+                "execution_hash": stable_hash(reference_execution_contract(
+                    params.execution_snapshot, markets[group].execution, group,
+                )),
+            },
+        })
+    return {
+        "date": date_str,
+        "targets": targets,
+        "state_hash": stable_hash(portfolios),
+        "preview": {
+            "effect": "清空 A股/港股/美股 全部参考持仓并重置；未确认不执行",
+            "date": date_str,
+            "holdings_count": sum(len(pf["holdings"]) for pf in portfolios),
+            "cash": sum(pf["cash"] for pf in portfolios),
+            "initial_capital_per_market": capital,
+            "strategy_runs": {group: active.run_id_for(group) for group, _ in groups},
+        },
+    }
+
+
+def apply_reference_reset(config_path: Path, plan: dict) -> str:
+    """Apply only from the existing proposal's claimed/applying branch."""
+
+    # Rebuild fixed paths and arguments; never write arbitrary payload paths.
+    current = prepare_reference_reset(config_path, plan["date"])
+    if current != plan:
+        raise ValueError("参考持仓或策略已变化，请重新预览")
+    try:
+        for target in current["targets"]:
+            manager = RefPortfolioManager(file_path=target["path"])
+            expected = manager.reset(**target["arguments"])
+            if manager.load().to_dict() != expected.to_dict():
+                raise OSError("reference portfolio write verification failed")
+
+        def set_base_date(config):
+            optimizer = config.setdefault("optimizer", {})
+            optimizer["reference_base_date"] = current["date"]
+            optimizer.pop("_ref_date_pending", None)
+
+        ConfigStore(config_path).update(set_base_date)
+    except Exception:
+        logger.exception("Reference reset may have partially completed")
+        return "❌ 重置结果未确认，可能部分完成；此提案不会重复执行，请核对三市场持仓。"
+    return f"✅ 参考持仓已重置（A股/港股/美股 三分仓），基期：{current['date']}。"

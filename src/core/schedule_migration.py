@@ -1,4 +1,4 @@
-"""Migrate this deployment's old cron jobs into its single service scheduler.
+"""Remove this deployment's old report cron jobs without creating replacements.
 
 Deployments call this after stopping the old service and before starting the new
 one. Unsupported schedules fail before either YAML or crontab is changed.
@@ -10,7 +10,6 @@ import posixpath
 import re
 import shlex
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 
 from .config_store import ConfigStore
@@ -18,15 +17,7 @@ from .process_lock import exclusive_process_lock
 
 
 class LegacyCronMigrationError(RuntimeError):
-    """The old schedule could not be represented or installed safely."""
-
-
-@dataclass(frozen=True)
-class _LegacyJob:
-    mode: str
-    fields: tuple[str, ...]
-    arguments: tuple[str, ...]
-    timezone: str | None
+    """The project's old cron could not be identified or removed safely."""
 
 
 def _project_invocation(command: str, project_root: str) -> tuple[str, ...] | None:
@@ -105,75 +96,11 @@ def _install_crontab(contents: str) -> None:
         raise LegacyCronMigrationError("安装迁移后的 crontab 失败；配置未保存")
 
 
-def _daily_time(jobs: list[_LegacyJob], timezone: str) -> str:
-    times = set()
-    for job in jobs:
-        if (
-            len(job.fields) != 5
-            or job.fields[2:] != ("*", "*", "*")
-            or not job.fields[0].isdigit()
-            or not job.fields[1].isdigit()
-            or not (0 <= int(job.fields[0]) < 60)
-            or not (0 <= int(job.fields[1]) < 24)
-        ):
-            raise LegacyCronMigrationError(
-                "旧项目 cron 不是每天固定时分，无法自动迁移；配置与 cron 未修改"
-            )
-        if job.timezone is not None and job.timezone != timezone:
-            raise LegacyCronMigrationError(
-                "旧项目 cron 的 CRON_TZ 与 scheduler.timezone 不一致；"
-                "配置与 cron 未修改"
-            )
-        times.add(f"{int(job.fields[1]):02d}:{int(job.fields[0]):02d}")
-    if len(times) != 1:
-        raise LegacyCronMigrationError(
-            "旧项目 cron 有多个运行时间，无法自动迁移；配置与 cron 未修改"
-        )
-    return times.pop()
-
-
-def _adopt_missing_schedule(config: dict, jobs: list[_LegacyJob]) -> list[str]:
-    if not any(job.mode in {"--once", "--brief"} for job in jobs):
-        return []
-    scheduler = config.setdefault("scheduler", {})
-    timezone = scheduler.get("timezone", "Asia/Shanghai")
-    changed = []
-    daily_jobs = [job for job in jobs if job.mode == "--once"]
-    if (
-        daily_jobs
-        and scheduler.get("daily_enabled", True)
-        and "run_time" not in scheduler
-    ):
-        scheduler["run_time"] = _daily_time(daily_jobs, timezone)
-        changed.append("scheduler.run_time")
-    brief_jobs: dict[str, list[_LegacyJob]] = {}
-    for job in jobs:
-        if job.mode != "--brief":
-            continue
-        if len(job.arguments) > 2 or job.arguments[0] != "--brief":
-            raise LegacyCronMigrationError(
-                "旧简报 cron 参数无法自动迁移；配置与 cron 未修改"
-            )
-        report_id = job.arguments[1] if len(job.arguments) == 2 else "morning_snapshot"
-        brief_jobs.setdefault(report_id, []).append(job)
-    for report_id, matching_jobs in brief_jobs.items():
-        reports = scheduler.setdefault("brief_reports", [])
-        report = next((item for item in reports if item.get("id") == report_id), None)
-        if report is None:
-            report = {"id": report_id, "enabled": True}
-            reports.append(report)
-        if report.get("enabled", True) and "run_time" not in report:
-            report["run_time"] = _daily_time(matching_jobs, timezone)
-            changed.append(f"scheduler.brief_reports.{report_id}.run_time")
-    return changed
-
-
 def migrate_legacy_cron(config_path: Path | str, project_root: Path | str) -> dict:
-    """Adopt missing schedule fields and remove only this project's old jobs.
+    """Remove only this project's retired cron jobs, without importing schedules.
 
-    Explicit report settings win. Retired optimizer cron jobs are removed,
-    never imported into the service scheduler. Optimizer execution has been
-    removed. The returned summary contains no credentials.
+    Existing YAML and historical trigger state stay unchanged. No old occurrence
+    is submitted or replayed. The returned summary contains no credentials.
     """
     root = posixpath.normpath(str(project_root).replace("\\", "/"))
     if not posixpath.isabs(root):
@@ -185,13 +112,9 @@ def migrate_legacy_cron(config_path: Path | str, project_root: Path | str) -> di
             raise LegacyCronMigrationError("另一进程正在迁移此项目的 cron")
         original = _read_crontab()
         kept_lines = []
-        jobs = []
-        cron_timezone = None
+        removed_jobs = 0
         for line in original.splitlines(keepends=True):
             stripped = line.strip()
-            timezone_match = re.fullmatch(r"CRON_TZ\s*=\s*(.*)", stripped)
-            if timezone_match:
-                cron_timezone = timezone_match.group(1).strip("\"'") or None
             parts = stripped.split(maxsplit=5)
             if stripped.startswith("@"):
                 parts = stripped.split(maxsplit=1)
@@ -208,11 +131,9 @@ def migrate_legacy_cron(config_path: Path | str, project_root: Path | str) -> di
             ]
             if len(modes) != 1:
                 raise LegacyCronMigrationError("旧项目 cron 有多个任务模式；未执行迁移")
-            jobs.append(
-                _LegacyJob(modes[0], tuple(parts[:-1]), arguments, cron_timezone)
-            )
-        summary = {"removed_jobs": len(jobs), "migrated_fields": []}
-        if not jobs:
+            removed_jobs += 1
+        summary = {"removed_jobs": removed_jobs, "migrated_fields": []}
+        if not removed_jobs:
             return summary
         updated_crontab = "".join(kept_lines)
         if updated_crontab and not updated_crontab.endswith("\n"):
@@ -221,11 +142,10 @@ def migrate_legacy_cron(config_path: Path | str, project_root: Path | str) -> di
 
         def apply_migration(config: dict) -> None:
             nonlocal install_attempted
-            summary["migrated_fields"] = _adopt_missing_schedule(config, jobs)
             if _read_crontab() != original:
                 raise LegacyCronMigrationError("crontab 已被其他进程修改；迁移已取消")
-            # Keep the config lock across installing cron and committing YAML.
-            # If YAML commit fails, the exception handler restores the old cron.
+            # Reuse the existing configuration lock without changing any YAML.
+            # Uncertain cron installation still restores the prior cron if safe.
             install_attempted = True
             _install_crontab(updated_crontab)
 
@@ -238,7 +158,7 @@ def migrate_legacy_cron(config_path: Path | str, project_root: Path | str) -> di
                     _install_crontab(original)
                 elif current_crontab != original:
                     raise LegacyCronMigrationError(
-                        "配置写入失败且 crontab 随后被修改，未覆盖新的 cron；请人工核对"
+                        "退役操作未完成且 crontab 随后被修改，未覆盖新的 cron；请人工核对"
                     ) from None
             raise
         return summary

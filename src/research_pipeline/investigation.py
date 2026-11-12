@@ -16,7 +16,12 @@ from types import SimpleNamespace
 
 from src.agent_runtime.harness import ConversationHarness
 from src.data_hub import DataHub
-from src.data_hub.public_web import fetch_public, search_results, search_url
+from src.data_hub.public_web import (
+    fetch_public,
+    search_public,
+    search_results,
+    search_url,
+)
 from src.platform_composition import authority_for
 from src.task_runtime.request_policy import RequestPolicyBlocked
 
@@ -253,15 +258,41 @@ class ResearchWorkspace:
             original["path"], url, kind="public", provenance=provenance
         )
 
-    def search_public(self, query, provider="bing"):
-        source = self.fetch_source(
-            search_url(query, provider), "Discovery only: " + query, refresh=True
+    def search_public(self, query):
+        from src.core.config_store import load_config
+
+        url = search_url(query)
+        config = load_config(self.pipeline.spec.repo / "config/config.yaml")
+        metadata = {"purpose": "Discovery only: " + query}
+
+        def download(_target):
+            raw, headers = search_public(
+                query,
+                self.authority,
+                api_key=(config.get("llm") or {}).get("api_key", ""),
+                deadline=self.deadline,
+                cancel=self.cancel,
+            )
+            metadata.update(headers)
+            return raw
+
+        original = self.hub.ensure_original(
+            url, download, version=self.key, source_metadata=metadata
+        )
+        source = self.register(
+            original["path"],
+            "Discovery only: " + query,
+            kind="public",
+            provenance={
+                **original.get("source_metadata", {}),
+                "cache_hit": original["cache_hit"],
+            },
         )
         raw = Path(self.sources[source["id"]]["path"]).read_bytes()
         rows = search_results(raw)
         return {
             "search_source_id": source["id"],
-            "provider": provider,
+            "provider": "deepseek",
             "results": rows,
             "status": "discovery_only" if rows else "no_discovery_results",
         }
@@ -562,10 +593,9 @@ def research_tools():
         ),
         (
             "search_public",
-            "搜索公开资料线索；默认Bing，可显式选择DuckDuckGo。失败或空结果不代表未披露；摘要不能作为已核实事实。没有自动切换或重试。",
+            "通过DeepSeek Search API搜索并保存真实返回。失败或空结果不代表未披露；摘要不能作为已核实事实，没有自动重试。",
             {
-                "query": string,
-                "provider": {"type": "string", "enum": ["bing", "duckduckgo"]},
+                "query": {"type": "string", "minLength": 1, "maxLength": 128},
             },
             ["query"],
         ),

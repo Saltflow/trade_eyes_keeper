@@ -154,22 +154,22 @@ def test_schedule_tool_uses_existing_preview_without_enabling_reports(tools):
             }
         )
     )
-    prepared = prepare_command(tools.project_root, tools, "/schedule daily 20:00")
+    with pytest.raises(ValueError, match="trigger_manage"):
+        prepare_command(tools.project_root, tools, "/schedule daily 20:00")
     assert raw(tools)["scheduler"]["run_time"] == "19:00"
-    tools.apply(prepared["proposals"][0])
     assert raw(tools)["scheduler"] == {
         "daily_enabled": False,
-        "run_time": "20:00",
+        "run_time": "19:00",
         "data_collection_mode": "three_daily",
     }
 
 
 def test_tool_exposure_list_and_owner_bound_confirmation(bot, tools):
     assert any(x["function"]["name"] == "bot_command" for x in bot.tool_schema())
-    assert bot.call_tool("chat", "owner", "bot_command", {"command": "/list"})[
+    assert bot.call_tool("chat", "owner", "watchlist_manage", {"action": "list"})[
         "stocks"
     ] == ["600036", "VOO"]
-    result = bot.call_tool("chat", "owner", "bot_command", {"command": "/add D05"})
+    result = bot.call_tool("chat", "owner", "watchlist_manage", {"action": "add", "codes": ["D05"]})
     assert "DBS D05.SI SGX SGD" in result["previews"][0]
     assert "600036" not in result["previews"][0]
     assert raw(tools)["stocks"] == ["600036", "VOO"]
@@ -185,7 +185,7 @@ def test_tool_exposure_list_and_owner_bound_confirmation(bot, tools):
 
 def test_ambiguous_tool_returns_choices_without_writing(bot, tools):
     tools.symbol_resolver = resolver(ambiguous=True)
-    result = bot.call_tool("chat", "owner", "bot_command", {"command": "/add D05"})
+    result = bot.call_tool("chat", "owner", "watchlist_manage", {"action": "add", "codes": ["D05"]})
     assert result["status"] == "needs_clarification"
     assert len(result["candidates"]) == 2
     assert bot.store.recent("chat", "owner") == []
@@ -202,7 +202,7 @@ def test_unavailable_alternative_market_requires_a_choice():
 
 def test_failed_preview_cannot_be_confirmed(bot):
     bot.send_message.return_value = (False, "offline")
-    result = bot.call_tool("chat", "owner", "bot_command", {"command": "/add D05"})
+    result = bot.call_tool("chat", "owner", "watchlist_manage", {"action": "add", "codes": ["D05"]})
     assert result["state"] == "preview_failed"
     with pytest.raises(ValueError):
         bot._control("chat", "owner", "确认", result["proposal_ids"][0])
@@ -244,7 +244,7 @@ def test_changed_config_or_cancelled_preview_prevents_dispatch(bot, tools):
     )
     bot._control("chat", "owner", "确认", result["proposal_ids"][0])
     bot.command_executor.execute.assert_not_called()
-    result = bot.call_tool("chat", "owner", "bot_command", {"command": "/save"})
+    result = bot.call_tool("chat", "owner", "configuration_save", {})
     action_id = result["proposal_ids"][0]
     bot._control("chat", "owner", "取消", action_id)
     with pytest.raises(ValueError):
@@ -253,10 +253,10 @@ def test_changed_config_or_cancelled_preview_prevents_dispatch(bot, tools):
 
 
 @pytest.mark.parametrize(
-    "question,command", [("加D05", "/add D05"), ("看看监控列表", "/list")]
+    "question,arguments", [("加D05", {"action": "add", "codes": ["D05"]}), ("看看监控列表", {"action": "list"})]
 )
 def test_natural_management_uses_real_pi_tool_loop_without_model_payment(
-    bot, tools, real_pi_bridge, question, command
+    bot, tools, real_pi_bridge, question, arguments
 ):
     bot.client.complete.side_effect = [
         {
@@ -267,8 +267,8 @@ def test_natural_management_uses_real_pi_tool_loop_without_model_payment(
                     "id": "add",
                     "type": "function",
                     "function": {
-                        "name": "bot_command",
-                        "arguments": json.dumps({"command": command}),
+                        "name": "watchlist_manage",
+                        "arguments": json.dumps(arguments),
                     },
                 }
             ],
@@ -282,7 +282,7 @@ def test_natural_management_uses_real_pi_tool_loop_without_model_payment(
     bot.harness = harness
     bot.handle("chat", "owner", question, "natural-management")
     items = bot.store.recent("chat", "owner")
-    if command.startswith("/add"):
+    if arguments["action"] == "add":
         assert len(items) == 1
         item = bot.store.get(items[0]["id"], "chat", "owner")
         assert item["payload"]["changes"][0]["value"][-1] == "D05.SI"

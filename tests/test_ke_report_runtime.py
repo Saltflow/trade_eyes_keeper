@@ -337,10 +337,15 @@ def offline_report(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("kind", ["daily", "brief"])
+@pytest.mark.parametrize("legacy_rules", [False, True])
 def test_real_report_entrypoints_skip_technical_calls_but_keep_events_snapshots_and_ledger(
-    offline_report, kind
+    offline_report, kind, legacy_rules
 ):
     fixture = offline_report
+    if legacy_rules:
+        fixture.config["scheduler"]["daily_report_frequency"] = "off"
+        fixture.config["scheduler"]["daily_report_triggers"] = {"invalid": "retired"}
+        fixture.config["scheduler"]["brief_reports"][0]["triggers"] = {"invalid": "retired"}
     if kind == "daily":
         fixture.config["_trigger_context"] = {
             "kind": "daily",
@@ -374,7 +379,12 @@ def test_real_report_entrypoints_skip_technical_calls_but_keep_events_snapshots_
         fixture.session.strategy_return_curves["strategy_id"]
         == "ke_threshold_allocation"
     )
-    assert fixture.session.announcements["601088"][0]["url"].endswith("fixture.pdf")
+    if kind == "daily":
+        assert fixture.session.announcements["601088"][0]["url"].endswith("fixture.pdf")
+    else:
+        # Retired brief predicates cannot cause hidden event acquisition.
+        assert fixture.session.announcements == {}
+        fixture.announcements.get_recent_important_announcements.assert_not_called()
     fixture.snapshots.assert_called_once_with(fixture.config, fixture.session, kind)
     assert fixture.accounts.apply_corporate_actions.call_count == 3
     assert fixture.accounts.save.call_count == 3

@@ -113,3 +113,137 @@ def test_failure_and_unknown_receipts_retain_original_archive_digest(
         result["archive_sha256"]
         == hashlib.sha256(Path(result["archive"]).read_bytes()).hexdigest()
     )
+
+
+def test_sent_pdf_and_attachment_are_archived_as_exact_mime_bytes(mail):
+    notifier, server = mail
+    pdf = b"%PDF-1.7\ncontrolled report bytes\n%%EOF"
+    receipt = notifier._send_email(
+        "report",
+        "<body>body</body>",
+        pdf_bytes=pdf,
+        attachments=[
+            {
+                "filename": "reader.html",
+                "content": "<p>原文</p>".encode(),
+                "content_type": "text/html",
+            }
+        ],
+    )
+    sent = server.send_message.call_args.args[0]
+    parts = [
+        part for part in sent.walk() if part.get_content_disposition() == "attachment"
+    ]
+    archived = receipt.get("attachments", [])
+    assert len(archived) == len(parts) == 2
+    for saved, part in zip(archived, parts):
+        raw = part.get_payload(decode=True)
+        assert saved["archive_status"] == "saved"
+        assert saved["filename"] == part.get_filename()
+        assert saved["content_type"] == part.get_content_type()
+        assert saved["bytes"] == len(raw)
+        assert Path(saved["archive"]).read_bytes() == raw
+        assert saved["archive_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert receipt["status"] == "sent"
+
+
+@pytest.mark.parametrize(
+    "phase,status",
+    [
+        ("connect", "failed"),
+        ("login", "failed"),
+        ("reject", "failed"),
+        ("submit", "unknown"),
+        ("quit", "sent"),
+    ],
+)
+def test_attachment_evidence_preserves_smtp_stage_outcome(mail, phase, status):
+    notifier, server = mail
+    connection = smtplib.SMTP_SSL.return_value
+    if phase == "connect":
+        smtplib.SMTP_SSL.side_effect = TimeoutError("connection failed")
+    elif phase == "login":
+        server.login.side_effect = smtplib.SMTPAuthenticationError(535, b"denied")
+    elif phase == "reject":
+        server.send_message.side_effect = smtplib.SMTPDataError(550, b"denied")
+    elif phase == "submit":
+        server.send_message.side_effect = TimeoutError("ack lost")
+    else:
+        connection.__exit__.side_effect = TimeoutError("quit lost")
+    receipt = notifier._send_email("report", "body", pdf_bytes=b"%PDF-1.7\n%%EOF")
+    assert receipt["status"] == status
+    assert receipt["attachments"][0]["archive_status"] == "saved"
+    assert Path(receipt["attachments"][0]["archive"]).read_bytes() == b"%PDF-1.7\n%%EOF"
+    assert server.send_message.call_count == (0 if phase in {"connect", "login"} else 1)
+
+
+@pytest.mark.parametrize(
+    "error,status",
+    [
+        (None, "sent"),
+        (TimeoutError("ack lost"), "unknown"),
+        (smtplib.SMTPDataError(550, b"denied"), "failed"),
+    ],
+)
+def test_attachment_archive_failure_does_not_reclassify_smtp_result(
+    mail, monkeypatch, error, status
+):
+    notifier, server = mail
+    server.send_message.side_effect = error
+    original = Path.open
+
+    def fail_attachment(path, *args, **kwargs):
+        if path.parent.name == ".attachments":
+            raise OSError("archive unavailable")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_attachment)
+    receipt = notifier._send_email("report", "body", pdf_bytes=b"%PDF-1.7\n%%EOF")
+    assert receipt["status"] == status
+    if status == "sent":
+        assert receipt["smtp_accepted"] is True
+    assert receipt["attachments"][0]["archive_status"] == "failed"
+    assert "archive" not in receipt["attachments"][0]
+    server.send_message.assert_called_once()
+
+
+def test_attachment_name_collision_never_overwrites_history(mail, monkeypatch):
+    notifier, _ = mail
+    monkeypatch.setattr(email_notifier, "uuid4", lambda: SimpleNamespace(hex="fixed"))
+    first = notifier._send_email("report", "body", pdf_bytes=b"%PDF-first")
+    second = notifier._send_email("report", "body", pdf_bytes=b"%PDF-second")
+    assert first["attachments"][0]["archive_status"] == "saved"
+    assert second["attachments"][0]["archive_status"] == "failed"
+    assert second["status"] == "sent"
+    saved = first["attachments"][0]
+    assert Path(saved["archive"]).read_bytes() == b"%PDF-first"
+    assert (
+        hashlib.sha256(Path(saved["archive"]).read_bytes()).hexdigest()
+        == saved["archive_sha256"]
+    )
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_daily_pdf_generation_gap_is_partial_with_html_smtp_sent(
+    mail, monkeypatch, failed
+):
+    import pandas as pd
+
+    notifier, server = mail
+    generator = (
+        Mock(side_effect=RuntimeError("render failed"))
+        if failed
+        else Mock(return_value=None)
+    )
+    monkeypatch.setattr(notifier, "_generate_daily_pdf", generator)
+    monkeypatch.setattr(notifier, "_build_email_body", lambda *_a, **_k: "<p>daily</p>")
+    monkeypatch.setattr(email_notifier, "generate_return_curve_png", lambda *_: None)
+    session = SimpleNamespace(
+        get_all_dataframe=lambda: pd.DataFrame(), announcements={}
+    )
+    receipt = notifier.send_daily_report_from_session(session)
+    assert receipt["status"] == "partial"
+    assert receipt["smtp_status"] == "sent"
+    assert receipt["pieces"][0]["status"] == "sent"
+    assert receipt["pdf"]["status"] == "failed"
+    server.send_message.assert_called_once()

@@ -97,7 +97,7 @@ class ReportTools:
     def _archives(self, run):
         """Index only explicit, existing report artifacts within catalog policy."""
         result = run.get("result")
-        candidates, gaps = [], []
+        candidates, gaps, attachment_metadata = [], [], {}
 
         def collect(value, evidence, *, artifacts=False, depth=0, digest=None):
             if depth > 8 or len(candidates) >= 100:
@@ -139,6 +139,18 @@ class ReportTools:
                 if len(value) > 100:
                     gaps.append("archive_reference_scan_limit")
             elif isinstance(value, dict):
+                if value.get("archive_status") == "failed":
+                    gaps.append("email_attachment_archive_failed")
+                if ".attachments[" in evidence:
+                    attachment_metadata[evidence + ".archive"] = {
+                        key: value.get(key)
+                        for key in (
+                            "filename",
+                            "content_type",
+                            "bytes",
+                            "archive_status",
+                        )
+                    }
                 for key, child in value.items():
                     if (
                         artifacts
@@ -152,7 +164,7 @@ class ReportTools:
                             depth=depth + 1,
                             digest=value.get(key + "_sha256") or value.get("sha256"),
                         )
-                    elif not artifacts and key in {"archive", "pieces"}:
+                    elif not artifacts and key in {"archive", "pieces", "attachments"}:
                         collect(
                             child,
                             f"{evidence}.{key}",
@@ -180,6 +192,13 @@ class ReportTools:
             trusted.append(
                 directory if directory.is_absolute() else self.root / directory
             )
+        attachment_roots = [self.root / "data/email_archive/.attachments"]
+        if isinstance(configured, str) and configured:
+            directory = Path(configured)
+            attachment_roots.append(
+                (directory if directory.is_absolute() else self.root / directory)
+                / ".attachments"
+            )
         catalog, archives, seen = None, [], set()
         for value, evidence, expected_hash in candidates:
             path = Path(value)
@@ -197,11 +216,22 @@ class ReportTools:
             if not any(path.is_relative_to(base) for base in trusted):
                 gaps.append("archive_outside_trusted_roots")
                 continue
-            if eligibility_reason(relative):
+            private_attachment = evidence in attachment_metadata
+            if private_attachment and path.parent not in attachment_roots:
+                gaps.append("attachment_outside_private_archive")
+                continue
+            if not private_attachment and eligibility_reason(relative):
                 gaps.append("archive_outside_catalog_policy")
                 continue
             try:
-                checked = _checked_file(self.root, relative)
+                if private_attachment:
+                    from .research import _safe_path
+
+                    checked = _safe_path(path, self.root, regular=True)
+                    if checked.stat().st_nlink != 1:
+                        raise ValueError("linked_attachment_file")
+                else:
+                    checked = _checked_file(self.root, relative)
                 if not isinstance(expected_hash, str) or not re.fullmatch(
                     r"[0-9a-f]{64}", expected_hash
                 ):
@@ -211,6 +241,18 @@ class ReportTools:
                     gaps.append("archive_content_changed")
                     continue
                 seen.add(relative)
+                if private_attachment:
+                    archives.append(
+                        {
+                            "data_id": f"report_artifact:{run['id']}:{expected_hash}",
+                            "source": relative,
+                            "sha256": expected_hash,
+                            "product": "email_attachment",
+                            "evidence": evidence,
+                            **attachment_metadata[evidence],
+                        }
+                    )
+                    continue
                 catalog = catalog or DatasetCatalog(self.root)
                 indexed = catalog.index_paths([relative])["files"][0]
                 if not indexed.get("file_id"):
@@ -235,6 +277,61 @@ class ReportTools:
             except (OSError, ValueError, sqlite3.Error):
                 gaps.append("archive_unavailable_or_unsafe")
         return archives, list(dict.fromkeys(gaps))
+
+    def read_artifact(self, data_id, **options):
+        """Read an explicitly linked attachment only for this run's owner/chat."""
+        from ...data.evidence_text import (
+            cached_parse,
+            parsed_projection,
+            physical_text_lines,
+        )
+        from ...data_hub.materials import DataHub
+        from ...platform_composition import authority_for
+        from .data_tools import MAX_BYTES, _read_evidence_rows, read_path
+        from .research import _safe_path
+
+        match = re.fullmatch(r"report_artifact:([^:]{1,128}):([0-9a-f]{64})", data_id)
+        if match is None:
+            raise ValueError("invalid_report_artifact_id")
+        run = self.runtime.store.get(match[1])
+        if not self._owned(run):
+            raise PermissionError("报告附件不属于当前用户和会话")
+        archives, gaps = self._archives(run)
+        linked = next((item for item in archives if item["data_id"] == data_id), None)
+        if linked is None:
+            raise ValueError("report_attachment_unavailable:" + ",".join(gaps))
+        path = _safe_path(self.root / linked["source"], self.root, regular=True)
+        if path.stat().st_nlink != 1 or path.stat().st_size > MAX_BYTES:
+            raise ValueError("report_attachment_unsafe_or_too_large")
+        if _sha256(path) != linked["sha256"]:
+            raise ValueError("report_attachment_content_changed")
+        if (
+            linked.get("content_type") == "application/pdf"
+            or path.suffix.lower() == ".pdf"
+        ):
+            hub = DataHub(authority_for(self.root, self.config))
+            parsed = cached_parse(hub, linked["sha256"], max_bytes=MAX_BYTES)
+            if parsed is None:
+                result = {
+                    "available": False,
+                    "items": [],
+                    "coverage_gaps": ["existing_text_parse_unavailable"],
+                    "notice": "PDF原件已归档，尚无已有文字解析；本次读取不会解析或OCR。",
+                }
+            else:
+                text, basis, parse_gaps = parsed_projection(parsed, max_chars=MAX_BYTES)
+                result = _read_evidence_rows(
+                    physical_text_lines(text),
+                    {"line_basis": basis},
+                    parse_gaps,
+                    **options,
+                )
+        else:
+            result = read_path(path, **options)
+        checked = _safe_path(path, self.root, regular=True)
+        if checked.stat().st_nlink != 1 or _sha256(checked) != linked["sha256"]:
+            raise ValueError("report_attachment_content_changed")
+        return _safe({**result, **linked})
 
     def submit(
         self,

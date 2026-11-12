@@ -143,7 +143,7 @@ def test_price_reuse_preserves_original_and_request_replay_after_edit(tools):
         first["data"]["trigger"]["number"] == replay["data"]["trigger"]["number"] == 1
     )
     assert tools.store.get(tools.owner, 1) == original
-    prepared = tools._prepare(value)
+    prepared = tools._prepare(value, NOW)
     assert tools.store.create(tools.owner, prepared, "explicit-reuse")["number"] == 1
     tools.store = TriggerStore(tools.store.path)
     tools.store.update(tools.owner, 1, {"label": "后续修改"}, expected_revision=1)
@@ -1096,3 +1096,69 @@ def test_historical_feishu_only_result_marks_email_not_requested_not_sent(
     assert channels["email"]["status"] == "not_requested"
     assert channels["feishu"]["status"] == "sent"
     assert "邮件未请求" in reply["message"]
+
+
+def test_relative_deadline_preserves_message_seconds_and_replay(tools):
+    from src.triggers.schedule import due_times
+
+    message_time = NOW.replace(second=7, microsecond=924000)
+    value = maturity_spec()
+    value["schedule"] = {"after_seconds": 180}
+    first = tools.execute({"action": "create", "spec": value}, now=message_time)
+    replay = tools.execute(
+        {"action": "create", "spec": value}, now=message_time
+    )
+    assert first["status"] == replay["status"] == "created"
+    assert first["data"]["trigger"]["number"] == replay["data"]["trigger"]["number"]
+    schedule = tools.store.get(tools.owner, 1)["spec"]["schedule"]
+    expected = message_time + timedelta(seconds=180)
+    assert schedule["times"] == [expected.isoformat()]
+    assert not due_times(schedule, expected - timedelta(microseconds=1))
+    assert due_times(schedule, expected) == [expected]
+    assert "12:03:07" in first["message"]
+    assert value["schedule"] == {"after_seconds": 180}
+
+
+@pytest.mark.parametrize(
+    "schedule",
+    [
+        {"after_seconds": 0},
+        {"after_seconds": True},
+        {"after_seconds": 1.5},
+        {"after_seconds": 31622401},
+        {"after_seconds": 180, "at": "2026-11-01"},
+        {"after_seconds": 180, "kind": "daily"},
+    ],
+)
+def test_relative_invalid_never_creates(tools, schedule):
+    value = maturity_spec()
+    value["schedule"] = schedule
+    assert (
+        tools.execute({"action": "create", "spec": value})["status"]
+        == "needs_clarification"
+    )
+    assert tools.store.get(tools.owner, 1) is None
+
+
+def test_relative_update_uses_current_authenticated_message_time(tools):
+    tools.execute({"action": "create", "spec": maturity_spec()})
+    moment = NOW.replace(second=37)
+    reply = tools.execute(
+        {
+            "action": "update",
+            "number": 1,
+            "expected_revision": 1,
+            "changes": {"schedule": {"after_seconds": 60}},
+        },
+        now=moment,
+    )
+    assert reply["status"] == "updated"
+    stored = tools.store.get(tools.owner, 1)["spec"]["schedule"]
+    assert stored["times"] == [(moment + timedelta(seconds=60)).isoformat()]
+
+
+def test_list_prefix_error_explains_correct_action(tools):
+    reply = tools.execute({"action": "list", "prefix": "上线验收"})
+    assert reply["status"] == "needs_clarification"
+    assert "list仅允许参数：state" in reply["message"]
+    assert "prefix仅用于catalog" in reply["message"]

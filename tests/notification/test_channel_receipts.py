@@ -243,7 +243,7 @@ def test_email_public_reports_propagate_receipt(smtp, monkeypatch, method):
     }
     monkeypatch.setattr(notifier, "_send_email", Mock(return_value=receipt))
     monkeypatch.setattr(notifier, "_prepare_brief_report", lambda *_: ("title", "body"))
-    monkeypatch.setattr(notifier, "_generate_daily_pdf", lambda *_: None)
+    monkeypatch.setattr(notifier, "_generate_daily_pdf", lambda *_: b"%PDF-1.7\n%%EOF")
     monkeypatch.setattr(notifier, "_build_email_body", lambda *_a, **_k: "body")
     session = SimpleNamespace(
         get_all_dataframe=lambda: pd.DataFrame(),

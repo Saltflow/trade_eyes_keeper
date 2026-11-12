@@ -294,6 +294,23 @@ class ParsedCache:
                 "application/xhtml+xml",
             } or path.suffix.lower() in {".html", ".htm", ".xhtml"}:
                 value = self._produce(digest, lambda: self._html(path, digest))
+            elif (content_type or "").split(";", 1)[0] == "application/json":
+
+                def parse_json():
+                    text = json.dumps(
+                        json.loads(path.read_bytes()), ensure_ascii=False, indent=2
+                    )
+                    return {
+                        "sha256": digest,
+                        "content_type": "application/json",
+                        "content": [{"type": "text", "text": text}],
+                        "pages": 0,
+                        "complete": True,
+                        "anchors": [],
+                        "parser": "json-neutral/1",
+                    }
+
+                value = self._produce(digest, parse_json)
             else:
                 raise ParsedCacheError("document_is_not_pdf_or_declared_html")
             # Reject a source concurrently replaced while parsing it.

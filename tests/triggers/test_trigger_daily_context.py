@@ -217,20 +217,13 @@ def daily_notification_decision():
         if isinstance(item, ast.FunctionDef) and item.name == "run_daily_task"
     )
     candidates = [
-        node
-        for node in ast.walk(daily)
-        if isinstance(node, ast.If)
-        and isinstance(node.test, ast.Name)
-        and node.test.id == "managed_daily"
-        and any(
-            isinstance(item, ast.Attribute)
-            and item.attr == "send_daily_report_from_session"
-            for item in ast.walk(node)
-        )
+        node for node in ast.walk(daily)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "send_daily_report_from_session"
     ]
-    assert len(candidates) == 1, (
-        "managed daily must own a full-report branch"
-    )
+    assert len(candidates) == 1, "all daily requests use the complete report"
     module = ast.parse(
         "def decide(config, session, notifier, managed_daily):\n    delivery = None\n    trigger_mode = False\n    force = True\n    daily_triggers = []\n    skip_reason = ''\n"
     )
@@ -243,7 +236,6 @@ def daily_notification_decision():
     )
     namespace = {
         "logger": Mock(),
-        "should_send_daily_report": lambda config, force=False: True,
     }
     exec(compile(ast.fix_missing_locations(module), str(path), "exec"), namespace)  # noqa: S102 - trusted local branch, never external text
     return namespace["decide"], daily

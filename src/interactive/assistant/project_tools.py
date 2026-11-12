@@ -23,6 +23,8 @@ PROJECT_TOOLS = REPOSITORY_TOOLS | {
     "read_configuration",
     "propose_configuration",
     "bot_command",
+    "watchlist_manage",
+    "configuration_save",
 }
 MATERIAL_TOOLS = frozenset(
     {
@@ -55,7 +57,7 @@ def tool_group(name):
         return GROUPS[0]
     if name == "trigger_manage":
         return GROUPS[1]
-    if name.startswith("personal_monitor_"):
+    if name.startswith("personal_monitor_") or name == "reference_portfolio":
         return GROUPS[2]
     if name in MATERIAL_TOOLS:
         return GROUPS[4]
@@ -79,6 +81,8 @@ def tool_allowed(name, capabilities):
         return True
     if name == "trigger_manage":
         return bool({"personal", "triggers"} & capabilities)
+    if name == "reference_portfolio":
+        return "research" in capabilities
     if name.startswith("personal_monitor_"):
         return "personal" in capabilities
     if name in REPOSITORY_TOOLS | {"project_status"}:

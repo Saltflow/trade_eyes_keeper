@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from src.core.config_store import ConfigStore
-from src.core.schedule_manager import ScheduleManager, set_schedule_manager
+from src.core.schedule_manager import set_schedule_manager
 from src.interactive.assistant.config_tools import (
     ConfigProposal,
     ConfigurationConflict,
@@ -36,9 +36,6 @@ def config_tools(tmp_path, monkeypatch):
     app_path.write_text(yaml.safe_dump(app, allow_unicode=True), encoding="utf-8")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "runtime-api-secret")
     monkeypatch.setenv("EMAIL_PASSWORD", "runtime-email-secret")
-    monkeypatch.setattr(
-        ScheduleManager, "_job_runner", staticmethod(lambda *_args: lambda: None)
-    )
     set_schedule_manager(None)
     from unittest.mock import Mock
 
@@ -88,17 +85,8 @@ def test_describe_only_exposes_allowlisted_values(config_tools):
     assert "execution_params.commission_rate" not in keys
     assert "walk_forward.window_range_penalty" not in keys
     assert "search.solvers.local_genetic.budget" not in keys
-    trigger = next(
-        item
-        for item in description["fields"]
-        if item["key"] == "scheduler.daily_report_triggers"
-    )
-    assert trigger["schema"]["mode"] == ["any", "all"]
-    assert set(trigger["schema"]["allowed_roots"]) == {
-        "dividend_events",
-        "placements",
-        "announcements",
-    }
+    assert "scheduler.daily_report_triggers" not in keys
+    assert "scheduler.daily_enabled" not in keys
 
 
 def _announcement_fields(tools):
@@ -576,27 +564,6 @@ def test_forged_proposal_path_or_diff_is_rejected(config_tools):
         config_tools.apply(forged)
 
 
-def test_schedule_change_reloads_live_jobs_without_startup_execution(config_tools):
-    store = _app_store(config_tools)
-    manager = ScheduleManager(store.load_raw(), config_path=store.path)
-    manager.start()
-    try:
-        (proposal,) = config_tools.propose(
-            [
-                _change("scheduler.run_time", "20:30"),
-                _change("scheduler.brief_reports.morning_snapshot.enabled", False),
-            ]
-        )
-        result = config_tools.apply(proposal)
-        assert result["status"] == "applied"
-        assert "立即生效" in result["effect"]
-        daily = manager.scheduler.get_job("daily")
-        assert (daily.next_run_time.hour, daily.next_run_time.minute) == (20, 30)
-        assert manager.scheduler.get_job("optimize") is None
-        assert manager.scheduler.get_job("brief_morning_snapshot") is None
-        assert manager.scheduler.get_job("startup_task") is None
-    finally:
-        manager.stop()
 
 
 def test_retired_optimizer_schedule_is_neither_exposed_nor_writable(config_tools):
@@ -623,126 +590,16 @@ def test_retired_optimizer_schedule_is_neither_exposed_nor_writable(config_tools
     assert store.path.read_bytes() == before
 
 
-def test_report_triggers_are_previewed_and_saved_under_confirmation(config_tools):
-    rules = {
-        "mode": "any",
-        "conditions": [
-            {"path": "dividend_events", "operator": "non_empty"},
-            {"path": "placements", "operator": "non_empty"},
-        ],
-    }
-    changes = [
-        _change("scheduler.daily_report_triggers", rules),
-        _change(
-            "scheduler.brief_reports.morning_snapshot.triggers",
-            {
-                "mode": "all",
-                "conditions": [
-                    {
-                        "path": "announcements.*.*.title",
-                        "operator": "contains",
-                        "value": "年报",
-                    }
-                ],
-            },
-        ),
-    ]
-
-    (proposal,) = config_tools.propose(changes)
-
-    assert {item["key"]: item["old"] for item in proposal["diff"]} == {
-        "scheduler.daily_report_triggers": {},
-        "scheduler.brief_reports.morning_snapshot.triggers": {},
-    }
-    assert {item["key"]: item["new"] for item in proposal["diff"]} == {
-        "scheduler.daily_report_triggers": rules,
-        "scheduler.brief_reports.morning_snapshot.triggers": changes[1]["value"],
-    }
-
-    result = config_tools.apply(proposal)
-
-    saved = _app_store(config_tools).load_raw()["scheduler"]
-    assert result["status"] == "applied"
-    assert saved["daily_report_triggers"] == rules
-    assert saved["brief_reports"][0]["triggers"] == changes[1]["value"]
 
 
-def test_schedule_reload_failure_reports_saved_configuration(config_tools, monkeypatch):
-    store = _app_store(config_tools)
-    manager = ScheduleManager(store.load_raw(), config_path=store.path)
-    manager.start()
-    try:
-
-        def fail():
-            raise RuntimeError("provider-secret-in-error")
-
-        monkeypatch.setattr(manager, "reload_config", fail)
-        (proposal,) = config_tools.propose([_change("scheduler.run_time", "20:30")])
-        result = config_tools.apply(proposal)
-        assert result["status"] == "applied_reload_failed"
-        assert "重启服务" in result["effect"]
-        assert "provider-secret-in-error" not in json.dumps(result)
-        assert store.load_raw()["scheduler"]["run_time"] == "20:30"
-        assert manager.scheduler.get_job("daily").next_run_time.hour == 19
-    finally:
-        manager.stop()
 
 
-def test_schedule_reload_rolls_back_jobs_on_install_failure(config_tools, monkeypatch):
-    store = _app_store(config_tools)
-    manager = ScheduleManager(store.load_raw(), config_path=store.path)
-    manager.start()
-    try:
-        install = manager._install_scheduled_specs
-        attempts = 0
-
-        def fail_once(specs, owned_ids):
-            nonlocal attempts
-            attempts += 1
-            if attempts == 1:
-                manager.scheduler.remove_job("daily")
-                raise RuntimeError("failed scheduling")
-            install(specs, owned_ids)
-
-        monkeypatch.setattr(manager, "_install_scheduled_specs", fail_once)
-        (proposal,) = config_tools.propose([_change("scheduler.run_time", "20:30")])
-        result = config_tools.apply(proposal)
-        assert result["status"] == "applied_reload_failed"
-        assert attempts == 2
-        assert manager.scheduler.get_job("daily").next_run_time.hour == 19
-        assert store.load_raw()["scheduler"]["run_time"] == "20:30"
-    finally:
-        manager.stop()
 
 
-def test_no_live_manager_reports_startup_requirement(config_tools):
-    (proposal,) = config_tools.propose([_change("scheduler.run_time", "20:30")])
-    result = config_tools.apply(proposal)
-    assert "服务启动后生效" in result["effect"]
 
 
-def test_off_report_frequency_keeps_daily_alert_job(config_tools):
-    store = _app_store(config_tools)
-    manager = ScheduleManager(store.load_raw(), config_path=store.path)
-    manager.start()
-    try:
-        (proposal,) = config_tools.propose(
-            [_change("scheduler.daily_report_frequency", "off")]
-        )
-        config_tools.apply(proposal)
-        assert manager.scheduler.get_job("daily") is not None
-        assert manager.config["scheduler"]["daily_report_frequency"] == "off"
-    finally:
-        manager.stop()
 
 
-def test_schedule_collision_rejected_before_config_write(config_tools):
-    store = _app_store(config_tools)
-    store.update(lambda raw: raw["scheduler"]["brief_reports"][0].update(id="daily"))
-    before = store.path.read_bytes()
-    with pytest.raises(ValueError, match="id 重复"):
-        config_tools.propose([_change("scheduler.run_time", "20:30")])
-    assert store.path.read_bytes() == before
 
 
 def test_malformed_yaml_error_never_echoes_secret_line(config_tools):

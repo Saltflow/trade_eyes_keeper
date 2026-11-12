@@ -183,39 +183,59 @@ def test_late_transport_audit_does_not_invalidate_frozen_research(
         verify_bundle(bundle)
 
 
-def test_search_provider_selection_and_primary_link_extraction(workspace, monkeypatch):
+def test_search_api_archive_and_primary_link_extraction(workspace, monkeypatch):
+    from unittest.mock import Mock
+
+    from src.research_pipeline import investigation
+
     query = "issuer annual report & solvency"
-    assert public_web.urlsplit(public_web.search_url(query)).hostname == "cn.bing.com"
-    assert public_web.parse_qs(
-        public_web.urlsplit(public_web.search_url(query)).query
-    ) == {"q": [query]}
-    assert "duckduckgo.com" in public_web.search_url(query, "duckduckgo")
-    with pytest.raises(ValueError, match="unsupported_search_provider"):
-        public_web.search_url(query, "uncontrolled-host")
-    raw = b"""<li class="b_algo"><h2><a href="https://issuer.example/report">Annual</a></h2>
-        <div class="b_caption"><p>Discovery only</p></div></li>
-        <li class="b_algo"><h2><a href="/search?q=other">Internal</a></h2></li>
-        <li class="b_algo"><h2><a href="http://issuer.example/plain">Insecure</a></h2></li>"""
-    rows = public_web.search_results(raw)
-    assert rows == [
+    assert (
+        public_web.urlsplit(public_web.search_url(query)).hostname == "api.deepseek.com"
+    )
+    raw = json.dumps(
         {
-            "title": "Annual",
-            "url": "https://issuer.example/report",
-            "snippet": "Discovery only",
-            "status": "discovery_only_not_primary_evidence",
+            "results": [
+                {
+                    "title": "Annual",
+                    "url": "https://issuer.example/report",
+                    "snippet": "Discovery only",
+                },
+                {"url": "http://issuer.example/plain"},
+                {"url": "https://issuer.example/report"},
+            ]
         }
-    ]
-    assert public_web.search_results(b"<html>No results</html>") == []
-    calls = []
+    ).encode()
+    mock = Mock(
+        return_value=(raw, {"content_type": "application/json", "provider": "deepseek"})
+    )
+    monkeypatch.setattr(investigation, "search_public", mock)
+    monkeypatch.setattr(
+        "src.core.config_store.load_config",
+        lambda *a, **kw: {"llm": {"api_key": "fixture"}},
+    )
+    result = workspace.search_public(query)
+    assert result["provider"] == "deepseek"
+    assert len(result["results"]) == 1
+    assert result["results"][0]["status"] == "discovery_only_not_primary_evidence"
+    assert mock.call_args.kwargs["api_key"] == "fixture"
+    mock.assert_called_once()
+    assert "fixture" not in json.dumps(result)
 
-    def unavailable(url, purpose, refresh):
-        calls.append(url)
-        raise TimeoutError("search transport unavailable")
 
-    monkeypatch.setattr(workspace, "fetch_source", unavailable)
+def test_search_api_failure_has_no_hidden_retry(workspace, monkeypatch):
+    from unittest.mock import Mock
+
+    from src.research_pipeline import investigation
+
+    mock = Mock(side_effect=TimeoutError("search transport unavailable"))
+    monkeypatch.setattr(investigation, "search_public", mock)
+    monkeypatch.setattr(
+        "src.core.config_store.load_config",
+        lambda *a, **kw: {"llm": {"api_key": "fixture"}},
+    )
     with pytest.raises(TimeoutError, match="search transport unavailable"):
-        workspace.search_public(query)
-    assert calls == [public_web.search_url(query)]  # No hidden fallback or retry.
+        workspace.search_public("issuer annual report")
+    mock.assert_called_once()
 
 
 def test_computed_chart_values_and_source_conflicts_are_preserved(

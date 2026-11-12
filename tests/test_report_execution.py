@@ -13,7 +13,6 @@ import yaml
 
 from src.core import report_execution as reports
 from src.core.execution import ExecutionRuntime, ExecutionStore, RunResult
-from src.core.schedule_manager import ScheduleManager
 from src.interactive.commands import handlers
 from src.notification.manager import NotifierManager
 
@@ -437,23 +436,6 @@ def test_bot_queues_forced_report_without_popen(profile, monkeypatch):
     runtime.stop(drain=False)
 
 
-def test_scheduled_callbacks_only_submit_and_obsolete_generation_is_ignored(
-    profile, monkeypatch
-):
-    config, path = profile
-    submit = Mock(return_value="scheduled")
-    monkeypatch.setattr(reports, "submit_report", submit)
-    manager = ScheduleManager(config, path, execution_runtime="shared")
-    callback = manager._job_runner("daily", ["--once"])
-    assert callback() == "scheduled"
-    first = submit.call_args.kwargs
-    assert first["runtime"] == "shared"
-    assert first["request_id"].startswith("schedule:daily:")
-    assert callback() == "scheduled"
-    assert submit.call_args.kwargs["request_id"] == first["request_id"]
-    manager.stop()
-    assert callback() is None
-    assert submit.call_count == 2
 
 
 @pytest.mark.parametrize(

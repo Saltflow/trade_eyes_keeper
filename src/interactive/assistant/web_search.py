@@ -52,14 +52,38 @@ def _iso(timestamp):
 
 
 def _archive(
-    url, hub, *, refresh, title, register_material, deadline, cancel, source_type
+    url,
+    hub,
+    *,
+    refresh,
+    title,
+    register_material,
+    deadline,
+    cancel,
+    source_type,
+    search_query=None,
+    search_limit=5,
+    api_key=None,
 ):
     metadata = {"title": title, "source_type": source_type}
 
     def download(_target):
-        raw, response = public_web.fetch_public(
-            url, hub.authority, deadline=deadline, cancel=cancel
-        )
+        if search_query is None:
+            raw, response = public_web.fetch_public(
+                url, hub.authority, deadline=deadline, cancel=cancel
+            )
+        else:
+            raw, response = public_web.search_public(
+                search_query,
+                hub.authority,
+                api_key=api_key,
+                limit=search_limit,
+                deadline=deadline,
+                cancel=cancel,
+            )
+            metadata.update(
+                provider="deepseek", method="POST", endpoint=public_web.SEARCH_ENDPOINT
+            )
         metadata.update(
             final_url=response["url"],
             content_type=response.get("content_type", ""),
@@ -114,6 +138,7 @@ def _archive(
                 "text/html",
                 "application/xhtml+xml",
                 "application/pdf",
+                "application/json",
             }:
                 result["parse"] = {
                     "status": "not_parsed",
@@ -189,19 +214,26 @@ def search_web(
     project_root: Path | str | None = None,
     authority: AuthorityRef | None = None,
     refresh: bool = True,
-    provider: str = "bing",
+    api_key: str | None = None,
     register_material: Callable[[dict], object] | None = None,
     deadline: float | None = None,
     cancel: threading.Event | None = None,
 ) -> dict:
     """Archive the actual search response; result snippets remain discovery only."""
-    if not isinstance(query, str) or not query.strip() or len(query) > 256:
-        raise ValueError("query must contain 1 to 256 characters")
+    if not isinstance(query, str) or not query.strip() or len(query) > 128:
+        raise ValueError("query must contain 1 to 128 characters")
     if type(limit) is not int or not 1 <= limit <= 8:
         raise ValueError("limit must be an integer from 1 to 8")
     if type(refresh) is not bool:
         raise ValueError("refresh must be boolean")
-    url = public_web.search_url(query.strip(), provider)
+    url = public_web.search_url(query.strip(), limit)
+    if api_key is None:
+        from ...core.config_store import load_config
+
+        root = Path(project_root) if project_root else Path(__file__).parents[3]
+        api_key = (load_config(root / "config/config.yaml").get("llm") or {}).get(
+            "api_key", ""
+        )
     hub = _hub(project_root, authority)
     page = _archive(
         url,
@@ -211,12 +243,15 @@ def search_web(
         register_material=register_material,
         deadline=deadline if deadline is not None else time.monotonic() + 30,
         cancel=cancel if cancel is not None else threading.Event(),
-        source_type="public_web_search_page",
+        source_type="deepseek_search_response",
+        search_query=query.strip(),
+        search_limit=limit,
+        api_key=api_key,
     )
     result = {
         **page,
         "query": query.strip(),
-        "provider": provider,
+        "provider": "deepseek",
         "results": [],
         "discovery": {"status": "not_attempted"},
     }
@@ -240,12 +275,12 @@ def search_web(
             if result["results"]
             else {
                 "status": "unavailable",
-                "reason": "search_results_not_extracted",
+                "reason": "no_usable_search_results",
             }
         )
         if not result["results"]:
             result["coverage_gaps"] = [
-                "Search page contained no extractable results; this does not prove no matching sources exist."
+                "Search API returned no usable links; this does not prove no matching sources exist."
             ]
     except Exception as error:  # noqa: BLE001 - the search original stays readable
         result["discovery"] = {"status": "failed", "error": str(error)}
