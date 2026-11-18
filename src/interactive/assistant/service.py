@@ -1666,6 +1666,8 @@ class FeishuAssistant:
                    "report_id": {"enum": ["morning_snapshot", "afternoon_snapshot"]}}, ("kind",)),
             _tool("report_get", "按真实run_id读取本人报告阶段、原因和逐渠道回执",
                   {"run_id": {"type": "string"}}, ("run_id",)),
+            _tool("report_attachment_parse", "显式解析本人当前会话已归档的PDF附件；只提取本地文字并存入私有缓存，无联网、OCR或模型调用。扫描页明确缺口，成功后用data_read按页/行读取",
+                  {"data_id": {"type": "string", "pattern": "^report_artifact:[^:]{1,128}:[0-9a-f]{64}$"}}, ("data_id",)),
             _tool("report_find", "分页查询本人当前会话的报告任务",
                   {"report_type": {"enum": ["daily", "brief"]},
                    "status": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100},
@@ -2037,6 +2039,10 @@ class FeishuAssistant:
             if set(arguments) - {"kind", "report_id"} or "kind" not in arguments:
                 raise ValueError("需要kind，可选report_id")
             return self._propose_report(chat, sender, prepare_report(self.root, **arguments))
+        if name == "report_attachment_parse":
+            if set(arguments) != {"data_id"}:
+                raise ValueError("report_attachment_parse requires only data_id")
+            return self._report_tools_for(chat, sender).parse_artifact(arguments["data_id"])
         if name in {"report_find", "report_get"}:
             reports = self._report_tools_for(chat, sender)
             allowed = {"run_id"} if name == "report_get" else {"report_type", "status", "limit", "offset"}

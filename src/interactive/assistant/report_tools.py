@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 
 from ...core import report_execution
 from ...core.execution import get_runtime
@@ -14,7 +16,14 @@ from ...data.dataset_catalog import (
     _sha256,
     eligibility_reason,
 )
-from .data_tools import _safe, paginate_rows
+from .data_tools import MAX_BYTES, _safe, paginate_rows
+
+# Interactive local parsing budget, not a financial/model policy. Refuse (never
+# clip) PDFs above 200 pages or this text bound. Parsed JSON keeps text twice;
+# 16 bytes per character leaves room for JSON escaping and page metadata within
+# the existing 8 MiB reader limit. Limits are returned by the explicit tool.
+ATTACHMENT_MAX_PAGES = 200
+ATTACHMENT_MAX_TEXT_CHARS = MAX_BYTES // 16
 
 
 class ReportTools:
@@ -278,16 +287,8 @@ class ReportTools:
                 gaps.append("archive_unavailable_or_unsafe")
         return archives, list(dict.fromkeys(gaps))
 
-    def read_artifact(self, data_id, **options):
-        """Read an explicitly linked attachment only for this run's owner/chat."""
-        from ...data.evidence_text import (
-            cached_parse,
-            parsed_projection,
-            physical_text_lines,
-        )
-        from ...data_hub.materials import DataHub
-        from ...platform_composition import authority_for
-        from .data_tools import MAX_BYTES, _read_evidence_rows, read_path
+    def _attachment(self, data_id):
+        """Resolve only receipt-pinned bytes after authenticating this caller."""
         from .research import _safe_path
 
         match = re.fullmatch(r"report_artifact:([^:]{1,128}):([0-9a-f]{64})", data_id)
@@ -305,18 +306,106 @@ class ReportTools:
             raise ValueError("report_attachment_unsafe_or_too_large")
         if _sha256(path) != linked["sha256"]:
             raise ValueError("report_attachment_content_changed")
+        return path, linked
+
+    def _attachment_cache(self, path, digest):
+        from ...data_hub.parsing import ParsedCache
+        from ...data_hub.pdf import read_pdf_material
+        from .research import _safe_path
+
+        # Reuse the existing content-addressed parser inside the private archive.
+        # Never register the attachment or its text in the public material store.
+        directory = _safe_path(path.parent / ".parsed", self.root)
+        # This private cache has no migration history. The shared parser's
+        # legacy indirections would bypass the checked private directory.
+        for marker in (
+            directory / "shared_parse_ref.json",
+            directory / "legacy_roots.json",
+            directory / digest / "parsed.ref.json",
+        ):
+            if marker.exists() or marker.is_symlink():
+                raise ValueError("report_attachment_cache_redirect_forbidden")
+        for candidate in (
+            directory / digest / "parsed.json",
+            directory / digest / "parse_attempt.json",
+            directory / "locks" / f"{digest}.lock",
+        ):
+            _safe_path(candidate, self.root)
+            if candidate.exists() and candidate.stat().st_nlink != 1:
+                raise ValueError("report_attachment_cache_unsafe")
+        return ParsedCache(
+            directory,
+            pdf_reader=partial(
+                read_pdf_material,
+                render_images=False,
+                max_pages=ATTACHMENT_MAX_PAGES,
+                max_chars=ATTACHMENT_MAX_TEXT_CHARS,
+            ),
+        )
+
+    def parse_artifact(self, data_id):
+        """Explicit local text extraction; no network, model, OCR or delivery."""
+        path, linked = self._attachment(data_id)
+        if (
+            linked.get("content_type") != "application/pdf"
+            and path.suffix.lower() != ".pdf"
+        ):
+            raise ValueError("report_attachment_parse_requires_pdf")
+        cache = self._attachment_cache(path, linked["sha256"])
+        parsed = cache.read(path, content_type="application/pdf")
+        if parsed["sha256"] != linked["sha256"]:
+            raise ValueError("report_attachment_content_changed")
+        # Reauthenticate and verify the immutable receipt after native parsing.
+        self._attachment(data_id)
+        result = self.read_artifact(data_id, limit=1)
+        return {
+            **linked,
+            "parse_status": "complete",
+            "text_available": any(
+                text.strip() for text in parsed.get("page_texts", {}).values()
+            ),
+            "pages": parsed["pages"],
+            "cache_hit": parsed["cache_hit"],
+            "coverage_gaps": result.get("coverage_gaps", []),
+            "ocr_performed": False,
+            "limits": {
+                "max_bytes": MAX_BYTES,
+                "max_pages": ATTACHMENT_MAX_PAGES,
+                "max_text_chars": ATTACHMENT_MAX_TEXT_CHARS,
+            },
+            "next_step": {"tool": "data_read", "data_id": data_id},
+        }
+
+    def read_artifact(self, data_id, **options):
+        """Read an explicitly linked attachment only for this run's owner/chat."""
+        from ...data.evidence_text import (
+            cached_parse,
+            parsed_projection,
+            physical_text_lines,
+        )
+        from ...data_hub.materials import DataHub
+        from ...platform_composition import authority_for
+        from .data_tools import _read_evidence_rows, read_path
+        from .research import _safe_path
+
+        path, linked = self._attachment(data_id)
         if (
             linked.get("content_type") == "application/pdf"
             or path.suffix.lower() == ".pdf"
         ):
-            hub = DataHub(authority_for(self.root, self.config))
-            parsed = cached_parse(hub, linked["sha256"], max_bytes=MAX_BYTES)
+            cache = self._attachment_cache(path, linked["sha256"])
+            parsed = cached_parse(
+                SimpleNamespace(parsed=cache), linked["sha256"], max_bytes=MAX_BYTES
+            )
+            if parsed is None:
+                hub = DataHub(authority_for(self.root, self.config))
+                parsed = cached_parse(hub, linked["sha256"], max_bytes=MAX_BYTES)
             if parsed is None:
                 result = {
                     "available": False,
                     "items": [],
                     "coverage_gaps": ["existing_text_parse_unavailable"],
-                    "notice": "PDF原件已归档，尚无已有文字解析；本次读取不会解析或OCR。",
+                    "notice": "PDF原件已归档，尚无文字解析；可显式调用report_attachment_parse后再读取。本次读取不会解析或OCR。",
                 }
             else:
                 text, basis, parse_gaps = parsed_projection(parsed, max_chars=MAX_BYTES)

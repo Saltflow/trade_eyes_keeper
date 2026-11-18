@@ -5169,3 +5169,10 @@ User-authorized batch: `data/fundamental_data/terra61_high_batch100_20261102/man
 - DS 原生搜索真实调用、IFRS 官方 PDF 原文归档解析、另一会话禁网重读和当前 54 项工具能力查询均通过。模型验收使用生产代码及真实 DS API、隔离会话，不冒充真实飞书入站。
 - 新建一次性触发器 #16（不是重放历史动作），180 秒相对时间完整保留；全 26 标的日报成功，邮件及飞书三段逐渠道成功，Gmail INBOX 收件确认，实际 PDF 108285 字节与归档 SHA256 完全一致。附件私有读取和越权拒绝通过；尚无正文解析时明确返回 existing_text_parse_unavailable。
 - 完整部署、真实数据及剩余边界见 docs/development/project_tools_gaps_20261112.md；旧段落中的候选、未部署和 Bing 默认仅记录当时状态，已被本次发布取代。
+
+
+### 2026-11-18 报告附件正文补齐
+
+- 新增明确的 report_attachment_parse(data_id)，复用 ParsedCache/PDF 后端，提取本人/当前会话的已归档附件文字并保存到私有缓存；data_read/report_get 保持只读。没有新队列、公共索引、网络、OCR或通知。
+- 解析前后验证固定回执哈希、路径及身份；私有缓存拒绝共享 parser 的 legacy/redirect 元数据。交互解析有原件大小、页数及文字量上限，拒绝超限不裁剪；没有硬 CPU 超时隔离。失败沿用持久 parse_attempt 不自动重试。
+- 既有飞书消息→模型创建触发器 #20→完整26标的日报→邮件/飞书成功→Gmail INBOX 的实际记录已核实，未重放。详见 docs/development/report_attachment_parse_20261118.md；候选与实际发布状态以该记录的最新验收结果为准。

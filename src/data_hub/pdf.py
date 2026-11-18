@@ -6,20 +6,32 @@ import base64
 import io
 
 
-def read_pdf_material(path):
+def read_pdf_material(path, *, render_images=True, max_pages=None, max_chars=None):
     import pypdfium2
 
     content, pages, images = [], [], []
+    characters = 0
     with pypdfium2.PdfDocument(str(path)) as pdf:
+        if max_pages is not None and len(pdf) > max_pages:
+            raise ValueError(f"pdf_page_limit_exceeded:{max_pages}")
         for number, page in enumerate(pdf, 1):
             try:
                 textpage = page.get_textpage()
                 try:
+                    if max_chars is not None:
+                        characters += textpage.count_chars()
+                        if characters > max_chars:
+                            raise ValueError(f"pdf_text_limit_exceeded:{max_chars}")
                     text = textpage.get_text_range()
                     pages.append(text)
                 finally:
                     textpage.close()
                 if len(text.strip()) < 80:
+                    if not render_images:
+                        # Record visual coverage without rendering or OCR. The
+                        # default research path still preserves page images.
+                        images.append({"page": number})
+                        continue
                     bitmap = page.render(scale=1.7)
                     try:
                         picture = bitmap.to_pil().convert("RGB")

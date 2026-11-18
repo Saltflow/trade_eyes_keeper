@@ -77,6 +77,7 @@ def tool_allowed(name, capabilities):
         "data_search",
         "report_find",
         "report_get",
+        "report_attachment_parse",
     }:
         return True
     if name == "trigger_manage":

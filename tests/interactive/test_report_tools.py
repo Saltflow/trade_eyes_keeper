@@ -21,6 +21,188 @@ from src.interactive.feishu_handler import handle_feishu_message
 from src.interactive.telegram_bot import TelegramBot
 
 
+def _pdf_attachment(reports, content):
+    path = reports.root / "data/email_archive/.attachments/parse.pdf"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    digest = hashlib.sha256(content).hexdigest()
+    run_id = _record_result(
+        reports,
+        {
+            "deliveries": {
+                "email": {
+                    "status": "sent",
+                    "attachments": [
+                        {
+                            "filename": "report.pdf",
+                            "content_type": "application/pdf",
+                            "archive": str(path),
+                            "archive_sha256": digest,
+                            "archive_status": "saved",
+                            "bytes": len(content),
+                        }
+                    ],
+                }
+            }
+        },
+    )
+    return path, f"report_artifact:{run_id}:{digest}"
+
+
+def test_explicit_attachment_parse_reuses_private_cache_through_bot(
+    reports, text_pdf_bytes, monkeypatch
+):
+    import pypdfium2
+
+    from src.data_hub.materials import DataHub
+    from src.interactive.assistant.service import FeishuAssistant
+    from src.interactive.assistant.store import ProposalStore
+
+    forbidden = Mock(side_effect=AssertionError("No public registration or rendering"))
+    monkeypatch.setattr(DataHub, "register_original", forbidden)
+    monkeypatch.setattr(pypdfium2.PdfPage, "render", forbidden)
+    path, key = _pdf_attachment(reports, text_pdf_bytes)
+    bot = FeishuAssistant(
+        reports.config,
+        Mock(),
+        project_root=reports.root,
+        configuration=Mock(),
+        research=Mock(),
+        client=Mock(),
+        store=ProposalStore(reports.runtime.store.path),
+        execution_runtime=reports.runtime,
+        start_workers=False,
+    )
+    bot.capabilities = set()  # No research capability needed for one's own report.
+    try:
+        before = bot.call_tool("chat", "owner", "data_read", {"data_id": key})
+        assert before["coverage_gaps"] == ["existing_text_parse_unavailable"]
+        assert not (path.parent / ".parsed").exists()
+        for owner, chat in (("foreign", "chat"), ("owner", "foreign")):
+            with pytest.raises(PermissionError):
+                bot.call_tool(chat, owner, "report_attachment_parse", {"data_id": key})
+        with pytest.raises(ValueError):
+            bot.call_tool(
+                "chat",
+                "owner",
+                "report_attachment_parse",
+                {"data_id": key, "owner": "owner"},
+            )
+        result = bot.call_tool(
+            "chat", "owner", "report_attachment_parse", {"data_id": key}
+        )
+        assert result["text_available"] and not result["cache_hit"]
+        assert result["pages"] == 1 and not result["ocr_performed"]
+        monkeypatch.setattr(pypdfium2, "PdfDocument", forbidden)
+        assert reports.parse_artifact(key)["cache_hit"]
+        fresh = report_tools.ReportTools(
+            reports.config,
+            owner="owner",
+            chat_id="chat",
+            runtime=reports.runtime,
+            config_path=reports.config_path,
+        )
+        text = fresh.read_artifact(key)
+        assert any(
+            row["page"] == 1 and "123.45" in row["text"] for row in text["items"]
+        )
+        with pytest.raises(ValueError):
+            BusinessDataTools(reports.root).read(key)
+        assert not list(
+            (reports.root / "data/shared_platform/materials/objects").glob("*")
+        )
+        path.write_bytes(b"replaced PDF")
+        with pytest.raises(ValueError, match="archive_content_changed"):
+            reports.parse_artifact(key)
+        forbidden.assert_not_called()
+    finally:
+        bot.stop()
+
+
+def test_attachment_blank_pdf_keeps_explicit_visual_gap(reports, monkeypatch):
+    import pypdfium2
+
+    pdf = pypdfium2.PdfDocument.new()
+    page = pdf.new_page(100, 100)
+    import io
+
+    stream = io.BytesIO()
+    pdf.save(stream)
+    page.close()
+    pdf.close()
+    _, key = _pdf_attachment(reports, stream.getvalue())
+    monkeypatch.setattr(
+        pypdfium2.PdfPage, "render", Mock(side_effect=AssertionError("no rendering"))
+    )
+    result = reports.parse_artifact(key)
+    assert not result["text_available"]
+    assert any("visual_text_unavailable" in gap for gap in result["coverage_gaps"])
+
+
+@pytest.mark.parametrize("limit", ["pages", "text"])
+def test_attachment_parse_limits_fail_without_clipping(
+    reports, text_pdf_bytes, monkeypatch, limit
+):
+    _, key = _pdf_attachment(reports, text_pdf_bytes)
+    monkeypatch.setattr(
+        report_tools,
+        "ATTACHMENT_MAX_PAGES" if limit == "pages" else "ATTACHMENT_MAX_TEXT_CHARS",
+        0,
+    )
+    with pytest.raises(ValueError, match="limit_exceeded"):
+        reports.parse_artifact(key)
+    with pytest.raises(ValueError, match="parse_attempt_not_retried"):
+        reports.parse_artifact(key)
+    assert reports.read_artifact(key)["coverage_gaps"] == [
+        "existing_text_parse_unavailable"
+    ]
+
+
+def test_attachment_broken_pdf_is_not_retried(reports):
+    _, key = _pdf_attachment(reports, b"%PDF-1.7 broken")
+    with pytest.raises(Exception, match="[Ff]ailed.*PDF|[Dd]ata format"):
+        reports.parse_artifact(key)
+    with pytest.raises(ValueError, match="parse_attempt_not_retried"):
+        reports.parse_artifact(key)
+
+
+@pytest.mark.parametrize(
+    "marker", ["shared_parse_ref.json", "legacy_roots.json", "parsed.ref.json"]
+)
+def test_attachment_cache_rejects_shared_parser_redirects(
+    reports, text_pdf_bytes, marker
+):
+    path, key = _pdf_attachment(reports, text_pdf_bytes)
+    directory = path.parent / ".parsed"
+    if marker == "parsed.ref.json":
+        directory /= key.rsplit(":", 1)[1]
+    directory.mkdir(parents=True)
+    (directory / marker).write_text("{}")
+    with pytest.raises(ValueError, match="cache_redirect_forbidden"):
+        reports.parse_artifact(key)
+    with pytest.raises(ValueError, match="cache_redirect_forbidden"):
+        reports.read_artifact(key)
+
+
+@pytest.mark.parametrize("link", ["hardlink", "symlink"])
+def test_attachment_parse_rejects_linked_cache(
+    reports, text_pdf_bytes, monkeypatch, link
+):
+    path, key = _pdf_attachment(reports, text_pdf_bytes)
+    digest = key.rsplit(":", 1)[1]
+    target = path.parent / ".parsed" / digest / "parsed.json"
+    target.parent.mkdir(parents=True)
+    if link == "hardlink":
+        os.link(path, target)
+    else:
+        original = Path.is_symlink
+        monkeypatch.setattr(
+            Path, "is_symlink", lambda p: p == target.parent or original(p)
+        )
+    with pytest.raises(ValueError, match="unsafe|symbolic"):
+        reports.parse_artifact(key)
+
+
 def test_report_get_discovers_receipt_attachment_with_pinned_hash(reports, monkeypatch):
     from src.data_hub.materials import DataHub
 
