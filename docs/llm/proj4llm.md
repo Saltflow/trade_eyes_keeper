@@ -5176,3 +5176,6 @@ User-authorized batch: `data/fundamental_data/terra61_high_batch100_20261102/man
 - 新增明确的 report_attachment_parse(data_id)，复用 ParsedCache/PDF 后端，提取本人/当前会话的已归档附件文字并保存到私有缓存；data_read/report_get 保持只读。没有新队列、公共索引、网络、OCR或通知。
 - 解析前后验证固定回执哈希、路径及身份；私有缓存拒绝共享 parser 的 legacy/redirect 元数据。交互解析有原件大小、页数及文字量上限，拒绝超限不裁剪；没有硬 CPU 超时隔离。失败沿用持久 parse_attempt 不自动重试。
 - 既有飞书消息→模型创建触发器 #20→完整26标的日报→邮件/飞书成功→Gmail INBOX 的实际记录已核实，未重放。详见 docs/development/report_attachment_parse_20261118.md；候选与实际发布状态以该记录的最新验收结果为准。
+
+
+- 上述附件解析已于 2026-11-18 09:10 +08:00 随 683e86b5 部署：服务器禁网216项通过，源码/保护配置核对通过；真实模型完成查报告→发现缺解析→显式解析→正文引用，独立对话读取缓存通过。实际收件PDF与原件哈希一致，4页正文可读、越权拒绝；Ke产物仍过期，详见 report_attachment_parse_20261118.md 的最终验收。
