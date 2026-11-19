@@ -518,6 +518,38 @@ def test_telegram_rechecks_revocation_between_http_fragments(route, monkeypatch)
     post.assert_called_once()
 
 
+@pytest.mark.parametrize("route", ["daily", "brief"], indirect=True)
+def test_telegram_bound_report_preserves_prices_and_events_without_curves(route, monkeypatch):
+    from tests.notification.test_bot_reports_without_curves import ReportSession
+
+    notifier = TriggerTelegramNotifier(route.routed)
+    post = Mock(side_effect=lambda *_a, **_k: SimpleNamespace(
+        status_code=200,
+        json=lambda: {"ok": True, "result": {"message_id": post.call_count}},
+    ))
+    monkeypatch.setattr(requests, "post", post)
+    daily = notifier.binding["kind"] == "daily"
+    receipt = (
+        notifier.send_daily_report_from_session(ReportSession())
+        if daily else notifier.send_brief_report(ReportSession(), {"label": "合成简报"})
+    )
+    assert receipt["status"] == "sent", receipt
+    assert post.call_count == (2 if daily else 1)
+    for call in post.call_args_list:
+        assert call.kwargs["data"]["chat_id"] == "configured-telegram-chat"
+        body = call.kwargs["data"]["text"]
+        assert "触发器 #1" in body and "<script>" not in body
+        assert "收益曲线" not in body and "Ke策略" not in body
+    first = post.call_args_list[0].kwargs["data"]["text"]
+    assert "600036" in first and "00700" in first and "—" in first
+    if daily:
+        assert "合成事件应完整保留" in post.call_args_list[1].kwargs["data"]["text"]
+        assert [piece["label"] for piece in receipt["pieces"]] == ["价格与基本面", "事件速览"]
+        assert [piece["pieces"][0]["message_id"] for piece in receipt["pieces"]] == [1, 2]
+    else:
+        assert receipt["pieces"][0]["message_id"] == 1
+
+
 def test_enabled_missing_telegram_configuration_cannot_be_omitted(route, monkeypatch):
     for config in (route.config, route.routed):
         config["notification"]["telegram"].pop("bot_token")

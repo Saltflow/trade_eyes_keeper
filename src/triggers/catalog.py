@@ -16,6 +16,7 @@ _PRIVATE = re.compile(
 )
 _EXCLUDED = {"config", "env", "errors", "session_id", "created_at"}
 _RETIRED_REPORT_ROOTS = {
+    "strategy_return_curves",
     "alerts", "signal_scan", "portfolio_results", "backtest", "evaluation_reports",
     "opt_data_a", "opt_data_non_a", "opt_data_hk", "opt_data_us",
 }

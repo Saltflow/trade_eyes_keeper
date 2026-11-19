@@ -29,7 +29,7 @@ pip install pytest pytest-mock
 # Single run (for testing)
 python main.py --once
 
-# Brief report (returns_only: price/fundamentals + validated Ke curves)
+# Brief report (returns_only: price/fundamentals)
 python main.py --brief [report_id]
 
 # Scheduled run (default)
@@ -148,7 +148,7 @@ logger.info(f"Stock {stock_code} cache bypassed, current time {now.strftime('%H:
 - **Config**: `config/config.yaml`, environment variables in `config/.env` (gitignored)
 - **Scheduler**: Timezone Asia/Shanghai, cache bypass cutoff 15:55. Production verified 2026-11-03 uses managed triggers; fixed daily/startup/brief schedules are disabled. ScheduleManager still supports explicit fixed-time configurations; do not re-enable them during deployment.
 - **Report types**: Managed actions are `daily`, `brief`, and reserved `optimize`; only daily/brief execute, through the existing full report workers. There is no managed `reminder` report. All timed/conditional notifications use the managed trigger report pipeline and all configured enabled channels. Personal-monitor notification tools/runtime are retired; retain holdings and historical receipts only.
-- **Brief reports**: In `returns_only` mode, display applicable price/fundamental rows and validated Ke curves; no legacy technical-result fallback. The 09:50/14:30 IDs remain compatibility settings, not a claim that production schedules them.
+- **Brief reports**: In `returns_only` mode, display applicable price/fundamental rows; no legacy technical-result fallback. The 09:50/14:30 IDs remain compatibility settings, not a claim that production schedules them.
 - **Report events**: `report.events.announcement_lookback_months` defaults to 2 calendar months, accepts integers 1–24 through Bot preview/confirmation, and affects later report reads only. It does not extend acquisition coverage or remove pending dividends/locked placements.
 - **Optional extraction transport**: `financial_pipeline.py extract --subagent --subagent-native` uses Codex CLI only when explicitly selected. Normal service, daily/brief reports and default API extraction do not require Codex. Research model execution separately requires the configured offline Docker sandbox.
 

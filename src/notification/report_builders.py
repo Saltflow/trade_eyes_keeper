@@ -1,4 +1,4 @@
-"""Shared event and validated Ke text report builders."""
+"""Shared event presentation and report readiness builders."""
 
 from __future__ import annotations
 
@@ -50,13 +50,6 @@ def _safe_html_url(value) -> str:
     if raw.lower().startswith(("http://", "https://")):
         return html_lib.escape(raw, quote=True)
     return ""
-
-
-def build_strategy_text_summary(session, markdown: bool = False) -> str:
-    """Validated Ke curves as the text-channel substitute for the shared chart."""
-    from .report_policy import build_return_curves_text
-
-    return build_return_curves_text(getattr(session, "strategy_return_curves", None))
 
 
 def _event_number(value):

@@ -144,7 +144,7 @@ class TestFeishuContent:
         with patch.object(notifier, "_send") as mock_send:
             mock_send.return_value = (True, "ok")
             notifier.send_daily_report_from_session(session)
-            # 3 段报告 + 策略摘要（signal_scan=None 时策略摘要可能为空但仍调用）
+            # 行情/基本面与可用事件分片；曲线不再产生独立分片
             assert mock_send.call_count >= 1
             calls = mock_send.call_args_list[:3]
             titles = [c.args[0] for c in calls]

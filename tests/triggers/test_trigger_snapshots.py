@@ -215,6 +215,7 @@ def test_quote_metadata_never_borrows_capture_or_naive_clock(config, source_time
 
 def test_retired_report_roots_are_not_captured_or_restored_from_old_snapshots(config):
     roots = {
+        "strategy_return_curves",
         "alerts", "signal_scan", "portfolio_results", "backtest", "evaluation_reports",
         "opt_data_a",
         "opt_data_non_a", "opt_data_hk", "opt_data_us",

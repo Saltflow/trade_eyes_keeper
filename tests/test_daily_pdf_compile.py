@@ -10,6 +10,54 @@ from src.notification import daily_pdf
 from src.notification.daily_pdf import _compile_pdf
 
 
+@pytest.mark.parametrize("state", ["ready", "not_ready", "not_applicable"])
+def test_rendered_pdf_keeps_quote_readiness_without_strategy_charts(monkeypatch, state):
+    import pandas as pd
+
+    class ReportSession(SimpleNamespace):
+        @property
+        def strategy_return_curves(self):
+            raise AssertionError("PDF must not read retired Ke curves")
+
+    code = "601088"
+    frame = pd.DataFrame([
+        {
+            "stock_code": code,
+            "stock_name": "合成测试公司",
+            "close": 10,
+            "pe_ratio": 10,
+            "quote_status": "unavailable" if state == "not_ready" else "last_close",
+            "quote_as_of": "2026-11-18T15:00:00+08:00",
+            "quote_reason": "合成缺口" if state == "not_ready" else "",
+        }
+    ])
+    source = ReportSession(
+        config={} if state == "not_applicable" else {"stocks": [code]},
+        created_at="2026-11-18T19:00:00+08:00",
+        stocks_data={code: frame.iloc[0].to_dict()},
+        report_quote_quality={"quotes": {code: frame.iloc[0].to_dict()}},
+    )
+    rendered = []
+
+    def compile_pdf(path):
+        raw = path.read_bytes()
+        assert b"\r" not in raw
+        rendered.append(raw.decode("utf-8"))
+        return b"%PDF-synthetic-compile"
+
+    monkeypatch.setattr(daily_pdf, "_compile_pdf", compile_pdf)
+    assert daily_pdf.generate_daily_pdf(source, frame, get_server_info=dict)
+    text = rendered[0]
+    for retired in ("includegraphics", "graphicx", "Ke策略收益", "历史模拟", "A股策略"):
+        assert retired not in text
+    assert code in text and "隐含 Ke" in text and "12.0\\%" in text
+    assert "\\VAR{" not in text
+    expected = {"ready": "数据就绪", "not_ready": "数据未就绪", "not_applicable": "未评估"}
+    assert expected[state] in text
+    if state != "ready":
+        assert "数据就绪" not in text
+
+
 @pytest.fixture
 def tex(tmp_path, monkeypatch):
     # Compiler protocol tests isolate platform discovery; probe tests below

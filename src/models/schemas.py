@@ -256,7 +256,6 @@ class SessionContext(BaseModel):
     report_quote_quality: Optional[dict] = None
     # 扩展字段
     announcements: dict[str, list] = Field(default_factory=dict)
-    strategy_return_curves: Optional[dict] = None  # 明确标识来源的 Ke 模拟收益曲线
     placements: dict[str, dict] = Field(default_factory=dict)  # {code: 定增数据}
     dividend_events: list[dict] = Field(default_factory=list)  # 日报待处理分红/分派
     dividend_schedule: dict | None = None  # 有来源的公开派息日及覆盖，不等于账户到账

@@ -1,4 +1,4 @@
-"""Shared daily PDF: current fundamentals, validated Ke curves and events."""
+"""Shared daily PDF: assessed quotes, current fundamentals and events."""
 
 from __future__ import annotations
 
@@ -137,7 +137,6 @@ def generate_daily_pdf(
     get_server_info,
 ) -> bytes | None:
     """生成日报 PDF（xelatex 编译 LaTeX 模板），返回 bytes"""
-    import os
     import tempfile
 
     from .report_policy import (
@@ -145,39 +144,14 @@ def generate_daily_pdf(
         PRICE_COLORS,
         ROE_ESTIMATE_NOTE,
         fundamental_rows,
-        generate_return_curve_png,
         implied_ke,
         price_movement,
         quote_presentation,
         quote_status_summary,
-        return_curve_markets,
-        return_curve_notes,
     )
 
     config = getattr(session, "config", {})
-    chart_path = None
     try:
-        # 1. 图表 PNG
-        curves = getattr(session, "strategy_return_curves", None)
-        chart_buf = generate_return_curve_png(curves)
-        chart_path = None
-        if chart_buf and not isinstance(chart_buf, str):
-            fd, chart_path = tempfile.mkstemp(suffix=".png", prefix="chart_")
-            with open(fd, "wb") as f:
-                data = (
-                    chart_buf
-                    if isinstance(chart_buf, bytes)
-                    else chart_buf.getvalue()
-                    if hasattr(chart_buf, "getvalue")
-                    else chart_buf
-                )
-                f.write(data)
-            chart_section = (
-                f"\\includegraphics[width=\\textwidth]{{{Path(chart_path).as_posix()}}}"
-            )
-        else:
-            chart_section = "{\\color{gray}\\small 今日无图表数据}"
-
         # ── LaTeX 转义函数 (必须在使用前定义) ──
         def _esc(s):
             """LaTeX 转义"""
@@ -195,21 +169,10 @@ def generate_daily_pdf(
             }
             return "".join(escaped.get(char, char) for char in str(s))
 
-        ta, th, tu = [
-            float(item["values"][-1] / item["initial_capital"] * 100 - 100)
-            if item["status"] != "unavailable"
-            else None
-            for item in return_curve_markets(curves)
-        ]
-        kpi_a = f"{ta:+.1f}\\%" if ta is not None else "—"
-        kpi_h = f"{th:+.1f}\\%" if th is not None else "—"
-        kpi_u = f"{tu:+.1f}\\%" if tu is not None else "—"
-        kpi_color_a = "green" if ta is not None and ta > 0 else "red"
-        kpi_color_h = "green" if th is not None and th > 0 else "red"
-        kpi_color_u = "green" if tu is not None and tu > 0 else "red"
         kpi_buy = str(len(stock_data))
-        kpi_s, kpi_color_s = "历史模拟", "navy"
         readiness = report_data_readiness(session)
+        kpi_s = "数据就绪" if readiness["status"] == "ready" else "未评估"
+        kpi_color_s = "navy"
         readiness_section = r"{\small " + _esc(quote_status_summary(stock_data)) + "}"
         if readiness["status"] == "not_ready":
             kpi_s, kpi_color_s = "数据未就绪", "red"
@@ -232,15 +195,6 @@ def generate_daily_pdf(
                 + _esc("；".join(issues))
                 + "}"
             )
-            for group, key in (("a_share", "kpi_a"), ("hk", "kpi_h"), ("us", "kpi_u")):
-                if group in readiness["analysis_issues"]:
-                    if key == "kpi_a":
-                        kpi_a = "受阻"
-                    elif key == "kpi_h":
-                        kpi_h = "受阻"
-                    else:
-                        kpi_u = "受阻"
-
         events = build_daily_event_rows(
             getattr(session, "announcements", None),
             getattr(session, "placements", None),
@@ -416,38 +370,20 @@ def generate_daily_pdf(
         )
         html = html.replace("\\VAR{kpi_buy}", kpi_buy)
         html = html.replace("\\VAR{kpi_buy_label}", "监控标的")
-        html = html.replace(
-            "\\VAR{chart_title}",
-            "Ke策略收益曲线",
-        )
-        html = html.replace("\\VAR{kpi_a}", kpi_a)
-        html = html.replace("\\VAR{kpi_h}", kpi_h)
-        html = html.replace("\\VAR{kpi_u}", kpi_u)
         html = html.replace("\\VAR{kpi_s}", kpi_s)
-        html = html.replace("\\VAR{kpi_color_a}", kpi_color_a)
-        html = html.replace("\\VAR{kpi_color_h}", kpi_color_h)
-        html = html.replace("\\VAR{kpi_color_u}", kpi_color_u)
         html = html.replace("\\VAR{kpi_color_s}", kpi_color_s)
         html = html.replace("\\VAR{readiness_section}", readiness_section)
         html = html.replace("\\VAR{events_section}", events_section)
-        html = html.replace("\\VAR{chart_section}", chart_section)
-        html = html.replace(
-            "\\VAR{curve_notes}",
-            "\\par\n".join(_esc(line) for line in return_curve_notes(curves)),
-        )
         html = html.replace("\\VAR{table_section}", table_section)
         html = html.replace("\\VAR{fundamental_note}", bt_text)
 
         # 8. xelatex 编译
         with tempfile.TemporaryDirectory() as tmpdir:
             tex_file = Path(tmpdir) / "report.tex"
-            tex_file.write_text(html, encoding="utf-8")
+            tex_file.write_text(html, encoding="utf-8", newline="\n")
 
             return _compile_pdf(tex_file)
 
     except Exception as e:  # noqa: BLE001 -- classify report generation failure
         logger.error("生成日报 PDF 失败: %s", type(e).__name__)
         return None
-    finally:
-        if chart_path and os.path.exists(chart_path):
-            os.unlink(chart_path)

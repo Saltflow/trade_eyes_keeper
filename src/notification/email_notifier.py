@@ -31,7 +31,6 @@ from .report_builders import (  # noqa: F401
     _html_escape,
     _safe_html_url,
     build_daily_event_rows,
-    build_strategy_text_summary,
     group_daily_event_rows,
 )
 from .report_policy import (
@@ -40,12 +39,10 @@ from .report_policy import (
     format_price,
     format_roe,
     fundamental_rows,
-    generate_return_curve_png,
     implied_ke,
     price_movement,
     quote_presentation,
     quote_status_summary,
-    return_curves_html,
 )
 from .settings import channel_enabled
 
@@ -112,18 +109,6 @@ class EmailNotifier(BaseNotifier):
             # 构建邮件主题
             subject = f"股票日报 - {datetime.now().astimezone().strftime('%Y-%m-%d')}"
 
-            # 日报使用单张三市场 Ke 曲线总览图。
-            portfolio_chart_dict = None
-            try:
-                overview_png = generate_return_curve_png(
-                    getattr(session, "strategy_return_curves", None)
-                )
-                portfolio_chart_dict = (
-                    {"overview": overview_png} if overview_png else None
-                )
-            except Exception as e:  # noqa: BLE001 -- contain optional report/OS/archive failures
-                logger.error(f"投资组合图表生成失败: {e}")
-
             # 生成日报 PDF 附件
             pdf_bytes = None
             pdf_failure = None
@@ -139,10 +124,8 @@ class EmailNotifier(BaseNotifier):
             body = self._build_email_body(
                 stock_data,
                 announcements,
-                portfolio_chart_dict=portfolio_chart_dict,
                 placements=getattr(session, "placements", None),
                 dividend_events=getattr(session, "dividend_events", None),
-                strategy_return_curves=getattr(session, "strategy_return_curves", None),
                 report_as_of=getattr(session, "created_at", None),
             )
 
@@ -150,7 +133,6 @@ class EmailNotifier(BaseNotifier):
             receipt = self._send_email(
                 subject,
                 body,
-                portfolio_chart_dict=portfolio_chart_dict,
                 pdf_bytes=pdf_bytes,
             )
             if pdf_failure:
@@ -274,7 +256,6 @@ class EmailNotifier(BaseNotifier):
             ("最近收盘", counts["last_close"]),
             ("行情缺口", counts["unavailable"]),
             ("监控标的", len(rows)),
-            ("策略展示", "Ke收益曲线"),
             ("覆盖市场", len({item["group"] for item in rows})),
         ]
         html = [
@@ -448,27 +429,12 @@ class EmailNotifier(BaseNotifier):
         )
         return "".join(lines)
 
-    def _daily_portfolio_chart_section(
-        self, portfolio_chart_dict, strategy_return_curves=None
-    ):
-        source = (
-            "cid:chart002" if (portfolio_chart_dict or {}).get("overview") else None
-        )
-        return (
-            '<section class="daily-section portfolio-overview-section">'
-            '<div class="section-heading">Ke策略收益曲线</div><div class="chart-card">'
-            + return_curves_html(strategy_return_curves, source, compact=True)
-            + "</div></section>"
-        )
-
     def _build_email_body(
         self,
         stock_data,
         announcements=None,
-        portfolio_chart_dict=None,
         placements=None,
         dividend_events=None,
-        strategy_return_curves=None,
         report_as_of=None,
     ):
         template_dir = Path(__file__).parent.parent / "templates"
@@ -498,9 +464,6 @@ class EmailNotifier(BaseNotifier):
             deployment_status=deployment_status,
             summary_section=self._build_daily_summary_section(watchlist_rows),
             watchlist_section=self._build_daily_watchlist_section(watchlist_rows),
-            portfolio_chart_section=self._daily_portfolio_chart_section(
-                portfolio_chart_dict, strategy_return_curves
-            ),
             events_section=self._build_daily_events_section(
                 announcements,
                 placements,
@@ -610,7 +573,7 @@ class EmailNotifier(BaseNotifier):
         return self._send_email(subject, body)
 
     def _prepare_brief_report(self, session, report_config: dict):
-        """Render current price/fundamentals and validated Ke curves."""
+        """Render current prices and fundamentals from the assessed report data."""
         from ..core.build_info import build_label
         from .report_policy import FUNDAMENTAL_COLUMNS
 
@@ -642,9 +605,6 @@ class EmailNotifier(BaseNotifier):
             + "。每行按源时间展示行情状态；延迟采样不代表实时，最近收盘不代表盘中报价。"
             + "缺口价格与缺失指标显示为 —。"
             + ROE_ESTIMATE_NOTE,
-            strategy_suggestions=return_curves_html(
-                getattr(session, "strategy_return_curves", None)
-            ),
         )
         return f"{label} - {today:%Y-%m-%d}", body
 
@@ -658,7 +618,6 @@ class EmailNotifier(BaseNotifier):
         subject,
         body,
         chart_png_bytes=None,
-        portfolio_chart_dict=None,
         pdf_bytes=None,
         attachments=None,
     ):
@@ -669,7 +628,6 @@ class EmailNotifier(BaseNotifier):
             subject: 邮件主题
             body: 邮件正文（HTML格式）
             chart_png_bytes: 告警走势图 PNG 字节（可选），CID=chart001
-            portfolio_chart_dict: 投资组合走势图 {"a_share": bytes, "non_a_share": bytes}
             pdf_bytes: 日报 PDF 附件 bytes（可选）
         """
 
@@ -697,10 +655,8 @@ class EmailNotifier(BaseNotifier):
             # MIMEText encodes the payload and sets its matching transfer header.
             html_part = MIMEText(body, "html", "utf-8")
 
-            has_any_chart = chart_png_bytes or portfolio_chart_dict
-
-            if has_any_chart:
-                # 有任意图表：MIMEMultipart("related") 容器，HTML + 内嵌图片
+            if chart_png_bytes:
+                # 告警图使用 related 容器；日报不再生成或注入策略图。
                 inner = MIMEMultipart("related")
                 inner.policy = policy.default
 
@@ -710,36 +666,14 @@ class EmailNotifier(BaseNotifier):
                 inner.attach(alt)
 
                 # 添加告警走势图（CID: chart001）
-                if chart_png_bytes:
-                    image = MIMEImage(chart_png_bytes, "png")
-                    image.add_header("Content-ID", "<chart001>")
-                    image.add_header(
-                        "Content-Disposition", "inline", filename="chart.png"
-                    )
-                    inner.attach(image)
-                    logger.info("告警走势图以 CID chart001 嵌入邮件")
+                image = MIMEImage(chart_png_bytes, "png")
+                image.add_header("Content-ID", "<chart001>")
+                image.add_header(
+                    "Content-Disposition", "inline", filename="chart.png"
+                )
+                inner.attach(image)
+                logger.info("告警走势图以 CID chart001 嵌入邮件")
 
-                # 日报优先使用单张归一化三市场总览；兼容旧调用方的分市场图。
-                if portfolio_chart_dict:
-                    cid_map = {
-                        "overview": "chart002",
-                        "a_share": "chart002",
-                        "hk": "chart003",
-                        "us": "chart004",
-                        "non_a_share": "chart005",
-                    }
-                    for group_key, png_bytes in portfolio_chart_dict.items():
-                        if png_bytes and group_key in cid_map:
-                            cid = cid_map[group_key]
-                            img = MIMEImage(png_bytes, "png")
-                            img.add_header("Content-ID", f"<{cid}>")
-                            img.add_header(
-                                "Content-Disposition",
-                                "inline",
-                                filename=f"portfolio_{group_key}.png",
-                            )
-                            inner.attach(img)
-                            logger.info(f"投资组合走势图以 CID {cid} 嵌入邮件")
             else:
                 # 无图表：保持原逻辑
                 inner = MIMEMultipart("alternative")

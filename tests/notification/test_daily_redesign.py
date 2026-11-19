@@ -15,7 +15,6 @@ from src.notification.report_builders import (
 from src.notification.report_policy import (
     PRICE_COLORS,
     price_movement,
-    return_curves_html,
 )
 
 
@@ -180,22 +179,3 @@ def test_unrounded_movement_is_used_in_real_daily_cells(
     cell = soup.select_one(".current-quote")
     assert PRICE_COLORS[direction] in cell["style"] and cell.strong is not None
     assert cell.select_one(".price-change").get_text() == change
-
-
-def test_daily_curve_caption_has_no_duplicate_sparkline_but_brief_keeps_it():
-    payload = {
-        "strategy_id": "ke_threshold_allocation",
-        "markets": {
-            "a_share": {
-                "dates": ["2026-01-01", "2026-01-02"],
-                "values": [100, 110],
-                "initial_capital": 100,
-                "coverage": {"status": "complete"},
-            },
-        },
-    }
-    daily = return_curves_html(payload, "cid:chart002", compact=True)
-    assert daily.count("<img") == 1 and "<h3>" not in daily and "<pre" not in daily
-    assert not any(char in daily for char in "▁▂▃▄▅▆▇█")
-    assert "美股：暂不可用" in daily and "数据截至 2026-01-02" in daily
-    assert "▁" in return_curves_html(payload)

@@ -15,7 +15,6 @@ from .base import BaseNotifier
 from .receipts import combine_receipts, legacy_tuple, normalize_receipt
 from .report_policy import (
     FUNDAMENTAL_COLUMNS,
-    build_return_curves_text,
     fundamental_rows,
     quote_status_summary,
 )
@@ -113,22 +112,6 @@ class FeishuNotifier(BaseNotifier):
                     "error": type(exc).__name__,
                 }
             )
-        try:
-            from ..notification.email_notifier import build_strategy_text_summary
-
-            strat_body = build_strategy_text_summary(session, markdown=True)
-            if strat_body:
-                sections.append(("收益曲线", strat_body, None))
-        except Exception as exc:  # noqa: BLE001 - retain other report sections
-            preparation_failures.append(
-                {
-                    "label": "收益曲线",
-                    "status": "failed",
-                    "attempted": False,
-                    "reason": "preparation_failed",
-                    "error": type(exc).__name__,
-                }
-            )
         pieces = []
         halted = False
         for ordinal, (label, body, extra) in enumerate(sections):
@@ -166,9 +149,7 @@ class FeishuNotifier(BaseNotifier):
     def _prepare_brief_report(self, session, report_config: dict) -> dict:
         stock_data = session.get_all_dataframe()
         table = self._fundamental_table(stock_data)
-        body = quote_status_summary(stock_data) + "\n\n" + build_return_curves_text(
-            getattr(session, "strategy_return_curves", None)
-        )
+        body = quote_status_summary(stock_data)
         card = _build_interactive_card(
             report_config.get("label", "简报"), body, extra_elements=[table]
         )

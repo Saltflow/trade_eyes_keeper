@@ -42,18 +42,12 @@
   .watch-instrument span {{ margin-top:2px; font-size:11px; line-height:1.55; }}
   .current-quote strong {{ font-size:12px; }}
   .price-change {{ display:block; margin-top:2px; font-size:10px; white-space:nowrap; }}
-  .curve-notes {{ margin-top:8px; padding:7px 9px; background:#f0f5fa; border-radius:5px; }}
-  .curve-note {{ color:#667c92; font-size:10px; line-height:1.65; overflow-wrap:anywhere; }}
-  .curve-note:first-child {{ color:#315574; font-weight:600; }}
   .event-category {{ margin-top:16px; padding:7px 9px; background:#eaf1f8;
     border-left:3px solid #315a82; color:#173b62; font-size:13px; font-weight:700; }}
   .event-market {{ padding:9px 1px 2px; color:#718096; font-size:10px; font-weight:700; }}
   .event-instrument {{ padding:4px 1px; color:#244969; font-weight:700; font-size:12px; }}
   .event-dates {{ margin-top:4px; line-height:1.9; }}
   .event-routine {{ padding:7px 8px; background:#f8fafc; }}
-  .chart-card {{ margin-top:8px; padding:8px; border:1px solid #e0e8f0;
-    border-radius:8px; background:#fbfdff; }}
-  .chart-card img {{ display:block; width:100%; max-width:100%; height:auto; }}
   .event-row {{ padding:6px 1px; border-bottom:1px solid #e8eef4; color:#4a5c70;
     font-size:11px; overflow-wrap:anywhere; }}
   .event-row:last-of-type {{ border-bottom:0; }}
@@ -80,9 +74,7 @@
       <tr><td class="content" style="padding:12px 16px 18px;">
         {deployment_status}
         {summary_section}
-        <!-- Strategy Search Results -->
         {watchlist_section}
-        {portfolio_chart_section}
         {events_section}
 
       </td></tr>

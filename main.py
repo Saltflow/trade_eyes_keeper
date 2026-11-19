@@ -48,13 +48,8 @@ from src.instruments.audit import load_latest_audit
 from src.notification.manager import NotifierManager
 from src.search.config import get_market_optimizer_configs
 from src.session.session_manager import SessionManager
-from src.strategy.return_curves import load_return_curves
 
 MARKET_GROUPS = ("a_share", "hk", "us")
-
-
-def _attach_return_curves(session, config):
-    object.__setattr__(session, "strategy_return_curves", load_return_curves(config))
 
 
 def _stock_code(stock: object) -> str:
@@ -514,10 +509,6 @@ def run_daily_task(
                     len(audit.profiles),
                 )
 
-        if progress:
-            progress("daily_evaluation")
-        _attach_return_curves(session, config)
-
         # Freeze raw source-timed report prices after slow history/event preparation.
         if progress:
             progress("daily_report_quotes")
@@ -667,8 +658,6 @@ def run_brief_report(
         fetcher.fetch_to_session(session, session_manager)
 
         logger.info(f"简报：获取到 {len(session.stocks_data)} 只股票数据")
-
-        _attach_return_curves(session, config)
 
         if progress:
             progress("brief_report_quotes")

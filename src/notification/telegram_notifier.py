@@ -1,7 +1,7 @@
 """
 Telegram 通知器 — Bot API 消息推送（HTML 格式）
 简报：逐行独立小段 + emoji 着色
-日报：价格/基本面/技术指标三分段
+日报：价格与基本面、事件速览分段
 """
 
 from __future__ import annotations
@@ -15,10 +15,7 @@ import requests
 
 from .base import BaseNotifier
 from .receipts import combine_receipts, legacy_tuple, normalize_receipt
-from .report_policy import (
-    build_return_curves_text,
-    fundamental_text,
-)
+from .report_policy import fundamental_text
 from .settings import channel_enabled
 
 logger = logging.getLogger(__name__)
@@ -205,21 +202,6 @@ class TelegramNotifier(BaseNotifier):
                     "error": type(exc).__name__,
                 }
             )
-        try:
-            from .email_notifier import build_strategy_text_summary
-
-            summary = build_strategy_text_summary(session, markdown=False)
-            if summary:
-                sections.append(("收益曲线", f"<pre>{_esc(summary)}</pre>"))
-        except Exception as exc:  # noqa: BLE001 - retain other report sections
-            preparation_failures.append(
-                {
-                    "status": "failed",
-                    "label": "策略与信号",
-                    "reason": "preparation_failed",
-                    "error": type(exc).__name__,
-                }
-            )
         pieces = []
         halted = False
         for ordinal, (label, body) in enumerate(sections):
@@ -253,9 +235,6 @@ class TelegramNotifier(BaseNotifier):
     def _prepare_brief_report(self, session, report_config: dict):
         title = report_config.get("label", "简报")
         text = fundamental_text(session.get_all_dataframe())
-        text += "\n\n" + build_return_curves_text(
-            getattr(session, "strategy_return_curves", None)
-        )
         return title, f"<pre>{_esc(text)}</pre>"
 
     def send_deployment_notification(

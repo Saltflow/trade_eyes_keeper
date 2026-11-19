@@ -45,13 +45,12 @@ def test_sent_mime_has_one_encoding_and_decodable_inline_images(
     body = "<html><body>买入信号 &amp; 图表</body></html>"
     if with_charts:
         body = body.replace(
-            "</body>", '<img src="cid:chart001"><img src="cid:chart002"></body>'
+            "</body>", '<img src="cid:chart001"></body>'
         )
     notifier._send_email(
         "中文日报",
         body,
         chart_png_bytes=png if with_charts else None,
-        portfolio_chart_dict={"overview": png} if with_charts else None,
         pdf_bytes=b"%PDF-test" if with_pdf else None,
     )
 
@@ -68,7 +67,7 @@ def test_sent_mime_has_one_encoding_and_decodable_inline_images(
         part for part in parsed.walk() if part.get_content_type() == "image/png"
     ]
     assert [part["Content-ID"] for part in image_parts] == (
-        ["<chart001>", "<chart002>"] if with_charts else []
+        ["<chart001>"] if with_charts else []
     )
     assert all(part.get_payload(decode=True) == png for part in image_parts)
     pdf_parts = [

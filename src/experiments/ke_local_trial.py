@@ -64,7 +64,7 @@ def symbols_from(config: dict) -> list[str]:
 
 def render_report(output: Path, summary: dict) -> None:
     """The presentation contains return curves; diagnostics stay in JSON/CSV."""
-    from src.notification.report_policy import (
+    from .ke_curve_render import (
         generate_return_curve_png,
         return_curves_html,
     )
@@ -83,10 +83,8 @@ def render_report(output: Path, summary: dict) -> None:
 
 
 def make_return_curves(summary: dict, output: Path) -> dict:
-    from src.strategy.return_curves import CURVE_CONTRACT
-
     payload = {
-        "contract": CURVE_CONTRACT,
+        "contract": "ke-return-curves/1",
         "strategy_id": "ke_threshold_allocation",
         "generated_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
         "universe": list(summary["universe"]),

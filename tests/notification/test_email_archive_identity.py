@@ -237,7 +237,6 @@ def test_daily_pdf_generation_gap_is_partial_with_html_smtp_sent(
     )
     monkeypatch.setattr(notifier, "_generate_daily_pdf", generator)
     monkeypatch.setattr(notifier, "_build_email_body", lambda *_a, **_k: "<p>daily</p>")
-    monkeypatch.setattr(email_notifier, "generate_return_curve_png", lambda *_: None)
     session = SimpleNamespace(
         get_all_dataframe=lambda: pd.DataFrame(), announcements={}
     )

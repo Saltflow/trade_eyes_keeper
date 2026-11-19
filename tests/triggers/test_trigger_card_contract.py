@@ -218,10 +218,12 @@ def test_real_report_builders_reach_strict_schema2_http_boundary(
         for code in ("601088", "00700", "VOO")
     )
     assert "合成参考组合" not in blob
+    assert "收益曲线" not in blob and "Ke策略" not in blob
+    assert len(receipt["pieces"]) == (2 if kind == "daily" else 1)
     if kind == "daily":
         assert all(
             label in blob
-            for label in ("价格", "基本面", "Ke策略收益曲线", "合成公告正文必须保留")
+            for label in ("价格", "基本面", "合成公告正文必须保留")
         )
 
 

@@ -1,4 +1,4 @@
-"""Offline renderer contracts with labelled synthetic NAV and fundamentals."""
+"""Offline report contracts: fundamentals/events remain, Ke curves are retired."""
 
 import json
 from copy import deepcopy
@@ -11,46 +11,18 @@ import pytest
 from src.notification import daily_pdf
 from src.notification.email_notifier import EmailNotifier
 from src.notification.feishu_notifier import FeishuNotifier
-from src.notification.report_builders import (
-    build_strategy_text_summary,
-    report_data_readiness,
-)
-from src.notification.report_policy import (
-    build_return_curves_text,
-    format_roe,
-    generate_return_curve_png,
-    return_curve_markets,
-)
+from src.notification.report_builders import report_data_readiness
+from src.notification.report_policy import format_roe
 from src.notification.telegram_notifier import TelegramNotifier
 
 CONFIG = {}
 
 
-def curves():
-    return {
-        "strategy_id": "ke_threshold_allocation",
-        "markets": {
-            "a_share": {
-                "dates": ["2026-01-01", "2026-01-02", "2026-01-03"],
-                "values": [990, 1050, 1100],
-                "initial_capital": 1000,
-                "coverage": {"status": "complete"},
-                "data_as_of": "2026-01-03",
-            },
-            "hk": {
-                "dates": ["2026-01-01", "2026-01-02"],
-                "values": [1000, 900],
-                "initial_capital": 1000,
-                "coverage": {"status": "partial", "message": "合成历史Ke缺口"},
-            },
-            "us": {
-                "dates": ["2026-01-01", "2026-01-02"],
-                "values": [1000, 1000],
-                "initial_capital": 1000,
-                "coverage": {"status": "unavailable"},
-            },
-        },
-    }
+class RetiredCurvePayload:
+    """Old persisted payloads cannot reactivate report rendering or validation."""
+
+    def __getattribute__(self, name):
+        raise AssertionError("reports must not consume retired Ke curves")
 
 
 def session():
@@ -95,7 +67,7 @@ def session():
         },
         backtest={"a_share": {"total_return": 999}},
         ref_portfolio_status={"a_share": {"_label": "OLD_REFERENCE"}},
-        strategy_return_curves=curves(),
+        strategy_return_curves=RetiredCurvePayload(),
         stocks_data={"601088": {}, "00700": {}},
         announcements={
             "601088": [
@@ -125,6 +97,14 @@ def assert_clean(text):
         "偏离",
         "买入阈值",
         "三市场决策板",
+        "Ke策略收益曲线",
+        "Ke收益曲线",
+        "历史Ke覆盖不完整",
+        "历史模拟",
+        "A股策略",
+        "港股策略",
+        "美股策略",
+        "cid:chart002",
     ):
         assert forbidden not in text
     assert "601088" in text and "00700" in text
@@ -152,70 +132,10 @@ def test_roe_display_prefers_reported_and_labels_finite_pb_pe_estimates(
     assert row["roe"] is roe
 
 
-def test_return_identity_coverage_and_initial_capital_are_not_inferred():
-    payload = curves()
-    text = build_return_curves_text(payload)
-    assert "+10.00%" in text  # 1100 / initial 1000, never 1100 / first NAV 990.
-    assert "-10.00%" in text
-    assert "历史Ke覆盖不完整" in text
-    assert "美股：暂不可用" in text and "+0.00%" not in text
-    payload["strategy_id"] = "technical_ensemble"
-    assert all(
-        item["status"] == "unavailable" for item in return_curve_markets(payload)
-    )
-    assert generate_return_curve_png(payload) is None
-    assert "999" not in build_strategy_text_summary(session())
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("values", [1000, float("nan"), 1001]),
-        ("values", [1000, 1001]),
-        ("initial_capital", 0),
-        ("dates", ["2026-01-02", "2026-01-01", "2026-01-03"]),
-        ("dates", ["2026-01-01"] * 3),
-        ("coverage", {}),
-    ],
-)
-def test_malformed_curve_fails_closed(field, value):
-    payload = curves()
-    payload["markets"]["a_share"][field] = value
-    assert return_curve_markets(payload)[0]["status"] == "unavailable"
-
-
-@pytest.mark.parametrize("us_available", [False, True])
-def test_png_uses_one_axis_no_watermark_and_no_unavailable_zero_return_line(
-    monkeypatch, us_available
-):
-    import matplotlib.pyplot as plt
-
-    original = plt.subplots
-    captured = []
-
-    def subplots(*args, **kwargs):
-        figure, axes = original(*args, **kwargs)
-        captured.append(axes)
-        return figure, axes
-
-    monkeypatch.setattr(plt, "subplots", subplots)
-    payload = curves()
-    if us_available:
-        payload["markets"]["us"]["coverage"] = {"status": "complete"}
-    assert generate_return_curve_png(payload).startswith(b"\x89PNG")
-    assert captured[0].lines[0].get_ydata().tolist() == [-1, 5, pytest.approx(10)]
-    assert len(captured) == 1 and len(captured[0].lines) == (3 if us_available else 2)
-    assert [line.get_color() for line in captured[0].lines] == (
-        ["#d6a72a", "#2ca02c", "#1f77b4"] if us_available else ["#d6a72a", "#2ca02c"]
-    )
-    assert not captured[0].texts
-    assert len(captured[0].lines[1].get_xdata()) == 2
-
-
 @pytest.mark.parametrize(
     "method", ["send_from_session", "send_daily_report_from_session"]
 )
-def test_daily_email_uses_only_ke_curve_and_retains_full_fundamentals_events(
+def test_daily_email_ignores_retired_curves_and_retains_fundamentals_events_pdf(
     monkeypatch, method
 ):
     notifier = EmailNotifier({})
@@ -227,10 +147,6 @@ def test_daily_email_uses_only_ke_curve_and_retains_full_fundamentals_events(
     )
     pdf = b"%PDF-1.7\ncontrolled report fixture\n%%EOF"
     monkeypatch.setattr(notifier, "_generate_daily_pdf", lambda *args: pdf)
-    monkeypatch.setattr(
-        "src.notification.email_notifier.generate_return_curve_png",
-        lambda payload: b"synthetic-png",
-    )
     original = session()
     assert getattr(notifier, method)(original)["status"] == "sent"
     body = sent[0][0][1]
@@ -240,8 +156,8 @@ def test_daily_email_uses_only_ke_curve_and_retains_full_fundamentals_events(
     assert "扫描未完成" not in body
     assert_clean(body)
     assert "合成三季报_全文" in body and "fixture.pdf" in body
-    assert "cid:chart002" in body and "Ke策略收益曲线" in body
-    assert sent[0][1]["portfolio_chart_dict"] == {"overview": b"synthetic-png"}
+    assert "隐含 Ke" in body and "13.1%" in body
+    assert "portfolio_chart_dict" not in sent[0][1]
     assert sent[0][1]["pdf_bytes"] == pdf
     assert original.signal_scan is not None
 
@@ -262,8 +178,6 @@ def test_manual_brief_has_full_price_fundamental_pool_without_technical_fields(k
         else str(result)
     )
     assert_clean(text)
-    assert "Ke策略收益曲线" in text
-    assert "暂不可用" in text
     if kind == "email":
         assert "<style>" in text and "检测时间" in text
         assert "<th>ROE%" in text and "股息率" not in text
@@ -284,7 +198,7 @@ def test_bot_daily_retains_events_and_never_calls_legacy_technical_builder(
     text = json.dumps(pieces, ensure_ascii=False)
     assert_clean(text)
     assert "合成三季报_全文" in text and "fixture.pdf" in text
-    assert "历史Ke覆盖不完整" in text
+    assert "PE" in text and "PB" in text
 
 
 def test_pdf_uses_original_template_and_keeps_escaped_fundamentals_and_events(
@@ -297,10 +211,6 @@ def test_pdf_uses_original_template_and_keeps_escaped_fundamentals_and_events(
         return b"%PDF-synthetic"
 
     monkeypatch.setattr(daily_pdf, "_compile_pdf", compile_pdf)
-    monkeypatch.setattr(
-        "src.notification.report_policy.generate_return_curve_png",
-        lambda payload: b"synthetic-png",
-    )
     source = session()
     result = daily_pdf.generate_daily_pdf(
         source,
@@ -312,7 +222,9 @@ def test_pdf_uses_original_template_and_keeps_escaped_fundamentals_and_events(
     assert "\\VAR{" not in captured[0]
     assert_clean(captured[0])
     assert "三季报\\_全文" in captured[0] and "fixture.pdf" in captured[0]
-    assert "\\includegraphics" in captured[0] and "历史Ke覆盖不完整" in captured[0]
+    assert "\\includegraphics" not in captured[0]
+    assert "隐含 Ke" in captured[0] and "13.1\\%" in captured[0]
+    assert "数据状态" in captured[0]
     assert "\r" not in captured[0]
 
 
@@ -329,12 +241,12 @@ def test_disabled_scan_does_not_make_fundamental_data_readiness_blocked():
     assert report_data_readiness(source)["status"] == "ready"
 
 
-def test_missing_ke_curve_keeps_daily_template_and_full_pool():
+def test_daily_template_keeps_full_pool_without_retired_curve_placeholder():
     source = session()
     body = EmailNotifier(deepcopy(CONFIG))._build_email_body(
         source.get_all_dataframe(),
     )
     assert "<style>" in body and 'class="shell"' in body
-    assert "完整行情矩阵" in body and "Ke策略收益曲线" in body
-    assert "暂不可用" in body and "cid:chart002" not in body
+    assert "完整行情矩阵" in body
+    assert "暂不可用" not in body and "cid:chart002" not in body
     assert_clean(body)

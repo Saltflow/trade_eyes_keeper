@@ -11,7 +11,6 @@ import pandas as pd
 import pytest
 import requests
 
-from src.notification import email_notifier
 from src.notification.email_notifier import EmailNotifier
 from src.notification.feishu_notifier import FeishuNotifier
 from src.notification.manager import NotifierManager
@@ -342,9 +341,6 @@ def test_explicit_provider_rejection_is_failed(config, monkeypatch, channel, bod
 def test_feishu_report_records_each_card_and_stops_after_unknown(config, monkeypatch):
     notifier = FeishuNotifier(config)
     monkeypatch.setattr(
-        email_notifier, "build_strategy_text_summary", lambda *_a, **_k: "curve"
-    )
-    monkeypatch.setattr(
         "src.notification.report_builders.build_daily_events_text", lambda *_: "events"
     )
     monkeypatch.setattr(
@@ -363,8 +359,8 @@ def test_feishu_report_records_each_card_and_stops_after_unknown(config, monkeyp
     assert [piece["status"] for piece in receipt["pieces"]] == [
         "sent",
         "unknown",
-        "skipped",
     ]
+    assert [piece["label"] for piece in receipt["pieces"]] == ["价格与基本面", "事件速览"]
     assert post.call_count == 2
 
 
@@ -390,9 +386,6 @@ def test_telegram_report_stops_remaining_sections_after_partial_chunk(
 ):
     notifier = TelegramNotifier(config)
     monkeypatch.setattr(
-        email_notifier, "build_strategy_text_summary", lambda *_a, **_k: "curve"
-    )
-    monkeypatch.setattr(
         "src.notification.report_builders.build_daily_events_text", lambda *_: "events"
     )
     monkeypatch.setattr(
@@ -407,10 +400,8 @@ def test_telegram_report_stops_remaining_sections_after_partial_chunk(
     )
     assert receipt["status"] == "partial"
     assert receipt["pieces"][0]["status"] == "partial"
-    assert [piece["status"] for piece in receipt["pieces"][1:]] == [
-        "skipped",
-        "skipped",
-    ]
+    assert [piece["status"] for piece in receipt["pieces"][1:]] == ["skipped"]
+    assert [piece["label"] for piece in receipt["pieces"]] == ["价格与基本面", "事件速览"]
     assert post.call_count == 2
 
 

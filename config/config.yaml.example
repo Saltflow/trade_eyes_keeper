@@ -1,10 +1,7 @@
-# 报告中的策略部分仅显示明确来源的 Ke 收益曲线。
 report:
   events:
     # 仅限制已采集公告在日报中的展示；不删除原文，不影响待派息/未解禁事项。
     announcement_lookback_months: 2
-  return_curve_artifact: data/strategy_returns/ke_24m.json
-  return_curve_max_age_days: 7
 
 # 股票量化系统配置文件示例
 # 复制为 config/config.yaml 并修改
