@@ -84,7 +84,7 @@ personal_monitor仅保留持仓事实及历史记录；所有提醒、投资条�
 编号是持久number，不是列表行号；先list/get取得真实状态，不猜编号或他人身份。
 工作日定时发简报用schedule={kind:weekly,at:"14:45",weekdays:[0,1,2,3,4]}和动作brief，at取用户要求的当地时间。改时或取消明确的定时报表可按原话中的时刻、星期和报告类型定位，多个匹配列出编号让用户选择。到点采集或查价应使用采集配置。
 list只接受state；prefix只用于catalog字段前缀，不能作为触发器名称筛选。
-“N秒/分钟/小时后”用schedule.after_seconds表示精确间隔，由系统基于认证消息时间计算；不要自行换算成整分钟at。绝对时刻仍使用at/times。
+“N秒/分钟/小时后”用schedule.after_seconds，由系统按认证消息时间计算。一次性任务保留秒。若要求“工作日定时简报，时间设为现在往后五分钟”，传schedule={kind:"weekly",weekdays:[0,1,2,3,4],after_seconds:300}；系统向上取整到当地分钟并按工作日重复。不要丢掉重复周期，也不要自行估算at。
 删除区分已删除、已不存在与已提交将尽力停止；正在投递或已送达可能无法撤回，未知投递不得声称已撤回。
 只依据工具成功回执声称已创建或更改；复杂自然语言应转结构化规则，缺失条件明确询问。
 list/get按action_results逐动作、channels逐渠道解释状态；飞书成功不代表邮件成功。last_result只兼容最新一条，不代表其他报告无记录。报告数据未就绪与是否投递成功分别说明。
@@ -140,13 +140,32 @@ def trigger_tool_schema() -> list[dict]:
                                 "schedule": {
                                     "type": "object",
                                     "properties": {
+                                        "kind": {
+                                            "type": "string",
+                                            "enum": ["dates", "daily", "weekly"],
+                                        },
+                                        "weekdays": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 6,
+                                            },
+                                            "description": "工作日为[0,1,2,3,4]。",
+                                        },
+                                        "timezone": {"type": "string"},
+                                        "at": {"type": "string"},
+                                        "times": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                        },
                                         "after_seconds": {
                                             "type": "integer",
                                             "minimum": 1,
                                             "maximum": 31622400,
                                         },
                                     },
-                                    "description": "一次性使用after_seconds正整数或ISO时刻at/times。循环使用kind=daily或weekly、at=HH:MM及weekdays（周一0到周日6，工作日[0,1,2,3,4]）。timezone默认为Asia/Shanghai。",
+                                    "description": "一次性使用after_seconds正整数或ISO时刻at/times。循环用kind=daily或weekly、weekdays与当地HH:MM的at；用相对时间确定循环时刻时传after_seconds代替at，保留kind、weekdays。timezone默认Asia/Shanghai。",
                                 },
                                 "event": {
                                     "type": "object",
@@ -454,13 +473,35 @@ class TriggerTools:
         value = deepcopy(spec)
         schedule = value.get("schedule")
         if isinstance(schedule, dict) and "after_seconds" in schedule:
-            seconds = schedule["after_seconds"]
-            if set(schedule) - {"after_seconds", "timezone", "window_seconds"}:
-                raise ValueError("after_seconds不能与绝对时刻或重复日程混用")
+            seconds = schedule.pop("after_seconds")
+            if {"times", "at"} & schedule.keys():
+                raise ValueError("after_seconds不能与绝对时刻at/times混用")
             if type(seconds) is not int or not 1 <= seconds <= 366 * 86400:
                 raise ValueError("after_seconds需要1至31622400的整数秒数")
-            schedule.pop("after_seconds")
-            schedule["at"] = (now + timedelta(seconds=seconds)).isoformat()
+            target = now + timedelta(seconds=seconds)
+            if schedule.get("kind") in {"daily", "weekly"}:
+                zone = ZoneInfo(schedule.get("timezone", "Asia/Shanghai"))
+                if target.second or target.microsecond:
+                    target = target.replace(second=0, microsecond=0) + timedelta(
+                        minutes=1
+                    )
+                local = target.astimezone(zone)
+                if local.date() > now.astimezone(zone).date():
+                    from ...triggers.models import timestamp
+
+                    start = schedule.get("start_date", local.date())
+                    schedule["start_date"] = max(
+                        local.date(), timestamp(start, zone.key).astimezone(zone).date()
+                    ).isoformat()
+                schedule["at"] = local.strftime("%H:%M")
+            else:
+                if schedule.get("kind", "dates") != "dates" or set(schedule) - {
+                    "kind",
+                    "timezone",
+                    "window_seconds",
+                }:
+                    raise ValueError("重复周期或星期需同时指定kind=daily或weekly")
+                schedule["at"] = target.isoformat()
         actions = value.get("actions")
         if not isinstance(actions, list) or not 1 <= len(actions) <= 10:
             raise ValueError("请提供1至10个daily或brief报告动作；optimize仅预留")

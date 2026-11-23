@@ -1127,7 +1127,8 @@ def test_relative_deadline_preserves_message_seconds_and_replay(tools):
         {"after_seconds": 1.5},
         {"after_seconds": 31622401},
         {"after_seconds": 180, "at": "2026-11-01"},
-        {"after_seconds": 180, "kind": "daily"},
+        {"after_seconds": 180, "weekdays": [0, 1, 2, 3, 4]},
+        {"after_seconds": 180, "kind": "weekly", "times": ["2026-11-02"]},
     ],
 )
 def test_relative_invalid_never_creates(tools, schedule):
@@ -1186,6 +1187,44 @@ def test_recurring_report_repeats_and_concurrent_requests_share_one_schedule(too
     assert len(tools.store.list(tools.owner)) == 1
     found = tools.execute({"action": "list"})["data"]["triggers"][0]
     assert "14:45" in found["next_execution"]
+
+
+@pytest.mark.parametrize(
+    "sent,zone,delay,expected,first",
+    [
+        ("2026-11-23T19:12:00+08:00", "Asia/Shanghai", 300, "19:17", "2026-11-23"),
+        (
+            "2026-11-23T19:12:00.001+08:00",
+            "America/New_York",
+            300,
+            "06:18",
+            "2026-11-23",
+        ),
+        ("2026-11-27T23:58:21+08:00", "Asia/Shanghai", 300, "00:04", "2026-11-30"),
+        ("2026-11-23T10:12:30+08:00", "Asia/Shanghai", 172800, "10:13", "2026-11-25"),
+    ],
+)
+def test_relative_weekday_report_keeps_recurrence_and_never_fires_early(
+    tools, sent, zone, delay, expected, first
+):
+    from zoneinfo import ZoneInfo
+
+    from src.triggers.schedule import next_due
+
+    now = datetime.fromisoformat(sent)
+    spec = weekday_brief()
+    spec["schedule"].pop("at")
+    spec["schedule"].update(after_seconds=delay, timezone=zone)
+    result = tools.execute({"action": "create", "spec": spec}, now=now)
+    assert result["status"] == "created"
+    saved = result["data"]["trigger"]["spec"]["schedule"]
+    assert saved["kind"] == "weekly"
+    assert saved["weekdays"] == list(range(5))
+    assert saved["at"] == expected
+    first_due = next_due(saved, now)
+    assert first_due >= now + timedelta(seconds=delay)
+    assert first_due.astimezone(ZoneInfo(zone)).date().isoformat() == first
+    assert next_due(saved, first_due) > first_due
 
 
 def test_report_time_selector_preserves_schedule_and_guards_revision(tools):

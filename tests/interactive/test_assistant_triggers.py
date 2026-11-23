@@ -123,6 +123,25 @@ def test_remove_by_clock_does_not_authorize_a_trigger_with_the_hour_as_its_id(
     assert assistant.trigger_store.get("owner", number)["state"] == "deleted"
 
 
+def test_real_weekday_request_keeps_calendar_when_model_only_passes_delay(assistant_factory):
+    assistant = assistant_factory()
+
+    def invoke_model(messages, schemas, invoke, *args, **kwargs):
+        created = invoke("trigger_manage", {"action": "create", "spec": {
+            "label": "时段验收", "schedule": {"after_seconds": 300},
+            "actions": [{"kind": "brief"}],
+        }})
+        return created["message"]
+
+    assistant.harness.run.side_effect = invoke_model
+    send(assistant, "创建工作日定时简报，名称叫时段验收，发送时间设为当前北京时间往后五分钟，走所有启用渠道")
+    stored, = assistant.trigger_store.list("owner")
+    assert stored["spec"]["schedule"]["kind"] == "weekly"
+    assert stored["spec"]["schedule"]["weekdays"] == list(range(5))
+    assert stored["spec"]["schedule"]["at"] == "12:05"
+    assert stored["spec"]["match_policy"] != "once"
+
+
 def spec():
     return {
         "label": "复合指标条件",

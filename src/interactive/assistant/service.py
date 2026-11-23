@@ -1117,6 +1117,8 @@ class FeishuAssistant:
             source = arguments.get("spec" if action == "create" else "changes") or {}
             if isinstance(source, dict) and source.get("condition"):
                 self._trigger_numeric_values(source["condition"], text, tools.catalog)
+            if action == "create" and isinstance(source, dict):
+                arguments = self._weekday_report_request(text, arguments, source)
             if action != "create":
                 targets = arguments.get("numbers", [arguments.get("number")])
                 if not isinstance(targets, list):
@@ -1162,6 +1164,28 @@ class FeishuAssistant:
             self._trigger_changed()
             context.setdefault("trigger_receipts", []).append(result)
         return result
+
+    @staticmethod
+    def _weekday_report_request(text, arguments, spec):
+        """Keep an explicit weekday report calendar attached to its clock."""
+        if {"condition", "event"} & spec.keys() or not re.search(
+            r"每个?工作日[^。；\n]*?(?:简报|日报)|"
+            r"(?:^|创建|添加|新增|设置)(?:一个|一条)?\s*工作日\s*定时\s*(?:简报|日报)",
+            text,
+        ):
+            return arguments
+        if re.search(r"一次性|执行一次后结束", text):
+            return arguments
+        schedule = spec.get("schedule")
+        weekdays = list(range(5))
+        if not isinstance(schedule, dict) or schedule.get("weekdays", weekdays) != weekdays:
+            raise ValueError("工作日定时报告需要周一至周五的循环计划")
+        if schedule.get("kind", schedule.get("type")) not in (None, "weekly", "daily"):
+            raise ValueError("请保留工作日循环计划；相对起始时刻用 after_seconds")
+        if spec.get("match_policy") == "once":
+            raise ValueError("工作日定时报告需要持续生效；请移除 once")
+        schedule = {**schedule, "kind": "weekly", "weekdays": weekdays}
+        return {**arguments, "spec": {**spec, "schedule": schedule}}
 
     def _collection_runtime_receipt(self, schedule):
         runtime = getattr(self, "trigger_runtime", None)
