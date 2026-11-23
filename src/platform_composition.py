@@ -12,7 +12,8 @@ def collection_expiry(config, observed):
     """Application clock policy injected into source adapters, never vice versa."""
     from .personal_monitor.tasks import market_deadlines
 
-    return market_deadlines(config, observed)[1]
+    # With no scheduled collections, on-demand reads have no future cache slot.
+    return market_deadlines(config, observed)[1] or observed
 
 
 def authority_for(

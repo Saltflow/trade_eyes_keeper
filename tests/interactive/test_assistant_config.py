@@ -610,3 +610,90 @@ def test_malformed_yaml_error_never_echoes_secret_line(config_tools):
         with pytest.raises(ValueError, match="无法解析") as caught:
             action()
         assert "stored-secret" not in str(caught.value)
+
+
+def test_collection_clock_lifecycle(config_tools):
+    from datetime import datetime
+
+    from src.personal_monitor.tasks import market_deadlines
+
+    store = _app_store(config_tools)
+    store.update(
+        lambda raw: raw["scheduler"].update(data_collection_mode="three_daily")
+    )
+    original = store.load_raw()["scheduler"]
+    key = "scheduler.collection_slots"
+
+    def propose(*ops):
+        return config_tools.propose([_change(key, list(ops))])
+
+    adds = [{"action": "add", "time": t} for t in ("11:00", "13:30")]
+    (preview,) = propose(*adds)
+    assert store.load_raw()["scheduler"] == original
+    assert [r["time"] for r in preview["diff"][0]["old"]] == ["09:50", "14:30", "19:00"]
+    receipt = config_tools.apply(preview)["collection_schedule"]
+    assert [r["time"] for r in receipt["slots"]] == [
+        "09:50",
+        "11:00",
+        "13:30",
+        "14:30",
+        "19:00",
+    ]
+    assert all(
+        r["skip_weekends"] and r["misfire_grace_seconds"] == 900
+        for r in receipt["slots"][1:3]
+    )
+    assert all(
+        next_time[11:16] == slot["time"]
+        for slot, next_time in zip(
+            receipt["slots"], receipt["next_by_slot"], strict=True
+        )
+    )
+    assert propose(*adds) == []
+    move = {"action": "move", "time": "19:00", "to": "18:30"}
+    config_tools.apply(propose(move)[0])
+    assert propose(move) == []
+    slots = next(
+        f["value"] for f in config_tools.describe()["fields"] if f["key"] == key
+    )
+    assert slots[-1] == {
+        "time": "18:30",
+        "skip_weekends": False,
+        "misfire_grace_seconds": 3600,
+    }
+    clears = [{"action": "remove", "time": r["time"]} for r in slots]
+    assert config_tools.apply(propose(*clears)[0])["collection_schedule"]["slots"] == []
+    assert propose(*clears) == []
+    assert market_deadlines(
+        store.load_raw(), datetime.fromisoformat("2026-11-23T10:00+08:00")
+    ) == (None, None)
+    saved = store.load_raw()["scheduler"]
+    assert saved["run_time"] == original["run_time"]
+    assert saved["brief_reports"] == [
+        dict(b, collection_enabled=False) for b in original["brief_reports"]
+    ]
+
+
+def test_collection_preview_rechecks_revision_and_operations(config_tools):
+    key = "scheduler.collection_slots"
+    before = _app_store(config_tools).path.read_bytes()
+    for op in (
+        {"action": "add", "time": "11:00:00"},
+        {"action": "move", "time": "09:50", "to": "14:30"},
+        {"action": "add", "time": "11:00", "enabled": True},
+        {"action": "add", "time": "11:00", "skip_weekends": "true"},
+    ):
+        with pytest.raises(ValueError):
+            config_tools.propose([_change(key, [op])])
+    assert _app_store(config_tools).path.read_bytes() == before
+    (first,) = config_tools.propose(
+        [_change(key, [{"action": "add", "time": "11:00"}])]
+    )
+    (second,) = config_tools.propose(
+        [_change(key, [{"action": "add", "time": "13:30"}])]
+    )
+    assert first["diff"][0]["previous_mode"] == "interval"
+    assert first["diff"][0]["collection_mode"] == "three_daily"
+    config_tools.apply(first)
+    with pytest.raises(ConfigurationConflict):
+        config_tools.apply(second)

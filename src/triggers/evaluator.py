@@ -117,22 +117,30 @@ def _compare(left, operator, right):
     raise ValueError("unsupported comparison")
 
 
-def evaluate_condition(condition, snapshot, now: datetime) -> ConditionResult:
+def evaluate_condition(
+    condition, snapshot, now: datetime, *, collected_since: datetime | None = None
+) -> ConditionResult:
     now = now_utc(now)
     if condition is None:
         return ConditionResult(TRUE)
     for key in ("all", "any"):
         if key in condition:
             return _combine(
-                [evaluate_condition(child, snapshot, now) for child in condition[key]],
+                [
+                    evaluate_condition(child, snapshot, now, collected_since=collected_since)
+                    for child in condition[key]
+                ],
                 key == "any",
             )
     if "not" in condition:
-        result = evaluate_condition(condition["not"], snapshot, now)
+        result = evaluate_condition(
+            condition["not"], snapshot, now, collected_since=collected_since
+        )
         return ConditionResult(
             {TRUE: FALSE, FALSE: TRUE, UNKNOWN: UNKNOWN}[result.truth], result.reasons
         )
     field = condition["field"]
+    current_sample = collected_since is not None and field.startswith("quotes.")
 
     def check(fact):
         status = _get(fact, "status", "unknown")
@@ -143,16 +151,21 @@ def evaluate_condition(condition, snapshot, now: datetime) -> ConditionResult:
                 name in fact if isinstance(fact, Mapping) else hasattr(fact, name)
             )
             observed = _get(fact, name) if has_metadata else _get(snapshot, name)
+            if current_sample and not has_metadata:
+                return ConditionResult(UNKNOWN, (field + ":missing_timestamp",))
             if observed is None:
-                if "max_age_seconds" in condition:
+                if "max_age_seconds" in condition or current_sample:
                     return ConditionResult(UNKNOWN, (field + ":missing_timestamp",))
                 continue
             try:
-                age = (now - timestamp(observed)).total_seconds()
+                stamp = timestamp(observed)
+                age = (now - stamp).total_seconds()
             except (ValueError, TypeError, OverflowError):
                 return ConditionResult(UNKNOWN, (field + ":invalid_timestamp",))
             if age < (-5 if name == "observed_at" else 0):
                 return ConditionResult(UNKNOWN, (field + ":future_observation",))
+            if current_sample and name == "observed_at" and stamp < collected_since:
+                return ConditionResult(UNKNOWN, (field + ":stale",))
             if ("max_age_seconds" in condition and age > condition["max_age_seconds"]
                     and not (status == "sampled" and field.startswith("quotes.")
                              and name == "as_of")):
@@ -409,15 +422,26 @@ class TriggerEvaluator:
         self.store = store
         self.last_outcomes = []
 
-    def evaluate(self, snapshot=None, now=None, owner=None):
+    def evaluate(
+        self, snapshot=None, now=None, owner=None, *, collection_slot=None,
+        check_prices=True,
+    ):
         now = now_utc(now)
+        batch_start = timestamp(collection_slot) if collection_slot else None
         actions, outcomes = [], []
-        for selected in self.store.active(owner):
-            with self.store.transaction() as db:
-                trigger = self.store.get(selected["owner"], selected["number"], db=db)
-                if trigger is None or trigger["state"] != "active":
-                    continue
+        # A concurrent clock worker must see either all price hits for a sample
+        # or none, or it could split a single slot into separate reports.
+        with self.store.transaction() as db:
+            for trigger in self.store.active(owner, db=db):
                 spec = trigger["spec"]
+                dependencies = collect_dependencies(spec)
+                price_rule = (
+                    bool(dependencies)
+                    and "event" not in spec and "schedule" not in spec
+                    and all(path.startswith("quotes.") for path in dependencies)
+                )
+                if price_rule and not check_prices:
+                    continue
                 state = self.store.evaluation_state(
                     trigger["owner"], trigger["number"], db=db
                 )
@@ -434,22 +458,39 @@ class TriggerEvaluator:
                         }
                     )
                     continue
-                result = evaluate_condition(spec.get("condition"), snapshot, now)
-                samples = {
-                    path: {"value": _get(fact, "value"),
-                           "source_time": _get(fact, "as_of").isoformat(),
-                           "collected_at": _get(fact, "observed_at").isoformat()}
-                    for path, fact in getattr(snapshot, "facts", {}).items()
-                    if _get(fact, "status") == "sampled" and any(
-                        fnmatchcase(path, dependency)
-                        for dependency in collect_dependencies(spec)
+                result = evaluate_condition(
+                    spec.get("condition"), snapshot, now, collected_since=batch_start,
+                )
+                samples = {}
+                for path, fact in getattr(snapshot, "facts", {}).items():
+                    if not path.startswith("quotes.") or not any(
+                        fnmatchcase(path, dependency) for dependency in dependencies
+                    ):
+                        continue
+                    source, collected = _get(fact, "as_of"), _get(fact, "observed_at")
+                    status = _get(fact, "status")
+                    eligible = status == "sampled" or (
+                        collection_slot and status == "available"
                     )
-                }
+                    if (
+                        eligible and isinstance(source, datetime)
+                        and isinstance(collected, datetime)
+                        and (not batch_start or timestamp(collected) >= batch_start)
+                    ):
+                        samples[path] = {
+                            "value": _get(fact, "value"),
+                            "source_time": source.isoformat(),
+                            "collected_at": collected.isoformat(),
+                        }
+                evidence = {"quote_samples": samples} if samples else {}
+                if collection_slot and price_rule:
+                    evidence.update(
+                        collection_slot=collection_slot, condition=spec["condition"]
+                    )
                 updates = {
                     "diagnostic": json.dumps(
-                        {"truth": result.truth, "reasons": result.reasons,
-                         **({"quote_samples": samples} if samples else {})}
-                    ),
+                        {"truth": result.truth, "reasons": result.reasons, **evidence}
+                    )
                 }
                 if result.truth != UNKNOWN:
                     updates["last_truth"] = result.truth
@@ -485,7 +526,12 @@ class TriggerEvaluator:
                                 "key": "schedule:" + due.isoformat(),
                                 "context": {"scheduled_at": due.isoformat()},
                             }
-                            for due in due_times(spec["schedule"], now, previous)
+                            for due in due_times(
+                                spec["schedule"],
+                                now,
+                                previous,
+                                effective_since=trigger["updated_at"],
+                            )
                         ]
                     else:
                         previous = (
@@ -510,8 +556,7 @@ class TriggerEvaluator:
                             candidates = [
                                 {
                                     "key": f"edge:{episode}",
-                                    "context": {"matched_at": now.isoformat(),
-                                                **({"quote_samples": samples} if samples else {})},
+                                    "context": {"matched_at": now.isoformat(), **evidence},
                                 }
                             ]
                 created = []

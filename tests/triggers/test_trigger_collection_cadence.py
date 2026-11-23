@@ -128,3 +128,82 @@ def test_three_collection_slots_survive_restart_and_disabled_reports(tmp_path):
             == 1
         )
     assert loader.call_count == 3
+
+
+def test_collection_edges_survive_repeat_stale_and_missing_samples(tmp_path):
+    from src.triggers import TriggerEvaluator, TriggerStore
+    from src.triggers.facts import FactValue
+
+    store = TriggerStore(tmp_path / "edges.sqlite3")
+    evaluator = TriggerEvaluator(store)
+    now = datetime(2026, 11, 23, 9, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
+    field = "quotes.00883.last"
+    for policy, threshold in (("edge", 21), ("once", 22)):
+        store.create("alice", {
+            "condition": {"field": field, "op": "lt", "value": threshold},
+            "match_policy": policy,
+            "actions": [{"kind": "brief", "payload": {"chat_id": "chat"}}],
+        }, policy, now=now)
+    expected = [
+        (25, "sampled", 0), (20, "sampled", 2), (20, "sampled", 0),
+        (25, "stale", 0), (None, "unknown", 0), (20, "sampled", 0),
+        (25, "sampled", 0), (20, "sampled", 1),
+    ]
+    for index, (value, status, hits) in enumerate(expected):
+        slot = now + timedelta(minutes=30 * index)
+        snapshot = FactSnapshot(slot, slot, {field: FactValue(value, status, slot, slot)})
+        assert len(evaluator.evaluate(snapshot, now=slot, collection_slot=slot.isoformat())) == hits
+    assert len(store.actions("alice", 1)) == 2
+    assert len(store.actions("alice", 2)) == 1
+
+
+def test_deleted_slot_is_read_back_without_restart_and_queued_sample_skips(tmp_path):
+    now = datetime(2026, 11, 23, 11, tzinfo=ZoneInfo("Asia/Shanghai"))
+    config = {
+        "storage": {"data_dir": str(tmp_path)},
+        "scheduler": {"data_collection_mode": "three_daily", "run_time": "11:00"},
+    }
+    execution = ExecutionRuntime(ExecutionStore(runtime_path(config)))
+    loader = Mock(side_effect=AssertionError("deleted collection"))
+    runtime = TriggerRuntime(
+        config, execution, config_provider=lambda: config, clock=lambda: now,
+        fact_loader=loader,
+    )
+    assert runtime.health()["collection_times"] == ["11:00"]
+    config["scheduler"]["collection_enabled"] = False
+    assert runtime.health()["collection_slots"] == []
+    assert runtime.health()["next_collection_at"] is None
+    ctx = SimpleNamespace(cancel_event=SimpleNamespace(is_set=lambda: False))
+    result = runtime._evaluate({"collection_slot": now.isoformat()}, ctx)
+    assert result.status == "skipped"
+    assert result.reason == "collection_slot_no_longer_due"
+    loader.assert_not_called()
+
+
+def test_batch_rejects_prior_slot_sample_and_preserves_dated_condition(tmp_path):
+    from src.triggers import TriggerEvaluator, TriggerStore
+    from src.triggers.facts import FactValue
+
+    store = TriggerStore(tmp_path / "mixed.sqlite3")
+    evaluator = TriggerEvaluator(store)
+    now = datetime(2026, 11, 23, 11, tzinfo=ZoneInfo("Asia/Shanghai"))
+    earlier = now - timedelta(minutes=1)
+    field = "quotes.00883.last"
+    spec = {
+        "condition": {"field": field, "op": "lt", "value": 21},
+        "actions": [{"kind": "daily", "payload": {"chat_id": "chat"}}],
+    }
+    store.create("alice", spec, "price", now=earlier)
+    store.create("alice", {
+        **spec, "schedule": {"at": now.isoformat()},
+        "actions": [{"kind": "brief", "payload": {"chat_id": "chat"}}],
+    }, "dated", now=earlier)
+    snapshot = FactSnapshot(now, now, {field: FactValue(20, "sampled", earlier, earlier)})
+    assert evaluator.evaluate(snapshot, now=now, collection_slot=now.isoformat()) == []
+    assert all(item["truth"] == "unknown" for item in evaluator.last_outcomes)
+    # A dated condition still follows its original schedule, even when the
+    # current evaluation isn't admitting standalone price edges.
+    actions = evaluator.evaluate(snapshot, now=now, check_prices=False)
+    assert len(actions) == 1
+    assert actions[0]["number"] == 2 and actions[0]["occurrence_key"].startswith("schedule:")
+    assert "collection_slot" not in actions[0]["context"]

@@ -123,6 +123,49 @@ def normalize_condition(value: dict, depth: int = 0) -> dict:
     return result
 
 
+def condition_summary(node: dict) -> str:
+    for key, join in (("all", " 且 "), ("any", " 或 ")):
+        if key in node:
+            return (
+                "（"
+                + join.join(condition_summary(item) for item in node[key])
+                + "）"
+            )
+    if "not" in node:
+        return "非" + condition_summary(node["not"])
+    path = node["field"]
+    names = {
+        "last": "现价",
+        "ma60": "60日均线",
+        "pe_ratio": "市盈率",
+        "dividend_yield": "股息率",
+        "roe": "ROE",
+    }
+    parts = path.split(".")
+    field = (
+        parts[1] + names.get(parts[-1], "." + parts[-1])
+        if len(parts) == 3 and parts[0] in {"quotes", "stocks_data"}
+        else path
+    )
+    op = {
+        "lt": "小于",
+        "lte": "不高于",
+        "gt": "大于",
+        "gte": "不低于",
+        "eq": "等于",
+        "ne": "不等于",
+        "in": "属于",
+        "not_in": "不属于",
+        "contains": "包含",
+        "between": "位于区间",
+        "exists": "存在",
+        "truthy": "为真",
+        "startswith": "开头为",
+        "endswith": "结尾为",
+    }.get(node["op"], node["op"])
+    value = json.dumps(node["value"], ensure_ascii=False) if "value" in node else ""
+    return (field + op + value)[:350]
+
 def clock(value: object) -> str:
     if not isinstance(value, str) or not re.fullmatch(
         r"(?:[01]\d|2[0-3]):[0-5]\d", value

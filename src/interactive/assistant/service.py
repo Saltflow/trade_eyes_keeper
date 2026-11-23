@@ -108,6 +108,9 @@ read_configuration 返回标记writable的开放字段，包含公告业务设�
 用户为自己创建、查询或管理定时提醒、日报/简报条件触发时，使用trigger_manage直接执行可逆管理；
 先用catalog核对真实字段，不要求全局配置提案确认。个人触发器始终绑定当前认证用户和会话。
 固定日报/简报调度及其旧全局筛选配置已停用；旧值仅供查询，不可写入。报告调度统一使用trigger_manage；手动 /daily 或 /brief仍可生成完整报告。
+「几点采集／加查一次／到点查价、到价才发」管理全局采集时段。用read_configuration(prefix="scheduler.collection_slots")读当前配置和下次采集，用propose_configuration批量生成一次预览。只调整时刻时保留现有价格规则及其日报/简报种类。
+「每个工作日几点发简报／日报」用trigger_manage管理纯定时规则。按时间取消或改时先匹配当前会话、报告种类、周期和原时刻，多个匹配时列编号让用户选择。
+「几点采集、几点发报」同时查询scheduler.collection_slots和trigger_manage(list)，列出各自时区、日期、下一次及条件命中时发送的规则。时刻以真实回执为准。
 用户目标不在配置字段中时，明确区分需要开发的新功能和已有配置，不得虚构字段或已完成修改。
 writable=false的字段只能解释，不能承诺生成变更提案或差异预览，也不存在隐藏的授权修改流程。
 工具未开放的实时字段应明确说当前助手无法查询；不能承诺以后能查，不能用默认值代替。
@@ -1125,7 +1128,8 @@ class FeishuAssistant:
                 )
                 groups.extend(
                     re.findall(
-                        r"(?:删除|移除|暂停|恢复|启用)\s*#?([\d][\d,，、\s和及#]*)",
+                        r"(?:删除|移除|暂停|恢复|启用)\s*#?([\d][\d,，、\s和及#]*)"
+                        r"(?![\d\s:：点时])",
                         text,
                     )
                 )
@@ -1141,7 +1145,9 @@ class FeishuAssistant:
                         re.IGNORECASE,
                     )
                 )
-                if not all_requested and any(
+                if not explicit and not all_requested and action in {"remove", "update"}:
+                    arguments = tools.resolve_report_time(text, action, arguments)
+                elif not all_requested and any(
                     str(number) not in explicit for number in targets
                 ):
                     raise ValueError(
@@ -1156,6 +1162,22 @@ class FeishuAssistant:
             self._trigger_changed()
             context.setdefault("trigger_receipts", []).append(result)
         return result
+
+    def _collection_runtime_receipt(self, schedule):
+        runtime = getattr(self, "trigger_runtime", None)
+        if runtime is not None:
+            try:
+                health = runtime.health()
+                if health.get("started"):
+                    return {
+                        "verified": health.get("collection_slots") == schedule["slots"]
+                        and health.get("collection_timezone") == schedule["timezone"]
+                        and health.get("collection_mode") == schedule["collection_mode"],
+                        "next_collection_at": health.get("next_collection_at"),
+                    }
+            except Exception:
+                logger.exception("Could not read collection schedule from trigger runtime")
+        return {"verified": False}
 
     @staticmethod
     def _trigger_numeric_values(condition, text, catalog):
@@ -1825,7 +1847,7 @@ class FeishuAssistant:
             ),
             _tool(
                 "read_configuration",
-                "读取当前配置及字段说明，writable表示能否提出变更；含announcements业务设置，可按字段前缀过滤",
+                "按前缀读取配置和可写说明；scheduler.collection_slots 返回后台采集时段，announcements 返回公告设置",
                 {"prefix": {"type": "string"}},
             ),
             _tool("research_catalog", "查看实际策略、脚本、数据和研究输入规范", {}),
@@ -1893,7 +1915,10 @@ class FeishuAssistant:
             ),
             _tool(
                 "propose_configuration",
-                "仅生成配置差异预览，不执行修改",
+                '生成待确认预览。采集用 key=scheduler.collection_slots，value 为操作数组，'
+                '例：[{"action":"add","time":"11:00","skip_weekends":true},'
+                '{"action":"move","time":"13:30","to":"13:45"},{"action":"remove","time":"14:30"}]。'
+                '一次请求的多个时段传一个数组。定时发报使用 trigger_manage。',
                 {
                     "changes": {
                         "type": "array",
@@ -2249,6 +2274,9 @@ class FeishuAssistant:
                         if field.get("key", "").startswith(arguments["prefix"])
                     ],
                 }
+            for field in result.get("fields", []):
+                if field.get("key") == "scheduler.collection_slots":
+                    field["runtime"] = self._collection_runtime_receipt(field)
             return result
         if name == "research_catalog":
             if arguments:
@@ -2403,13 +2431,25 @@ class FeishuAssistant:
             if any(change.get("key") == "stocks" for change in arguments["changes"]):
                 raise ValueError("监控列表请用watchlist_manage增量管理")
             proposals = self.configuration.propose(arguments["changes"])
+            if not proposals:
+                current = self.configuration.describe()
+                keys = {change["key"] for change in arguments["changes"]}
+                return {
+                    "state": "unchanged",
+                    "proposal_ids": [],
+                    "fields": [f for f in current["fields"] if f["key"] in keys],
+                }
             ids = []
+            failed_previews = []
             for payload in proposals:
                 item = self.store.create(
                     "config", chat, sender, payload, self.settings.proposal_ttl_seconds
                 )
-                self._preview(item)
+                if not self._preview(item):
+                    failed_previews.append(item["id"])
                 ids.append(item["id"])
+            if failed_previews:
+                return {"proposal_ids": ids, "state": "preview_failed", "failed_previews": failed_previews}
             return {"proposal_ids": ids, "state": "requires_confirmation"}
         if name == "prepare_research":
             action_id = uuid.uuid4().hex[:12]
@@ -2523,6 +2563,23 @@ class FeishuAssistant:
                 return False
         return True
 
+    @staticmethod
+    def _format_collection_diff(change):
+        def describe(slots):
+            return "、".join(
+                f"{slot['time']}（{'周一至五' if slot['skip_weekends'] else '每天'}，"
+                f"补跑 {slot['misfire_grace_seconds']} 秒）"
+                for slot in slots
+            ) or "未安排后台采集"
+
+        before = describe(change["old"])
+        if change["previous_mode"] != "three_daily":
+            before = f"按间隔轮询（配置时段 {before}）"
+        return (
+            f"采集时间（{change['timezone']}）\n原计划：{before}\n"
+            f"新计划：{describe(change['new'])}"
+        )
+
     def _preview(self, item: dict) -> bool:
         if item["expires"] < time.time():
             self.store.transition(
@@ -2543,6 +2600,9 @@ class FeishuAssistant:
                 indent=2,
             )
             detail = watchlist_preview(payload) or detail
+            changes = payload.get("diff", [])
+            if len(changes) == 1 and changes[0].get("key") == "scheduler.collection_slots":
+                detail = self._format_collection_diff(changes[0])
         else:
             preview = payload.get("preview", {})
             detail = (
@@ -2775,6 +2835,11 @@ class FeishuAssistant:
             elif item["kind"] == "config":
                 try:
                     result = self.configuration.apply(item["payload"])
+                    if "collection_schedule" in result:
+                        self._trigger_changed()
+                        result["runtime"] = self._collection_runtime_receipt(
+                            result["collection_schedule"]
+                        )
                     status = (
                         "failed"
                         if result.get("status") == "applied_reload_failed"
@@ -2783,11 +2848,17 @@ class FeishuAssistant:
                     self.store.update(
                         action_id, status, str(result.get("effect", "")), result=result
                     )
-                    self._reply(
-                        chat,
-                        f"配置提案 {action_id} 执行结果：\n"
-                        + json.dumps(result, ensure_ascii=False),
-                    )
+                    detail = json.dumps(result, ensure_ascii=False)
+                    if "collection_schedule" in result and len(result["diff"]) == 1:
+                        detail = self._format_collection_diff(result["diff"][0])
+                        if result["runtime"]["verified"]:
+                            upcoming = result["runtime"].get("next_collection_at")
+                            detail += "\n运行时已核对。" + (
+                                f"下次采集 {upcoming}" if upcoming else "未安排后台采集。"
+                            )
+                        else:
+                            detail += "\n配置已保存，运行时尚未核实。"
+                    self._reply(chat, f"配置提案 {action_id} 执行结果：\n{detail}")
                 except Exception as exc:  # noqa: BLE001 - persist uncertain write outcome
                     self.store.update(action_id, "failed", self.redact(str(exc)))
                     self._reply(

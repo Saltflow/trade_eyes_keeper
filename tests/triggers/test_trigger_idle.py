@@ -1,6 +1,6 @@
 """Persisted recurring occurrences do not create empty clock jobs all day."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from src.core.execution import ExecutionRuntime, ExecutionStore
 from src.core.report_execution import runtime_path
@@ -20,6 +20,7 @@ def test_today_recurring_slot_already_admitted_does_not_create_empty_runs(tmp_pa
             "actions": [{"kind": "daily", "payload": {"chat_id": "chat"}}],
         },
         "recurring",
+        now=now - timedelta(hours=1),
     )
     trigger.evaluator.evaluate(None, now=now)
     action = trigger.store.actions("alice")[0]

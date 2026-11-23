@@ -14,6 +14,7 @@ import re
 from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime, time, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,12 +23,107 @@ import yaml
 from ...core.config_store import ConfigStore
 from ...core.schedule_manager import get_schedule_manager
 from ...notification.settings import env_flag
+from ...personal_monitor.tasks import collection_status, market_schedule
+from ...triggers.models import clock
 
 _APP = "config/config.yaml"
 _MARKETS = ("a_share", "hk", "us")
 _WATCH_MARKETS = (*_MARKETS, "sg")
 _NEXT_TASK = "下次任务生效；已开始的任务继续使用原配置快照"
 _SYMBOL = re.compile(r"[A-Za-z0-9^][A-Za-z0-9.^=_-]{0,31}\Z")
+_COLLECTION = "scheduler.collection_slots"
+
+
+def _collection_rows(app: dict) -> list[dict]:
+    _, slots = market_schedule(app)
+    return [
+        {
+            "time": t.strftime("%H:%M"),
+            "skip_weekends": weekends,
+            "misfire_grace_seconds": grace,
+        }
+        for t, weekends, grace in sorted(set(slots))
+    ]
+
+
+def _edit_collection(app: dict, operations: list[dict]) -> None:
+    """Edit only collection clocks. Report templates and their IDs stay available."""
+    if not isinstance(operations, list) or not 1 <= len(operations) <= 100:
+        raise ValueError("采集时段需要 1 到 100 个 add/remove/move 操作")
+    scheduler = app.setdefault("scheduler", {})
+    briefs = scheduler.setdefault("brief_reports", [])
+    for operation in operations:
+        if not isinstance(operation, dict):
+            raise TypeError("采集时段操作必须是对象")
+        action = operation.get("action")
+        allowed = {"add": {"skip_weekends"}, "remove": set(), "move": {"to"}}
+        if (
+            not isinstance(action, str)
+            or action not in allowed
+            or (set(operation) - {"action", "time"} - allowed[action])
+        ):
+            raise ValueError("采集时段仅支持 add/remove/move 及对应参数")
+        at = clock(operation.get("time"))
+        target = clock(operation.get("to")) if action == "move" else at
+        if scheduler.get("data_collection_mode") != "three_daily":
+            if action == "remove":
+                continue
+            if action == "move":
+                raise ValueError("当前按间隔采集，没有可移动的生效时段")
+            scheduler["data_collection_mode"] = "three_daily"
+        rows = _collection_rows(app)
+        matches = [row for row in rows if row["time"] == at]
+        skip_weekends = operation.get("skip_weekends", True)
+        if type(skip_weekends) is not bool:
+            raise ValueError("skip_weekends 必须为布尔值")
+        if action == "add" and matches:
+            if "skip_weekends" in operation and any(
+                row["skip_weekends"] != skip_weekends for row in matches
+            ):
+                raise ValueError(f"{at} 已存在且适用日期不同")
+            continue
+        if action == "move":
+            if not matches:
+                if any(row["time"] == target for row in rows):
+                    continue
+                raise ValueError(f"采集时段 {at} 不存在")
+            if at == target:
+                continue
+            if any(row["time"] == target for row in rows) or len(matches) != 1:
+                raise ValueError("目标时段已存在或原时刻有多种采集策略")
+            skip_weekends = matches[0]["skip_weekends"]
+        if action in {"remove", "move"}:
+            if not matches:
+                continue
+            for entry in [scheduler, *briefs]:
+                fallback = "19:00" if entry is scheduler else "09:50"
+                # Older YAML can spell a minute with zero seconds.
+                if not entry.get("collection_enabled", True):
+                    continue
+                source = time.fromisoformat(str(entry.get("run_time", fallback)))
+                if source.strftime("%H:%M") == at:
+                    if entry is not scheduler and entry.get("collection_only") is True:
+                        briefs.remove(entry)
+                    else:
+                        entry["collection_enabled"] = False
+        if action != "remove":
+            prefix = "collection_" + target.replace(":", "")
+            ids = {entry.get("id") for entry in briefs}
+            entry_id = prefix
+            suffix = 0
+            while entry_id in ids:
+                suffix += 1
+                entry_id = f"{prefix}_{suffix}"
+            entry = {
+                "id": entry_id,
+                "run_time": target,
+                "enabled": False,
+                "collection_only": True,
+                "skip_weekends": skip_weekends,
+            }
+            if action == "move":
+                entry["misfire_grace_seconds"] = matches[0]["misfire_grace_seconds"]
+            briefs.append(entry)
 
 
 class ConfigurationConflict(ValueError):
@@ -329,6 +425,15 @@ class ConfigurationTools:
 
         for key, label in (("stocks", "监控标的"),):
             add(key, _Rule("symbols"), label, default=[], markets=_WATCH_MARKETS)
+        add(
+            _COLLECTION,
+            _Rule("collection_operations"),
+            "采集时段；value 是操作列表，每项含 action、time(HH:MM)。"
+            "add 可传 skip_weekends，move 另传 to，remove 按时刻删除。",
+            markets=_WATCH_MARKETS,
+            effect="保存后受管触发器在下次轮询读取新采集时间",
+        )
+        fields[_COLLECTION] = replace(fields[_COLLECTION], value=_collection_rows(app))
         announcement_values = _announcement_values(app)
         add(
             "report.events.announcement_lookback_months",
@@ -348,6 +453,8 @@ class ConfigurationTools:
         for index, brief in enumerate(briefs):
             if not isinstance(brief, dict):
                 raise TypeError("简报配置必须是对象")
+            if brief.get("collection_only") is True:
+                continue
             brief_id = brief.get("id")
             if not isinstance(brief_id, str) or not re.fullmatch(
                 r"[a-zA-Z0-9_-]+", brief_id
@@ -388,6 +495,7 @@ class ConfigurationTools:
         """Return allowlisted values and metadata; never return raw config."""
         snapshots = self._read()
         announcement_values = _announcement_values(snapshots[_APP])
+        collection = collection_status(snapshots[_APP], datetime.now(timezone.utc))
         return {
             "fields": [
                 {
@@ -400,6 +508,7 @@ class ConfigurationTools:
                     "affected_markets": list(spec.markets),
                     **spec.rule.describe(),
                     **announcement_values.get(spec.key, {}),
+                    **({"value": collection["slots"], **collection} if spec.key == _COLLECTION else {}),
                 }
                 for spec in self._registry(snapshots).values()
             ]
@@ -412,6 +521,7 @@ class ConfigurationTools:
         announcement_values = _announcement_values(snapshots[_APP])
         grouped: dict[str, list[tuple[_Field, Any]]] = {}
         identities = {}
+        collection_diff = {}
         for change in changes:
             key, value = change["key"], change["value"]
             spec = registry.get(key)
@@ -428,6 +538,31 @@ class ConfigurationTools:
                 raise ValueError(f"不可修改的配置字段：{key}；请先查询可编辑字段")
             if key in announcement_values and not announcement_values[key]["valid"]:
                 raise ValueError(f"{key} 原配置类型异常，未生成变更；原值未展示")
+            if key == _COLLECTION:
+                proposed = deepcopy(snapshots[_APP])
+                _edit_collection(proposed, value)
+                original_mode = (snapshots[_APP].get("scheduler") or {}).get(
+                    "data_collection_mode", "interval"
+                )
+                new_mode = proposed["scheduler"].get("data_collection_mode", "interval")
+                before = spec.value if original_mode == "three_daily" else []
+                after = _collection_rows(proposed) if new_mode == "three_daily" else []
+                if before != after or original_mode != new_mode:
+                    if any(
+                        c["key"].startswith("scheduler.brief_reports.") for c in changes
+                    ):
+                        raise ValueError("同一提案不能同时编辑采集时段和简报模板字段")
+                    collection_diff = {
+                        "old": before,
+                        "new": after,
+                        "timezone": proposed["scheduler"].get(
+                            "timezone", "Asia/Shanghai"
+                        ),
+                        "previous_mode": original_mode,
+                        "collection_mode": new_mode,
+                    }
+                    grouped.setdefault(spec.target, []).append((spec, value))
+                continue
             try:
                 spec.rule.validate(
                     value,
@@ -443,9 +578,6 @@ class ConfigurationTools:
                 grouped.setdefault(spec.target, []).append((spec, value))
         proposals = []
         for target, items in grouped.items():
-            proposed = deepcopy(snapshots)
-            for spec, value in items:
-                _set(proposed[target], spec.path, value)
             dependencies = {}
             markets = sorted({group for spec, _ in items for group in spec.markets})
             effects = list(dict.fromkeys(spec.effect for spec, _ in items))
@@ -464,6 +596,7 @@ class ConfigurationTools:
                             "path": list(spec.path),
                             "effect": spec.effect,
                             "affected_markets": list(spec.markets),
+                            **(collection_diff if spec.key == _COLLECTION else {}),
                             **(
                                 {"resolved_instruments": list(identities.values())}
                                 if spec.key == "stocks"
@@ -487,7 +620,7 @@ class ConfigurationTools:
                     dependencies=dependencies,
                 )
             )
-        if not proposals:
+        if not proposals and not any(c["key"] == _COLLECTION for c in changes):
             raise ValueError("所选字段已经是指定值，无需修改")
         return proposals
 
@@ -598,14 +731,18 @@ class ConfigurationTools:
                     )
                 registry = self._registry(snapshots, normalized)
                 for change in normalized:
-                    _set(raw, registry[change["key"]].path, change["value"])
+                    if change["key"] == _COLLECTION:
+                        _edit_collection(raw, change["value"])
+                    else:
+                        _set(raw, registry[change["key"]].path, change["value"])
 
             try:
                 saved = self._stores[target].update(mutate)
             except yaml.YAMLError:
                 raise ValueError("配置文件无法解析，未写入变更") from None
         scheduler_changed = target == _APP and any(
-            change["key"].startswith("scheduler.") for change in normalized
+            change["key"].startswith("scheduler.") and change["key"] != _COLLECTION
+            for change in normalized
         )
         effect, refresh_error = preview.effect, None
         if scheduler_changed:
@@ -631,4 +768,13 @@ class ConfigurationTools:
             "affected_markets": preview.affected_markets,
             "effect": effect,
             "runtime_refresh_error": refresh_error,
+            **(
+                {
+                    "collection_schedule": collection_status(
+                        self._stores[target].load_raw(), datetime.now(timezone.utc)
+                    )
+                }
+                if any(c["key"] == _COLLECTION for c in normalized)
+                else {}
+            ),
         }

@@ -23,6 +23,7 @@ from ..core.report_execution import (
 from . import TriggerEvaluator, TriggerStore, collect_dependencies
 from .evaluator import dividend_target, event_occurrences
 from .facts import FactSnapshot, load_trigger_facts, monitored_symbols
+from .models import condition_summary
 from .schedule import due_times
 
 logger = logging.getLogger(__name__)
@@ -165,14 +166,15 @@ class TriggerRuntime:
             dependencies = set().union(
                 *(collect_dependencies(item["spec"]) for item in active)
             )
-            scheduled = (self.config_provider().get("scheduler") or {}).get(
+            config = self.config_provider()
+            scheduled = (config.get("scheduler") or {}).get(
                 "data_collection_mode"
             ) == "three_daily"
             slot = None
             if scheduled:
                 from ..personal_monitor.tasks import market_deadlines
 
-                slot, _ = market_deadlines(self.config_provider(), now)
+                slot, _ = market_deadlines(config, now)
             interval = (
                 self.POLL_SECONDS
                 if any(path.startswith("quotes.") for path in dependencies)
@@ -235,7 +237,7 @@ class TriggerRuntime:
                 if "schedule" in spec:
                     keys = [
                         "schedule:" + due.isoformat()
-                        for due in due_times(spec["schedule"], now)
+                        for due in due_times(spec["schedule"], now, effective_since=item["updated_at"])
                     ]
                 elif spec.get("event", {}).get("kind") == "dividend.next_payment":
                     state = self.store.evaluation_state(
@@ -416,7 +418,7 @@ class TriggerRuntime:
                     )
                     in monitored
                 ]
-            self.evaluator.evaluate(snapshot, now=now)
+            self.evaluator.evaluate(snapshot, now=now, check_prices=False)
             self._submit_pending(config)
             self.reconcile()
             return RunResult("succeeded", "trigger_due_complete")
@@ -431,10 +433,20 @@ class TriggerRuntime:
             if runtime_path(config).resolve() != self.execution.store.path.resolve():
                 raise ValueError("trigger runtime database path changed")
             self.config = copy.deepcopy(config)
+            slot = payload.get("collection_slot")
+            if slot:
+                from ..personal_monitor.tasks import market_deadlines
+
+                eligible, _ = market_deadlines(config, self.clock())
+                if (
+                    (config.get("scheduler") or {}).get("data_collection_mode") != "three_daily"
+                    or eligible is None or eligible.isoformat() != slot
+                ):
+                    return RunResult("skipped", "collection_slot_no_longer_due")
             # Manual dates must not wait behind slow market/disclosure sources.
             clock_snapshot = FactSnapshot(as_of=self.clock(), observed_at=self.clock())
             clock_snapshot.wildcard_symbols = tuple(monitored_symbols(config))
-            self.evaluator.evaluate(clock_snapshot, now=self.clock())
+            self.evaluator.evaluate(clock_snapshot, now=self.clock(), check_prices=False)
             self._submit_pending(config)
             dependencies = set().union(
                 *(collect_dependencies(item["spec"]) for item in self.store.active())
@@ -448,7 +460,10 @@ class TriggerRuntime:
                 )
                 if ctx.cancel_event.is_set():
                     return RunResult("skipped", "trigger_evaluation_cancelled")
-                self.evaluator.evaluate(snapshot, now=self.clock())
+                self.evaluator.evaluate(
+                    snapshot, now=self.clock(), collection_slot=slot,
+                    check_prices=not payload.get("cached_only", False),
+                )
                 self._snapshot = snapshot
                 self._submit_pending(config)
             self.reconcile()
@@ -514,6 +529,22 @@ class TriggerRuntime:
         ]
         if grouped and len(grouped) > 1:
             result["action_ids"] = sorted(item["id"] for item in grouped)
+        if context.get("collection_slot"):
+            slot = context["collection_slot"]
+            reasons = []
+            for member in grouped or [action]:
+                evidence = member["context"]
+                samples = "、".join(
+                    f"{path}={sample['value']}（源时间 {sample['source_time']}，"
+                    f"采集时间 {sample['collected_at']}）"
+                    for path, sample in evidence.get("quote_samples", {}).items()
+                )
+                reasons.append(
+                    f"#{member['number']} {condition_summary(evidence['condition'])} {samples}"
+                )
+            result["collection_slot"] = slot
+            result["reason"] = f"到价检查 {slot} · " + "；".join(reasons)
+        elif grouped and len(grouped) > 1:
             symbols = sorted(
                 {
                     item.get("context", {}).get("symbol")
@@ -534,15 +565,25 @@ class TriggerRuntime:
         if not reports_enabled:
             return
         with self.store.transaction() as db:
-            actions = self.store.claim_pending(
-                limit=100,
-                kinds=set(REPORT_JOB_IDS),
-                db=db,
-                now=self.clock(),
-            )
+            # Read the entire pending set in this transaction. A claim page
+            # boundary must not turn one collection into two deliveries.
+            actions = []
+            while page := self.store.claim_pending(
+                limit=100, kinds=set(REPORT_JOB_IDS), db=db, now=self.clock()
+            ):
+                actions.extend(page)
+                if len(page) < 100:
+                    break
             groups = {}
             for action in actions:
                 context = action.get("context", {})
+                if context.get("collection_slot"):
+                    key = (
+                        action["owner"], action["payload"].get("chat_id"),
+                        action["kind"], context["collection_slot"],
+                    )
+                    groups.setdefault(key, []).append(action)
+                    continue
                 key = (
                     (
                         action["owner"],
@@ -632,17 +673,19 @@ class TriggerRuntime:
             "last_evaluated_at": self.last_evaluated_at,
             "error": self.last_error or None,
         }
-        if (self.config.get("scheduler") or {}).get(
+        config = self.config_provider()
+        if (config.get("scheduler") or {}).get(
             "data_collection_mode"
         ) == "three_daily":
-            from ..personal_monitor.tasks import market_deadlines, market_schedule
+            from ..personal_monitor.tasks import collection_status
 
-            zone, slots = market_schedule(self.config)
-            _, next_slot = market_deadlines(self.config, self.clock())
+            calendar = collection_status(config, self.clock())
             result.update(
-                collection_mode="three_daily",
-                collection_times=sorted(t.strftime("%H:%M") for t, _, _ in slots),
-                collection_timezone=str(zone),
-                next_collection_at=next_slot.isoformat(),
+                collection_mode=calendar["collection_mode"],
+                collection_times=[slot["time"] for slot in calendar["slots"]],
+                collection_slots=calendar["slots"],
+                collection_timezone=calendar["timezone"],
+                next_collection_at=calendar["next_collection_at"],
+                next_collection_by_slot=calendar["next_by_slot"],
             )
         return result

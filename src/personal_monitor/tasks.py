@@ -19,13 +19,17 @@ def market_schedule(config: dict) -> tuple[object, list[tuple[time, bool, int]]]
         except (TypeError, ValueError):
             return default
 
-    specs = [
-        (
-            scheduler.get("run_time", "19:00"),
-            False,
-            grace(scheduler.get("daily_misfire_grace_seconds"), 3600),
-        )
-    ]
+    specs = (
+        [
+            (
+                scheduler.get("run_time", "19:00"),
+                False,
+                grace(scheduler.get("daily_misfire_grace_seconds"), 3600),
+            )
+        ]
+        if scheduler.get("collection_enabled", True)
+        else []
+    )
     specs.extend(
         (
             brief.get("run_time", "09:50"),
@@ -39,6 +43,7 @@ def market_schedule(config: dict) -> tuple[object, list[tuple[time, bool, int]]]
             ),
         )
         for brief in scheduler.get("brief_reports", [])
+        if brief.get("collection_enabled", True)
     )
     parsed = []
     for clock, weekends, window in specs:
@@ -49,11 +54,9 @@ def market_schedule(config: dict) -> tuple[object, list[tuple[time, bool, int]]]
     return zone, parsed
 
 
-def market_deadlines(config: dict, now: datetime):
-    """Return latest catch-up slot and next future slot using current quotes."""
-    zone, specs = market_schedule(config)
+def _deadlines(zone, specs, now):
     local = now.astimezone(zone)
-    eligible, future = [], []
+    eligible, future = [], {}
     for offset in range(-1, 9):
         day = local.date() + timedelta(days=offset)
         for clock, weekends, grace in specs:
@@ -70,5 +73,35 @@ def market_deadlines(config: dict, now: datetime):
                 if (now - scheduled).total_seconds() <= grace:
                     eligible.append(scheduled)
             else:
-                future.append(scheduled)
-    return max(eligible, default=None), min(future, default=None)
+                future.setdefault((clock, weekends, grace), scheduled)
+    return max(eligible, default=None), future
+
+
+def market_deadlines(config: dict, now: datetime):
+    """Return latest catch-up slot and next future slot using current quotes."""
+    zone, specs = market_schedule(config)
+    eligible, future = _deadlines(zone, specs, now)
+    return eligible, min(future.values(), default=None)
+
+
+def collection_status(config: dict, now: datetime) -> dict:
+    """Expose the same calendar used by the timer, including each next slot."""
+    zone, specs = market_schedule(config)
+    mode = (config.get("scheduler") or {}).get("data_collection_mode", "interval")
+    active = sorted(set(specs)) if mode == "three_daily" else []
+    _, future = _deadlines(zone, active, now)
+    next_slot = min(future.values(), default=None)
+    return {
+        "collection_mode": mode,
+        "timezone": str(zone),
+        "slots": [
+            {
+                "time": t.strftime("%H:%M"),
+                "skip_weekends": weekends,
+                "misfire_grace_seconds": grace,
+            }
+            for t, weekends, grace in active
+        ],
+        "next_by_slot": [future[slot].isoformat() for slot in active],
+        "next_collection_at": next_slot.isoformat() if next_slot else None,
+    }

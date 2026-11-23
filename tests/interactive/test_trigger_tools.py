@@ -439,7 +439,7 @@ def test_deletion_discloses_submitted_and_uncertain_actions_cannot_be_retracted(
     assert "无法撤回" in result["message"]
     assert "不确定" in result["message"]
     assert result["data"]["cancelled_actions"] == 2
-    tools.store.remove.assert_called_once_with(tools.owner, [1, 2, 3])
+    tools.store.remove.assert_called_once_with(tools.owner, [1, 2, 3], expected_revision=None)
 
 
 def test_catalog_prefix_filters_real_fields(tools):
@@ -1162,3 +1162,87 @@ def test_list_prefix_error_explains_correct_action(tools):
     assert reply["status"] == "needs_clarification"
     assert "list仅允许参数：state" in reply["message"]
     assert "prefix仅用于catalog" in reply["message"]
+
+
+def weekday_brief(at="14:45"):
+    return {
+        "label": "工作日简报",
+        "schedule": {"kind": "weekly", "at": at, "weekdays": list(range(5))},
+        "actions": [{"kind": "brief"}],
+    }
+
+
+def test_recurring_report_repeats_and_concurrent_requests_share_one_schedule(tools):
+    def send(i):
+        spec = weekday_brief()
+        spec["schedule"]["kind"] = "weekly" if i % 2 else "daily"
+        spec["label"] = f"第{i}次请求"
+        return tools.execute({"action": "create", "spec": spec}, message_id=f"m{i}")
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        saved = list(pool.map(send, range(4)))
+    assert all(r["data"]["trigger"]["number"] == 1 for r in saved)
+    assert all("下次 2026-11-02T14:45:00+08:00" in r["message"] for r in saved)
+    assert len(tools.store.list(tools.owner)) == 1
+    found = tools.execute({"action": "list"})["data"]["triggers"][0]
+    assert "14:45" in found["next_execution"]
+
+
+def test_report_time_selector_preserves_schedule_and_guards_revision(tools):
+    spec = weekday_brief()
+    spec["schedule"].update(catch_up=True, window_seconds=120)
+    tools.execute({"action": "create", "spec": spec})
+    removal = tools.resolve_report_time("取消工作日 14:45 的简报", "remove", {})
+    update = tools.resolve_report_time("把工作日14:45的简报改到14:55", "update", {})
+    assert tools.execute(update)["status"] == "updated"
+    stored = tools.store.get(tools.owner, 1)
+    assert stored["spec"]["schedule"]["window_seconds"] == 120
+    assert stored["spec"]["schedule"]["at"] == "14:55"
+    assert tools.execute(removal)["status"] == "needs_clarification"
+    assert tools.store.get(tools.owner, 1)["state"] == "active"
+    with pytest.raises(ValueError, match="没有符合"):
+        tools.resolve_report_time("取消工作日14:45的简报", "remove", {})
+    result = tools.execute(
+        tools.resolve_report_time("取消工作日14:55的简报", "remove", {})
+    )
+    assert result["data"]["removed"] == [1]
+    assert (
+        tools.execute({"action": "get", "number": 1})["data"]["trigger"][
+            "next_execution"
+        ]
+        == "已停止后续触发"
+    )
+
+
+def test_report_time_selector_does_not_guess_between_multiple_rules_or_other_chats(
+    tools,
+):
+    tools.execute({"action": "create", "spec": weekday_brief()})
+    second = weekday_brief()
+    second["schedule"]["end_date"] = "2026-12-31"
+    tools.execute({"action": "create", "spec": second})
+    with pytest.raises(ValueError, match=r"#1 .*#2"):
+        tools.resolve_report_time("取消工作日14:45的简报", "remove", {"number": 1})
+    with pytest.raises(ValueError, match="没有符合"):
+        TriggerTools(tools.store, tools.owner, "other").resolve_report_time(
+            "取消工作日14:45的简报", "remove", {}
+        )
+    for text in (
+        "取消14:45采集",
+        "如果取消14:45的简报会怎么样",
+        "不要取消工作日14:45的简报",
+    ):
+        with pytest.raises(ValueError):
+            tools.resolve_report_time(text, "remove", {})
+
+
+def test_recurring_schedule_never_delivers_a_slot_before_its_creation(tools):
+    from src.triggers.evaluator import TriggerEvaluator
+
+    moment = datetime.fromisoformat("2026-11-02T15:00:00+08:00")
+    tools.execute({"action": "create", "spec": weekday_brief()}, now=moment)
+    evaluator = TriggerEvaluator(tools.store)
+    evaluator.evaluate(now=moment)
+    assert not tools.store.actions(tools.owner)
+    evaluator.evaluate(now=datetime.fromisoformat("2026-11-03T14:45:00+08:00"))
+    assert len(tools.store.actions(tools.owner)) == 1

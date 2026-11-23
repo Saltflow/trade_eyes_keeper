@@ -513,7 +513,10 @@ def test_all_dated_occurrences_settle_before_done_and_edit_can_add_future_time(s
 def test_only_exhausted_schedule_opportunities_retire(store, schedule, expected):
     moment = datetime.fromisoformat("2026-11-03T10:00+08:00")
     store.create(
-        "alice", {"schedule": schedule, "actions": [{"kind": "daily"}]}, "finite"
+        "alice",
+        {"schedule": schedule, "actions": [{"kind": "daily"}]},
+        "finite",
+        now=moment - timedelta(days=2),
     )
     store.finish_exhausted(now=moment)
     record = store.get("alice", 1)
@@ -532,6 +535,7 @@ def test_last_bounded_recurring_slot_waits_for_all_action_receipts(store):
             "actions": [{"kind": "daily"}, {"kind": "brief"}],
         },
         "last-slot",
+        now=moment - timedelta(days=1),
     )
     TriggerEvaluator(store).evaluate(now=moment)
     actions = store.claim_pending(now=moment)
@@ -560,6 +564,7 @@ def test_bounded_catchup_keeps_unconsumed_history_until_window_expires(store):
             "actions": [{"kind": "daily"}],
         },
         "catchup",
+        now=moment - timedelta(days=2),
     )
     with store.transaction() as db:
         store.record_state(
@@ -634,13 +639,14 @@ def test_reconciling_unchanged_unknown_outcome_performs_no_redundant_write(store
 
 
 def test_unknown_fact_poll_does_not_advance_recurring_catchup_cursor(store):
+    start = datetime.fromisoformat("2026-10-30T09:00+08:00")
     store.create(
         "alice",
         price_spec(schedule={"kind": "daily", "at": "09:50", "catch_up": True}),
         "catchup",
+        now=start,
     )
     engine = TriggerEvaluator(store)
-    start = datetime.fromisoformat("2026-10-30T09:00+08:00")
     engine.evaluate(Snapshot({"quotes.601088.last": fact(51, start)}), start)
     engine.evaluate(None, NOW)
     resumed = datetime.fromisoformat("2026-11-01T10:00+08:00")

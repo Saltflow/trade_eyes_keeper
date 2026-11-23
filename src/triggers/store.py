@@ -30,6 +30,52 @@ def _owner(value):
     return value
 
 
+def _business_spec(spec, *, ignore_action_order=False):
+    """Labels and generated descriptions do not identify a report rule."""
+    business = {key: value for key, value in spec.items() if key != "label"}
+    business["actions"] = [
+        {
+            **action,
+            "payload": {
+                key: val
+                for key, val in action["payload"].items()
+                if key != "trigger_reason"
+            },
+        }
+        for action in spec["actions"]
+    ]
+    if ignore_action_order:
+        business["actions"].sort(key=_encode)
+    return business
+
+
+def _recurring_report(spec):
+    schedule = spec.get("schedule", {})
+    if (
+        schedule.get("kind") not in {"daily", "weekly"}
+        or {"condition", "event"} & spec.keys()
+    ):
+        return None
+    # Both calendar kinds use exactly the same normalized weekday mask.
+    return (
+        {k: v for k, v in schedule.items() if k != "kind"},
+        _business_spec(spec)["actions"],
+        spec["match_policy"] == "once",
+    )
+
+
+def _matching_report(db, owner, spec, *, excluding=0):
+    wanted = _recurring_report(spec)
+    if wanted is not None:
+        for row in db.execute(
+            "SELECT number,spec FROM trigger_definitions WHERE owner=? AND state='active' AND number<>? ORDER BY number",
+            (owner, excluding),
+        ):
+            if _recurring_report(json.loads(row["spec"])) == wanted:
+                return row["number"]
+    return None
+
+
 def _number(value):
     if isinstance(value, str):
         match = re.fullmatch(r"(?:trigger)?([1-9]\d*)", value.strip(), re.IGNORECASE)
@@ -65,6 +111,7 @@ class TriggerStore:
                 "CREATE TABLE IF NOT EXISTS trigger_occurrences (owner TEXT NOT NULL,number INTEGER NOT NULL,occurrence_key TEXT NOT NULL,revision INTEGER NOT NULL,created_at TEXT NOT NULL,context TEXT NOT NULL,PRIMARY KEY(owner,number,occurrence_key))",
                 "CREATE TABLE IF NOT EXISTS trigger_actions (id TEXT PRIMARY KEY,owner TEXT NOT NULL,number INTEGER NOT NULL,occurrence_key TEXT NOT NULL,action_index INTEGER NOT NULL,revision INTEGER NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL,state TEXT NOT NULL,run_id TEXT,cancel_requested INTEGER NOT NULL DEFAULT 0,reason TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(owner,number,occurrence_key,action_index))",
                 "CREATE INDEX IF NOT EXISTS trigger_action_pending ON trigger_actions(state,created_at)",
+                "CREATE INDEX IF NOT EXISTS trigger_action_run ON trigger_actions(run_id) WHERE run_id IS NOT NULL",
                 "CREATE INDEX IF NOT EXISTS trigger_definition_active ON trigger_definitions(state,owner,number)",
             ):
                 db.execute(sql)
@@ -161,30 +208,19 @@ class TriggerStore:
                         "request key already belongs to a different trigger"
                     )
                 return self.get(owner, old["number"], db=db)
+            existing = _matching_report(db, owner, spec)
+            if existing is not None:
+                db.execute(
+                    "INSERT INTO trigger_requests VALUES(?,?,?,?)",
+                    (owner, request_key, existing, encoded),
+                )
+                return self.get(owner, existing, db=db)
             if spec.get("event", {}).get("kind") == "dividend.next_payment":
-
-                def business(value):
-                    result = {
-                        key: item for key, item in value.items() if key != "label"
-                    }
-                    result["actions"] = [
-                        {
-                            **action,
-                            "payload": {
-                                key: item
-                                for key, item in action["payload"].items()
-                                if key != "trigger_reason"
-                            },
-                        }
-                        for action in value["actions"]
-                    ]
-                    return result
-
                 for row in db.execute(
                     "SELECT * FROM trigger_definitions WHERE owner=? AND state='active'",
                     (owner,),
                 ):
-                    if business(json.loads(row["spec"])) == business(spec):
+                    if _business_spec(json.loads(row["spec"])) == _business_spec(spec):
                         db.execute(
                             "INSERT INTO trigger_requests VALUES(?,?,?,?)",
                             (owner, request_key, row["number"], encoded),
@@ -223,27 +259,7 @@ class TriggerStore:
                         )
                     ):
                         continue
-                    comparable = []
-                    for value in (previous, spec):
-                        business = {
-                            key: item for key, item in value.items() if key != "label"
-                        }
-                        business["actions"] = sorted(
-                            (
-                                {
-                                    "kind": action["kind"],
-                                    "payload": {
-                                        key: item
-                                        for key, item in action["payload"].items()
-                                        if key != "trigger_reason"
-                                    },
-                                }
-                                for action in value["actions"]
-                            ),
-                            key=_encode,
-                        )
-                        comparable.append(business)
-                    if comparable[0] != comparable[1]:
+                    if _business_spec(previous, ignore_action_order=True) != _business_spec(spec, ignore_action_order=True):
                         raise ValueError(
                             f"触发器 {row['number']} 已有相同价格条件及报告类型，其他参数不同；请先get并用update修改"
                         )
@@ -337,7 +353,7 @@ class TriggerStore:
     @staticmethod
     def _finish_if_settled(db, owner, number, stamp):
         definition = db.execute(
-            "SELECT spec,state FROM trigger_definitions WHERE owner=? AND number=?",
+            "SELECT spec,state,updated_at FROM trigger_definitions WHERE owner=? AND number=?",
             (owner, number),
         ).fetchone()
         if not definition or definition["state"] != "active":
@@ -375,7 +391,12 @@ class TriggerStore:
                     next_due(schedule, moment) is None
                     and all(
                         "schedule:" + due.isoformat() in seen
-                        for due in due_times(schedule, moment, previous)
+                        for due in due_times(
+                            schedule,
+                            moment,
+                            previous,
+                            effective_since=definition["updated_at"],
+                        )
                     )
                 )
             )
@@ -426,6 +447,10 @@ class TriggerStore:
                     "completed trigger requires editing its future schedule"
                 )
             if item["state"] != state:
+                if state == "active":
+                    existing = _matching_report(db, owner, item["spec"], excluding=number)
+                    if existing is not None:
+                        raise ValueError(f"触发器 #{existing} 已经使用该定时报告计划")
                 db.execute(
                     "UPDATE trigger_definitions SET state=?,revision=revision+1,updated_at=? WHERE owner=? AND number=?",
                     (state, stamp, owner, number),
@@ -459,6 +484,12 @@ class TriggerStore:
             spec = dict(item["spec"])
             spec.update(changes)
             spec = normalize_spec(spec)
+            if spec == item["spec"] and item["state"] == "active":
+                return item
+            if item["state"] == "active":
+                existing = _matching_report(db, owner, spec, excluding=number)
+                if existing is not None:
+                    raise ValueError(f"触发器 #{existing} 已经使用该定时报告计划")
             condition_changed = spec.get("condition") != item["spec"].get("condition")
             dividend_changed = spec.get("event") != item["spec"].get(
                 "event"
@@ -494,11 +525,17 @@ class TriggerStore:
                 self._finish_if_settled(db, owner, number, stamp)
             return self.get(owner, number, db=db)
 
-    def remove(self, owner, numbers, now=None):
+    def remove(self, owner, numbers, now=None, *, expected_revision=None):
         owner, stamp = _owner(owner), now_utc(now).isoformat()
         if not isinstance(numbers, (list, tuple)) or not 1 <= len(numbers) <= 200:
             raise ValueError("a bounded list of trigger numbers is required")
         numbers = list(dict.fromkeys(_number(number) for number in numbers))
+        if expected_revision is not None and (
+            type(expected_revision) is not int
+            or expected_revision < 1
+            or len(numbers) != 1
+        ):
+            raise ValueError("按版本删除需要单个触发器和有效版本")
         result = {
             "removed": [],
             "already_deleted": [],
@@ -514,6 +551,11 @@ class TriggerStore:
                     result["not_found"].append(number)
                 elif item["state"] == "deleted":
                     result["already_deleted"].append(number)
+                elif (
+                    expected_revision is not None
+                    and item["revision"] != expected_revision
+                ):
+                    raise ValueError("trigger revision changed; reload before removing")
                 else:
                     db.execute(
                         "UPDATE trigger_definitions SET state='deleted',revision=revision+1,updated_at=? WHERE owner=? AND number=?",

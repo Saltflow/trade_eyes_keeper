@@ -37,6 +37,7 @@ def binding_status(config: dict, *, run_id: str | None = None) -> str:
             sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=10)
         ) as db:
             db.row_factory = sqlite3.Row
+            db.execute("BEGIN")
             row = db.execute(
                 "SELECT a.*,d.state AS trigger_state,d.revision AS current_revision,"
                 "r.job_id,r.status AS run_status,r.payload AS run_payload "
@@ -45,30 +46,32 @@ def binding_status(config: dict, *, run_id: str | None = None) -> str:
                 (binding.get("action_id"),),
             ).fetchone()
             ids = binding.get("action_ids", [binding.get("action_id")])
-            if (
+            if row is None or (
                 not isinstance(ids, list)
-                or not 1 <= len(ids) <= 100
+                or not ids
                 or any(not isinstance(item, str) for item in ids)
                 or binding.get("action_id") not in ids
                 or len(set(ids)) != len(ids)
             ):
                 return "invalid"
             members = db.execute(
-                "SELECT * FROM trigger_actions WHERE id IN ("
-                + ",".join("?" for _ in ids)
-                + ")",
-                ids,
+                "SELECT a.*,d.state AS trigger_state,d.revision AS current_revision,"
+                "json_extract(o.context,'$.collection_slot') AS slot "
+                "FROM trigger_actions a JOIN trigger_definitions d USING(owner,number) "
+                "JOIN trigger_occurrences o USING(owner,number,occurrence_key) "
+                "WHERE a.run_id=?",
+                (row["run_id"],),
             ).fetchall()
-        if row is None:
-            return "invalid"
-        if len(members) != len(ids) or any(
+        slot = binding.get("collection_slot")
+        if {m["id"] for m in members} != set(ids) or any(
             member["owner"] != row["owner"]
-            or member["number"] != row["number"]
-            or member["revision"] != row["revision"]
             or member["kind"] != row["kind"]
-            or member["action_index"] != row["action_index"]
-            or member["payload"] != row["payload"]
-            or member["run_id"] != row["run_id"]
+            or member["slot"] != slot
+            or (slot is None and (
+                member["number"] != row["number"] or member["revision"] != row["revision"]
+                or member["action_index"] != row["action_index"]
+                or member["payload"] != row["payload"]
+            ))
             or json.loads(member["payload"]).get("chat_id") != binding.get("chat_id")
             for member in members
         ):
@@ -91,13 +94,11 @@ def binding_status(config: dict, *, run_id: str | None = None) -> str:
         ):
             return "invalid"
         if (
-            row["trigger_state"] != "active"
-            or row["current_revision"] != row["revision"]
-            or row["cancel_requested"]
-            or row["state"] != "submitted"
-            or row["run_status"] != "running"
+            row["run_status"] != "running"
             or any(
-                member["state"] != "submitted" or member["cancel_requested"]
+                member["trigger_state"] != "active"
+                or member["current_revision"] != member["revision"]
+                or member["state"] != "submitted" or member["cancel_requested"]
                 for member in members
             )
         ):

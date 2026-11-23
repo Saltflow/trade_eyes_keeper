@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import unicodedata
 from contextlib import closing
 from copy import deepcopy
 from dataclasses import asdict, is_dataclass
@@ -17,6 +18,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from zoneinfo import ZoneInfo
+
+from ...triggers.models import condition_summary
 
 BEIJING = ZoneInfo("Asia/Shanghai")
 _ACTIONS = {"create", "update", "list", "get", "pause", "resume", "remove", "catalog"}
@@ -79,6 +82,7 @@ personal_monitor仅保留持仓事实及历史记录；所有提醒、投资条�
 三季报事件使用announcement.q3_report、report_period=Q3、day_offsets=[0,1]，按监控池动态匹配。
 到期事件缺时刻默认Asia/Shanghai 09:50，命中后生成完整日报；回执必须给出完整年月日和时区。未给年份且今年日期已过时询问年份，不偷偷跨年。
 编号是持久number，不是列表行号；先list/get取得真实状态，不猜编号或他人身份。
+工作日定时发简报用schedule={kind:weekly,at:"14:45",weekdays:[0,1,2,3,4]}和动作brief，at取用户要求的当地时间。改时或取消明确的定时报表可按原话中的时刻、星期和报告类型定位，多个匹配列出编号让用户选择。到点采集或查价应使用采集配置。
 list只接受state；prefix只用于catalog字段前缀，不能作为触发器名称筛选。
 “N秒/分钟/小时后”用schedule.after_seconds表示精确间隔，由系统基于认证消息时间计算；不要自行换算成整分钟at。绝对时刻仍使用at/times。
 删除区分已删除、已不存在与已提交将尽力停止；正在投递或已送达可能无法撤回，未知投递不得声称已撤回。
@@ -142,7 +146,7 @@ def trigger_tool_schema() -> list[dict]:
                                             "maximum": 31622400,
                                         },
                                     },
-                                    "description": "相对时间仅传after_seconds正整数（例如3分钟后=180），基于认证消息时间保留秒；不能同时传at/times/kind。绝对时间at为带时区ISO时刻，或times为多个ISO时刻；timezone默认为Asia/Shanghai。",
+                                    "description": "一次性使用after_seconds正整数或ISO时刻at/times。循环使用kind=daily或weekly、at=HH:MM及weekdays（周一0到周日6，工作日[0,1,2,3,4]）。timezone默认为Asia/Shanghai。",
                                 },
                                 "event": {
                                     "type": "object",
@@ -320,6 +324,77 @@ class TriggerTools:
         self.store, self.owner, self.chat = store, owner, chat
         self.message_id, self.now, self.catalog = message_id, now, catalog
 
+    def resolve_report_time(self, text: str, action: str, arguments: dict) -> dict:
+        """Resolve an unnumbered operation solely from an explicit user command."""
+        text = re.sub(r"\s+", "", unicodedata.normalize("NFKC", text)).rstrip("。！!")
+        target = (
+            r"(?:每个|每逢)?(?P<days>工作日|周一至周五|周一到周五|每天|每日|每?周[一二三四五六日天])?"
+            r"(?P<at>(?:[01]?\d|2[0-3]):[0-5]\d)(?:的|发送的|发的)?(?P<kind>简报|日报)"
+        )
+        if action == "remove":
+            pattern = r"(?:请)?(?:取消|删除|移除)" + target
+        elif action == "update":
+            pattern = (
+                r"(?:请)?(?:把|将)?"
+                + target
+                + r"(?:改到|改成|调整到|移到|改为)(?P<new>(?:[01]?\d|2[0-3]):[0-5]\d)"
+            )
+        else:
+            raise ValueError("按时刻定位只支持修改或删除定时报告")
+        command = re.fullmatch(pattern, text)
+        if not command:
+            raise ValueError("请明确提供定时报告的时间、类型或触发器编号")
+        day = command["days"]
+        days = None
+        if day in ("工作日", "周一至周五", "周一到周五"):
+            days = list(range(5))
+        elif day in ("每天", "每日"):
+            days = list(range(7))
+        elif day:
+            days = ["一二三四五六日".index(day[-1].replace("天", "日"))]
+        at = command["at"].zfill(5)
+        kind = "brief" if command["kind"] == "简报" else "daily"
+        candidates = []
+        for row in self.store.list(self.owner, include_inactive=True):
+            spec = row["spec"]
+            schedule = spec.get("schedule", {})
+            if (
+                row["state"] in {"active", "paused"}
+                and not ({"condition", "event"} & spec.keys())
+                and schedule.get("kind") in {"daily", "weekly"}
+                and schedule["timezone"] == "Asia/Shanghai"
+                and schedule["at"] == at
+                and (days is None or schedule["weekdays"] == days)
+                and len(spec["actions"]) == 1
+                and spec["actions"][0]["kind"] == kind
+                and spec["actions"][0]["payload"].get("chat_id") == self.chat
+            ):
+                candidates.append(row)
+        if not candidates:
+            raise ValueError("当前会话没有符合该时刻的定时报告")
+        if len(candidates) > 1:
+            choices = "、".join(
+                f"#{row['number']} {row['label']}" for row in candidates
+            )
+            raise ValueError(f"匹配到多个定时报告，请选择编号：{choices}")
+        row = candidates[0]
+        supplied = arguments.get("numbers", [arguments.get("number", row["number"])])
+        if supplied != [row["number"]] or (
+            "expected_revision" in arguments
+            and arguments["expected_revision"] != row["revision"]
+        ):
+            raise ValueError("所选编号或版本与当前会话的时刻不符，请重新查询")
+        resolved = {
+            "action": action,
+            "number": row["number"],
+            "expected_revision": row["revision"],
+        }
+        if action == "update":
+            resolved["changes"] = {
+                "schedule": {**row["spec"]["schedule"], "at": command["new"].zfill(5)}
+            }
+        return resolved
+
     def _catalog(self):
         if self.catalog is None:
             from ...triggers.catalog import build_report_field_catalog
@@ -365,7 +440,13 @@ class TriggerTools:
             (self.owner + "\0" + message_id + "\0" + raw).encode()
         ).hexdigest()
         created = self.store.create(self.owner, value, request_key=key, now=now)
-        return self._saved_reply("created", created)
+        reply = self._saved_reply("created", created, now)
+        if created["request_key"] != key and value.get("schedule", {}).get("kind") in {
+            "daily",
+            "weekly",
+        }:
+            reply["message"] = "已复用现有定时报告。" + reply["message"]
+        return reply
 
     def _prepare(self, spec: dict, now: datetime) -> dict:
         if not isinstance(spec, dict) or _untrusted_route(spec):
@@ -430,7 +511,7 @@ class TriggerTools:
             raise ValueError("未知业务事件种类；请先查询catalog")
         return value
 
-    def _saved_reply(self, status, created):
+    def _saved_reply(self, status, created, now):
         value = created["spec"]
         number = created["number"]
         label = created.get("label", value.get("label", ""))
@@ -481,7 +562,13 @@ class TriggerTools:
                 "不代表券商账户实际到账"
             )
         if "condition" in value:
-            when += "，条件为" + self._condition_summary(value["condition"])
+            when += "，条件为" + condition_summary(value["condition"])
+        if schedule and created["state"] == "active":
+            from ...triggers.schedule import next_due
+
+            due = next_due(schedule, now)
+            if due:
+                when += "，下次 " + due.astimezone(ZoneInfo(schedule["timezone"])).isoformat()
         return _reply(
             status,
             f"已保存触发器 {number}：{label}{when}。",
@@ -496,49 +583,6 @@ class TriggerTools:
             for key in _ROUTE_KEYS:
                 action.get("payload", {}).pop(key, None)
         return spec
-
-    def _condition_summary(self, node):
-        for key, join in (("all", " 且 "), ("any", " 或 ")):
-            if key in node:
-                return (
-                    "（"
-                    + join.join(self._condition_summary(item) for item in node[key])
-                    + "）"
-                )
-        if "not" in node:
-            return "非" + self._condition_summary(node["not"])
-        path = node["field"]
-        names = {
-            "last": "现价",
-            "ma60": "60日均线",
-            "pe_ratio": "市盈率",
-            "dividend_yield": "股息率",
-            "roe": "ROE",
-        }
-        parts = path.split(".")
-        field = (
-            parts[1] + names.get(parts[-1], "." + parts[-1])
-            if len(parts) == 3 and parts[0] in {"quotes", "stocks_data"}
-            else path
-        )
-        op = {
-            "lt": "小于",
-            "lte": "不高于",
-            "gt": "大于",
-            "gte": "不低于",
-            "eq": "等于",
-            "ne": "不等于",
-            "in": "属于",
-            "not_in": "不属于",
-            "contains": "包含",
-            "between": "位于区间",
-            "exists": "存在",
-            "truthy": "为真",
-            "startswith": "开头为",
-            "endswith": "结尾为",
-        }.get(node["op"], node["op"])
-        value = json.dumps(node["value"], ensure_ascii=False) if "value" in node else ""
-        return (field + op + value)[:350]
 
     def _execution_result(self, action):
         """Read the shared run without creating stores, reconciling or waking jobs."""
@@ -821,9 +865,9 @@ class TriggerTools:
         }.get(record["state"], "状态待核实")
         summary = []
         if "condition" in spec:
-            summary.append(self._condition_summary(spec["condition"]))
+            summary.append(condition_summary(spec["condition"]))
         schedule = spec.get("schedule")
-        next_label = "等待行情/日报数据匹配"
+        next_label = "条件命中时发送"
         if schedule:
             zone = ZoneInfo(schedule["timezone"])
             if schedule["kind"] == "dates":
@@ -934,6 +978,7 @@ class TriggerTools:
             readiness = "仅公开派息计划，不代表券商实际到账"
         message = f"{record['number']}. {record['label']}【{state}】\n条件/计划：{'；'.join(summary)}\n动作：{actions}\n下一次：{next_label}\n最近结果：{recent}；{readiness}"
         data = _clean(record)
+        data["next_execution"] = next_label
         data["action_results"] = action_results
         data["last_result"] = (
             {
@@ -948,8 +993,11 @@ class TriggerTools:
             "truth": truth,
             "last_evaluated_at": evaluation.get("last_evaluated_at"),
             "last_fired_at": evaluation.get("last_fired_at"),
+            "collection_slot": diagnostic.get("collection_slot"),
             "quote_samples": diagnostic.get("quote_samples", {}),
         }
+        if diagnostic.get("collection_slot"):
+            message += f"\n最近采集时段：{diagnostic['collection_slot']}"
         for path, sample in diagnostic.get("quote_samples", {}).items():
             message += (
                 f"\n采样报价：{path}={sample['value']}；"
@@ -999,7 +1047,7 @@ class TriggerTools:
                 "update": {"number", "changes", "expected_revision"},
                 "pause": {"number", "numbers"},
                 "resume": {"number", "numbers"},
-                "remove": {"number", "numbers"},
+                "remove": {"number", "numbers", "expected_revision"},
                 "catalog": {"prefix"},
             }[action]
             if set(params) - allowed:
@@ -1057,7 +1105,7 @@ class TriggerTools:
                     expected_revision=revision,
                     now=_clock(now or self.now),
                 )
-                return self._saved_reply("updated", changed)
+                return self._saved_reply("updated", changed, _clock(now or self.now))
             if action == "catalog":
                 catalog = self._catalog()
                 described = catalog.describe_fields()
@@ -1113,7 +1161,9 @@ class TriggerTools:
                 raise ValueError("number与numbers不能同时提供")
             numbers = _numbers(params.get("numbers", params.get("number")))
             if action == "remove":
-                result = self.store.remove(self.owner, numbers)
+                result = self.store.remove(
+                    self.owner, numbers, expected_revision=params.get("expected_revision")
+                )
                 parts = []
                 for field, label in (
                     ("removed", "已删除"),

@@ -75,9 +75,14 @@ def normalize_schedule(value: dict) -> dict:
 
 
 def due_times(
-    schedule: dict, now: datetime, previous: datetime | None = None
+    schedule: dict,
+    now: datetime,
+    previous: datetime | None = None,
+    *,
+    effective_since: str | datetime | None = None,
 ) -> list[datetime]:
     now = now_utc(now)
+    earliest = timestamp(effective_since) if effective_since is not None else None
     if schedule["kind"] == "dates":
         candidates = [timestamp(value) for value in schedule["times"]]
     else:
@@ -109,6 +114,11 @@ def due_times(
         value
         for value in candidates
         if value <= now
+        and (
+            schedule["kind"] == "dates"
+            or earliest is None
+            or value >= earliest
+        )
         and (
             "window_seconds" not in schedule
             or (now - value).total_seconds() <= schedule["window_seconds"]

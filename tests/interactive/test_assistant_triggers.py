@@ -28,7 +28,7 @@ def assistant_factory(tmp_path):
     def create(capabilities=frozenset({"personal"}), **kwargs):
         root = tmp_path / str(len(active))
         root.mkdir()
-        runtime = ExecutionRuntime(ExecutionStore(root / "assistant.sqlite3"))
+        runtime = ExecutionRuntime(ExecutionStore(root / "runtime/feishu_assistant.sqlite3"))
         assistant = FeishuAssistant(
             {"storage": {"data_dir": str(root)}},
             Mock(return_value=(True, "ok")),
@@ -54,6 +54,73 @@ def assistant_factory(tmp_path):
 
 def send(assistant, text, message_id="message", owner="owner", chat="chat", **kwargs):
     assistant.handle(chat, owner, text, message_id, message_time=MESSAGE_TIME, **kwargs)
+
+
+def test_collection_changes_use_one_confirmed_preview_and_live_readback(assistant_factory):
+    import yaml
+
+    from src.interactive.assistant.config_tools import ConfigurationTools
+    from src.triggers.runtime import TriggerRuntime
+
+    assistant = assistant_factory({"triggers", "research"})
+    config_path = assistant.root / "config/config.yaml"
+    config_path.parent.mkdir(exist_ok=True)
+    config = {
+        "storage": {"data_dir": str(assistant.root)},
+        "scheduler": {"data_collection_mode": "three_daily", "run_time": "19:00"},
+    }
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    assistant.configuration = ConfigurationTools(assistant.root)
+    def load():
+        return yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    runtime = TriggerRuntime(load(), assistant.execution_runtime, config_provider=load)
+    assistant.trigger_runtime = runtime
+    runtime.started = True
+    assistant.trigger_changed = Mock()
+    args = {"changes": [{"key": "scheduler.collection_slots", "value": [
+        {"action": "add", "time": "11:00"}, {"action": "add", "time": "13:30"},
+    ]}]}
+    def propose(messages, schemas, invoke, *args_unused, **kwargs):
+        return invoke("propose_configuration", args)["state"]
+
+    assistant.harness.run.side_effect = propose
+    send(assistant, "工作日 11:00、13:30 各加采一次")
+    proposal, = assistant.store.recent("chat", "owner")
+    assert runtime.health()["collection_times"] == ["19:00"]
+    send(assistant, "确认 " + proposal["id"], "confirm")
+    assert assistant.store.get(proposal["id"], "chat", "owner")["status"] == "succeeded"
+    fields = assistant.call_tool("chat", "owner", "read_configuration", {
+        "prefix": "scheduler.collection_slots",
+    })["fields"]
+    assert fields[0]["runtime"]["verified"] is True
+    assert runtime.health()["collection_times"] == ["11:00", "13:30", "19:00"]
+    assert assistant.call_tool("chat", "owner", "propose_configuration", args)["state"] == "unchanged"
+    assert len(assistant.store.recent("chat", "owner")) == 1
+    assert assistant.trigger_store.list("owner") == []
+
+
+def test_remove_by_clock_does_not_authorize_a_trigger_with_the_hour_as_its_id(
+    assistant_factory,
+):
+    assistant = assistant_factory()
+    tools = assistant._trigger_tools_for("chat", "owner")
+    receipt = tools.execute("create", {"spec": {
+        "label": "工作日简报",
+        "schedule": {"kind": "weekly", "weekdays": list(range(5)), "at": "14:45"},
+        "actions": [{"kind": "brief"}],
+    }}, now=NOW, message_id="schedule")
+    number = receipt["data"]["trigger"]["number"]
+
+    def remove(messages, schemas, invoke, *args, **kwargs):
+        with pytest.raises(ValueError):
+            invoke("trigger_manage", {"action": "remove", "number": 14})
+        result = invoke("trigger_manage", {"action": "remove", "number": number})
+        return result["message"]
+
+    assistant.harness.run.side_effect = remove
+    send(assistant, "删除14:45的简报")
+    assert assistant.trigger_store.get("owner", number)["state"] == "deleted"
 
 
 def spec():
